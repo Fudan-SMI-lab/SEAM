@@ -1,0 +1,35 @@
+experiment:
+  name: complex_smoke_test
+  output_dir: runs/complex_smoke
+
+runtime:
+  seed: 42
+  device: cuda
+  use_amp: true
+
+data:
+  image_size: 32
+  channels: 3
+  num_classes: 5
+  train_samples: 96
+  val_samples: 32
+  batch_size: 8
+  eval_batch_size: 8
+  num_workers: 2
+  persistent_workers: true
+  prepared_stats_path: data/prepared_stats.yaml
+
+optimizer:
+  lr: 0.001
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  grad_clip_norm: 1.0
+
+trainer:
+  epochs: 2
+  log_interval: 2
+
+distributed:
+  enabled: true
+  backend: nccl
+  init_file: data/dist_init

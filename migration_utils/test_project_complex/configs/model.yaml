@@ -1,0 +1,8 @@
+backbone:
+  input_channels: 3
+  channels: [16, 32, 64]
+  dropout: 0.2
+
+classifier:
+  hidden_dim: 64
+  num_classes: 5
