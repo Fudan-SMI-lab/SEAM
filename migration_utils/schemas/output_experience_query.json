@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Experience Query Output",
+  "type": "object",
+  "required": ["selected_experiences", "summary"],
+  "properties": {
+    "selected_experiences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "relevance_score"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "relevance_score": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "load_full": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string"
+    },
+    "warning": {
+      "type": "string"
+    }
+  }
+}

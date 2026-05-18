@@ -1,0 +1,17 @@
+framework:
+  stagnation_threshold: 3           # consecutive same-error breaks
+  max_iterations: 10                # default max repair iterations
+  max_entry_script_revisions: 2       # bounded Phase 5 entry command revisions
+
+  review:
+    enabled: false                    # opt-in review gate
+    gate_on_cpu_fallback: true        # trigger on CPU fallback detection
+    max_review_iterations: 3          # max improvement cycles
+
+  server:
+    url: ""                           # empty = auto-start
+    auto_start: true                  # auto-start OpenCode server
+    port_preference: 0                # 0 = find available port
+
+  artifacts:
+    key_prefix: "phase"               # consistent artifact key format

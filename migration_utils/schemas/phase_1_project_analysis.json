@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phase 1: Project Analysis Output",
+  "type": "object",
+  "properties": {
+    "project_dir": {
+      "type": "string"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cuda_detected": {
+      "type": "boolean"
+    },
+    "entry_script": {
+      "type": "string"
+    }
+  },
+  "required": ["project_dir", "dependencies", "cuda_detected", "entry_script"]
+}

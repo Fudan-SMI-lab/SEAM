@@ -1,0 +1,219 @@
+# Test workflow for Experience Memory System E2E validation
+# Uses test_project_template (simple MLP with CUDA patterns) to verify:
+# 1. Phase 7a/7b extracts experiences after migration
+# 2. Phase 5 analyze_error retrieves experiences on retry
+# 3. Index is properly maintained across runs
+
+name: experience_memory_test
+version: "1.0"
+description: End-to-end test for cross-task experience memory system
+terminals: [complete, failed]
+
+globals:
+  max_repair_iterations: 3
+  review_gate_enabled: false
+
+agents:
+  main_engineer:
+    role: main_engineer
+    lifecycle: persistent
+  error_analyzer:
+    role: error_analyzer
+    lifecycle: persistent
+  dependency_fixer:
+    role: dependency_fixer
+    lifecycle: persistent
+  code_adapter:
+    role: code_adapter
+    lifecycle: persistent
+  operator_fixer:
+    role: operator_fixer
+    lifecycle: persistent
+
+phases:
+  - id: phase_0_env_detect
+    name: environment_detection
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_0_env_detect"
+    output_schema: {}
+    validator: env_detect
+    retrieve_experience: false
+    transitions:
+      on_success: phase_1_project_analysis
+      on_failure: complete
+
+  - id: phase_1_project_analysis
+    name: project_analysis
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_1_project_analysis"
+    output_schema: {}
+    validator: project_analysis
+    retrieve_experience: true
+    experience_query:
+      source: "project_context"
+      signals:
+        - dependencies
+        - cuda_patterns
+        - entry_script
+    transitions:
+      on_success: phase_2_venv_create
+      on_failure: complete
+
+  - id: phase_2_venv_create
+    name: venv_create
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_2_venv_create"
+    output_schema: {}
+    validator: venv
+    transitions:
+      on_success: phase_3_entry_script
+      on_failure: complete
+
+  - id: phase_3_entry_script
+    name: entry_script
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_3_entry_script"
+    output_schema: {}
+    validator: entry_script
+    transitions:
+      on_success: phase_35_static_validate
+      on_failure: complete
+
+  - id: phase_35_static_validate
+    name: static_validate
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_35_static_validate"
+    output_schema: {}
+    validator: entry_static
+    transitions:
+      on_success: phase_4_rule_migration
+      on_failure: complete
+
+  - id: phase_4_rule_migration
+    name: rule_migration
+    type: builtin
+    prompt_template: ""
+    output_schema: {}
+    transitions:
+      on_success: phase_5_validation
+      on_failure: complete
+
+  - id: phase_5_validation
+    name: validation
+    type: loop
+    sub_workflow: repair_loop
+    input_mapping:
+      entry_script: "${state.phase_3_entry_script.run_command}"
+    transitions:
+      on_success: phase_6_report
+      on_failure: complete
+
+  - id: phase_6_report
+    name: report
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_6_report"
+    output_schema: {}
+    validator: null
+    transitions:
+      on_success: phase_7a_evaluate
+      on_failure: complete
+
+  - id: phase_7a_evaluate
+    name: experience_evaluation
+    type: orchestration
+    handler: "experience_evaluator.ExperienceEvaluator.evaluate"
+    output_schema: {}
+    validator: null
+    retrieve_experience: false
+    transitions:
+      on_success: phase_7b_refine
+      on_failure: complete
+
+  - id: phase_7b_refine
+    name: experience_refinement
+    type: orchestration
+    handler: "experience_dispatcher.ExperienceDispatcher.dispatch_and_refine"
+    transitions:
+      on_success: complete
+      on_failure: complete
+
+sub_workflows:
+  repair_loop:
+    id: repair_loop
+    type: loop
+    max_iterations: 3
+    stagnation_threshold: 3
+    review_gate_enabled: false
+    max_review_iterations: 3
+    stop_conditions:
+      - condition: "$.script_exit_code == 0 and $.review_gate_enabled == false"
+        status: "success"
+      - condition: "$.script_exit_code == 0 and $.review_verdict_status == 'accept'"
+        status: "success"
+      - condition: "$.stagnation_count >= 3"
+        status: "stagnation"
+    phases:
+      - id: run_entry_script
+        type: shell
+        command: "${loop_vars.entry_script}"
+        cwd: "${loop_vars.project_dir}"
+        capture:
+          exit_code: "script_exit_code"
+          stdout: "script_stdout"
+          stderr: "script_stderr"
+          duration: "script_duration"
+        on_failure: "continue"
+
+      - id: custom_op_final_gate
+        type: builtin
+        condition: "$.script_exit_code == 0"
+        params:
+          operation: "custom_op_final_gate"
+
+      - id: analyze_error
+        type: llm
+        agent: error_analyzer
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        prompt_template: "phase_error_recovery"
+        validator: repair_classification
+        output_as: "error_analysis"
+        retrieve_experience: true
+        experience_query:
+          source: "error_analysis"
+          signals:
+            - error_category
+            - error_stderr
+            - classification
+
+      - id: repair_dispatch
+        type: dispatch
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        route_field: "${error_analysis.repair_role}"
+        routes:
+          dependency_fixer: fix_dependency
+          code_adapter: fix_code
+          operator_fixer: fix_operator
+
+      - id: fix_dependency
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: dependency_fixer
+        prompt_template: "repair_dependency_fixer"
+
+      - id: fix_code
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: code_adapter
+        prompt_template: "repair_code_adapter"
+
+      - id: fix_operator
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: operator_fixer
+        prompt_template: "repair_operator_fixer"
