@@ -1,0 +1,16 @@
+{
+  "name": "@opencode-ai/plugin-sm-orchestrator",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
