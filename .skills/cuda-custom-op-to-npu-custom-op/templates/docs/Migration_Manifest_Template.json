@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "project_name": "{{PROJECT_NAME}}",
+  "framework_name": "{{FRAMEWORK_NAME}}",
+  "vendor_name": "{{VENDOR_NAME}}",
+  "soc_version": "{{SOC_VERSION}}",
+  "custom_opp_path": "{{CUSTOM_OPP_PATH}}",
+  "adapter_artifact": "{{ADAPTER_ARTIFACT_PATH}}",
+  "adapter_sha256": "{{ADAPTER_SHA256}}",
+  "producer_artifact": "{{PRODUCER_ARTIFACT_PATH}}",
+  "producer_sha256": "{{PRODUCER_SHA256}}",
+  "package_artifacts": {
+    "op_proto_header": "op_proto/inc/op_proto.h",
+    "op_proto_library": "op_proto/lib/{{OP_PROTO_LIBRARY}}",
+    "op_tiling_library": "op_impl/ai_core/tbe/op_tiling/liboptiling.so",
+    "vendor_set_env": "bin/set_env.bash",
+    "default_vendor_config": "{{DEFAULT_VENDOR_CONFIG_IF_USED}}"
+  },
+  "coverage_run_id": "{{COVERAGE_RUN_ID}}",
+  "workload_hash": "{{WORKLOAD_HASH}}",
+  "normalized_command_hash": "{{NORMALIZED_COMMAND_HASH}}",
+  "preflight_recorded": true,
+  "loaded_artifact_proof_recorded": true,
+  "entries": [
+    {
+      "name": "{{FRAMEWORK_ENTRY}}",
+      "source_public_entry": "{{SOURCE_PUBLIC_ENTRY_OR_FRAMEWORK_ALIAS}}",
+      "source_op": "{{SOURCE_CUDA_OR_CUSTOM_OP}}",
+      "semantic_op": "{{SEMANTIC_OP}}",
+      "cann_op_type": "{{CANN_OP_TYPE}}",
+      "aclnn_header": "op_api/include/{{ACLNN_HEADER}}",
+      "kernel_dir": "op_impl/ai_core/tbe/kernel/{{SOC_VERSION}}/{{KERNEL_DIR}}",
+      "kernel_json": "op_impl/ai_core/tbe/kernel/{{SOC_VERSION}}/{{KERNEL_DIR}}/{{KERNEL_JSON}}",
+      "kernel_object": "op_impl/ai_core/tbe/kernel/{{SOC_VERSION}}/{{KERNEL_DIR}}/{{KERNEL_OBJECT}}",
+      "op_config_json": "op_impl/ai_core/tbe/kernel/config/{{SOC_VERSION}}/{{OP_CONFIG_JSON}}",
+      "op_info_json": "op_impl/ai_core/tbe/op_info_cfg/{{SOC_VERSION}}/{{OP_INFO_JSON}}",
+      "opapi_library": "op_api/lib/libcust_opapi.so",
+      "adapter_callable": "{{ADAPTER_CALLABLE}}",
+      "coverage_key": "{{COVERAGE_KEY}}",
+      "producer_sha256": "{{PRODUCER_SHA256}}",
+      "parity_scope": "{{PARITY_SCOPE}}",
+      "unsupported_cases": ["{{UNSUPPORTED_CASES_NOT_VALIDATED}}"],
+      "unresolved_cases": ["{{UNRESOLVED_CASES_NOT_VALIDATED}}"],
+      "out_of_scope_unsupported_cases": ["{{TRUE_OUT_OF_SCOPE_UNSUPPORTED_CASES_NOT_VALIDATED}}"],
+      "implementation_issue_class": "{{IMPLEMENTATION_ISSUE_CLASS_IF_UNRESOLVED}}",
+      "aliases": ["{{FRAMEWORK_ALIAS}}"],
+      "in_scope": true,
+      "closure": {
+        "artifact_status": null,
+        "direct_reference_status": null,
+        "adapter_status": null,
+        "integration_status": null,
+        "project_tests_status": null,
+        "coverage_status": null,
+        "benchmark_status": null,
+        "report_parity_status": null,
+        "final_validation_status": null,
+        "measured_performance_status": null,
+        "unresolved_items": ["{{ENTRY_UNRESOLVED_ITEMS_NOT_VALIDATED}}"],
+        "notes": "Example closure fields for one migration record."
+      }
+    }
+  ],
+  "template_notes": {
+    "scope": "Example manifest structure for a CUDA-to-Ascend migration record.",
+    "artifact_identity": "The path fields show the kinds of artifacts that were recorded in prior migrations.",
+    "closure": "The closure object captures what a project may choose to record for its own notes."
+  }
+}

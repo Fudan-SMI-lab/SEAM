@@ -1,0 +1,161 @@
+{
+  "schema_version": "1.0",
+  "run_id": "{{RUN_ID}}",
+  "mode": "{{BASELINE_OR_CUSTOM_MODE}}",
+  "status": "UNMEASURED",
+  "implementation_issue_class": "{{IMPLEMENTATION_ISSUE_CLASS_IF_UNRESOLVED}}",
+  "manifest_path": null,
+  "manifest_sha256": null,
+  "coverage_run_id": "{{COVERAGE_RUN_ID}}",
+  "workload_hash": "{{WORKLOAD_HASH}}",
+  "normalized_command_hash": "{{NORMALIZED_COMMAND_HASH}}",
+  "paired_evidence": {
+    "baseline_result_json": "{{BASELINE_RESULT_JSON_NOT_VALIDATED}}",
+    "custom_result_json": "{{CUSTOM_RESULT_JSON_NOT_VALIDATED}}",
+    "baseline_workload_hash": "{{BASELINE_WORKLOAD_HASH}}",
+    "custom_workload_hash": "{{CUSTOM_WORKLOAD_HASH}}",
+    "baseline_normalized_command_hash": "{{BASELINE_NORMALIZED_COMMAND_HASH}}",
+    "custom_normalized_command_hash": "{{CUSTOM_NORMALIZED_COMMAND_HASH}}",
+    "comparable": null
+  },
+  "environment": {
+    "cann_install_path": "{{CANN_INSTALL_PATH}}",
+    "custom_opp_path": "{{CUSTOM_OPP_PATH}}",
+    "custom_opp_path_source": "{{CUSTOM_OPP_PATH_SOURCE_NOT_VALIDATED}}",
+    "active_custom_opp_path": "{{ACTIVE_CUSTOM_OPP_PATH_NOT_VALIDATED}}",
+    "ascend_custom_opp_path_env": "{{ASCEND_CUSTOM_OPP_PATH_ENV_NOT_VALIDATED}}",
+    "ascend_opp_path_env": "{{ASCEND_OPP_PATH_ENV_NOT_VALIDATED}}",
+    "default_vendor_config": "{{DEFAULT_VENDOR_CONFIG_NOT_VALIDATED}}",
+    "direct_producer_linkage": "{{DIRECT_PRODUCER_LINKAGE_NOT_VALIDATED}}",
+    "soc_version": "{{SOC_VERSION}}",
+    "framework_name": "{{FRAMEWORK_NAME}}",
+    "device": "{{DEVICE}}",
+    "baseline_custom_adapter_imported": null,
+    "baseline_custom_opp_path_active": null
+  },
+  "preflight_observations": {
+    "status": "UNMEASURED",
+    "low_level_opp_coverage": "{{LOW_LEVEL_OPP_COVERAGE_NOT_VALIDATED}}",
+    "custom_opp_path_source": "{{CUSTOM_OPP_PATH_SOURCE_NOT_VALIDATED}}",
+    "active_custom_opp_path": "{{ACTIVE_CUSTOM_OPP_PATH_NOT_VALIDATED}}",
+    "ascend_custom_opp_path_env": "{{ASCEND_CUSTOM_OPP_PATH_ENV_NOT_VALIDATED}}",
+    "ascend_opp_path_env": "{{ASCEND_OPP_PATH_ENV_NOT_VALIDATED}}",
+    "default_vendor_config": "{{DEFAULT_VENDOR_CONFIG_NOT_VALIDATED}}",
+    "direct_producer_linkage": "{{DIRECT_PRODUCER_LINKAGE_NOT_VALIDATED}}",
+    "framework_alias_coverage": "{{FRAMEWORK_ALIAS_COVERAGE_NOT_VALIDATED}}",
+    "per_entry_artifact_coverage": "{{PER_ENTRY_ARTIFACT_COVERAGE_NOT_VALIDATED}}",
+    "runtime_callable_readiness": "{{RUNTIME_CALLABLE_READINESS_NOT_VALIDATED}}",
+    "loaded_artifact_proof": "{{LOADED_ARTIFACT_PROOF_NOT_VALIDATED}}",
+    "implementation_work_items": ["{{PREFLIGHT_IMPLEMENTATION_WORK_ITEMS_NOT_VALIDATED}}"]
+  },
+  "producer_identity": {
+    "manifest_producer_path": "{{PRODUCER_ARTIFACT_PATH}}",
+    "manifest_producer_sha256": "{{PRODUCER_SHA256}}",
+    "loaded_producer_path": "{{LOADED_PRODUCER_PATH_NOT_VALIDATED}}",
+    "loaded_producer_sha256": "{{LOADED_PRODUCER_SHA256_NOT_VALIDATED}}",
+    "loaded_adapter_path": "{{LOADED_ADAPTER_PATH_NOT_VALIDATED}}",
+    "loaded_adapter_sha256": "{{LOADED_ADAPTER_SHA256_NOT_VALIDATED}}",
+    "loaded_identity_matched": null
+  },
+  "artifact_status": {
+    "missing_artifacts": ["{{ARTIFACTS_NOT_VALIDATED}}"],
+    "producer_sha256_matched": null,
+    "loaded_library_proof_matched": null,
+    "stale_library_rejected": null
+  },
+  "implementation_evidence": {
+    "attempted_stage": "{{ATTEMPTED_STAGE_NOT_VALIDATED}}",
+    "attempted_command_or_probe": "{{ATTEMPTED_COMMAND_OR_PROBE_NOT_VALIDATED}}",
+    "output_or_error_summary": "{{OUTPUT_OR_ERROR_SUMMARY_NOT_VALIDATED}}",
+    "failing_artifact": "{{FAILING_ARTIFACT_NOT_VALIDATED}}",
+    "hard_precondition_or_failure": "{{HARD_PRECONDITION_OR_FAILURE_NOT_VALIDATED}}",
+    "remediation_attempted": "{{REMEDIATION_ATTEMPTED_NOT_VALIDATED}}",
+    "next_artifact_or_fact": "{{NEXT_ARTIFACT_OR_FACT_NOT_VALIDATED}}",
+    "build_or_install_attempted": null,
+    "build_attempts_json": "{{BUILD_ATTEMPTS_JSON_NOT_VALIDATED}}",
+    "implementation_resolution_log_json": "{{IMPLEMENTATION_RESOLUTION_LOG_JSON_NOT_VALIDATED}}",
+    "attempted_resolution_steps": [
+      {
+        "stage": "{{ATTEMPTED_STAGE_NOT_VALIDATED}}",
+        "command_or_probe": "{{ATTEMPTED_COMMAND_OR_PROBE_NOT_VALIDATED}}",
+        "output_or_error_summary": "{{OUTPUT_OR_ERROR_SUMMARY_NOT_VALIDATED}}",
+        "hard_precondition_or_failure": "{{HARD_PRECONDITION_OR_FAILURE_NOT_VALIDATED}}",
+        "remediation_attempted": "{{REMEDIATION_ATTEMPTED_NOT_VALIDATED}}",
+        "next_artifact_or_fact": "{{NEXT_ARTIFACT_OR_FACT_NOT_VALIDATED}}"
+      }
+    ]
+  },
+  "accuracy": {
+    "all_passed": null,
+    "max_abs_diff": null
+  },
+  "coverage": {
+    "manifest_sha256": null,
+    "producer_path": "{{PRODUCER_ARTIFACT_PATH}}",
+    "producer_sha256": "{{PRODUCER_SHA256}}",
+    "adapter_path": "{{ADAPTER_ARTIFACT_PATH}}",
+    "adapter_sha256": "{{ADAPTER_SHA256}}",
+    "workload_hash": "{{WORKLOAD_HASH}}",
+    "missing_calls": ["{{CALLS_NOT_VALIDATED}}"],
+    "call_counts": {
+      "{{COVERAGE_KEY}}": null
+    }
+  },
+  "unsupported_cases": ["{{UNSUPPORTED_CASES_NOT_VALIDATED}}"],
+  "project_tests": {
+    "status": "UNMEASURED",
+    "commands": ["{{PROJECT_TEST_COMMANDS_NOT_VALIDATED}}"],
+    "failures": ["{{PROJECT_TEST_FAILURES_NOT_VALIDATED}}"],
+    "notes": "Project tests are one source of migration evidence."
+  },
+  "report_parity": {
+    "status": "UNMEASURED",
+    "checked_report": "{{REPORT_PATH_NOT_VALIDATED}}",
+    "missing_or_mismatched_fields": ["{{REPORT_PARITY_FIELDS_NOT_VALIDATED}}"]
+  },
+  "final_validation": {
+    "status": "UNMEASURED",
+    "commands": ["{{FINAL_VALIDATION_COMMANDS_NOT_VALIDATED}}"],
+    "failures": ["{{FINAL_VALIDATION_FAILURES_NOT_VALIDATED}}"],
+    "notes": "Validation results are usually interpreted together with manifest, coverage, and timing notes."
+  },
+  "per_manifest_entry_closure": {
+    "status": "UNMEASURED",
+    "missing_entries": ["{{MANIFEST_ENTRIES_NOT_CLOSED}}"],
+    "notes": "Each in-scope entry may record artifact, direct/reference, adapter, integration, project, coverage, benchmark, and report parity evidence."
+  },
+  "final_unresolved_counts": {
+    "missing_artifacts": null,
+    "unsupported_cases_count": null,
+    "disabled_entries": null,
+    "fallback_routed_entries": null,
+    "zero_call_keys": null,
+    "stale_artifact_entries": null,
+    "report_mismatch_fields": null,
+    "failed_project_tests": null,
+    "failed_final_validation_checks": null,
+    "unresolved_total": null,
+    "notes": "Measured zero counts help describe a complete migration report."
+  },
+  "benchmark": {
+    "warmup": null,
+    "repeat": null,
+    "total_seconds": null,
+    "seconds_per_iter": null
+  },
+  "speedup_vs_baseline": null,
+  "measured_performance_result": {
+    "baseline_seconds_per_iter": null,
+    "custom_seconds_per_iter": null,
+    "speed_ratio": null,
+    "result_label": "UNMEASURED",
+    "reporting_context": ["{{PROJECT_TESTS_REPORT_PARITY_FINAL_VALIDATION_ZERO_UNRESOLVED_TIMING_CONTEXT}}"]
+  },
+  "template_notes": {
+    "numeric_fields": "Populate numbers only after the corresponding baseline/custom runs, coverage checks, project tests, report parity, validation, unresolved-count checks, and comparable timing are available.",
+    "status_values": "Use status labels that fit the migration notes you are recording.",
+    "implementation_issue_class_rule": "implementation_issue_class describes unresolved work.",
+    "coverage_rule": "A null or missing call count is not a custom-op call. Positive integer calls come from same-run runtime coverage.",
+    "completion_rule": "A complete migration report usually combines project tests, validation, report parity, zero unresolved in-scope counts, runtime coverage, and a measured speed ratio or slowdown."
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "type": "skill",
+  "skill_name": "apex-cuda-extension-removal",
+  "title": "Replace NVIDIA Apex (apex_C) with NPU-native alternatives",
+  "category": "dependency_issue",
+  "subtype": "apex_cuda_extension_no_npu_equivalent",
+  "tags": [
+    "apex",
+    "fused-layer-norm",
+    "cuda-extension",
+    "module-not-found",
+    "npu-native",
+    "optimizer",
+    "mixed-precision"
+  ],
+  "symptom": "ModuleNotFoundError: cannot import name 'apex_C' (or 'fused_layer_norm', 'FusedAdam', 'FusedSGD', etc.) \u2014 NVIDIA Apex library is imported but has no Ascend NPU build or pip package available.",
+  "root_cause": "NVIDIA Apex is a CUDA-only extension library compiled specifically for NVIDIA GPU architectures. Its C-library (apex_C) and fused operators (fused_layer_norm, FusedAdam, FusedSGD, FusedLAMB, etc.) have no Ascend NPU equivalent. No third-party apex package or NPI variant exists for NPU. The entire Apex dependency must be removed and replaced with NPU-native PyTorch APIs.",
+  "fix_steps": [
+    "1. Search all Python source files for Apex-related imports: `grep -rn 'from apex' --include='*.py' .` and `grep -rn 'from apex_C' --include='*.py' .`. Also check for `import apex` and any reference to `apex.` in code.",
+    "2. Remove ALL `from apex import ...`, `from apex_C import ...`, and `import apex` lines. Do NOT attempt to conditionally import or wrap Apex \u2014 it cannot work on NPU.",
+    "3. If `apex_C.fused_layer_norm` or `apex.normalization.FusedLayerNorm` was used, replace with `torch.nn.LayerNorm(normalized_shape, eps=1e-5)`. NPU-native LayerNorm provides equivalent semantics. Verify the `normalized_shape` parameter matches the last dimension of the input tensor.",
+    "4. If Apex AMP (Automatic Mixed Precision) was used (`from apex import amp`, `amp.initialize()`, `amp.scale_loss()`), replace with PyTorch native autocast: `with torch.autocast(device_type='npu', dtype=torch.float16):` or `with torch.npu.amp.autocast():`. Replace `amp.scale_loss(loss, optimizer)` with `scaler.scale(loss).backward()`, `scaler.step(optimizer)`, `scaler.update()` using `torch.npu.amp.GradScaler()`.",
+    "5. If Apex fused optimizers were used (`apex.optimizers.FusedAdam`, `FusedSGD`, `FusedLAMB`, `FusedNovoGrad`), replace with standard PyTorch equivalents: `torch.optim.Adam`, `torch.optim.SGD`, etc. Pass identical learning rate, weight_decay, eps, and betas parameters. Note: Fused optimizers may have marginally different performance but produce functionally equivalent results.",
+    "6. If Apex DistributedDataParallel (`apex.parallel.DistributedDDP`) was used, replace with `torch.nn.parallel.DistributedDataParallel`.",
+    "7. Verify no remaining references to `apex`, `apex_C`, `amp` (Apex variant), or `Fused*` classes remain in any Python file. Run: `grep -rn 'apex' --include='*.py' .` to confirm.",
+    "8. Verify output tensor shapes and dtypes match the original implementation by comparing forward pass outputs with a small test input batch."
+  ],
+  "affected_patterns": [
+    "from apex import amp",
+    "from apex_C import fused_layer_norm",
+    "from apex.normalization import FusedLayerNorm",
+    "from apex.optimizers import FusedAdam, FusedSGD, FusedLAMB",
+    "model, optimizer = amp.initialize(model, optimizer, ...)",
+    "with amp.scale_loss(loss, optimizer) as scaled_loss:",
+    "attn = apex_C.fused_layer_norm(input_tensor)",
+    "from apex.parallel import DistributedDataParallel as ApexDDP"
+  ],
+  "code_changes": [
+    {
+      "file": "model/normalization.py (or wherever FusedLayerNorm is instantiated)",
+      "before": "from apex.normalization import FusedLayerNorm\n\nlayer_norm = FusedLayerNorm(normalized_shape=config.hidden_size, eps=1e-5)",
+      "after": "import torch.nn as nn\n\nlayer_norm = nn.LayerNorm(normalized_shape=config.hidden_size, eps=1e-5)"
+    },
+    {
+      "file": "optimizer.py (or wherever Apex optimizer is instantiated)",
+      "before": "from apex.optimizers import FusedAdam\n\noptimizer = FusedAdam(model.parameters(), lr=lr, eps=1e-8, weight_decay=weight_decay)",
+      "after": "import torch.optim as optim\n\noptimizer = optim.Adam(model.parameters(), lr=lr, eps=1e-8, weight_decay=weight_decay)"
+    },
+    {
+      "file": "train.py (or wherever Apex AMP is used)",
+      "before": "from apex import amp\n\nmodel, optimizer = amp.initialize(model, optimizer, opt_level='O1')\n\nwith amp.scale_loss(loss, optimizer) as scaled_loss:\n    scaled_loss.backward()\n\noptimizer.step()",
+      "after": "scaler = torch.npu.amp.GradScaler()\n\n# Forward pass\nwith torch.autocast(device_type='npu', dtype=torch.float16):\n    output = model(input_ids)\n    loss = criterion(output, labels)\n\n# Backward pass\nscaler.scale(loss).backward()\nscaler.step(optimizer)\nscaler.update()"
+    },
+    {
+      "file": "distributed_setup.py (or wherever Apex DDP is used)",
+      "before": "from apex.parallel import DistributedDataParallel as ApexDDP\n\nmodel = ApexDDP(model)",
+      "after": "from torch.nn.parallel import DistributedDataParallel as DDP\n\nmodel = DDP(model, device_ids=[local_rank], output_device=local_rank)"
+    }
+  ],
+  "references": [
+    "https://pytorch.org/docs/stable/notes/amp_examples.html",
+    "https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html",
+    "https://gitee.com/ascend/ascend-toolkit"
+  ],
+  "tools_needed": [
+    "grep",
+    "ripgrep"
+  ],
+  "antipatterns": [
+    "Do NOT attempt to install apex via pip or build from source \u2014 it will fail with CUDA compilation errors on NPU.",
+    "Do NOT attempt to use a third-party 'apex-npu' or 'apex-ascend' package \u2014 no such package exists.",
+    "Do NOT use CPU fallback for LayerNorm or optimizers \u2014 it will OOM on large models.",
+    "Do NOT wrap Apex imports in try/except to suppress errors \u2014 the code will silently fail at runtime.",
+    "Do NOT attempt to compile Apex C++ extensions manually for NPU \u2014 the kernel implementations are GPU-specific (CUDA PTX) and have no NPU (BIC/AICORE) equivalent."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-dd160bf52029",
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "N/A",
+    "refiner_reasoning": "This candidate addresses a fundamental dependency incompatibility. The fix is deterministic \u2014 Apex must be removed entirely and replaced with NPU-native PyTorch APIs. Multiple sub-patterns exist within Apex (AMP, fused layer norm, fused optimizers, DDP), so all are documented for completeness. The fix generalizes to any CUDA project that depends on NVIDIA Apex for performance optimizations.",
+    "created_at": "2026-04-30T00:21:39.900681+00:00"
+  },
+  "confidence": 0.95,
+  "candidate_id": "candidate-001",
+  "problem_description": "CUDA projects using NVIDIA Apex library (e.g. `from apex_C import fused_layer_norm` or `from apex import amp, optimizers`) fail immediately on NPU with `ModuleNotFoundError` because the Apex CUDA extension has no Ascend NPI build or equivalent pip package. The `apex_C` C-library is compiled for NVIDIA GPU architecture only. This is NOT a simple .cuda() to .npu() pattern swap \u2014 it is an entire third-party library that must be removed and replaced with NPU-native alternatives.",
+  "rough_fix_approach": "1. Identify all Apex imports in the project (`apex`, `apex_C`, `fused_layer_norm`, `FusedAdam`, `FusedSGD`, etc.) using grep across source files. 2. Remove all `from apex import ...` and `from apex_C import ...` import lines. 3. Replace `FusedLayerNorm` usage with `torch.nn.LayerNorm` (NPU-native, equivalent semantics). 4. Replace Apex AMP usage with `torch.nn.amp.autocast(device_type=\"npu\")` or `torch.npu.amp.autocast()`. 5. Replace Apex optimizers with standard PyTorch equivalents (`torch.optim.Adam`, etc.). 6. Do NOT attempt to install a third-party apex package \u2014 no NPI variant exists. Do NOT use CPU fallback \u2014 it will OOM on large models.",
+  "recommended_type": "skill",
+  "id": "e2e-v2-dd160bf52029-exp-20260430002139",
+  "run_id": "e2e-v2-dd160bf52029",
+  "created_at": "2026-04-30T00:21:39.901360+00:00",
+  "merged_from_runs": [
+    "e2e-v2-8cb0205b098b",
+    "e2e-v2-dd160bf52029-exp-20260430002139"
+  ],
+  "name": "apex-cuda-extension-removal",
+  "promoted_at": "2026-04-30T00:21:39.903676+00:00",
+  "promotion_type": "skill"
+}
