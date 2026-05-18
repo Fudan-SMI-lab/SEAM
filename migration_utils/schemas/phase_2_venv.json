@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phase 2: Virtual Environment Setup Output",
+  "type": "object",
+  "properties": {
+    "venv_path": {
+      "type": "string"
+    },
+    "python_path": {
+      "type": "string"
+    },
+    "installed_packages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": ["venv_path", "python_path", "installed_packages"]
+}

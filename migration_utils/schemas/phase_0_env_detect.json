@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phase 0: Environment Detection Output",
+  "type": "object",
+  "properties": {
+    "platform": {
+      "type": "string",
+      "enum": ["npu", "cuda"]
+    },
+    "npu_detected": {
+      "type": "boolean"
+    },
+    "python_version": {
+      "type": "string"
+    }
+  },
+  "required": ["platform", "npu_detected", "python_version"]
+}

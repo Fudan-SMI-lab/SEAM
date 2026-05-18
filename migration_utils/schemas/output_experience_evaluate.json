@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Experience Evaluation Output",
+  "type": "object",
+  "required": ["evaluation_summary", "total_candidates", "candidates"],
+  "properties": {
+    "evaluation_summary": {
+      "type": "string",
+      "description": "Brief summary of the evaluation"
+    },
+    "project_source_root": {
+      "type": "string",
+      "description": "Absolute path to the project source root"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "title", "recommended_type", "confidence"],
+        "properties": {
+          "candidate_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "problem_description": {
+            "type": "string"
+          },
+          "rough_fix_approach": {
+            "type": "string"
+          },
+          "artifact_evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "involved_code_files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "line_range": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          },
+          "recommended_type": {
+            "type": "string",
+            "enum": ["skill", "document", "rule", "prompt"]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["high", "medium", "low"]
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "category": {
+            "type": "string"
+          },
+          "subtype": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "total_candidates": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

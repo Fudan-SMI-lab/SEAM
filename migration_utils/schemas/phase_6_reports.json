@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phase 6: Reports Output",
+  "type": "object",
+  "properties": {
+    "report_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "migration_summary": {
+      "type": "object",
+      "properties": {
+        "files_migrated": {
+          "type": "integer"
+        },
+        "files_skipped": {
+          "type": "integer"
+        }
+      },
+      "required": ["files_migrated", "files_skipped"]
+    }
+  },
+  "required": ["report_paths", "migration_summary"]
+}

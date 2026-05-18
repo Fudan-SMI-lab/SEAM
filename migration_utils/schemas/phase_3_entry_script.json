@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phase 3: Entry Script Analysis Output",
+  "type": "object",
+  "properties": {
+    "entry_script_path": {
+      "type": "string"
+    },
+    "run_command": {
+      "type": "string"
+    }
+  },
+  "required": ["entry_script_path", "run_command"]
+}
