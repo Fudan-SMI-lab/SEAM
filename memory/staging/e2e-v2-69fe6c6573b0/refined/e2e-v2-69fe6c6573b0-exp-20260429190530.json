@@ -1,0 +1,25 @@
+{
+  "ok": false,
+  "error": "HTTP Error 400: Bad Request",
+  "meta": {
+    "source_run_id": "e2e-v2-69fe6c6573b0",
+    "created_at": "2026-04-29T19:05:30.441884+00:00"
+  },
+  "candidate_id": "candidate-003",
+  "title": "torch-npu wheel requires PyYAML runtime dependency not declared in --no-deps install",
+  "problem_description": "torch-npu 2.5.1 internally depends on the `yaml` (PyYAML) package at runtime for memory visualization and configuration parsing. When installing torch-npu with --no-deps (necessary to avoid version conflicts), PyYAML is not installed, causing a cascade failure during torch import that manifests as RuntimeError about backend extension loading.",
+  "rough_fix_approach": "1. After installing torch-npu with --no-deps, always install pyyaml as a companion. 2. Verify with `python -c 'import torch; import torch_npu'` and check for yaml ModuleNotFoundError. 3. Add pyyaml to project's pinned requirements if torch-npu is present.",
+  "recommended_type": "rule",
+  "tags": [
+    "torch-npu",
+    "pyyaml",
+    "missing-dependency",
+    "backend-loading"
+  ],
+  "category": "dependency_issue",
+  "subtype": "missing_runtime_dependency",
+  "confidence": 0.8,
+  "id": "e2e-v2-69fe6c6573b0-exp-20260429190530",
+  "run_id": "e2e-v2-69fe6c6573b0",
+  "created_at": "2026-04-29T19:05:30.442277+00:00"
+}

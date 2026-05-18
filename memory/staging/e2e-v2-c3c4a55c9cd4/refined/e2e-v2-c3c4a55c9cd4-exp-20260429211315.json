@@ -1,0 +1,55 @@
+{
+  "type": "skill",
+  "skill_name": "torch-npu-undeclared-deps-validation",
+  "title": "Validate and install torch-npu undeclared runtime dependencies",
+  "category": "dependency_issue",
+  "subtype": "multiple_undeclared_dependencies",
+  "tags": [
+    "torch-npu",
+    "undeclared-dependencies",
+    "npu-stack",
+    "decorator",
+    "ml-dtypes",
+    "dependency_validation"
+  ],
+  "symptom": "After installing torch-npu 2.5.1 in a fresh venv, various import or runtime errors occur due to missing dependencies that are not declared in torch-npu's pip metadata. Errors may include ModuleNotFoundError for packages like 'decorator', 'psutil', 'cloudpickle', 'ml_dtypes', or 'tornado'.",
+  "root_cause": "torch-npu 2.5.1 has runtime dependencies on decorator, attrs, psutil, absl-py, cloudpickle, ml-dtypes, scipy, and tornado, but none of these are declared in the package's pip metadata (requires field). In a minimal venv created for migration, these packages may be absent, causing failures when torch-npu features are accessed. The errors manifest unpredictably depending on which torch-npu submodule is first invoked.",
+  "fix_steps": [
+    "1. After installing torch-npu, immediately run a pre-flight import validation: `python -c 'import torch_npu; import torch_npu.npu'`",
+    "2. If the pre-flight check fails with ModuleNotFoundError, note the missing package name from the error message.",
+    "3. Install the full NPU stack dependency set proactively: `pip install decorator attrs psutil absl-py cloudpickle ml-dtypes scipy tornado`",
+    "4. Re-run the pre-flight validation to confirm all dependencies are satisfied.",
+    "5. Optionally add these packages to requirements.txt to prevent recurrence in future venv builds."
+  ],
+  "affected_patterns": [
+    "import torch_npu  # succeeds but internal submodule import fails later",
+    "import torch_npu.npu  # triggers full dependency chain loading"
+  ],
+  "code_changes": [],
+  "references": [
+    "https://ascend.github.io/docs/tutorials/torch_npu/"
+  ],
+  "tools_needed": [
+    "pip"
+  ],
+  "antipatterns": [
+    "Do NOT wait for a specific torch-npu feature to fail before installing deps \u2014 proactive validation is faster.",
+    "Do NOT install only the single missing package reported in the error \u2014 install the full set of 8 deps to prevent cascading failures on the next missing one.",
+    "Do NOT assume global Python environment packages are available in the venv \u2014 each dependency must be installed within the venv."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-c3c4a55c9cd4",
+    "iterations_to_fix_in_source": 2,
+    "verified_on_cann_version": "8.1.RC1",
+    "refiner_reasoning": "The 8 undeclared dependencies were discovered during the Phase 5 repair cycle when the fix_dependency agent had to install them after the initial PyYAML fix. Installing the full set proactively (rather than one-by-one through error discovery) would have reduced the repair iteration overhead significantly. This is generalizable to any torch-npu 2.5.1 migration.",
+    "created_at": "2026-04-29T21:13:15.490701+00:00"
+  },
+  "confidence": 0.8,
+  "candidate_id": "candidate-003",
+  "problem_description": "torch-npu 2.5.1 depends on decorator, attrs, psutil, absl-py, cloudpickle, ml-dtypes, scipy, and tornado at runtime, but none are declared in its pip metadata. These packages are pulled in transitively when PyYAML and other dependencies are resolved, but may still be missing in minimal venvs. Missing any of these causes import failures or runtime errors when torch-npu features are accessed.",
+  "rough_fix_approach": "After installing torch-npu, run a pre-flight import validation to catch missing dependencies early: python -c 'import torch_npu; import torch_npu.npu'. If this fails, install the missing packages from the NPU stack: pip install decorator attrs psutil absl-py cloudpickle ml-dtypes scipy tornado.",
+  "recommended_type": "skill",
+  "id": "e2e-v2-c3c4a55c9cd4-exp-20260429211315",
+  "run_id": "e2e-v2-c3c4a55c9cd4",
+  "created_at": "2026-04-29T21:13:15.491193+00:00"
+}

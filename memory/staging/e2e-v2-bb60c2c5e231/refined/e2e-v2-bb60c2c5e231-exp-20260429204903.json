@@ -1,0 +1,74 @@
+{
+  "type": "skill",
+  "skill_name": "comprehensive-cuda-to-npu-code-adapter",
+  "title": "Comprehensive CUDA-to-NPU code adaptation: remove CUDA-exclusive imports and replace torch.cuda.* with torch.npu.*",
+  "category": "operator_incompat",
+  "subtype": "cuda_exclusive_import_with_api_mismatch",
+  "tags": [
+    "apex",
+    "torch.cuda",
+    "torch.npu",
+    "nccl",
+    "hccl",
+    "code-adapter",
+    "phase-4-gap"
+  ],
+  "symptom": "Phase 4 rule migration performs zero operations (duration <1ms, empty operation field). At Phase 5 validation, the entry script fails with ModuleNotFoundError: No module named 'apex_C' (or similar CUDA-exclusive extension), or silently falls back to CPU via torch.cuda.is_available() returning False.",
+  "root_cause": "Phase 4 rule migration only performs simple string/text replacements (.cuda() \u2192 .npu(), 'cuda' \u2192 'npu'). It does NOT catch: (1) CUDA-exclusive third-party imports like apex_C, apex, cupy that have no NPU wheels, and (2) torch.cuda.* API calls (is_available, device_count, amp.autocast) that require torch.npu.* equivalents. Both require actual code adaptation by the code_adapter repair role.",
+  "fix_steps": [
+    "1. Scan all Python source files for CUDA-exclusive imports: grep -rn 'from apex\\|import apex\\|from apex_C\\|import apex_C\\|from cupy\\|import cupy\\|from .*_C import' across the project root. Also look for 'from apex_C import fused_layer_norm' specifically.",
+    "2. For each CUDA-exclusive import, remove the entire import line. Check if the imported symbol (e.g., fused_layer_norm) is used elsewhere in the file. If used, replace the call with torch.nn.LayerNorm or torch.nn.functional.layer_norm.",
+    "3. Replace torch.cuda.is_available() with torch.npu.is_available() in all files.",
+    "4. Replace torch.cuda.device_count() with torch.npu.device_count() in all files.",
+    "5. Replace torch.cuda.amp.autocast() with torch.npu.amp.autocast() in all files.",
+    "6. Replace torch.cuda.current_device() with torch.npu.current_device() if present.",
+    "7. Replace .cuda() and .to('cuda') / .to('cuda:0') with .npu() and .to('npu') / .to('npu:0') respectively.",
+    "8. Replace backend='nccl' or backend=\"nccl\" in torch.distributed.init_process_group() with backend='hccl' or backend=\"hccl\".",
+    "9. Run the entry script and verify it exits with code 0 on NPU."
+  ],
+  "affected_patterns": [
+    "from apex_C import fused_layer_norm",
+    "import apex",
+    "torch.cuda.is_available()",
+    "torch.cuda.device_count()",
+    "torch.cuda.amp.autocast()",
+    "torch.distributed.init_process_group(backend='nccl')",
+    "device = 'cuda'"
+  ],
+  "code_changes": [
+    {
+      "file": "train.py",
+      "before": "    # [E2E_TEST_INJECTION] Simulate a CUDA-specific import that breaks on NPU\n    from apex_C import fused_layer_norm  # noqa: F401 - intentionally broken for E2E test\n\n    device = \"cuda\" if torch.cuda.is_available() else \"cpu\"\n    if torch.cuda.device_count() > 1:\n        torch.distributed.init_process_group(backend=\"nccl\")\n    with torch.cuda.amp.autocast():",
+      "after": "    # Device setup with NPU\n    device = \"npu\" if torch.npu.is_available() else \"cpu\"\n    if torch.npu.device_count() > 1:\n        torch.distributed.init_process_group(backend=\"hccl\")\n    with torch.npu.amp.autocast():"
+    }
+  ],
+  "references": [
+    "https://gitee.com/ascend/pytorch (torch-npu source and API mapping)",
+    "https://ascend.github.io/docs/tutorials/torch_npu/"
+  ],
+  "tools_needed": [
+    "grep",
+    "sed or Python file rewriting"
+  ],
+  "antipatterns": [
+    "Do NOT attempt to install apex or apex_C on NPU \u2014 no wheels exist for Ascend architecture.",
+    "Do NOT leave torch.cuda.is_available() in place without replacement \u2014 it will return False and trigger CPU fallback for device selection.",
+    "Do NOT use nccl backend on NPU \u2014 it requires HCCL for Ascend distributed training.",
+    "Do NOT use CPU fallback for fused_layer_norm \u2014 replace with torch.nn.LayerNorm which is NPU-native and performant."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-bb60c2c5e231",
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "8.1.RC1",
+    "refiner_reasoning": "This experience is a fundamental gap in the Phase 4 rule migration engine. Rule migration only handles simple string replacements and completely misses: (a) CUDA-exclusive imports that cause ModuleNotFoundError at runtime, and (b) torch.cuda.* API calls that silently trigger CPU fallback. The combined fix (import removal + torch.cuda\u2192torch.npu API replacement + nccl\u2192hccl) resolved the issue in a single fix_code iteration on CANN 8.1.RC1 with Python 3.10.17. This pattern applies universally to any CUDA-to-NPU migration where the project uses standard PyTorch CUDA APIs or CUDA-exclusive libraries.",
+    "created_at": "2026-04-29T20:49:03.273989+00:00"
+  },
+  "confidence": 0.9,
+  "candidate_id": "candidate-001",
+  "problem_description": "Phase 4 rule migration performed zero operations (duration 5\u00b5s, empty operation field) on a project with obvious CUDA patterns: `from apex_C import fused_layer_norm`, `torch.cuda.is_available()`, `torch.cuda.device_count()`, `torch.cuda.amp.autocast()`, and `backend=\"nccl\"`. The apex_C import caused immediate ModuleNotFoundError at Phase 5 first iteration, while the torch.cuda.* calls would have caused silent CPU fallback if not replaced.",
+  "rough_fix_approach": "1. In fix_code, scan all Python source files for CUDA-exclusive imports (apex_C, apex, cupy, etc.) and remove them. 2. Replace torch.cuda.is_available() \u2192 torch.npu.is_available(), torch.cuda.device_count() \u2192 torch.npu.device_count(), torch.cuda.amp.autocast() \u2192 torch.npu.amp.autocast(). 3. Change distributed backend from 'nccl' to 'hccl'. 4. For apex_C's fused_layer_norm usage, replace with torch.nn.LayerNorm if used downstream.",
+  "recommended_type": "skill",
+  "id": "e2e-v2-bb60c2c5e231-exp-20260429204903",
+  "run_id": "e2e-v2-bb60c2c5e231",
+  "created_at": "2026-04-29T20:49:03.274645+00:00"
+}

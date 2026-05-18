@@ -1,0 +1,26 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "System-site-packages venv strategy eliminates CUDA variant downloads on pre-configured Ascend hosts",
+  "problem_description": "On Ascend hosts where torch-npu and CPU-base torch are pre-installed in the system Python, creating a clean venv and running pip install -r requirements.txt would attempt to download CUDA variants of torch/torchvision from PyPI mirrors, causing conflicts and potential download timeouts. The correct strategy is to inherit the system torch-npu stack.",
+  "rough_fix_approach": "Use `python3 -m venv --system-site-packages` to create the virtual environment, then install only undeclared or missing dependencies (e.g., ml-dtypes from \u963f\u91cc\u4e91 mirror). Project dependencies satisfied by inherited system packages require no additional pip installs. Verify with `python -c 'import torch_npu; torch.npu.is_available()'`. This strategy eliminated all CUDA variant downloads for this migration, requiring only 1 extra package installation (ml-dtypes 0.5.4).",
+  "artifact_evidence": [
+    "validated/phase_2_venv_create_canonical.json (installed_packages shows torch==2.5.1+cpu inherited, only ml-dtypes==0.5.4 newly installed)",
+    "validated/phase_0_env_detect_canonical.json (platform=npu, torch-npu 2.5.1 pre-installed in system)",
+    "validated/phase_1_project_analysis_canonical.json (dependencies: torch, torch-npu, torchvision \u2014 all unpinned, would pull CUDA variants without --system-site-packages)",
+    "execution_journal.jsonl (line 4: phase_2 duration 60s, including venv creation + 1 pip install)"
+  ],
+  "involved_code_files": [],
+  "recommended_type": "document",
+  "confidence": 0.9,
+  "priority": "high",
+  "reasoning": "This is a verified case study demonstrating that --system-site-packages is the optimal venv strategy on pre-configured Ascend hosts. It eliminated 3 potential CUDA variant downloads (torch+cuXXX, torchvision+cuXXX, torch-npu pip install) and reduced environment setup to a single ml-dtypes install. Highly generalizable: any project on a host with pre-installed torch-npu should use this strategy to avoid the dual problems of (a) wasting time downloading conflicting CUDA packages and (b) risking mirror download timeouts for large torch wheels.",
+  "tags": [
+    "venv-creation",
+    "system-site-packages",
+    "torch-npu",
+    "cuda-variant-avoidance",
+    "domestic-mirror"
+  ],
+  "category": "environment_issue",
+  "subtype": "venv_strategy_preinstalled_stack"
+}

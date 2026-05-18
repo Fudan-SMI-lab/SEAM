@@ -1,0 +1,36 @@
+{
+  "candidate_id": "candidate-003",
+  "title": "Clean venv on Ascend hosts missing implicit CANN toolkit Python dependencies",
+  "problem_description": "The CANN toolchain ships Python wheels (`auto_tune`, `te`, `hccl`, `opc_tool`) that declare runtime dependencies (`decorator`, `attrs`, `psutil`, `scipy`, `cloudpickle`, `ml-dtypes`, `tornado`, `absl-py`) not pre-installed in a clean venv. Additionally, `torch_npu` requires `pyyaml` at import time (for its memory visualization module). When any of these are missing, torch_npu initialization fails with `ModuleNotFoundError`, blocking all NPU operations.",
+  "rough_fix_approach": "1. After creating venv and installing torch-npu, scan system CANN packages for their declared dependencies: `pip show auto_tune te hccl opc_tool 2>/dev/null | grep 'Requires:'`. 2. Install missing dependencies in one shot: `pip install decorator attrs psutil scipy cloudpickle ml-dtypes tornado absl-py pyyaml`. 3. Pre-install these before first `python -c 'import torch_npu'` to avoid runtime failures. Alternative: parse `/usr/local/Ascend/ascend-toolkit/latest/` metadata to build a deterministic `cann-deps.txt`.",
+  "artifact_evidence": [
+    "raw/phase_2_venv_create_attempt0.json:line 8 (Phase 2 took 280s \u2014 dependency gap filling consumed time)",
+    "validated/phase_5_validation_canonical.json:line 59",
+    "raw/phase_fix_code_attempt0.json:line 5",
+    "reports/SUMMARY_REPORT.md \u2014 Challenges Encountered, item 4: 'CANN toolkit Python dependencies: Clean venv lacked decorator, attrs, psutil, etc.'",
+    "reports/TOOLS_EXECUTION_REPORT.md \u2014 Missing CANN Toolkit Dependencies section"
+  ],
+  "involved_code_files": [
+    {
+      "path": "train.py",
+      "role": "Entry script \u2014 import torch_npu triggers transitive loading of CANN Python modules (auto_tune, te, hccl) which require the missing dependencies",
+      "line_range": [
+        6,
+        9
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.8,
+  "priority": "medium",
+  "reasoning": "This is a systematic issue for any clean venv on Ascend hosts. The dependencies are not documented in project requirements.txt \u2014 they are implicit requirements of the system CANN toolchain. The fix is straightforward (install the missing packages) but discovering them requires either error-driven iteration or prior knowledge. Capturing this as a reusable skill saves future migration runs from the same trial-and-error cycle.",
+  "tags": [
+    "cann",
+    "venv",
+    "implicit-dependencies",
+    "pyyaml",
+    "torch-npu-import"
+  ],
+  "category": "environment_issue",
+  "subtype": "cann_toolkit_missing_deps"
+}

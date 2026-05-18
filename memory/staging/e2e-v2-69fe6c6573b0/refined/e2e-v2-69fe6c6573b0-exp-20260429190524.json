@@ -1,0 +1,25 @@
+{
+  "ok": false,
+  "error": "HTTP Error 400: Bad Request",
+  "meta": {
+    "source_run_id": "e2e-v2-69fe6c6573b0",
+    "created_at": "2026-04-29T19:05:24.417957+00:00"
+  },
+  "candidate_id": "candidate-001",
+  "title": "torch-npu version resolution prevents unconstrained pip install",
+  "problem_description": "When installing from requirements.txt without pinned versions, pip resolves torch to the latest version (2.11.0) which pulls incompatible torch-npu (2.2.0). This CANN 8.1.RC1 environment requires torch-npu 2.5.1 specifically, but pip's resolver does not know the CANN constraint and selects mismatched versions.",
+  "rough_fix_approach": "1. Before pip install, check the system-installed torch-npu version. 2. Pin torch to the matching major.minor version plus +cpu suffix (e.g., torch==2.5.1+cpu). 3. Install torch-npu with --no-deps to prevent version downgrade. 4. Install torchvision with matching +cpu wheel. 5. Verify all three import successfully before proceeding.",
+  "recommended_type": "skill",
+  "tags": [
+    "torch-npu",
+    "version-pinning",
+    "dependency-resolution",
+    "CANN"
+  ],
+  "category": "dependency_issue",
+  "subtype": "torch_npu_version_mismatch",
+  "confidence": 0.9,
+  "id": "e2e-v2-69fe6c6573b0-exp-20260429190524",
+  "run_id": "e2e-v2-69fe6c6573b0",
+  "created_at": "2026-04-29T19:05:24.418583+00:00"
+}

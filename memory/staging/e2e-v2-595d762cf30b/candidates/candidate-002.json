@@ -1,0 +1,35 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "Broken CUDA extension imports (apex, apex_C, custom CUDA libs) must be removed before NPU execution",
+  "problem_description": "Import statements for CUDA-only extension libraries (apex_C, custom fused kernels, etc.) cause ModuleNotFoundError at import time, preventing the entire script from running. These imports execute before any NPU code paths are reached, making them a hard blocker. The apex_C import was present at line 25 of train.py and was labeled as an intentional E2E test injection, but the same pattern occurs in real projects with CUDA-only dependencies.",
+  "rough_fix_approach": "1. Scan all import statements for CUDA-only packages (apex, apex_C, custom CUDA extensions, xformers, flash_attn if no NPU equivalent). 2. Remove the import line entirely if the functionality is optional or unused elsewhere. 3. If the functionality IS used downstream (e.g., fused_layer_norm called elsewhere), replace with torch.nn.LayerNorm which torch-npu supports natively. 4. Verify no usage references remain after removal via grep. 5. Do NOT add try/except wrapper imports \u2014 they defer failure and create silent CPU fallback behavior.",
+  "artifact_evidence": [
+    "raw/phase_analyze_error_attempt0.json",
+    "raw/phase_5_validation_attempt0.json:lines 46-63 (analyze_error root_cause and last_error_signature)",
+    "raw/phase_fix_code_attempt0.json:line 5 (summary mentions apex_C removal)",
+    "execution_journal.jsonl:line 8 (phase_5 iteration 1 failed, iteration 2 succeeded)"
+  ],
+  "involved_code_files": [
+    {
+      "path": "train.py",
+      "role": "Training script entry point \u2014 contained broken CUDA extension import at line 25, removed during repair",
+      "line_range": [
+        23,
+        26
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.9,
+  "priority": "high",
+  "reasoning": "Every CUDA-to-NPU migration will encounter CUDA-only extension imports. These are hard blockers that prevent any execution. The removal-and-replace pattern (use native torch equivalents) is universally applicable because torch-npu provides native support for most standard operations (LayerNorm, etc.) that CUDA extensions accelerate.",
+  "tags": [
+    "torch-npu",
+    "cuda-extensions",
+    "apex",
+    "import-compatibility",
+    "module-removal"
+  ],
+  "category": "code_adaptation",
+  "subtype": "cuda_extension_import_incompatible"
+}

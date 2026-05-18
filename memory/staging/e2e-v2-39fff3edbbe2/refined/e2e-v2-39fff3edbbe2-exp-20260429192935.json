@@ -1,0 +1,60 @@
+{
+  "type": "skill",
+  "skill_name": "cann-toolkit-venv-implicit-deps",
+  "title": "Install implicit CANN toolkit Python dependencies in clean venv",
+  "category": "environment_issue",
+  "subtype": "cann_toolkit_missing_deps",
+  "tags": [
+    "cann",
+    "venv",
+    "implicit-dependencies",
+    "pyyaml",
+    "torch-npu-import"
+  ],
+  "symptom": "ModuleNotFoundError when importing torch_npu or running NPU scripts in a clean venv. Common missing modules: 'yaml', 'decorator', 'attrs', 'psutil', 'scipy', 'cloudpickle', 'ml-dtypes', 'tornado', 'absl-py'.",
+  "root_cause": "CANN toolchain Python wheels (auto_tune, te, hccl, opc_tool) shipped with the system installation declare runtime dependencies that are not satisfied in a clean virtual environment. Additionally, torch_npu requires pyyaml at import time for its memory visualization module. Without these packages, torch_npu initialization fails and blocks all NPU operations.",
+  "fix_steps": [
+    "1. Create and activate the project's virtual environment: python -m venv .venv && source .venv/bin/activate.",
+    "2. Install torch and torch-npu first, ensuring version compatibility (e.g., torch==X.X.X+cpu for torch-npu==X.X.X).",
+    "3. Scan system CANN packages to identify their required dependencies: pip show auto_tune te hccl opc_tool 2>/dev/null | grep 'Requires:'.",
+    "4. Install the implicit dependencies required by CANN toolchain and torch_npu: pip install decorator attrs psutil scipy cloudpickle ml-dtypes tornado absl-py pyyaml.",
+    "5. Verify the environment by importing torch_npu: python -c 'import torch; import torch_npu; import torchvision; print(torch.npu.is_available())'.",
+    "6. If a ModuleNotFoundError occurs during step 5, install the missing module immediately (pip install <missing_module>) and retry the import."
+  ],
+  "affected_patterns": [
+    "python -c 'import torch_npu'",
+    "import torch_npu",
+    "import te",
+    "import hccl"
+  ],
+  "code_changes": [],
+  "references": [
+    "/usr/local/Ascend/ascend-toolkit/latest/ (CANN toolchain root)",
+    "https://mirrors.aliyun.com/pypi/simple/ (Domestic PyPI mirror)"
+  ],
+  "tools_needed": [
+    "pip",
+    "python -m venv",
+    "grep"
+  ],
+  "antipatterns": [
+    "Do NOT wait for the first import torch_npu to fail before installing dependencies \u2014 this wastes execution cycles.",
+    "Do NOT install CANN dependencies globally; always isolate them in the project's virtual environment.",
+    "Do NOT ignore pyyaml \u2014 torch_npu imports it at the top level of npu._memory_viz, so its absence crashes torch_npu import."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-39fff3edbbe2",
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "8.1.RC1",
+    "refiner_reasoning": "This experience was observed during Phase 2 venv creation and Phase 5 execution. The clean venv lacked multiple implicit dependencies declared by system CANN wheels (auto_tune, te, hccl, opc_tool) and torch_npu. The fix involves proactively installing decorator, attrs, psutil, scipy, cloudpickle, ml-dtypes, tornado, absl-py, and pyyaml. This applies universally to any Ascend host using CANN 8.x with clean virtual environments, regardless of project complexity.",
+    "created_at": "2026-04-29T19:29:35.030216+00:00"
+  },
+  "confidence": 0.8,
+  "candidate_id": "candidate-003",
+  "problem_description": "The CANN toolchain ships Python wheels (`auto_tune`, `te`, `hccl`, `opc_tool`) that declare runtime dependencies (`decorator`, `attrs`, `psutil`, `scipy`, `cloudpickle`, `ml-dtypes`, `tornado`, `absl-py`) not pre-installed in a clean venv. Additionally, `torch_npu` requires `pyyaml` at import time (for its memory visualization module). When any of these are missing, torch_npu initialization fails with `ModuleNotFoundError`, blocking all NPU operations.",
+  "rough_fix_approach": "1. After creating venv and installing torch-npu, scan system CANN packages for their declared dependencies: `pip show auto_tune te hccl opc_tool 2>/dev/null | grep 'Requires:'`. 2. Install missing dependencies in one shot: `pip install decorator attrs psutil scipy cloudpickle ml-dtypes tornado absl-py pyyaml`. 3. Pre-install these before first `python -c 'import torch_npu'` to avoid runtime failures. Alternative: parse `/usr/local/Ascend/ascend-toolkit/latest/` metadata to build a deterministic `cann-deps.txt`.",
+  "recommended_type": "skill",
+  "id": "e2e-v2-39fff3edbbe2-exp-20260429192935",
+  "run_id": "e2e-v2-39fff3edbbe2",
+  "created_at": "2026-04-29T19:29:35.030646+00:00"
+}
