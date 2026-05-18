@@ -62,7 +62,7 @@ flowchart TB
 
 ## CUDA Custom-Op Vs Normal Flow
 
-SEAM uses one framework for both ordinary CUDA projects and CUDA custom-op projects, but custom-op projects activate a stricter evidence chain. This comparison follows the design in `CUSTOM_OP_FLOW_SESSION_CHANGES.md`, section 12.
+SEAM uses one framework for both ordinary CUDA projects and CUDA custom-op projects, but custom-op projects activate a stricter evidence chain. The comparison below is distilled from the custom-op flow design note that contrasts projects with and without CUDA custom operators.
 
 ```mermaid
 flowchart LR
