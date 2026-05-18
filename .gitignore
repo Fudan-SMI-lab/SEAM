@@ -1,0 +1,58 @@
+# Requested root exclusions for the public SEAM repo
+/_migration_manifest/
+/.opencode/
+/cuda_projects/
+/original_projects/
+/output_projects/
+
+# Local/generated artifacts
+/.sm-artifacts/
+**/.sm-artifacts/
+logs/
+*.log
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Node/OpenCode local installs
+node_modules/
+plugins/sm-orchestrator/node_modules/
+plugins/sm-orchestrator/dist/
+
+# Build/native artifacts
+build/
+dist/
+*.egg-info/
+kernel_meta/
+checkpoints/
+
+# Large model/data/archive artifacts
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.egg
+*.wav
+
+# Local secrets and private keys
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_ecdsa
