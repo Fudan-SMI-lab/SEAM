@@ -1,0 +1,25 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "torch-npu 2.5.1 incompatible with NumPy 2.x due to removed np.float_",
+  "problem_description": "torch-npu 2.5.1 internally references np.float_ (alias removed in NumPy 2.0). When pip installs the latest numpy (2.2.6) by default, this causes an AttributeError or similar failure in torch-npu internals. The dependency is not pinned in torch-npu's metadata.",
+  "rough_fix_approach": "Pin numpy<2.0 when installing torch-npu 2.5.1: pip install 'numpy<2.0'. For CANN 8.1.RC1 + torch-npu 2.5.1, numpy==1.26.x is the confirmed working version.",
+  "artifact_evidence": [
+    "validated/phase_fix_dependency_canonical.json: summary states 'downgraded NumPy 2.2\u21921.26 (np.float_ compatibility)'",
+    "validated/phase_5_validation_canonical.json: loop_history shows iteration 1 required fix including numpy downgrade",
+    "validated/phase_2_venv_create_canonical.json: installed_packages originally had numpy==2.2.6"
+  ],
+  "involved_code_files": [],
+  "recommended_type": "document",
+  "confidence": 0.9,
+  "priority": "high",
+  "reasoning": "NumPy 2.x breaking changes affect many packages, but torch-npu 2.5.1 specifically depends on the removed np.float_ alias. This is a known migration pitfall that occurs the moment a fresh venv installs the latest numpy. Easily preempted by pinning.",
+  "tags": [
+    "torch-npu",
+    "numpy-2.0",
+    "np.float_",
+    "version-incompatibility",
+    "cann-8.1"
+  ],
+  "category": "dependency_issue",
+  "subtype": "numpy_version_incompatible"
+}

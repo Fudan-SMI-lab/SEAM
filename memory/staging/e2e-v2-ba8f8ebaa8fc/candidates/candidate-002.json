@@ -1,0 +1,47 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "Fail-closed custom-op evidence gate with per-unit NPU runtime rows",
+  "problem_description": "The repair trajectory included a custom-op final evidence gate failure where project_e2e_passed, report_parity_passed, and non-empty per-unit rows were not closed. This matters because custom-op migrations can otherwise falsely pass with summary reports, missing source inventory linkage, zero-call evidence, or CPU/CUDA fallback paths.",
+  "rough_fix_approach": "1. Build a source-driven fine-grained operator inventory and a matching migration manifest. 2. Generate custom_op_final_gate.json from same-run runtime coverage and performance reports, not from static summaries alone. 3. Include project_e2e_passed, report_parity_passed, source_inventory, performance_report, and one row per required unit. 4. For every row, include artifact, adapter, parity, integration/runtime coverage, performance, and no-fallback evidence. 5. Return nonzero unless every required unit executed on NPU, has parity and performance evidence, and reports no CPU/CUDA routing.",
+  "artifact_evidence": [
+    "runtime/runtime_error_pointnet2_ops_20260518_082637.md:lines 8-14",
+    "runtime/operatorRepairContext_pointnet2_ops_20260518_082637.md:lines 11-22",
+    "runtime/operatorRepairContext_pointnet2_ops_20260518_082637.md:lines 37-55",
+    "runtime/operatorRepairContext_pointnet2_ops_20260518_082637.md:lines 69-77",
+    "migration_reports/operator_repair_notes.md:lines 28-31",
+    "validate_custom_ops_full.py:lines 845-884",
+    "validate_custom_ops_full.py:lines 903-973",
+    "validate_custom_ops_full.py:lines 1043-1084",
+    "migration_reports/custom_op_final_gate.json:lines 2-13",
+    "migration_reports/custom_op_final_gate.json:lines 171-249",
+    "validated/phase_fix_operator_canonical.json:lines 50-60",
+    "validated/phase_35_static_validate_canonical.json"
+  ],
+  "involved_code_files": [
+    {
+      "path": "validate_custom_ops_full.py",
+      "role": "Final gate generator \u2014 emits source inventory, performance report, per-unit rows, no-fallback flags, and fail-closed status",
+      "line_range": [
+        845,
+        1084
+      ]
+    }
+  ],
+  "recommended_type": "prompt",
+  "confidence": 0.8,
+  "priority": "medium",
+  "reasoning": "This is reusable as a prompt/checklist improvement for future custom-op migrations: require per-unit same-run NPU execution evidence and reject report-only or fallback success. It is verified in this run by final exit_code=0, FULL_PASS, 9 closed rows, and no CPU/CUDA routed units. It is ranked medium rather than high because it is a validation/process lesson rather than the operator implementation technique itself.",
+  "tags": [
+    "custom-op-validation",
+    "final-gate",
+    "runtime-coverage",
+    "source-inventory",
+    "parity",
+    "performance-evidence",
+    "no-cpu-fallback"
+  ],
+  "category": "other",
+  "subtype": "custom_op_final_gate_schema_incomplete",
+  "source_run_id": "e2e-v2-ba8f8ebaa8fc",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/output_projects/pointnet2_ops_20260518_082637"
+}

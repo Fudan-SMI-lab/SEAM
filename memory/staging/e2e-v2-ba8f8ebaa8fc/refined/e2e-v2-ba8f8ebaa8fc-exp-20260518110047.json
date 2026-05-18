@@ -1,0 +1,87 @@
+{
+  "type": "prompt",
+  "title": "Require fail-closed per-unit custom-op final-gate evidence",
+  "phase_target": "phase_5_validation",
+  "current_prompt_issue": "Custom-op validation prompts allowed Phase 5 repair to reach an incomplete final evidence gate. The observed failure was: \"Custom-op final evidence gate failed: project_e2e_passed must be true; report_parity_passed must be true; rows must be a non-empty list\". This permits false success if validation relies on summary reports without source-inventory linkage, manifest equality, same-run runtime coverage, parity evidence, performance evidence, and explicit no-CPU/CUDA-fallback checks.",
+  "suggested_improvement": "Update operator_fixer and validation_agent prompts for custom-op migrations to require a fail-closed final-gate contract: build a source-driven fine-grained operator inventory; build a migration manifest whose entries exactly match the inventory; generate custom_op_final_gate.json from same-run runtime_coverage.json, performance.json, parity/build/integration evidence, and source_inventory linkage; require project_e2e_passed=true, report_parity_passed=true, remaining_entries=0, FULL_PASS status, and one non-empty row per manifest entry; for every row require custom-op artifact evidence, adapter evidence, parity passed, integration/runtime coverage with positive NPU call counts, numeric performance evidence, and contamination/no-fallback flags proving no CPU/CUDA routing, zero-call fake coverage, or builtin contamination. Return nonzero and force rediscovery/re-closure if any row is missing, mismatched, report-only, zero-call, lacking performance/parity evidence, or not traceable to source_inventory.",
+  "meta": {
+    "source_run_id": "e2e-v2-ba8f8ebaa8fc",
+    "candidate_id": "candidate-002",
+    "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/output_projects/pointnet2_ops_20260518_082637",
+    "target_roles": [
+      "operator_fixer",
+      "validation_agent"
+    ],
+    "target_phases": [
+      "phase_35_static_validate",
+      "phase_5_validation",
+      "fix_operator"
+    ],
+    "evidence": [
+      "runtime/runtime_error_pointnet2_ops_20260518_082637.md reported the final-gate failure for project_e2e_passed, report_parity_passed, and rows.",
+      "runtime/operatorRepairContext_pointnet2_ops_20260518_082637.md defined inventory/manifest/final-gate closure, required reports, required checks, FULL_PASS goal, remaining_entries=0, and no CPU fallback/zero-call/builtin contamination rules.",
+      "validated/phase_fix_operator_canonical.json later recorded FULL_PASS with inventory_count=9, manifest_entries=9, closed_pass_entries=9, remaining_entries=0, project_e2e_passed=true, report_parity_passed=true, rows=9, cpu_fallback_added=false, and per-row positive runtime/custom call counts.",
+      "validated/phase_35_static_validate_canonical.json confirmed static requirements for source-driven inventory, fine-grained units, public API mapping, report-only success rejection, project-local artifacts, numeric performance, and no-fallback checks."
+    ],
+    "confidence": 0.8,
+    "created_at": "2026-05-18T11:00:47.823790+00:00"
+  },
+  "target_roles": [
+    "operator_fixer",
+    "validation_agent"
+  ],
+  "target_phases": [
+    "phase_35_static_validate",
+    "phase_5_validation",
+    "fix_operator"
+  ],
+  "trigger_fingerprint": "Custom-op migration validation or operator repair reaches Phase 5 with incomplete final-gate evidence: project_e2e_passed false or missing, report_parity_passed false or missing, rows absent/empty, inventory/manifest mismatch, report-only success, zero runtime calls, missing performance/parity evidence, or any CPU/CUDA fallback routing risk.",
+  "solidifier": "prompt_solidifier",
+  "classifier": {
+    "type": "prompt",
+    "target_roles": [
+      "operator_fixer",
+      "validation_agent"
+    ],
+    "target_phases": [
+      "phase_35_static_validate",
+      "phase_5_validation",
+      "fix_operator"
+    ],
+    "solidifier": "prompt_solidifier",
+    "reasoning": "The candidate is best treated as a prompt/checklist improvement: future custom-op migration prompts should require fail-closed per-unit NPU runtime evidence rather than accepting summary-only reports. It is not a mechanical code rewrite rule, and it is narrower than a full implementation skill because the reusable lesson is the validation contract: source-driven inventory, manifest equality, same-run runtime/performance/parity rows, and explicit rejection of CPU/CUDA fallback or zero-call coverage.",
+    "confidence": 0.8,
+    "trigger_fingerprint": "Custom-op migration validation or operator repair reaches Phase 5 with incomplete final-gate evidence: project_e2e_passed false or missing, report_parity_passed false or missing, rows absent/empty, inventory/manifest mismatch, report-only success, zero runtime calls, missing performance/parity evidence, or any CPU/CUDA fallback routing risk."
+  },
+  "candidate_id": "candidate-002",
+  "problem_description": "The repair trajectory included a custom-op final evidence gate failure where project_e2e_passed, report_parity_passed, and non-empty per-unit rows were not closed. This matters because custom-op migrations can otherwise falsely pass with summary reports, missing source inventory linkage, zero-call evidence, or CPU/CUDA fallback paths.",
+  "rough_fix_approach": "1. Build a source-driven fine-grained operator inventory and a matching migration manifest. 2. Generate custom_op_final_gate.json from same-run runtime coverage and performance reports, not from static summaries alone. 3. Include project_e2e_passed, report_parity_passed, source_inventory, performance_report, and one row per required unit. 4. For every row, include artifact, adapter, parity, integration/runtime coverage, performance, and no-fallback evidence. 5. Return nonzero unless every required unit executed on NPU, has parity and performance evidence, and reports no CPU/CUDA routing.",
+  "recommended_type": "prompt",
+  "tags": [
+    "custom-op-validation",
+    "final-gate",
+    "runtime-coverage",
+    "source-inventory",
+    "parity",
+    "performance-evidence",
+    "no-cpu-fallback"
+  ],
+  "category": "other",
+  "subtype": "custom_op_final_gate_schema_incomplete",
+  "confidence": 0.8,
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/output_projects/pointnet2_ops_20260518_082637",
+  "_asset_contents": {
+    "proposal.yaml": "title: Require fail-closed per-unit custom-op final-gate evidence\nphase_target: phase_5_validation\ncurrent_prompt_issue: Custom-op validation prompts allowed Phase 5 repair to reach an incomplete final evidence gate. The observed failure was: \"Custom-op final evidence gate failed: project_e2e_passed must be true; report_parity_passed must be true; rows must be a non-empty list\". This permits false success if validation relies on summary reports without source-inventory linkage, manifest equality, same-run runtime coverage, parity evidence, performance evidence, and explicit no-CPU/CUDA-fallback checks.\nsuggested_improvement: Update operator_fixer and validation_agent prompts for custom-op migrations to require a fail-closed final-gate contract: build a source-driven fine-grained operator inventory; build a migration manifest whose entries exactly match the inventory; generate custom_op_final_gate.json from same-run runtime_coverage.json, performance.json, parity/build/integration evidence, and source_inventory linkage; require project_e2e_passed=true, report_parity_passed=true, remaining_entries=0, FULL_PASS status, and one non-empty row per manifest entry; for every row require custom-op artifact evidence, adapter evidence, parity passed, integration/runtime coverage with positive NPU call counts, numeric performance evidence, and contamination/no-fallback flags proving no CPU/CUDA routing, zero-call fake coverage, or builtin contamination. Return nonzero and force rediscovery/re-closure if any row is missing, mismatched, report-only, zero-call, lacking performance/parity evidence, or not traceable to source_inventory.\ntarget_roles: [\"operator_fixer\", \"validation_agent\"]\ntrigger_fingerprint: Custom-op migration validation or operator repair reaches Phase 5 with incomplete final-gate evidence: project_e2e_passed false or missing, report_parity_passed false or missing, rows absent/empty, inventory/manifest mismatch, report-only success, zero runtime calls, missing performance/parity evidence, or any CPU/CUDA fallback routing risk.\n",
+    "metadata.json": {
+      "type": "prompt",
+      "run_id": "e2e-v2-ba8f8ebaa8fc"
+    }
+  },
+  "asset_names": [
+    "metadata.json",
+    "proposal.yaml"
+  ],
+  "id": "e2e-v2-ba8f8ebaa8fc-exp-20260518110047",
+  "run_id": "e2e-v2-ba8f8ebaa8fc",
+  "created_at": "2026-05-18T11:00:47.823980+00:00"
+}

@@ -1,0 +1,26 @@
+{
+  "candidate_id": "candidate-001",
+  "title": "Avoid CUDA dependency download by using --system-site-packages with pre-installed torch-npu",
+  "problem_description": "Installing requirements.txt (torch, torch-npu, torchvision) from PyPI pulled PyTorch 2.11.0 with the full NVIDIA CUDA toolkit stack (cuda-toolkit, nvidia-cudnn, nvidia-nccl, etc.), totaling over 1GB. This exceeded the 300s timeout even with \u963f\u91cc\u4e91 mirror, because CUDA packages are unnecessary on an Ascend NPU host.",
+  "rough_fix_approach": "1. Before pip install, check if torch-npu is already available system-wide. 2. If yes, create venv with --system-site-packages flag instead of clean venv. 3. Verify torch.npu.is_available() returns True inside the venv. 4. Skip pip install of torch-related packages entirely \u2014 inherit system versions.",
+  "artifact_evidence": [
+    "validated/phase_2_venv_create_canonical.json",
+    "execution_journal.jsonl:line 4 (phase_2 took 486s with retry)",
+    "raw/phase_2_venv_create_attempt0.json",
+    "reports/TOOLS_EXECUTION_REPORT.md (pip install timeout section)"
+  ],
+  "involved_code_files": [],
+  "recommended_type": "document",
+  "confidence": 0.85,
+  "priority": "high",
+  "reasoning": "Highly generalizable: any CUDA-to-NPU migration running on Ascend infrastructure with pre-installed torch-npu should use --system-site-packages to avoid downloading the entire NVIDIA CUDA stack. This is a recurring environment setup pattern that will save 5+ minutes per migration run.",
+  "tags": [
+    "venv",
+    "system-site-packages",
+    "torch-npu",
+    "pip-timeout",
+    "environment-setup"
+  ],
+  "category": "environment_issue",
+  "subtype": "cuda_dependency_download_timeout"
+}

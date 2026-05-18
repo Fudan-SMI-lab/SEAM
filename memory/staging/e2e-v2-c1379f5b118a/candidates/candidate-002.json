@@ -1,0 +1,25 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "NPU virtual environment strategy: prefer --system-site-packages over external mirror pip install",
+  "problem_description": "Initial venv creation used `pip install -r requirements.txt` from Aliyun mirror, which fetched CUDA-native packages (torch 2.11.0 with nvidia-cublas, nvidia-nccl, etc.) incompatible with the Ascend NPU host. The system Python already had torch 2.5.1+cpu and torch-npu 2.5.1 pre-installed. Recreating the venv with --system-site-packages resolved the issue by inheriting the correct NPU-compatible packages.",
+  "rough_fix_approach": "1. Before creating a new venv on an NPU host, check if system Python already has torch and torch-npu installed via `python3 -c \"import torch_npu; print(torch_npu.__version__)\"`. 2. If NPU packages are pre-installed, create venv with `python3 -m venv --system-site-packages .venv` to inherit them. 3. Only install additional non-torch project dependencies via pip install. 4. Verify with `python -c \"import torch; import torch_npu; print(torch.__version__)\"` inside the venv.",
+  "artifact_evidence": [
+    "raw/phase_2_venv_create_attempt0.json",
+    "validated/phase_2_venv_create_canonical.json (final venv config with system-site-packages approach)",
+    "execution_journal.jsonl (timing records of venv creation and reinstall)"
+  ],
+  "involved_code_files": [],
+  "recommended_type": "skill",
+  "confidence": 0.8,
+  "priority": "high",
+  "reasoning": "NPU hosts in production and cloud environments typically come pre-configured with NPU-compatible PyTorch stacks. Fetching from standard PyPI mirrors (including domestic ones like Aliyun) pulls x86/CUDA variants that are incompatible. This experience generalizes to all Ascend NPU environments with pre-installed toolchains and prevents wasted time installing and discarding wrong packages.",
+  "tags": [
+    "venv-creation",
+    "system-site-packages",
+    "torch-npu",
+    "npu-environment",
+    "pip-mirror"
+  ],
+  "category": "environment_issue",
+  "subtype": "wrong_package_variant_from_mirror"
+}

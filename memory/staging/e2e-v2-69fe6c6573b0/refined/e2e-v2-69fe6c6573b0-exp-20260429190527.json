@@ -1,0 +1,25 @@
+{
+  "ok": false,
+  "error": "HTTP Error 400: Bad Request",
+  "meta": {
+    "source_run_id": "e2e-v2-69fe6c6573b0",
+    "created_at": "2026-04-29T19:05:27.431516+00:00"
+  },
+  "candidate_id": "candidate-002",
+  "title": "APEX CUDA-only modules cause immediate ModuleNotFoundError on NPU",
+  "problem_description": "NVIDIA APEX library provides CUDA-optimized modules (fused_layer_norm, fused_adam, etc.) that are imported as standard Python modules. On NPU hosts, these .so files are compiled for CUDA and either absent or non-functional, causing ModuleNotFoundError at import time.",
+  "rough_fix_approach": "1. Scan imports for apex, apex_C, or apex_ patterns. 2. Remove the import entirely. 3. Replace with native PyTorch equivalents: fused_layer_norm \u2192 torch.nn.functional.layer_norm or torch_npu equivalent. 4. Remove APEX from requirements.txt or replace with torch-npu optimized alternatives.",
+  "recommended_type": "rule",
+  "tags": [
+    "apex",
+    "fused-ops",
+    "module-not-found",
+    "import-removal"
+  ],
+  "category": "operator_incompat",
+  "subtype": "apex_cuda_dependency",
+  "confidence": 0.85,
+  "id": "e2e-v2-69fe6c6573b0-exp-20260429190527",
+  "run_id": "e2e-v2-69fe6c6573b0",
+  "created_at": "2026-04-29T19:05:27.431909+00:00"
+}

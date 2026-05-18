@@ -1,0 +1,4 @@
+title: Pin NumPy below 2.0 for CANN toolkit compatibility
+pattern: numpy\s*>=?\s*2\.\d+
+replacement: numpy>=1.26.0,<2.0
+file_patterns: ["requirements*.txt", "pyproject.toml", "setup.py", "setup.cfg"]

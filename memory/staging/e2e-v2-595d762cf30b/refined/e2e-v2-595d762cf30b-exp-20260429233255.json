@@ -1,0 +1,55 @@
+{
+  "type": "skill",
+  "skill_name": "torch-npu-version-pinning",
+  "title": "torch-npu version must match torch major.minor version to avoid import-time FILE_LIKE mismatch",
+  "category": "dependency_issue",
+  "subtype": "torch_version_mismatch",
+  "tags": [
+    "torch-npu",
+    "version-pinning",
+    "dependency-resolution",
+    "environment-setup"
+  ],
+  "symptom": "ImportError at import time: cannot import name 'FILE_LIKE' from 'torch.serialization' \u2014 installed torch version (e.g., 2.11.0) is API-incompatible with torch-npu (e.g., 2.2.0 or 2.5.1). Issue manifests at runtime, not during pip install.",
+  "root_cause": "Installing torch-npu from requirements.txt without pinning the matching torch version causes pip to resolve the latest available torch, which may have API changes incompatible with the installed torch-npu release. The FILE_LIKE symbol was removed or renamed in newer torch versions. This mismatch is invisible during pip install since torch-npu does not declare a strict torch version constraint.",
+  "fix_steps": [
+    "1. Query the installed system torch-npu major.minor version: `pip show torch-npu | grep Version` (e.g., 2.5.1).",
+    "2. Pin torch to that exact version in requirements.txt: `torch==2.5.1`.",
+    "3. Add `--extra-index-url https://download.pytorch.org/whl/cpu` to pip install commands to resolve CPU-only torch wheels instead of CUDA builds.",
+    "4. Pin torchvision to the version matching the pinned torch release (e.g., `torchvision==0.20.1+cpu` for torch 2.5.1 \u2014 consult PyTorch version compatibility matrix).",
+    "5. After `pip install -r requirements.txt`, run `pip check` to catch any remaining version conflicts before runtime.",
+    "6. Validate import succeeds: `python -c 'import torch; import torch_npu'` must exit with code 0."
+  ],
+  "affected_patterns": [
+    "requirements.txt with torch-npu listed but no pinned torch version",
+    "pip install -r requirements.txt without --extra-index-url for CPU torch",
+    "Assuming pip install success means environment is valid \u2014 mismatch only surfaces at import time"
+  ],
+  "code_changes": [],
+  "references": [],
+  "tools_needed": [
+    "pip",
+    "pip check"
+  ],
+  "antipatterns": [
+    "Do NOT let pip auto-resolve torch version alongside torch-npu \u2014 it will pick the latest incompatible release.",
+    "Do NOT rely on pip install exit code as validation \u2014 the version mismatch only surfaces at Python import time.",
+    "Do NOT install CUDA torch builds on NPU machines \u2014 always use --extra-index-url https://download.pytorch.org/whl/cpu.",
+    "Do NOT attempt to patch torch.serialization at runtime \u2014 the correct fix is version pinning at install time."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-595d762cf30b",
+    "iterations_to_fix_in_source": 0,
+    "verified_on_cann_version": "8.0.RC",
+    "refiner_reasoning": "This is a dependency resolution issue, not a code change. Phase 2 venv creation took 1144.8s due to 3 resolution cycles, confirming pip struggled with unconstrained torch-torch-npu compatibility. The fix is entirely at the requirements.txt and pip install level \u2014 no source code modifications needed.",
+    "created_at": "2026-04-29T23:32:55.262676+00:00"
+  },
+  "confidence": 0.95,
+  "candidate_id": "candidate-001",
+  "problem_description": "Installing torch-npu from requirements.txt without pinning the matching torch version causes pip to resolve the latest torch (e.g., 2.11.0), which is API-incompatible with the installed torch-npu (e.g., 2.2.0 or 2.5.1). This produces ImportError at import time: cannot import name 'FILE_LIKE' from torch.serialization. The issue only manifests at runtime, not during pip install.",
+  "rough_fix_approach": "1. Query the installed system torch-npu major.minor version (e.g., 2.5.1). 2. Pin torch to the matching major.minor version (torch==2.5.1). 3. Use --extra-index-url https://download.pytorch.org/whl/cpu to resolve CPU-only torch wheels. 4. Pin torchvision to the matching version (e.g., 0.20.1+cpu for torch 2.5.1). 5. Run pip check after installation to catch version conflicts before runtime.",
+  "recommended_type": "skill",
+  "id": "e2e-v2-595d762cf30b-exp-20260429233255",
+  "run_id": "e2e-v2-595d762cf30b",
+  "created_at": "2026-04-29T23:32:55.263373+00:00"
+}

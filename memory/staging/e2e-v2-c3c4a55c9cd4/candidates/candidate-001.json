@@ -1,0 +1,51 @@
+{
+  "candidate_id": "candidate-001",
+  "title": "torch-npu requires PyYAML as undeclared transitive dependency",
+  "problem_description": "torch-npu 2.5.1's memory visualization submodule (_memory_viz.py) imports yaml unconditionally, but PyYAML is not declared in the package's pip metadata. When creating a fresh venv, torch import fails with ModuleNotFoundError: No module named 'yaml' during torch_npu backend loading, cascading into complete torch import failure.",
+  "rough_fix_approach": "Pre-install PyYAML in the venv before using torch-npu: pip install PyYAML -i https://mirrors.aliyun.com/pypi/simple/. Alternatively, pin requirements.txt to include PyYAML alongside torch and torch-npu.",
+  "artifact_evidence": [
+    "validated/phase_analyze_error_canonical.json: rootCause identifies PyYAML missing",
+    "validated/phase_5_validation_canonical.json: loop_state.last_error_signature full traceback at torch_npu/npu/_memory_viz.py line 11",
+    "raw/phase_5_validation_attempt0.json: same error trace in iteration 1, resolved by iteration 2",
+    "validated/phase_fix_dependency_canonical.json: summary confirms PyYAML installation"
+  ],
+  "involved_code_files": [
+    {
+      "path": ".venv/lib/python3.10/site-packages/torch_npu/npu/_memory_viz.py",
+      "role": "torch-npu internal \u2014 memory visualization module with unconditional yaml import",
+      "line_range": [
+        1,
+        15
+      ]
+    },
+    {
+      "path": ".venv/lib/python3.10/site-packages/torch_npu/npu/memory.py",
+      "role": "torch-npu internal \u2014 re-exports from _memory_viz, triggers yaml import chain",
+      "line_range": [
+        14,
+        18
+      ]
+    },
+    {
+      "path": "requirements.txt",
+      "role": "Project dependency declarations \u2014 missing PyYAML",
+      "line_range": [
+        1,
+        3
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.95,
+  "priority": "high",
+  "reasoning": "This affects every CUDA-to-NPU migration that creates a fresh venv with torch-npu. The error is misleading (traceback points to torch import failure, masking the real missing yaml module), so pre-installing PyYAML saves significant debugging time. Verified on CANN 8.1.RC1 with torch-npu 2.5.1.",
+  "tags": [
+    "torch-npu",
+    "pyyaml",
+    "transitive-dependency",
+    "undeclared-requirement",
+    "dependency_issue"
+  ],
+  "category": "dependency_issue",
+  "subtype": "undelared_transitive_dependency"
+}

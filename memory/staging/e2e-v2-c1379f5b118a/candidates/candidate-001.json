@@ -1,0 +1,35 @@
+{
+  "candidate_id": "candidate-001",
+  "title": "Remove CUDA-exclusive third-party imports (apex, apex_C) that have no NPU equivalent",
+  "problem_description": "Phase 4 rule migration produced an empty operation set, failing to address a deliberately broken `from apex_C import fused_layer_norm` import. Apex is a CUDA-exclusive NVIDIA library with no NPU equivalent. The script failed with ModuleNotFoundError on first run, requiring the Phase 5 repair agent to identify and remove the import along with all other CUDA\u2192NPU patterns in a single repair step.",
+  "rough_fix_approach": "1. Scan entry script and all project source files for imports of CUDA-exclusive packages: apex, apex_C, apex.parallel, apex.amp, pyximport with CUDA, cuda_ext, etc. 2. For each CUDA-exclusive import, determine if it has an NPU equivalent (most do not) and remove it entirely. 3. Verify the import was not used downstream \u2014 if referenced in code, also remove or replace those call sites. 4. Run the script and confirm no further import errors remain.",
+  "artifact_evidence": [
+    "raw/phase_5_validation_attempt0.json:line 63 (last_error_signature with ModuleNotFoundError: No module named 'apex_C')",
+    "validated/phase_5_validation_canonical.json:lines 46-50 (analyze_error root cause and suggested fix)",
+    "validated/phase_5_validation_canonical.json:lines 55-60 (fix_code summary of all replacements made)",
+    "validated/phase_4_rule_migration_canonical.json:line 2 (empty operation set proving rule migration missed this)"
+  ],
+  "involved_code_files": [
+    {
+      "path": "train.py",
+      "role": "Entry script \u2014 contained CUDA-exclusive apex import at line 25 (pre-repair), line 3 (post-repair adds import torch_npu)",
+      "line_range": [
+        1,
+        71
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.9,
+  "priority": "high",
+  "reasoning": "CUDA-exclusive third-party libraries (Apex, NVIDIA's CUDA extensions, cutlass-based ops, FlashAttention v1, etc.) are common in real-world PyTorch projects. Simple rule-based text replacement cannot detect or remove these imports because they are not torch.cuda.* patterns. A dedicated skill for identifying and removing CUDA-exclusive dependencies generalizes to virtually all CUDA\u2192NPU migrations.",
+  "tags": [
+    "apex",
+    "cuda-exclusive-imports",
+    "import-removal",
+    "torch-npu",
+    "dependency-cleanup"
+  ],
+  "category": "dependency_issue",
+  "subtype": "cuda_exclusive_no_npu_equivalent"
+}

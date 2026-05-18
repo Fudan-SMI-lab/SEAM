@@ -1,0 +1,101 @@
+{
+  "candidate_id": "candidate-001",
+  "title": "Port CUDA custom extension to NPU-routed C++/ATen extension without changing the Python API",
+  "problem_description": "The project had a CUDA custom-op extension surface, and Phase 5 identified an operator failure where the entry script was valid but implementation/build artifacts and custom-op runtime evidence were not closed. This matters for CUDA-to-NPU migrations because deleting the extension, using CPU fallback, or only doing Phase 4 text replacements leaves large-model workloads unable to run natively on NPU.",
+  "rough_fix_approach": "1. Replace CUDAExtension/nvcc build assumptions with a CppExtension build over C++ sources. 2. Reimplement CUDA kernel wrapper functions as C++ ATen tensor operations that require NPU/PrivateUse1 tensors and keep data on NPU. 3. Preserve the existing pybind symbols and Python torch.autograd.Function/public API calls so downstream project code continues to import the same extension module. 4. Build the project-local shared object in place, verify exported symbols, run the validation entry script, and require per-unit runtime coverage, parity, performance, compiled-artifact evidence, and no CPU/CUDA routing before declaring success.",
+  "artifact_evidence": [
+    "validated/phase_5_validation_canonical.json:lines 46-55",
+    "validated/phase_5_validation_canonical.json:lines 82-99",
+    "validated/phase_5_validation_canonical.json:lines 126-135",
+    "raw/phase_5_validation_attempt0.json:lines 46-55",
+    "raw/phase_5_validation_attempt0.json:lines 82-99",
+    "raw/phase_5_validation_attempt0.json:lines 126-135",
+    "validated/phase_fix_operator_canonical.json:lines 22-35",
+    "validated/phase_fix_operator_canonical.json:lines 37-60",
+    "validated/phase_fix_operator_canonical.json:lines 62-100",
+    "migration_reports/operator_repair_notes.md:lines 10-18",
+    "migration_reports/build.json:lines 11-21",
+    "migration_reports/build_ext_npu.log:lines 3-10",
+    "migration_reports/runtime_coverage.json:lines 4-84",
+    "migration_reports/custom_op_final_gate.json:lines 2-13",
+    "migration_reports/custom_op_final_gate.json:lines 213-248",
+    "validated/phase_6_report_canonical.json",
+    "execution_journal.jsonl:lines 7-9"
+  ],
+  "involved_code_files": [
+    {
+      "path": "setup.py",
+      "role": "Build configuration \u2014 uses torch.utils.cpp_extension.CppExtension over C++ sources instead of CUDAExtension/nvcc",
+      "line_range": [
+        6,
+        28
+      ]
+    },
+    {
+      "path": "pointnet2_ops/_ext-src/include/utils.h",
+      "role": "Custom operator input guard \u2014 enforces NPU/PrivateUse1 tensors and contiguous inputs",
+      "line_range": [
+        4,
+        8
+      ]
+    },
+    {
+      "path": "pointnet2_ops/_ext-src/src/npu_ops.cpp",
+      "role": "Migrated custom operator implementation \u2014 NPU-routed C++/ATen implementations for gather, sampling, interpolation, grouping, and ball query wrappers",
+      "line_range": [
+        8,
+        148
+      ]
+    },
+    {
+      "path": "pointnet2_ops/_ext-src/src/bindings.cpp",
+      "role": "pybind11 binding layer \u2014 preserves exported native symbols on pointnet2_ops._ext",
+      "line_range": [
+        6,
+        18
+      ]
+    },
+    {
+      "path": "pointnet2_ops/pointnet2_utils.py",
+      "role": "Public/autograd API layer \u2014 routes existing Python APIs to the migrated _ext symbols",
+      "line_range": [
+        8,
+        253
+      ]
+    },
+    {
+      "path": "test_pointnet2.py",
+      "role": "NPU validation support \u2014 imports torch_npu and rejects CPU fallback before custom-op validation",
+      "line_range": [
+        16,
+        50
+      ]
+    },
+    {
+      "path": "validate_custom_ops_full.py",
+      "role": "Migration validation entry \u2014 requires torch_npu and records per-unit NPU runtime, parity, performance, artifact, and no-fallback evidence",
+      "line_range": [
+        19,
+        1084
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.86,
+  "priority": "high",
+  "reasoning": "This experience is generalizable to CUDA custom extensions whose operator semantics can be expressed through NPU-supported ATen tensor operations while preserving pybind and Python API compatibility. It is verified by final validation exit_code=0, FULL_PASS, compiled shared-object evidence, all 9 units executing on runtime_device=npu, and repeated no CPU/CUDA routing evidence. Confidence is below 0.9 because projects requiring bespoke Ascend C kernels cannot use the ATen-wrapper approach as a drop-in implementation strategy.",
+  "tags": [
+    "torch-npu",
+    "custom-op",
+    "cpp-extension",
+    "aten",
+    "PrivateUse1",
+    "pybind11",
+    "no-cpu-fallback",
+    "runtime-coverage"
+  ],
+  "category": "operator_incompat",
+  "subtype": "cuda_extension_to_npu_routed_cpp_extension",
+  "source_run_id": "e2e-v2-ba8f8ebaa8fc",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/output_projects/pointnet2_ops_20260518_082637"
+}

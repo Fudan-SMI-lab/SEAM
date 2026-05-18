@@ -1,0 +1,34 @@
+{
+  "type": "rule",
+  "title": "Pin NumPy below 2.0 for CANN toolkit compatibility",
+  "pattern": "numpy\\s*>=?\\s*2\\.\\d+",
+  "replacement": "numpy>=1.26.0,<2.0",
+  "file_patterns": [
+    "requirements*.txt",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg"
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-39fff3edbbe2",
+    "confidence": 0.85,
+    "created_at": "2026-04-29T19:28:54.865481+00:00"
+  },
+  "candidate_id": "candidate-002",
+  "problem_description": "NumPy 2.0 removed the `np.float_` alias (replaced by `np.float64`), but CANN toolkit's internal Python code (in `te`, `auto_tune`, and HCCL parser modules) still references `np.float_`. When a clean venv installs the latest NumPy (2.2.x), CANN initialization fails at import time with `AttributeError: module 'numpy' has no attribute 'float_'`. This silently blocks all NPU operations.",
+  "rough_fix_approach": "1. Detect CANN toolkit version (from `/usr/local/Ascend/ascend-toolkit/latest/version.cfg`). 2. Before installing project dependencies, pin NumPy: `pip install 'numpy<2.0'` (specifically 1.26.4 for CANN 8.1.RC1). 3. If project's requirements.txt pulls in a later NumPy, install pinned version after: `pip install numpy==1.26.4 --force-reinstall`. 4. Verify: `python -c 'import numpy; print(numpy.__version__)'` shows 1.x.",
+  "recommended_type": "rule",
+  "tags": [
+    "numpy",
+    "cann",
+    "np.float_",
+    "breaking-change",
+    "numpy-2-incompatibility"
+  ],
+  "category": "dependency_issue",
+  "subtype": "numpy2_cann_incompatibility",
+  "confidence": 0.85,
+  "id": "e2e-v2-39fff3edbbe2-exp-20260429192854",
+  "run_id": "e2e-v2-39fff3edbbe2",
+  "created_at": "2026-04-29T19:28:54.865622+00:00"
+}
