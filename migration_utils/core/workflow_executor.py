@@ -37,6 +37,11 @@ from core.variable_resolver import VariableResolver
 from core.session_registry import SessionRegistry
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
+from core.custom_op_opp_preflight import (
+    format_custom_op_opp_preflight_failure,
+    has_custom_op_contract,
+    validate_custom_op_opp_preflight,
+)
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
@@ -1697,6 +1702,33 @@ class WorkflowExecutor:
         # 3. Resolve timeout; None means subprocess.run has no timeout.
         timeout = phase.timeout
 
+        preflight_result = self._custom_op_opp_preflight_for_entry_script(
+            state,
+            context,
+            loop_vars,
+            entry_script_command or getattr(phase, "id", "") == "run_entry_script",
+        )
+        if preflight_result is not None and preflight_result.get("passed") is not True:
+            stderr = format_custom_op_opp_preflight_failure(preflight_result)
+            captured = {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": stderr,
+                "duration": 0,
+                "command": str(cmd),
+                "custom_op_opp_preflight": preflight_result,
+            }
+            if loop_state is not None:
+                loop_state["script_exit_code"] = 1
+                loop_state["script_stdout"] = ""
+                loop_state["script_stderr"] = stderr
+                loop_state["script_duration"] = 0
+                loop_state["custom_op_opp_preflight"] = preflight_result
+            on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
+            if on_failure != "break":
+                return ("success", captured)
+            return ("failure", captured)
+
         out_path = err_path = None
         try:
             # 4. Redirect to temp files
@@ -1769,6 +1801,25 @@ class WorkflowExecutor:
         if raw_command == "${loop_vars.entry_script}":
             return True
         return bool(loop_vars and str(loop_vars.get("entry_script", "")) == str(raw_command))
+
+    def _custom_op_opp_preflight_for_entry_script(
+        self,
+        state: dict,
+        context: dict,
+        loop_vars: dict[str, Any] | None,
+        entry_script_command: bool,
+    ) -> dict[str, object] | None:
+        if not entry_script_command:
+            return None
+        contract = state.get("phase_3_entry_script")
+        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
+            return None
+        project_dir = self.project_dir
+        if loop_vars and isinstance(loop_vars.get("project_dir"), str):
+            project_dir = str(loop_vars["project_dir"])
+        elif isinstance(context.get("PROJECT_DIR"), str):
+            project_dir = str(context["PROJECT_DIR"])
+        return validate_custom_op_opp_preflight(cast(dict[str, object], contract), project_dir)
 
     def _read_tail(self, path: str, max_bytes: int = _MAX_TAIL) -> str:
         """Read at most last *max_bytes* of a file."""
@@ -1893,15 +1944,7 @@ class WorkflowExecutor:
 
     @staticmethod
     def _has_custom_op_contract(contract: dict[str, Any]) -> bool:
-        return any(
-            field in contract
-            for field in (
-                "entry_script_kind",
-                "reports_dir",
-                "required_report_paths",
-                "required_checks",
-            )
-        )
+        return has_custom_op_contract(contract)
 
     def _resolve_custom_op_reports_dir(
         self,

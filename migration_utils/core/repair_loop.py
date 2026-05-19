@@ -18,6 +18,11 @@ from typing import Any, Callable, Protocol, TypedDict, cast
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
+from core.custom_op_opp_preflight import (
+    format_custom_op_opp_preflight_failure,
+    has_custom_op_contract,
+    validate_custom_op_opp_preflight,
+)
 from core.paths import workspace_root
 from core.prompt_loader import PromptLoader
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
@@ -103,7 +108,7 @@ def _operator_custom_op_guidance(
     return (
         f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
         "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+        "6. Every in-scope row must have strict Ascend C/CANN OPP custom operator producer evidence: op_host source path, op_kernel/AscendC source path, CMakeLists.txt/build.sh or equivalent OPP build script, project-local CANN/OPP build-install logs, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. torch_npu.utils.cpp_extension.NpuExtension, torch.utils.cpp_extension.CppExtension, ATen-only npu_ops.cpp, and libtorch/torch_cpu/torch_npu-only builds are not opp_custom_op_artifact_evidence; NpuExtension may only be adapter evidence when separate strict OPP producer evidence exists. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
         f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
     )
@@ -131,6 +136,8 @@ _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
     r"FULL_MIGRATION_INCOMPLETE",
     r"operator evidence",
     r"custom[-_ ]op evidence",
+    r"custom[-_ ]op opp preflight failed",
+    r"ascend c/cann opp is the only accepted custom[-_ ]op target",
 )
 _CUSTOM_OP_SHARED_OBJECT_PATTERNS = (
     r"\.so\b",
@@ -162,19 +169,7 @@ def _flatten_for_routing(value: object) -> str:
 
 
 def _has_custom_op_contract_fields(contract: dict[str, object]) -> bool:
-    if contract.get("entry_script_kind") == "custom_op_full_validation":
-        return True
-    return any(
-        field in contract
-        for field in (
-            "reports_dir",
-            "required_report_paths",
-            "required_checks",
-            "operator_discovery_sources",
-            "operator_inventory_schema",
-            "validation_obligations",
-        )
-    )
+    return has_custom_op_contract(contract)
 
 
 def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: list[object] | None = None, classification: dict[str, object] | None = None, phase3_contract: dict[str, object] | None = None, prompt_context: dict[str, object] | None = None) -> bool:
@@ -494,7 +489,6 @@ class RepairLoopEngine:
 
         entry_script_timeout = _get_timeout(self.config, "entry_script_timeout")
         script_cwd, env_vars, cmd_argv, use_shell = self._prepare_entry_command(entry_script, project_dir)
-
         with tempfile.TemporaryDirectory(prefix="repair-loop-") as tmp_dir:
             stdout_log_path = os.path.join(tmp_dir, "out.log")
             stderr_log_path = os.path.join(tmp_dir, "err.log")
@@ -502,229 +496,240 @@ class RepairLoopEngine:
             for iteration in range(1, max_iterations + 1):
                 review_result: dict[str, object] | None = None
                 error_text = ""
-                self._log(f"[Iter {iteration}/{max_iterations}] Running entry script...", logger)
-                try:
-                    run_start = time.monotonic()
-                    run_env = os.environ.copy()
-                    run_env.update(env_vars)
+                completed_returncode: int | None = None
+                preflight_result = validate_custom_op_opp_preflight(active_phase3_contract, project_dir)
+                if preflight_result is not None and preflight_result.get("passed") is not True:
+                    final_stdout = ""
+                    final_stderr = format_custom_op_opp_preflight_failure(preflight_result)
+                    final_exit_code = 1
+                    completed_returncode = 1
+                    error_text = final_stderr
+                    self._log(f"[Iter {iteration}] Validation FAILED (custom-op OPP preflight)", logger)
+                else:
+                    self._log(f"[Iter {iteration}/{max_iterations}] Running entry script...", logger)
+                    try:
+                        run_start = time.monotonic()
+                        run_env = os.environ.copy()
+                        run_env.update(env_vars)
 
-                    with open(stdout_log_path, "w", encoding="utf-8") as stdout_handle, open(
-                        stderr_log_path, "w", encoding="utf-8"
-                    ) as stderr_handle:
-                        if use_shell:
-                            completed = subprocess.run(
-                                cmd_argv,
-                                stdout=stdout_handle,
-                                stderr=stderr_handle,
-                                cwd=script_cwd,
-                                shell=True,
-                                executable="/bin/bash",
-                                timeout=entry_script_timeout,
-                                env=run_env,
-                            )
-                        else:
-                            completed = subprocess.run(
-                                cmd_argv,
-                                stdout=stdout_handle,
-                                stderr=stderr_handle,
-                                cwd=script_cwd,
-                                shell=False,
-                                timeout=entry_script_timeout,
-                                env=run_env,
-                            )
-
-                    execution_duration = round(time.monotonic() - run_start, 1)
-                    final_stdout = self._read_tail(stdout_log_path)
-                    final_stderr = self._read_tail(stderr_log_path)
-                    final_exit_code = completed.returncode
-
-                    if completed.returncode == 0:
-                        gate_result = self._validate_custom_op_final_gate_for_contract(
-                            active_phase3_contract, project_dir
-                        )
-                        if gate_result is not None and gate_result.get("passed") is not True:
-                            final_exit_code = 1
-                            gate_errors = gate_result.get("errors")
-                            if isinstance(gate_errors, list) and gate_errors:
-                                concise_gate_errors = "; ".join(str(error) for error in gate_errors[:5])
+                        with open(stdout_log_path, "w", encoding="utf-8") as stdout_handle, open(
+                            stderr_log_path, "w", encoding="utf-8"
+                        ) as stderr_handle:
+                            if use_shell:
+                                completed = subprocess.run(
+                                    cmd_argv,
+                                    stdout=stdout_handle,
+                                    stderr=stderr_handle,
+                                    cwd=script_cwd,
+                                    shell=True,
+                                    executable="/bin/bash",
+                                    timeout=entry_script_timeout,
+                                    env=run_env,
+                                )
                             else:
-                                concise_gate_errors = "custom-op final gate failed"
-                            final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed: {concise_gate_errors}".strip()
-                            error_text = self._combine_error(final_stdout, final_stderr)
-                            self._log(
-                                f"[Iter {iteration}] Validation FAILED (custom-op final gate) - {concise_gate_errors}",
-                                logger,
+                                completed = subprocess.run(
+                                    cmd_argv,
+                                    stdout=stdout_handle,
+                                    stderr=stderr_handle,
+                                    cwd=script_cwd,
+                                    shell=False,
+                                    timeout=entry_script_timeout,
+                                    env=run_env,
+                                )
+
+                        execution_duration = round(time.monotonic() - run_start, 1)
+                        final_stdout = self._read_tail(stdout_log_path)
+                        final_stderr = self._read_tail(stderr_log_path)
+                        final_exit_code = completed.returncode
+                        completed_returncode = completed.returncode
+
+                        if completed_returncode == 0:
+                            gate_result = self._validate_custom_op_final_gate_for_contract(
+                                active_phase3_contract, project_dir
                             )
-                        else:
-                            self._log(f"[Iter {iteration}] Validation SUCCESS (exit 0)", logger)
-
-                            review_result = None
-                        if final_exit_code == 0 and enable_review_gate and review_callable is not None:
-                            try:
-                                classification_for_review = (
-                                    cast(dict[str, object], cast(object, last_classification))
-                                    if last_classification is not None
-                                    else {}
-                                )
-                                raw_dir = str(getattr(self.artifact_store, "raw_dir", ""))
-                                existing_attempts = sorted(
-                                    p for p in os.listdir(raw_dir) if p.startswith("phase_5_validation_attempt") and p.endswith(".json")
-                                ) if os.path.isdir(raw_dir) else []
-                                last_artifact_path = (
-                                    os.path.join(raw_dir, existing_attempts[-1])
-                                    if existing_attempts else "(no previous attempt available)"
-                                )
-                                review_payload: dict[str, object] = {
-                                    "iteration": iteration,
-                                    "error_text": "",
-                                    "classification": classification_for_review,
-                                    "repair_role": context.repair_role,
-                                    "fix_instruction": last_fix_instruction,
-                                    "fix_response": last_fix_response,
-                                    "fix_metadata": last_fix_metadata,
-                                    "history": list(context.history),
-                                    "last_artifact_path": last_artifact_path,
-                                    "attempt_log_content": self._load_attempt_log_content(last_artifact_path),
-                                    "execution_duration": str(execution_duration),
-                                    "gate_state_summary": {
-                                        "best_passing_version": gate_state.best_passing_version,
-                                        "review_reject_reasons": list(gate_state.review_reject_reasons),
-                                        "improvement_iterations": gate_state.improvement_iterations,
-                                        "max_review_iterations": max_review_iterations,
-                                        "history": list(context.history),
-                                    },
-                                }
-                                review_result = review_callable(review_payload)
-                                self._log(
-                                    f"[Iter {iteration}] Review verdict: {review_result.get('verdict', 'unknown')}",
-                                    logger,
-                                )
-                            except Exception as e:
-                                self._log(f"[Iter {iteration}] Review step failed: {e}", logger)
-
-                        if review_result is not None:
-                            last_review = review_result
-
-                        if review_result is not None:
-                            verdict = str(review_result.get("verdict", "")).lower()
-                            session_error = review_result.get("session_error")
-
-                            if verdict == "session_error" or session_error:
-                                reason = str(session_error or review_result.get("reasoning", "Review session failed"))
-                                self._log(
-                                    f"[Iter {iteration}] Review gate: SESSION_ERROR - {reason}",
-                                    logger,
-                                )
-                                context.iteration_count = iteration
-                                context.last_error = f"Review gate session error: {reason}"
+                            if gate_result is not None and gate_result.get("passed") is not True:
                                 final_exit_code = 1
-                                final_stderr = f"{final_stderr}\n{context.last_error}".strip()
-                                status = "review_failed"
+                                gate_errors = gate_result.get("errors")
+                                if isinstance(gate_errors, list) and gate_errors:
+                                    concise_gate_errors = "; ".join(str(error) for error in gate_errors[:5])
+                                else:
+                                    concise_gate_errors = "custom-op final gate failed"
+                                final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed: {concise_gate_errors}".strip()
+                                error_text = self._combine_error(final_stdout, final_stderr)
+                                self._log(
+                                    f"[Iter {iteration}] Validation FAILED (custom-op final gate) - {concise_gate_errors}",
+                                    logger,
+                                )
+                            else:
+                                self._log(f"[Iter {iteration}] Validation SUCCESS (exit 0)", logger)
+
+                                review_result = None
+                            if final_exit_code == 0 and enable_review_gate and review_callable is not None:
+                                try:
+                                    classification_for_review = (
+                                        cast(dict[str, object], cast(object, last_classification))
+                                        if last_classification is not None
+                                        else {}
+                                    )
+                                    raw_dir = str(getattr(self.artifact_store, "raw_dir", ""))
+                                    existing_attempts = sorted(
+                                        p for p in os.listdir(raw_dir) if p.startswith("phase_5_validation_attempt") and p.endswith(".json")
+                                    ) if os.path.isdir(raw_dir) else []
+                                    last_artifact_path = (
+                                        os.path.join(raw_dir, existing_attempts[-1])
+                                        if existing_attempts else "(no previous attempt available)"
+                                    )
+                                    review_payload: dict[str, object] = {
+                                        "iteration": iteration,
+                                        "error_text": "",
+                                        "classification": classification_for_review,
+                                        "repair_role": context.repair_role,
+                                        "fix_instruction": last_fix_instruction,
+                                        "fix_response": last_fix_response,
+                                        "fix_metadata": last_fix_metadata,
+                                        "history": list(context.history),
+                                        "last_artifact_path": last_artifact_path,
+                                        "attempt_log_content": self._load_attempt_log_content(last_artifact_path),
+                                        "execution_duration": str(execution_duration),
+                                        "gate_state_summary": {
+                                            "best_passing_version": gate_state.best_passing_version,
+                                            "review_reject_reasons": list(gate_state.review_reject_reasons),
+                                            "improvement_iterations": gate_state.improvement_iterations,
+                                            "max_review_iterations": max_review_iterations,
+                                            "history": list(context.history),
+                                        },
+                                    }
+                                    review_result = review_callable(review_payload)
+                                    self._log(
+                                        f"[Iter {iteration}] Review verdict: {review_result.get('verdict', 'unknown')}",
+                                        logger,
+                                    )
+                                except Exception as e:
+                                    self._log(f"[Iter {iteration}] Review step failed: {e}", logger)
+
+                            if review_result is not None:
+                                last_review = review_result
+
+                            if review_result is not None:
+                                verdict = str(review_result.get("verdict", "")).lower()
+                                session_error = review_result.get("session_error")
+
+                                if verdict == "session_error" or session_error:
+                                    reason = str(session_error or review_result.get("reasoning", "Review session failed"))
+                                    self._log(
+                                        f"[Iter {iteration}] Review gate: SESSION_ERROR - {reason}",
+                                        logger,
+                                    )
+                                    context.iteration_count = iteration
+                                    context.last_error = f"Review gate session error: {reason}"
+                                    final_exit_code = 1
+                                    final_stderr = f"{final_stderr}\n{context.last_error}".strip()
+                                    status = "review_failed"
+                                    break
+
+                                if verdict == "reject":
+                                    self._log(
+                                        f"[Iter {iteration}] Review gate: REJECT (verdict '{verdict}')",
+                                        logger,
+                                    )
+                                    snapshot = self._snapshot_project_files(project_dir, f"iter{iteration}")
+                                    gate_state.best_passing_version = {
+                                        "iteration": iteration,
+                                        "exit_code": completed_returncode,
+                                        "modified_files": last_fix_metadata.get("modified_files", []),
+                                        "fix_summary": str(last_fix_metadata.get("summary", "")),
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "snapshot_path": snapshot["snapshot_path"],
+                                    }
+                                    gate_state.review_reject_reasons.append(
+                                        str(review_result.get("reasoning", ""))
+                                    )
+                                    gate_state.improvement_iterations += 1
+
+                                    improvement_result = self._run_improvement_iteration(
+                                        gate_state=gate_state,
+                                        project_dir=project_dir,
+                                        entry_script=entry_script,
+                                        constraint_summary=constraint_summary,
+                                        logger=logger,
+                                    )
+
+                                    if improvement_result.get("status") == "success":
+                                        improvement_message = (
+                                            f"[Iter {iteration}] Improvement applied: "
+                                            f"role={improvement_result.get('repair_role', 'N/A')}, "
+                                            f"area={improvement_result.get('improvement_area', 'N/A')}"
+                                        )
+                                        self._log(
+                                            improvement_message,
+                                            logger,
+                                        )
+
+                                    if gate_state.improvement_iterations >= max_review_iterations:
+                                        self._log(
+                                            f"[Iter {iteration}] Review gate: Max iterations ({max_review_iterations}) reached, marking passed_with_reviews",
+                                            logger,
+                                        )
+                                        context.iteration_count = iteration
+                                        status = "passed_with_reviews"
+                                        break
+                                    else:
+                                        self._log(
+                                            f"[Iter {iteration}] Review gate: Improvement mode activated (iteration {gate_state.improvement_iterations}/{max_review_iterations})",
+                                            logger,
+                                        )
+                                        context.iteration_count = iteration
+                                        iteration_record_exit0: IterationRecord = {
+                                            "iteration": iteration,
+                                            "exit_code": completed_returncode,
+                                            "stdout": final_stdout,
+                                            "stderr": final_stderr,
+                                            "error": "",
+                                            "classification": last_classification or {
+                                                "category": "",
+                                                "root_cause": "",
+                                                "suggested_fix": "",
+                                                "repair_role": context.repair_role,
+                                                "raw_response": "",
+                                            },
+                                            "fix_attempt": {
+                                                "status": "review_rejected",
+                                                "repair_role": context.repair_role,
+                                                "instruction": last_fix_instruction,
+                                                "response": last_fix_response,
+                                                "modified_files": last_fix_metadata.get("modified_files", []),
+                                                "fix_summary": str(last_fix_metadata.get("summary", "")),
+                                            },
+                                            "error_analyzer_session_id": analyzer_session_id,
+                                        }
+                                        self._record_iteration(iteration, context, iteration_record_exit0)
+                                        continue
+
+                            if final_exit_code == 0:
+                                context.iteration_count = iteration
+                                status = "success"
                                 break
 
-                            if verdict == "reject":
-                                self._log(
-                                    f"[Iter {iteration}] Review gate: REJECT (verdict '{verdict}')",
-                                    logger,
-                                )
-                                snapshot = self._snapshot_project_files(project_dir, f"iter{iteration}")
-                                gate_state.best_passing_version = {
-                                    "iteration": iteration,
-                                    "exit_code": completed.returncode,
-                                    "modified_files": last_fix_metadata.get("modified_files", []),
-                                    "fix_summary": str(last_fix_metadata.get("summary", "")),
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                    "snapshot_path": snapshot["snapshot_path"],
-                                }
-                                gate_state.review_reject_reasons.append(
-                                    str(review_result.get("reasoning", ""))
-                                )
-                                gate_state.improvement_iterations += 1
-
-                                improvement_result = self._run_improvement_iteration(
-                                    gate_state=gate_state,
-                                    project_dir=project_dir,
-                                    entry_script=entry_script,
-                                    constraint_summary=constraint_summary,
-                                    logger=logger,
-                                )
-
-                                if improvement_result.get("status") == "success":
-                                    improvement_message = (
-                                        f"[Iter {iteration}] Improvement applied: "
-                                        f"role={improvement_result.get('repair_role', 'N/A')}, "
-                                        f"area={improvement_result.get('improvement_area', 'N/A')}"
-                                    )
-                                    self._log(
-                                        improvement_message,
-                                        logger,
-                                    )
-
-                                if gate_state.improvement_iterations >= max_review_iterations:
-                                    self._log(
-                                        f"[Iter {iteration}] Review gate: Max iterations ({max_review_iterations}) reached, marking passed_with_reviews",
-                                        logger,
-                                    )
-                                    context.iteration_count = iteration
-                                    status = "passed_with_reviews"
-                                    break
-                                else:
-                                    self._log(
-                                        f"[Iter {iteration}] Review gate: Improvement mode activated (iteration {gate_state.improvement_iterations}/{max_review_iterations})",
-                                        logger,
-                                    )
-                                    context.iteration_count = iteration
-                                    iteration_record_exit0: IterationRecord = {
-                                        "iteration": iteration,
-                                        "exit_code": completed.returncode,
-                                        "stdout": final_stdout,
-                                        "stderr": final_stderr,
-                                        "error": "",
-                                        "classification": last_classification or {
-                                            "category": "",
-                                            "root_cause": "",
-                                            "suggested_fix": "",
-                                            "repair_role": context.repair_role,
-                                            "raw_response": "",
-                                        },
-                                        "fix_attempt": {
-                                            "status": "review_rejected",
-                                            "repair_role": context.repair_role,
-                                            "instruction": last_fix_instruction,
-                                            "response": last_fix_response,
-                                            "modified_files": last_fix_metadata.get("modified_files", []),
-                                            "fix_summary": str(last_fix_metadata.get("summary", "")),
-                                        },
-                                        "error_analyzer_session_id": analyzer_session_id,
-                                    }
-                                    self._record_iteration(iteration, context, iteration_record_exit0)
-                                    continue
-
-                        if final_exit_code == 0:
-                            context.iteration_count = iteration
-                            status = "success"
-                            break
-
-                    if final_exit_code == 0 and completed.returncode == 0:
-                        pass
-                    elif completed.returncode < 0:
-                        error_text = (
-                            f"Entry script terminated by Signal {abs(completed.returncode)}. "
-                            "Likely caused by OOM or system limits."
-                        )
-                    else:
-                        error_text = self._combine_error(final_stdout, final_stderr)
-                except subprocess.TimeoutExpired:
-                    final_stdout = self._read_tail(stdout_log_path)
-                    final_stderr = self._read_tail(stderr_log_path)
-                    final_exit_code = 1
-                    error_text = (f"Execution timed out after {entry_script_timeout}s. "
-                                  f"STDOUT: {final_stdout}\nSTDERR: {final_stderr}")
-                except OSError as exc:
-                    final_stdout = ""
-                    final_stderr = str(exc)
-                    final_exit_code = 1
-                    error_text = f"Entry script execution failed: {exc}"
+                        if final_exit_code == 0 and completed_returncode == 0:
+                            pass
+                        elif completed_returncode is not None and completed_returncode < 0:
+                            error_text = (
+                                f"Entry script terminated by Signal {abs(completed_returncode)}. "
+                                "Likely caused by OOM or system limits."
+                            )
+                        else:
+                            error_text = self._combine_error(final_stdout, final_stderr)
+                    except subprocess.TimeoutExpired:
+                        final_stdout = self._read_tail(stdout_log_path)
+                        final_stderr = self._read_tail(stderr_log_path)
+                        final_exit_code = 1
+                        error_text = (f"Execution timed out after {entry_script_timeout}s. "
+                                      f"STDOUT: {final_stdout}\nSTDERR: {final_stderr}")
+                    except OSError as exc:
+                        final_stdout = ""
+                        final_stderr = str(exc)
+                        final_exit_code = 1
+                        error_text = f"Entry script execution failed: {exc}"
                 error_signature = self._normalize_error_signature(error_text)
                 self._log(
                     f"[Iter {iteration}] Validation FAILED (exit {final_exit_code}) - {error_text[:200]}",
