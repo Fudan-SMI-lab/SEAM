@@ -103,17 +103,17 @@ def test_send_command_rejects_non_finite_timeout_without_posting() -> None:
     assert post_calls == []
 
 
-def test_active_agent_defaults_to_atlas() -> None:
+def test_active_agent_defaults_to_sisyphus() -> None:
     manager = FakeSessionManager({})
 
-    assert manager.active_agent == "Atlas"
+    assert manager.active_agent == "Sisyphus"
 
 
-def test_detect_agent_prefers_exact_atlas_then_contains_atlas() -> None:
+def test_detect_agent_prefers_exact_sisyphus_then_contains_sisyphus() -> None:
     exact = FakeSessionManager({
         ("GET", "/agent"): {
             "ok": True,
-            "data": [{"name": "OtherAgent"}, {"name": "Atlas"}, {"name": "atlas-helper"}],
+            "data": [{"name": "OtherAgent"}, {"name": "Atlas"}, {"name": "Sisyphus"}, {"name": "sisyphus-helper"}],
         }
     })
     exact._detect_agent()
@@ -121,13 +121,25 @@ def test_detect_agent_prefers_exact_atlas_then_contains_atlas() -> None:
     containing = FakeSessionManager({
         ("GET", "/agent"): {
             "ok": True,
-            "data": [{"name": "OtherAgent"}, {"name": "custom-atlas-agent"}],
+            "data": [{"name": "OtherAgent"}, {"name": "Atlas"}, {"name": "custom-sisyphus-agent"}],
         }
     })
     containing._detect_agent()
 
-    assert exact.active_agent == "Atlas"
-    assert containing.active_agent == "custom-atlas-agent"
+    assert exact.active_agent == "Sisyphus"
+    assert containing.active_agent == "custom-sisyphus-agent"
+
+
+def test_detect_agent_falls_back_to_sisyphus_when_server_only_lists_atlas() -> None:
+    manager = FakeSessionManager({
+        ("GET", "/agent"): {
+            "ok": True,
+            "data": [{"name": "Atlas"}, {"name": "OtherAgent"}],
+        }
+    })
+    manager._detect_agent()
+
+    assert manager.active_agent == "Sisyphus"
 
 
 def test_send_command_rejects_compaction_response_as_incomplete() -> None:
@@ -310,7 +322,7 @@ def test_send_command_timeout_none_uses_sqlite_assistant_completion_without_todo
     db_path = tmp_path / "opencode.db"
     assistant_data = {
         "role": "assistant",
-        "agent": "Atlas - Plan Executor",
+        "agent": "Sisyphus",
         "finish": "stop",
         "time": {"completed": 1710000000},
         "parts": [{"type": "text", "text": '{"platform":"npu","npu_detected":true}'}],
