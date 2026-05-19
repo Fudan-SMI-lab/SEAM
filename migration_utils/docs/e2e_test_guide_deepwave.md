@@ -59,9 +59,10 @@ python -m pytest tests/ -x -q
 ```bash
 cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
-python -m tests.e2e.e2e_test \
+python -m tests.e2e.e2e_test_v2 \
   --server-url http://127.0.0.1:4098 \
   --project-dir original_projects/04_Deepwave \
+  --output-dir output_projects \
   --max-phase5-iter 5 \
   --keep-temp-dir
 ```
@@ -75,7 +76,7 @@ python -m tests.e2e.e2e_test \
 | `--max-phase5-iter` | `5` | 修复循环最多 5 轮 |
 | `--keep-temp-dir` | *(flag)* | 保留迁移后的项目副本，方便检查 |
 | `--review-gate` | *(可选)* | 启用审查门改进模式
-| `--output-project-dir` | *(可选)* | 指定迁移产物输出目录 |
+| `--output-dir` | `output_projects` | 指定迁移产物输出目录 |
 
 **运行中控制台输出示例**：
 
@@ -109,7 +110,7 @@ python -m tests.e2e.e2e_test \
 **产物位置**：
 
 ```
-# 默认输出目录 (若未指定 --output-project-dir)
+# 默认输出目录 (若未指定 --output-dir)
 SEAM/output_projects/04_Deepwave_YYYYMMDD_HHMMSS/
 
 # 报告目录
@@ -131,7 +132,7 @@ e2e-reports/migration_utils/YYYYMMDD_HHMMSS/
 ```bash
 cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
-python -m scripts.sm_adapt_cli \
+python migration_utils/scripts/sm_adapt_cli.py \
   --project-dir original_projects/04_Deepwave \
   --opencode-url http://127.0.0.1:4098 \
   --verbose
@@ -185,21 +186,20 @@ popd
 
 ---
 
-## Skip Validation 模式（快速验证管线逻辑）
+## Dry-run 模式（快速验证启动配置）
 
-仅验证 Phase 0-3 的 LLM 分析是否正确，跳过 Phase 5 的真实 subprocess 执行：
+当前 V2 launcher 提供 dry-run，用于检查项目路径、输出目录和即将执行的命令，不会启动 OpenCode 迁移：
 
 ```bash
-python -m tests.e2e.e2e_test \
-  --server-url http://127.0.0.1:4098 \
-  --project-dir original_projects/04_Deepwave \
-  --keep-temp-dir
+bash migration_utils/scripts/run_e2e_v2.sh 04_Deepwave \
+  --dry-run \
+  --server-url http://127.0.0.1:4098
 ```
 
 此模式适合：
-- 快速检查管线是否能正确识别 Deepwave 的入口脚本
-- 查看 Phase 0-3 的分析输出（`.sm-artifacts/phase_X.json`）
-- 节省等待 Phase 5 修复循环的时间
+- 快速检查项目是否能被 launcher 正确解析
+- 确认 `--project-dir`、`--output-dir`、`--max-phase5-iter` 等参数
+- 在真实 Phase 5 修复循环前发现路径或 server 配置问题
 
 ---
 
