@@ -212,3 +212,47 @@ def test_inject_full_false_keeps_paths_without_content(tmp_path: Path):
     assert bundle.names == ["brief"]
     assert "Source:" in bundle.markdown
     assert "Full content" not in bundle.markdown
+
+
+def test_skips_quarantined_catalog_runtime_skill(tmp_path: Path):
+    write_skill(tmp_path, "stale-skill", markdown="# Stale\n\nDo not inject")
+    index_dir = tmp_path / "memory" / "index"
+    index_dir.mkdir(parents=True)
+    (index_dir / "experiences.jsonl").write_text(
+        json.dumps({
+            "id": "promoted-stale-skill",
+            "type": "skill",
+            "status": "quarantined",
+            "asset_paths": ["skills/stale-skill/SKILL.md"],
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = RuntimeSkillResolver(tmp_path).resolve(
+        phase_config=RuntimeSkillsConfig(include=["stale-skill"], missing="warn", inject_full=True)
+    )
+
+    assert bundle.names == []
+    assert bundle.paths == []
+    assert bundle.missing == ["stale-skill"]
+    assert bundle.warnings == ["Inactive explicit runtime skills skipped: stale-skill (quarantined)"]
+    assert "Do not inject" not in bundle.markdown
+
+
+def test_skips_quarantined_skill_data_without_catalog(tmp_path: Path):
+    write_skill(
+        tmp_path,
+        "stale-json-skill",
+        markdown="# Stale JSON\n\nDo not inject",
+        data={"status": "quarantined"},
+    )
+
+    bundle = RuntimeSkillResolver(tmp_path).resolve(
+        phase_config=RuntimeSkillsConfig(include=["stale-json-skill"], missing="warn", inject_full=True)
+    )
+
+    assert bundle.names == []
+    assert bundle.missing == ["stale-json-skill"]
+    assert bundle.warnings == ["Inactive explicit runtime skills skipped: stale-json-skill (quarantined)"]
+    assert "Do not inject" not in bundle.markdown
+

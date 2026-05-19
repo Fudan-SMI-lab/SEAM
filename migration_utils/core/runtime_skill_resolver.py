@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from .types import RuntimeSkillsConfig
+
+_INACTIVE_SKILL_STATUSES = frozenset({"archived", "consumed", "quarantined", "rejected"})
 
 
 @dataclass
@@ -18,7 +20,7 @@ class RuntimeSkill:
     path: str
     content: str
     source: str = "canonical"
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,6 +43,7 @@ class RuntimeSkillResolver:
         self.repo_root: Path = Path(repo_root)
         self.skills_dir: Path = self.repo_root / "skills"
         self.local_skills_dir: Path = self._resolve_local_skills_dir()
+        self._catalog_skill_statuses: dict[str, str] | None = None
         self.skill_roots: tuple[tuple[str, Path], ...] = (
             ("canonical", self.skills_dir),
             ("local", self.local_skills_dir),
@@ -59,15 +62,31 @@ class RuntimeSkillResolver:
         skills: list[RuntimeSkill] = []
         missing: list[str] = []
         warnings: list[str] = []
+        inactive: list[str] = []
         for name in selected_names:
+            self._validate_skill_name(name)
+            inactive_status = self._inactive_skill_status(name)
+            if inactive_status:
+                missing.append(name)
+                inactive.append(f"{name} ({inactive_status})")
+                continue
+
             skill = self._load_skill(name, config.inject_full)
             if skill is None:
                 missing.append(name)
                 continue
             skills.append(skill)
 
-        if missing:
-            message = f"Missing explicit runtime skills: {', '.join(missing)}"
+        if inactive:
+            message = f"Inactive explicit runtime skills skipped: {', '.join(inactive)}"
+            if config.missing == "error":
+                raise FileNotFoundError(message)
+            if config.missing == "warn":
+                warnings.append(message)
+
+        missing_without_inactive = [name for name in missing if not self._inactive_skill_status(name)]
+        if missing_without_inactive:
+            message = f"Missing explicit runtime skills: {', '.join(missing_without_inactive)}"
             if config.missing == "error":
                 raise FileNotFoundError(message)
             if config.missing == "warn":
@@ -142,8 +161,7 @@ class RuntimeSkillResolver:
             )
 
         if data_path.is_file():
-            loaded = json.loads(data_path.read_text(encoding="utf-8"))
-            data = cast(dict[str, Any], loaded) if isinstance(loaded, dict) else {}
+            data = self._json_object(data_path.read_text(encoding="utf-8"))
             content = self._format_skill_data(name, data) if inject_full else ""
             return RuntimeSkill(
                 name=name,
@@ -154,6 +172,98 @@ class RuntimeSkillResolver:
             )
 
         return None
+
+    def _inactive_skill_status(self, name: str) -> str:
+        status = self._catalog_skill_status(name) or self._skill_data_status(name)
+        return status if status in _INACTIVE_SKILL_STATUSES else ""
+
+    def _catalog_skill_status(self, name: str) -> str:
+        return self._load_catalog_skill_statuses().get(name, "")
+
+    def _load_catalog_skill_statuses(self) -> dict[str, str]:
+        if self._catalog_skill_statuses is not None:
+            return self._catalog_skill_statuses
+
+        statuses: dict[str, str] = {}
+        catalog_path = self.repo_root / "memory" / "index" / "experiences.jsonl"
+        if not catalog_path.is_file():
+            self._catalog_skill_statuses = statuses
+            return statuses
+
+        for line in catalog_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = self._json_object(line)
+            except json.JSONDecodeError:
+                continue
+            if str(entry.get("type") or "skill").strip().lower() != "skill":
+                continue
+            status = str(entry.get("status") or "").strip().lower()
+            for skill_name in self._catalog_skill_names(entry):
+                current = statuses.get(skill_name, "")
+                if status in _INACTIVE_SKILL_STATUSES or not current:
+                    statuses[skill_name] = status
+
+        self._catalog_skill_statuses = statuses
+        return statuses
+
+    def _skill_data_status(self, name: str) -> str:
+        for _, root in self.skill_roots:
+            data_path = root / name / "skill_data.json"
+            if not data_path.is_file():
+                continue
+            try:
+                data = self._json_object(data_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            status = str(data.get("status") or "").strip().lower()
+            if status:
+                return status
+        return ""
+
+    def _catalog_skill_names(self, entry: dict[str, object]) -> set[str]:
+        names: set[str] = set()
+        for key in ("skill_name", "name"):
+            value = entry.get(key)
+            if isinstance(value, str) and self._is_valid_skill_name(value):
+                names.add(value)
+
+        entry_id = str(entry.get("id") or "")
+        if entry_id.startswith("promoted-"):
+            promoted_name = entry_id.removeprefix("promoted-")
+            if self._is_valid_skill_name(promoted_name):
+                names.add(promoted_name)
+
+        asset_paths = entry.get("asset_paths")
+        if isinstance(asset_paths, list):
+            for raw_path in cast(list[object], asset_paths):
+                if not isinstance(raw_path, str):
+                    continue
+                parts = Path(raw_path).parts
+                for index, part in enumerate(parts[:-1]):
+                    if part == "skills":
+                        candidate = parts[index + 1]
+                        if self._is_valid_skill_name(candidate):
+                            names.add(candidate)
+        return names
+
+    def _json_object(self, text: str) -> dict[str, object]:
+        loaded = cast(object, json.loads(text))
+        if not isinstance(loaded, dict):
+            return {}
+        mapping = cast(dict[object, object], loaded)
+        return {str(key): value for key, value in mapping.items()}
+
+    def _is_valid_skill_name(self, name: str) -> bool:
+        return bool(
+            name
+            and "/" not in name
+            and "\\" not in name
+            and name not in {".", ".."}
+            and ".." not in Path(name).parts
+        )
 
     def _format_markdown(self, skills: list[RuntimeSkill]) -> str:
         if not skills:
@@ -168,23 +278,23 @@ class RuntimeSkillResolver:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
-    def _format_skill_data(self, name: str, data: dict[str, Any]) -> str:
+    def _format_skill_data(self, name: str, data: dict[str, object]) -> str:
         title = data.get("title") or data.get("description") or name
         lines = [f"# {str(title)}", ""]
         for key in ("when_to_use", "root_cause", "fix_steps", "steps", "antipatterns", "references"):
-            if key not in data or data[key] in (None, "", []):
+            value = data.get(key)
+            if value is None or value == "" or value == []:
                 continue
             lines.append(f"## {key.replace('_', ' ').title()}")
-            value = data[key]
             if isinstance(value, list):
-                lines.extend(f"- {str(item)}" for item in value)
+                lines.extend(f"- {str(item)}" for item in cast(list[object], value))
             else:
                 lines.append(str(value))
             lines.append("")
         return "\n".join(lines).rstrip()
 
     def _validate_skill_name(self, name: str) -> None:
-        if not name or "/" in name or "\\" in name or name in {".", ".."} or ".." in Path(name).parts:
+        if not self._is_valid_skill_name(name):
             raise ValueError(f"Invalid runtime skill name: {name!r}")
 
     def _copy_config(self, config: RuntimeSkillsConfig | None) -> RuntimeSkillsConfig:
