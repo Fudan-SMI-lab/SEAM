@@ -19,7 +19,13 @@ Use the full upstream context from `{previous_outputs}` and write reports into `
 - `SUMMARY_REPORT.md` must include a table that shows tool usage ratios.
 - Do not invent credentials or redact non-existent secrets; report only what was actually observed.
 - Keep the reports specific to this run and grounded in `{previous_outputs}`.
-- For custom-op migrations, summarize compliance using the fine-grained source inventory, migration manifest, final gate, unit identities, variants/signatures, kernel launch sites, public-entry mappings, and any out-of-scope source groups; do not rely on external requirements docs or coarse row counts as the source of truth.
+- For custom-op migrations, summarize compliance using the fine-grained source inventory, migration manifest, final gate, unit identities, variants/signatures, kernel launch sites, public-entry mappings, strict Ascend C/CANN OPP producer artifacts, and any out-of-scope source groups; do not rely on external requirements docs or coarse row counts as the source of truth.
+- Custom-op final success must be grounded in strict OPP evidence: op_host source, op_kernel/AscendC source, CMakeLists.txt/build.sh or equivalent OPP build script, CANN/OPP build-install log, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled OPP artifact, adapter/import/link, parity, coverage, performance, and no-fallback proof. Do not report `torch_npu.utils.cpp_extension.NpuExtension`, `torch.utils.cpp_extension.CppExtension`, ATen-only `npu_ops.cpp`, or libtorch/torch_cpu/torch_npu-only builds as `opp_custom_op_artifact_evidence`; NpuExtension can only be adapter evidence when separate strict OPP producer evidence exists.
+- For custom-op migrations, `SUMMARY_REPORT.md` must include a final Chinese summary and the exact per-row table below, with one row per in-scope manifest/source-inventory unit:
+
+| row | semantic operator | public entries / aliases | OPP artifact | adapter callable | coverage key/count | parity | integration/e2e | baseline/custom performance | status | next action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
 - If report generation requires package installs or tooling setup, prefer domestic mirrors such as 阿里云镜像 or 清华镜像.
 - After writing the reports, you may reason freely in your response, but end it with a single JSON object containing exactly the required keys for this phase. No other JSON objects should appear.
 

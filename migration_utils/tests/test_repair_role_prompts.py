@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from collections.abc import Callable
 from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -79,6 +80,12 @@ def test_operator_fixer_prompt_is_generic_without_custom_op_guidance() -> None:
     assert "/tmp/test_project" in prompt
     assert "python train.py" in prompt
     assert "Ascend NPU 原生修复" in prompt
+    assert "严格 Ascend C/CANN OPP custom operator" in prompt
+    assert "op_host" in prompt
+    assert "op_kernel" in prompt
+    assert "NpuExtension" in prompt
+    assert "ATen-only npu_ops.cpp" in prompt
+    assert "adapter evidence" in prompt
     assert "CPU fallback" in prompt
     assert "不要启动后台检索/后台 agents 后提前返回" in prompt
     assert "modified_files: []" in prompt
@@ -98,7 +105,7 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
             "4. Read bounded operator context: /tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md; "
             "this context is the only inventory / manifest / final-gate closure source.\n"
             "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-            "6. Every in-scope row must have real Ascend OPP artifacts, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+            "6. Every in-scope row must have strict Ascend C/CANN OPP custom operator producer evidence: op_host source path, op_kernel/AscendC source path, CMakeLists.txt/build.sh or equivalent OPP build script, project-local CANN/OPP build-install logs, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. torch_npu.utils.cpp_extension.NpuExtension, torch.utils.cpp_extension.CppExtension, ATen-only npu_ops.cpp, and libtorch/torch_cpu/torch_npu-only builds are not opp_custom_op_artifact_evidence; NpuExtension may only be adapter evidence when separate strict OPP producer evidence exists. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
             "7. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证。只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
         ),
     }
@@ -112,6 +119,17 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
     assert "full_migration_status == FULL_PASS" in prompt
     assert "same-run runtime coverage > 0" in prompt
     assert "baseline/custom performance evidence" in prompt
+    assert "strict Ascend C/CANN OPP custom operator producer evidence" in prompt
+    assert "op_host source path" in prompt
+    assert "op_kernel/AscendC source path" in prompt
+    assert "CMakeLists.txt/build.sh" in prompt
+    assert "CANN/OPP build-install logs" in prompt
+    assert "generated header/op_info/kernel_meta/producer/package artifacts" in prompt
+    assert "NpuExtension" in prompt
+    assert "CppExtension" in prompt
+    assert "ATen-only npu_ops.cpp" in prompt
+    assert "not opp_custom_op_artifact_evidence" in prompt
+    assert "adapter evidence" in prompt
     assert "report-only" in prompt
     assert "MVP-only" in prompt
     assert "zero-call" in prompt
@@ -122,7 +140,8 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
 
 
 def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -> None:
-    guidance = repair_loop._operator_custom_op_guidance(
+    guidance_factory = cast(Callable[..., str], repair_loop.__dict__["_operator_custom_op_guidance"])
+    guidance = guidance_factory(
         "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md",
         project_dir="/tmp/test_project",
         entry_script="python validate_custom_ops_full.py",
@@ -132,7 +151,32 @@ def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -
     assert "*_evidence*" in guidance
     assert "stub/dummy/fake placeholder native libraries" in guidance
     assert "synthetic success codes" in guidance
+    assert "strict Ascend C/CANN OPP custom operator producer evidence" in guidance
+    assert "op_host source path" in guidance
+    assert "op_kernel/AscendC source path" in guidance
+    assert "NpuExtension" in guidance
+    assert "ATen-only npu_ops.cpp" in guidance
+    assert "not opp_custom_op_artifact_evidence" in guidance
     assert "FAILED/INCOMPLETE" in guidance
+
+
+def test_phase_prompts_require_strict_opp_artifacts_and_final_chinese_table() -> None:
+    phase3 = (PROMPTS_DIR / "phase_3_entry_script.md").read_text(encoding="utf-8")
+    phase6 = (PROMPTS_DIR / "phase_6_report.md").read_text(encoding="utf-8")
+
+    for prompt in (phase3, phase6):
+        assert "strict Ascend C/CANN OPP" in prompt
+        assert "op_host" in prompt
+        assert "op_kernel" in prompt
+        assert "CMakeLists.txt/build.sh" in prompt
+        assert "CANN/OPP build-install" in prompt
+        assert "generated header/op_info/kernel_meta/producer/package artifacts" in prompt
+        assert "NpuExtension" in prompt
+        assert "ATen-only" in prompt
+
+    assert "final_chinese_per_row_table_parity" in phase3
+    assert "final Chinese summary" in phase6
+    assert "| row | semantic operator | public entries / aliases | OPP artifact | adapter callable | coverage key/count | parity | integration/e2e | baseline/custom performance | status | next action |" in phase6
 
 
 def test_dependency_fixer_prompt_is_three_line_artifact_pointer() -> None:
