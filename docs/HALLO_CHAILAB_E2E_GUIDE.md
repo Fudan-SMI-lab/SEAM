@@ -39,16 +39,16 @@ pkill -f 'opencode-ai/bin/.opencode'
 ### E2E 启动脚本
 
 ```bash
-cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/opencode-sm-orchestrator/migration_utils/
+cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
 # Hallo 迁移
-bash scripts/run_e2e.sh 01_Hallo
+bash migration_utils/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098
 
 # ChaiLab 迁移
-bash scripts/run_e2e.sh 02_ChaiLab
+bash migration_utils/scripts/run_e2e_v2.sh 02_ChaiLab --server-url http://127.0.0.1:4098
 
 # 如需更详细的 Phase 5 迭代次数 (默认 8)
-bash scripts/run_e2e.sh 01_Hallo --max-iter 12
+bash migration_utils/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098 --max-iter 12
 ```
 
 ### 参数说明
@@ -58,18 +58,18 @@ bash scripts/run_e2e.sh 01_Hallo --max-iter 12
 | `--max-iter N` | 8 | Phase 5 最大修复迭代次数 | 项目复杂度超出预期时增大 (如Hallo可能需要 10-12) |
 | `--no-review` | 关闭 | 禁用 Review Gate (exit 0 后直接通过) | 修复循环陷入 reject/improve 循环时使用 |
 | `--no-keep-temp` | 关闭 | 不保留 output_projects 目录 | 磁盘空间不足时使用 |
-| `--extra 'ARGS...'` | 无 | 传递额外参数给底层 e2e_test.py | 高级场景 |
+| `--extra 'ARGS...'` | 无 | 传递额外参数给底层 e2e_test_v2.py | 高级场景 |
 
 ### 框架默认配置 (`framework_defaults.yaml`)
 
 | 配置项 | 默认值 | 实际含义 |
 |--------|--------|---------|
-| `session_timeout_repair` | 3600s (60 min) | 单个 repair agent session 最大等待时间 |
-| `entry_script_timeout` | 1200s (20 min) | 每次运行 entry script 的超时 |
-| `session_timeout_analyzer` | 3600s (60 min) | 错误分析 agent session 超时 |
-| `session_timeout_phase` | 600s (10 min) | Phase 0-3 的 LLM session 超时 |
-| `max_iterations` | 10 | Phase 5 默认最大迭代数 (run_e2e.sh 覆盖为 8) |
-| `max_review_iterations` | 3 | Review Gate 拒绝后的最大整改次数 |
+| `max_iterations` | 10 | Phase 5 默认最大迭代数（launcher 可用 `--max-iter` 覆盖） |
+| `stagnation_threshold` | 3 | 连续同类错误达到阈值后停止修复循环 |
+| `max_entry_script_revisions` | 2 | Phase 5 可控入口命令修订次数上限 |
+| `review.enabled` | false | 默认不启用 review gate；launcher 可用 `--review` / `--no-review` 控制 |
+| `review.max_review_iterations` | 3 | Review Gate 拒绝后的最大整改次数 |
+| `server.port_preference` | 0 | Python harness 自动启动时选择可用端口；launcher 推荐显式传入 4098 |
 
 ---
 
@@ -111,7 +111,7 @@ run_e2e.sh 会实时打印 Phase 进度:
 
 实验创建的输出目录路径格式:
 ```
-/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/output_projects/01_Hallo_YYYYMMDD_HHMMSS/
+/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/01_Hallo_YYYYMMDD_HHMMSS/
 ```
 
 其中 `.sm-artifacts/e2e-real-<hash>/` 包含完整运行记录:
@@ -176,10 +176,10 @@ cat /sys/fs/cgroup/memory/memory.usage_in_bytes
 **处理**:
 ```bash
 # 使用 --no-review 跳过 Review Gate 重试
-bash scripts/run_e2e.sh 01_Hallo --no-review
+bash migration_utils/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098 --no-review
 
 # 或增大 max-iter
-bash scripts/run_e2e.sh 01_Hallo --max-iter 12
+bash migration_utils/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098 --max-iter 12
 ```
 
 ### 3. Phase 5 单次 entry_script_timeout (20 min) 不够
@@ -268,11 +268,11 @@ Review Gate 拒绝后整改, 达到 max_review_iterations (3) 上限后触顶通
 
 ```bash
 # 启动 Hallo 迁移
-cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/opencode-sm-orchestrator/migration_utils/
-bash scripts/run_e2e.sh 01_Hallo
+cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
+bash migration_utils/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098
 
 # 启动 ChaiLab 迁移
-bash scripts/run_e2e.sh 02_ChaiLab
+bash migration_utils/scripts/run_e2e_v2.sh 02_ChaiLab --server-url http://127.0.0.1:4098
 
 # 查看最新实验输出
 ls -d output_projects/01_Hallo_*/ | tail -1

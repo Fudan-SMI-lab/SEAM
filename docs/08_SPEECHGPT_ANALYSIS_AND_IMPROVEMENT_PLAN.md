@@ -1,7 +1,7 @@
 # 08_SpeechGPT-2.0-preview 适配失败深度分析与改进方案
 
 > 日期: 2026-04-26
-> 项目: ascend_env_adapter/opencode-sm-orchestrator
+> 项目: SEAM/migration_utils
 > 分析对象: 08_SpeechGPT-2.0-preview E2E 适配全流程
 
 ---
@@ -490,21 +490,21 @@ _record_iteration(): 提取 agent_diagnostics 加入 summary_entry
 ### 5.1 如何运行 08_SpeechGPT-2.0-preview 端到端测试
 
 **前提条件**：
-- OpenCode server 运行在端口 `4096`（或指定端口）
+- OpenCode server 推荐运行在端口 `4098`（或通过 `--server-url` 指定其他端口）
 - 08_SpeechGPT-2.0-preview 项目已准备好在 `original_projects/08_SpeechGPT-2.0-preview/`
 - 模型权重已下载到 `uploaded_files/SpeechGPT-2.0-preview-7B/` 和 `uploaded_files/SpeechGPT-2.0-preview-Codec/`
 
 **运行命令**：
 
 ```bash
-cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/opencode-sm-orchestrator
+cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
-python migration_utils/tests/e2e/e2e_test.py \
-  --server-url http://127.0.0.1:4096 \
+python -m tests.e2e.e2e_test_v2 \
+  --server-url http://127.0.0.1:4098 \
   --max-phase5-iter 8 \
-  --project-dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/original_projects/08_SpeechGPT-2.0-preview/ \
-  --output-project-dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/output_projects/ \
-  --user-constraints /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/ascend_env_adapter/original_projects/08_SpeechGPT-2.0-preview/ADAPTATION_REQUIREMENTS.md \
+  --project-dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/original_projects/08_SpeechGPT-2.0-preview/ \
+  --output-dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/ \
+  --user-constraints /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/original_projects/08_SpeechGPT-2.0-preview/ADAPTATION_REQUIREMENTS.md \
   --keep-temp-dir \
   --review-gate \
   --verbose
@@ -514,10 +514,10 @@ python migration_utils/tests/e2e/e2e_test.py \
 
 | 参数 | 值 | 作用 |
 |------|-----|------|
-| `--server-url` | `http://127.0.0.1:4096` | OpenCode LLM server 地址 |
+| `--server-url` | `http://127.0.0.1:4098` | OpenCode LLM server 地址 |
 | `--max-phase5-iter` | `8` | Phase 5 最大修复迭代次数（建议 8，speechgpt 问题复杂） |
 | `--project-dir` | 源项目路径 | 原始 CUDA 项目目录 |
-| `--output-project-dir` | 输出根目录 | 迁移后的项目会创建到 `{output_project_dir}/{项目名}_{时间戳}/` |
+| `--output-dir` | 输出根目录 | 迁移后的项目会创建到 `{output_dir}/{项目名}_{时间戳}/` |
 | `--user-constraints` | 约束文件路径 | ADAPTATION_REQUIREMENTS.md，包含 zero CPU fallback 等要求 |
 | `--keep-temp-dir` | (flag) | 保留迁移后的项目目录供检查 |
 | `--review-gate` | (flag) | 开启 review gate，exit 0 后由 review agent 做代码质量确认 |
