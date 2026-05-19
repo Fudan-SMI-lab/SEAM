@@ -1,0 +1,27 @@
+{
+  "counts": {
+    "by_status": {
+      "promoted": 1,
+      "quarantined": 1
+    },
+    "by_type": {
+      "prompt": 1,
+      "skill": 1
+    },
+    "total": 2
+  },
+  "schema_version": 1,
+  "storage_roots": {
+    "archive": "memory/archive",
+    "cases": "memory/cases",
+    "catalog": "memory/index/experiences.jsonl",
+    "legacy_index": "memory/index/cases.jsonl",
+    "local_skills": ".skills",
+    "memory": "memory",
+    "promotions": "memory/promotions",
+    "quarantine": "memory/quarantine",
+    "skills": "skills",
+    "staging": "memory/staging"
+  },
+  "updated_at": "2026-05-19T02:38:02.622180+00:00"
+}
