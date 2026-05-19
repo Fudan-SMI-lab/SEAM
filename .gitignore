@@ -56,3 +56,7 @@ checkpoints/
 id_rsa
 id_ed25519
 id_ecdsa
+
+# Generated migration run artifacts
+/e2e-reports/migration_utils/
+/memory/staging/
