@@ -66,7 +66,7 @@
 建议写入 E2E report 目录：
 
 ```text
-opencode-sm-orchestrator/e2e-reports/migration_utils/<YYYYMMDD_HHMMSS>/agent_io/
+SEAM/e2e-reports/migration_utils/<YYYYMMDD_HHMMSS>/agent_io/
 ├── agent_io.jsonl
 ├── payloads/
 │   ├── 000001_prompt.txt
@@ -457,9 +457,9 @@ SM_ADAPT_FULL_AGENT_IO=1 bash scripts/run_e2e.sh 05_InsectID --dry-run
 如果 dry-run 不触发 Agent，则使用最小 test project：
 
 ```bash
-SM_ADAPT_FULL_AGENT_IO=1 python -m tests.e2e.e2e_test \
+SM_ADAPT_FULL_AGENT_IO=1 python -m tests.e2e.e2e_test_v2 \
   --server-url http://127.0.0.1:4098 \
-  --project-dir ../test_project_template \
+  --project-dir migration_utils/test_project_template \
   --max-phase5-iter 1 \
   --keep-temp-dir
 ```
