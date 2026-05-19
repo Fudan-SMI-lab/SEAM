@@ -309,11 +309,11 @@ def main() -> None:
         print(f"  ⚠️  oh-my-opencode.json 不存在")
 
     # 测试服务器连接
-    base_url = "http://127.0.0.1:4096"
+    base_url = "http://127.0.0.1:4098"
     
     print(f"\n4️⃣  测试 OpenCode Server ({base_url}):")
     if not check_server_alive(base_url):
-        print(f"  请确保 OpenCode Server 已启动: opencode serve --port 4096")
+        print(f"  请确保 OpenCode Server 已启动: opencode serve --port 4098 --hostname 127.0.0.1")
         sys.exit(1)
     
     check_session_api(base_url)
@@ -327,10 +327,11 @@ def main() -> None:
     if llm_ok:
         print(" ✅ 所有检查通过！可以运行 E2E 测试")
         print(f"\n运行命令:")
-        print(f"  python3 tests/e2e/test_e2e_evo_stripedhyena.py \\")
-        print(f"    --project-dir /path/to/01_EVO_stripedhyena \\")
-        print(f"    --base-url {base_url} \\")
-        print(f"    --output-dir e2e-reports")
+        print("  python -m tests.e2e.e2e_test_v2 \\")
+        print("    --project-dir /path/to/cuda_project \\")
+        print(f"    --server-url {base_url} \\")
+        print("    --output-dir output_projects \\")
+        print("    --keep-temp-dir --review-gate")
     else:
         print(" ❌ LLM 调用失败，请检查配置")
         print(f"\n可能的问题:")
