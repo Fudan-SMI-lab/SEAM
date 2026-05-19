@@ -1,0 +1,10 @@
+name: cuda-custom-extension-to-npu-aten-cpp-extension
+title: Port CUDA custom extensions to NPU-routed C++/ATen extensions without changing the Python API
+description: Port CUDA custom extensions to NPU-routed C++/ATen extensions without changing the Python API
+category: operator_incompat
+subtype: cuda_extension_to_npu_routed_cpp_extension
+target_roles: ["operator_fixer"]
+target_phases: ["phase_5_validation", "fix_operator"]
+trigger_fingerprint: CUDA custom extension or pybind operator fails Phase 5/operator validation due to missing NPU-native implementation/build/runtime evidence; existing Python API must remain unchanged; CUDAExtension/nvcc or CUDA kernel wrappers are present; CPU fallback/deleting extension is disallowed; operator semantics can be expressed with torch-npu-supported C++/ATen tensor operations on PrivateUse1/NPU tensors.
+status: quarantined
+quarantine_reason: Strict custom-op FULL_PASS now requires Ascend C/CANN OPP producer artifacts; ATen/CppExtension/NpuExtension-only guidance is audit-only.
