@@ -199,8 +199,8 @@ unknown ──────────────┘    (默认 dependency_fixe
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                         E2E 测试入口 (e2e_test.py)                        │
-│  CLI: --project-dir / --output-project-dir / --server-url / --review-gate │
+│                         E2E 测试入口 (e2e_test_v2.py)                        │
+│  CLI: --project-dir / --output-dir / --server-url / --review-gate │
 └────────────────────────┬─────────────────────────────────────────────────┘
                          │
                          ▼
@@ -270,7 +270,7 @@ unknown ──────────────┘    (默认 dependency_fixe
 │                                                                          │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────────┐  │
 │  │ OpenCode Server  │  │ Subprocess       │  │ File System            │  │
-│  │ (HTTP :4096)     │  │ (entry script    │  │ .sm-artifacts/         │  │
+│  │ (HTTP :4098)     │  │ (entry script    │  │ .sm-artifacts/         │  │
 │  │ ↔ SessionManager │  │  execution)      │  │   /{run_id}/raw/       │  │
 │  │                  │  │                  │  │   /{run_id}/validated/ │  │
 │  │ Agent Roles:     │  │ subprocess.run() │  │   execution_journal    │  │
@@ -356,7 +356,7 @@ unknown ──────────────┘    (默认 dependency_fixe
 │          harness/ (LLM Layer)          │
 │                                        │
 │  harness/session/manager.py            │
-│  • HTTP client to OpenCode (:4096)     │
+│  • HTTP client to OpenCode (:4098)     │
 │  • get_or_create(role, lifecycle)      │
 │  • send_command(session_id, cmd)       │
 │  • extract_json_response(text)         │
@@ -726,7 +726,7 @@ AND cpu_fallback_detected?
 │  ┌─────────────┐  create_session(role) ┌──────────────┐ │
 │  │ main_       │◄─────────────────────►│ OpenCode     │ │
 │  │ engineer    │  (persistent)         │ Server API   │ │
-│  │             │◄─────────────────────►│ :4096        │ │
+│  │             │◄─────────────────────►│ :4098        │ │
 │  │ used in:    │  send_command(sid)    │              │ │
 │  │ Phase 0-3,6 │◄────────────────────►│  Agent:      │ │
 │  │ Review,     │  get_last_response()  │  Sisyphus     │ │
@@ -919,7 +919,7 @@ AND cpu_fallback_detected?
 │      max_review_iterations: 3           │
 │    server:                              │
 │      auto_start: true                   │
-│      port: 4096                         │
+│      port: 4098                         │
 │    artifacts:                           │
 │      key_prefix: "phase_"               │
 │                                         │
