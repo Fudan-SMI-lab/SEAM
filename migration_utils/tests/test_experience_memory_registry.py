@@ -284,6 +284,34 @@ def test_experience_query_skips_inactive_statuses(tmp_path):
     assert [exp["id"] for exp in result["selected_experiences"]] == ["active-exp"]
 
 
+def test_experience_query_skips_quarantined_promoted_aten_skill(tmp_path):
+    store = ExperienceStore(str(tmp_path))
+    skill_dir = tmp_path / "skills" / "cuda-custom-extension-to-npu-aten-cpp-extension"
+    skill_dir.mkdir(parents=True)
+    skill_data = skill_dir / "skill_data.json"
+    skill_data.write_text(json.dumps({"title": "ATen skill"}), encoding="utf-8")
+    store.upsert_index({
+        "id": "promoted-cuda-custom-extension-to-npu-aten-cpp-extension",
+        "type": "skill",
+        "status": "quarantined",
+        "title": "Port CUDA custom extension to NPU-routed C++/ATen extension",
+        "subtype": "cuda_extension_to_npu_routed_cpp_extension",
+        "tags": ["custom-op", "aten", "cpp-extension"],
+        "asset_paths": [str(skill_data)],
+    })
+
+    class SelectorSession:
+        def get_or_create(self, role: str, lifecycle: str) -> str:
+            return f"session:{role}"
+
+        def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
+            raise AssertionError("quarantined promoted ATen skill must not reach selector")
+
+    result = ExperienceQuerier(store, SelectorSession()).query({"phase": "phase_5_validation"})
+
+    assert result["selected_experiences"] == []
+
+
 def test_experience_query_filters_aten_only_custom_op_under_native_gate(tmp_path):
     store = ExperienceStore(str(tmp_path))
     stale_path = tmp_path / "aten.json"
