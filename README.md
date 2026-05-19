@@ -17,7 +17,7 @@ The core idea is simple: migration is not finished when code has been rewritten.
 | OpenCode orchestration | Persistent roles coordinate project analysis, environment setup, code adaptation, dependency repair, and operator repair. |
 | Deterministic migration | Built-in rule migration handles common CUDA-to-NPU replacements before runtime validation. |
 | Validation repair loop | Phase 5 runs the entry command, classifies errors, dispatches specialized repair agents, retries, and fails closed on stalled or invalid evidence. |
-| Custom-op final gate | CUDA custom-op projects must produce inventory, manifest, parity, runtime coverage, performance, and no-fallback evidence before passing. |
+| Custom-op final gate | CUDA custom-op projects must produce strict Ascend C/CANN OPP artifacts plus inventory, manifest, parity, runtime coverage, performance, and no-fallback evidence before passing. |
 | Experience memory | Phase 7 evaluates successful or instructive runs and refines them into reusable skills for later migrations. |
 
 ## Architecture At A Glance
@@ -284,8 +284,9 @@ SEAM deliberately fails closed in places where migration tools often produce fal
 - Phase/session calls with `ok:false` are rejected before canonical success handling.
 - OpenCode compaction summaries and unfinished todos do not count as completed work.
 - Phase 4 rewrite success is not final success.
-- Custom-op projects must pass `migration_reports/custom_op_final_gate.json` machine validation.
-- CPU fallback, zero custom-op calls, stubs, missing `.so` evidence, missing parity, and incomplete manifest rows block final acceptance.
+- Custom-op projects must pass `migration_reports/custom_op_final_gate.json` machine validation against real project-local Ascend C/CANN OPP producer artifacts.
+- Strict custom-op `FULL_PASS` requires verifiable `op_host`, `op_kernel`/AscendC, OPP build script, CANN/OPP build-install logs, install/provenance, generated header/op_info/kernel_meta or OPP package artifacts, and the runtime-loaded compiled OPP artifact under the project root.
+- CPU fallback, zero custom-op calls, stubs, report-only/path-only evidence, missing parity, incomplete manifest rows, `NpuExtension`/ATen/libtorch-only builds, and any future non-OPP producer form block final acceptance.
 
 ## Useful Checks
 

@@ -107,6 +107,8 @@ python -m tests.e2e.e2e_test_v2 \
 | 全部 8 个 Phase | `phase_results.json` 中所有 8 个 phase 的 `status: "passed"` |
 | Phase 5 修复 | `phase_results.json` 中 status 为 `passed`（脚本 exit 0） |
 
+若项目包含 CUDA/C++ 自定义算子，以上只是基础 E2E 条件；最终通过还必须满足 `migration_reports/custom_op_final_gate.json` 的 strict Ascend C/CANN OPP 机器验收。每个 in-scope row 必须有真实 project-local `op_host`、`op_kernel`/AscendC、OPP build script、CANN/OPP build-install log、install/provenance、generated header/op_info/kernel_meta 或 OPP package artifacts、runtime-loaded compiled OPP artifact、adapter/import/link、parity、coverage、performance 和 no-fallback 证据。`NpuExtension`/ATen/libtorch-only、report-only、path-only、compile-only、smoke-only 或任何无法满足 OPP producer 正向证据的未来形态都不得作为 custom-op `FULL_PASS`。
+
 **产物位置**：
 
 ```
