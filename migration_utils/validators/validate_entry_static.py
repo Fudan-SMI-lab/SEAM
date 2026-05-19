@@ -11,9 +11,12 @@ CUSTOM_OP_BOOLEAN_FIELDS = (
     "script_maps_public_api_to_units",
     "script_discovers_full_inventory",
     "script_records_native_operator_symbols",
+    "script_requires_strict_opp_producer_evidence",
+    "script_rejects_non_opp_producer_success",
     "script_runs_project_api_custom_ops",
     "script_rejects_report_only_success",
     "script_requires_project_local_artifacts",
+    "script_requires_project_root_artifact_existence",
     "script_requires_numeric_performance",
     "script_checks_no_fallback",
 )

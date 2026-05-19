@@ -31,10 +31,18 @@ REQUIRED_DISCOVERY_SOURCES = {
 
 REQUIRED_VALIDATION_OBLIGATIONS = {
     "project_local_artifact",
+    "strict_opp_artifact",
+    "op_host_op_kernel_source",
+    "cann_opp_build_install",
+    "generated_opp_package_artifacts",
+    "reject_npuextension_aten_only",
+    "reject_non_opp_producer_evidence",
+    "project_root_artifact_existence",
     "runtime_project_api",
     "numeric_performance",
     "complete_speedup_report",
     "overall_speedup_report",
+    "final_chinese_per_row_table",
     "no_fallback",
 }
 
@@ -69,6 +77,14 @@ REQUIRED_CHECKS = {
     "performance_evidence",
     "complete_performance_report",
     "overall_speedup_report",
+    "strict_ascend_c_cann_opp_artifacts",
+    "op_host_op_kernel_source_evidence",
+    "cann_opp_build_install_provenance",
+    "generated_opp_package_artifacts",
+    "reject_npuextension_aten_only_as_opp_evidence",
+    "reject_non_opp_producer_evidence",
+    "project_root_artifact_existence",
+    "final_chinese_per_row_table_parity",
     "no_fallback_no_zero_call_no_builtin_contamination",
     "native_operator_symbol_inventory",
 }
