@@ -1241,8 +1241,16 @@ def _custom_op_gate_report() -> dict[str, object]:
             "opp_custom_op_artifact_evidence": {
                 "path": "opp/op_1/libop_1.so",
                 "runtime_loaded_artifact_path": "opp/op_1/libop_1.so",
+                "op_host_source_path": "opp/op_1/op_host/op_1.cpp",
+                "op_kernel_source_path": "opp/op_1/op_kernel/op_1.cpp",
+                "build_script_path": "opp/op_1/build.sh",
+                "install_log_path": "migration_reports/opp_install.log",
+                "generated_header_path": "opp/op_1/build_out/autogen/op_1.h",
+                "op_info_path": "opp/op_1/build_out/op_info/op_1.json",
+                "kernel_meta_path": "opp/op_1/build_out/kernel_meta/op_1.o",
                 "project_local": True,
                 "built": True,
+                "installed": True,
                 "native_artifact": True,
                 "compiled_extension": True,
                 "build_provenance": {
@@ -1287,10 +1295,32 @@ def _custom_op_gate_report() -> dict[str, object]:
 def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
     artifact_path = project_dir / "opp" / "op_1" / "libop_1.so"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
+    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt op_host op_kernel kernel_operator aicore")
+    host_source = project_dir / "opp" / "op_1" / "op_host" / "op_1.cpp"
+    kernel_source = project_dir / "opp" / "op_1" / "op_kernel" / "op_1.cpp"
+    host_source.parent.mkdir(parents=True, exist_ok=True)
+    kernel_source.parent.mkdir(parents=True, exist_ok=True)
+    _ = host_source.write_text("#include <acl/acl.h>\n// op_host registration\n", encoding="utf-8")
+    _ = kernel_source.write_text("#include <kernel_operator.h>\n// op_kernel AscendC aicore\n", encoding="utf-8")
+    build_script = project_dir / "opp" / "op_1" / "build.sh"
+    _ = build_script.write_text("cmake -S . -B build_out && cmake --build build_out && cmake --install build_out\n", encoding="utf-8")
+    generated_header = project_dir / "opp" / "op_1" / "build_out" / "autogen" / "op_1.h"
+    op_info = project_dir / "opp" / "op_1" / "build_out" / "op_info" / "op_1.json"
+    kernel_meta = project_dir / "opp" / "op_1" / "build_out" / "kernel_meta" / "op_1.o"
+    generated_header.parent.mkdir(parents=True, exist_ok=True)
+    op_info.parent.mkdir(parents=True, exist_ok=True)
+    kernel_meta.parent.mkdir(parents=True, exist_ok=True)
+    _ = generated_header.write_text("// generated CANN header\n", encoding="utf-8")
+    _ = op_info.write_text('{"op":"op_1"}\n', encoding="utf-8")
+    _ = kernel_meta.write_bytes(b"\x7fELF\x02\x01\x01\x00kernel_operator op_kernel")
     build_log = project_dir / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libop_1.so\n", encoding="utf-8")
+    build_log_text = (
+        "CANN OPP build: op_host/op_1.cpp op_kernel/op_1.cpp kernel_operator.h -lascendcl\n"
+        "install package to vendors/customize/op_impl/ai_core/tbe\n"
+    )
+    _ = build_log.write_text(build_log_text, encoding="utf-8")
+    _ = (project_dir / "migration_reports" / "opp_install.log").write_text("install OPP package into ASCEND_OPP_PATH vendors/customize\n", encoding="utf-8")
     _ = (project_dir / "migration_reports" / "migration_manifest.json").write_text(
         json.dumps({"required_units": ["op_1"]}),
         encoding="utf-8",
@@ -1377,6 +1407,7 @@ def test_repair_loop_custom_op_gate_blocks_exit_zero_when_missing(tmp_path: Path
         "repair_role": "code_adapter",
     })
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
+    _write_native_custom_op_gate_artifacts(tmp_path)
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
@@ -1392,6 +1423,100 @@ def test_repair_loop_custom_op_gate_blocks_exit_zero_when_missing(tmp_path: Path
     assert result["status"] == "max_iterations"
     assert "Custom-op final evidence gate failed" in str(result["final_stderr"])
     assert session_mgr.send_command_calls
+
+
+def test_repair_loop_custom_op_opp_preflight_blocks_before_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session_mgr = MockSessionManager({
+        "category": "operator",
+        "root_cause": "strict Ascend OPP artifacts missing",
+        "suggested_fix": "create op_host/op_kernel and generated OPP artifacts",
+        "repair_role": "operator_fixer",
+    })
+    engine, _artifact_store = build_engine(tmp_path, session_mgr)
+    (tmp_path / "validate.py").write_text("print('should not run')\n", encoding="utf-8")
+
+    def fail_run(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
+        raise AssertionError("Phase 5 must fail OPP preflight before subprocess.run")
+
+    monkeypatch.setattr("subprocess.run", fail_run)
+
+    result = engine.run(
+        f"{sys.executable} {tmp_path / 'validate.py'}",
+        str(tmp_path),
+        max_iterations=1,
+        phase3_contract=_custom_op_phase3_contract(tmp_path),
+    )
+
+    assert result["success"] is False
+    assert "Custom-op OPP preflight failed" in str(result["final_stderr"])
+    assert "Ascend C/CANN OPP is the only accepted custom-op target" in str(result["final_stderr"])
+    assert session_mgr.send_command_calls
+
+
+def test_repair_loop_custom_op_opp_preflight_ignores_symlinked_external_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session_mgr = MockSessionManager({
+        "category": "operator",
+        "root_cause": "strict Ascend OPP artifacts missing",
+        "suggested_fix": "create project-local OPP artifacts",
+        "repair_role": "operator_fixer",
+    })
+    engine, _artifact_store = build_engine(tmp_path, session_mgr)
+    outside = tmp_path.parent / "external_opp_evidence"
+    outside.mkdir()
+    host = outside / "op_host" / "op_1.cpp"
+    kernel = outside / "op_kernel" / "op_1.cpp"
+    host.parent.mkdir(parents=True)
+    kernel.parent.mkdir(parents=True)
+    host.write_text("#include <acl/acl.h>\n", encoding="utf-8")
+    kernel.write_text("#include <kernel_operator.h>\n", encoding="utf-8")
+    (tmp_path / "opp").symlink_to(outside, target_is_directory=True)
+    (tmp_path / "validate.py").write_text("print('should not run')\n", encoding="utf-8")
+
+    def fail_run(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
+        raise AssertionError("symlinked external OPP evidence must not allow subprocess.run")
+
+    monkeypatch.setattr("subprocess.run", fail_run)
+
+    result = engine.run(
+        f"{sys.executable} {tmp_path / 'validate.py'}",
+        str(tmp_path),
+        max_iterations=1,
+        phase3_contract=_custom_op_phase3_contract(tmp_path),
+    )
+
+    assert result["success"] is False
+    assert "Custom-op OPP preflight failed" in str(result["final_stderr"])
+    assert "missing op_host source path" in str(result["final_stderr"])
+
+
+def test_repair_loop_reports_dir_alone_does_not_trigger_custom_op_opp_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    session_mgr = MockSessionManager({})
+    engine, _artifact_store = build_engine(tmp_path, session_mgr)
+    (tmp_path / "validate.py").write_text("print('ordinary project')\n", encoding="utf-8")
+
+    run_calls: list[object] = []
+
+    def fake_run(*args: object, **_kwargs: object) -> CompletedProcess[str]:
+        run_calls.append(args)
+        return CompletedProcess(args="", returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    result = engine.run(
+        f"{sys.executable} {tmp_path / 'validate.py'}",
+        str(tmp_path),
+        max_iterations=1,
+        phase3_contract={
+            "entry_script_path": str(tmp_path / "validate.py"),
+            "run_command": f"{sys.executable} {tmp_path / 'validate.py'}",
+            "reports_dir": str(tmp_path / "migration_reports"),
+        },
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "success"
+    assert run_calls
+    assert "Custom-op OPP preflight failed" not in str(result["final_stderr"])
 
 
 def test_repair_loop_valid_custom_op_gate_allows_exit_zero_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1427,6 +1552,7 @@ def test_repair_loop_custom_op_gate_blocks_oversized_report(tmp_path: Path, monk
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
+    _write_native_custom_op_gate_artifacts(tmp_path)
     _ = (reports_dir / "custom_op_final_gate.json").write_text("{" + " " * (5 * 1024 * 1024), encoding="utf-8")
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
@@ -1634,6 +1760,7 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
         "repair_role": "code_adapter",
     })
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
+    _write_native_custom_op_gate_artifacts(tmp_path)
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
@@ -1685,6 +1812,7 @@ def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, 
         "repair_role": "code_adapter",
     })
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
+    _write_native_custom_op_gate_artifacts(tmp_path)
     contract = _custom_op_phase3_contract(tmp_path)
     contract["reports_dir"] = str(outside)
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))

@@ -156,15 +156,31 @@ def _valid_custom_op_contract(
             "performance_evidence",
             "complete_performance_report",
             "overall_speedup_report",
+            "strict_ascend_c_cann_opp_artifacts",
+            "op_host_op_kernel_source_evidence",
+            "cann_opp_build_install_provenance",
+            "generated_opp_package_artifacts",
+            "reject_npuextension_aten_only_as_opp_evidence",
+            "reject_non_opp_producer_evidence",
+            "project_root_artifact_existence",
+            "final_chinese_per_row_table_parity",
             "no_fallback_no_zero_call_no_builtin_contamination",
             "native_operator_symbol_inventory",
         ],
         "validation_obligations": [
             "project_local_artifact",
+            "strict_opp_artifact",
+            "op_host_op_kernel_source",
+            "cann_opp_build_install",
+            "generated_opp_package_artifacts",
+            "reject_npuextension_aten_only",
+            "reject_non_opp_producer_evidence",
+            "project_root_artifact_existence",
             "runtime_project_api",
             "numeric_performance",
             "complete_speedup_report",
             "overall_speedup_report",
+            "final_chinese_per_row_table",
             "no_fallback",
         ],
         "phase5_entry_script_revision_allowed": True,
@@ -249,8 +265,16 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                 "opp_custom_op_artifact_evidence": {
                     "path": "opp/ScalarFwd2D/libscalar_fwd_2d.so",
                     "runtime_loaded_artifact_path": "opp/ScalarFwd2D/libscalar_fwd_2d.so",
+                    "op_host_source_path": "opp/ScalarFwd2D/op_host/scalar_fwd_2d.cpp",
+                    "op_kernel_source_path": "opp/ScalarFwd2D/op_kernel/scalar_fwd_2d.cpp",
+                    "build_script_path": "opp/ScalarFwd2D/build.sh",
+                    "install_log_path": "migration_reports/opp_install.log",
+                    "generated_header_path": "opp/ScalarFwd2D/build_out/autogen/scalar_fwd_2d.h",
+                    "op_info_path": "opp/ScalarFwd2D/build_out/op_info/scalar_fwd_2d.json",
+                    "kernel_meta_path": "opp/ScalarFwd2D/build_out/kernel_meta/scalar_fwd_2d.o",
                     "project_local": True,
                     "built": True,
+                    "installed": True,
                     "native_artifact": True,
                     "compiled_extension": True,
                     "build_provenance": {
@@ -259,7 +283,7 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     },
                 },
                 "adapter_evidence": {"imported": True},
-                "parity_evidence": {"max_abs_error": 0.0},
+                "parity_evidence": {"max_abs_error": 0.0, "tolerance": 1e-5},
                 "integration_e2e_evidence": {
                     "command": "python test_e2e.py",
                     "passed": True,
@@ -306,6 +330,38 @@ def _write_custom_op_manifest(project_root: Path, required_units: list[str] | No
         json.dumps({"required_units": units}),
         encoding="utf-8",
     )
+
+
+def _write_strict_opp_fixture(project_root: Path) -> None:
+    artifact_path = project_root / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt op_host op_kernel kernel_operator aicore")
+    host_source = project_root / "opp" / "ScalarFwd2D" / "op_host" / "scalar_fwd_2d.cpp"
+    kernel_source = project_root / "opp" / "ScalarFwd2D" / "op_kernel" / "scalar_fwd_2d.cpp"
+    host_source.parent.mkdir(parents=True, exist_ok=True)
+    kernel_source.parent.mkdir(parents=True, exist_ok=True)
+    _ = host_source.write_text("#include <acl/acl.h>\n// op_host tiling and registration\n", encoding="utf-8")
+    _ = kernel_source.write_text("#include <kernel_operator.h>\n// op_kernel AscendC aicore implementation\n", encoding="utf-8")
+    build_script = project_root / "opp" / "ScalarFwd2D" / "build.sh"
+    _ = build_script.write_text("cmake -S . -B build_out && cmake --build build_out && cmake --install build_out\n", encoding="utf-8")
+    generated_header = project_root / "opp" / "ScalarFwd2D" / "build_out" / "autogen" / "scalar_fwd_2d.h"
+    op_info = project_root / "opp" / "ScalarFwd2D" / "build_out" / "op_info" / "scalar_fwd_2d.json"
+    kernel_meta = project_root / "opp" / "ScalarFwd2D" / "build_out" / "kernel_meta" / "scalar_fwd_2d.o"
+    generated_header.parent.mkdir(parents=True, exist_ok=True)
+    op_info.parent.mkdir(parents=True, exist_ok=True)
+    kernel_meta.parent.mkdir(parents=True, exist_ok=True)
+    _ = generated_header.write_text("// generated CANN OPP header\n", encoding="utf-8")
+    _ = op_info.write_text('{"op":"ScalarFwd2D"}\n', encoding="utf-8")
+    _ = kernel_meta.write_bytes(b"\x7fELF\x02\x01\x01\x00kernel_operator op_kernel")
+    reports_dir = project_root / "migration_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    build_log_text = (
+        "bash opp/ScalarFwd2D/build.sh\n"
+        "CANN OPP build: op_host/scalar_fwd_2d.cpp op_kernel/scalar_fwd_2d.cpp kernel_operator.h -lascendcl\n"
+        "install package to vendors/customize/op_impl/ai_core/tbe\n"
+    )
+    _ = (reports_dir / "build.log").write_text(build_log_text, encoding="utf-8")
+    _ = (reports_dir / "opp_install.log").write_text("install OPP package into ASCEND_OPP_PATH vendors/customize\n", encoding="utf-8")
 
 
 def _valid_project_analysis_custom_op_surface() -> dict[str, object]:
@@ -523,21 +579,27 @@ def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(tm
     assert any("existing file for custom-op contracts" in error for error in result["errors"])
 
 
-def test_custom_op_final_gate_accepts_valid_full_pass_report() -> None:
+def test_custom_op_final_gate_rejects_full_pass_without_project_root() -> None:
     result = validate_custom_op_final_gate(_valid_custom_op_final_gate())
 
-    assert result == {"passed": True, "errors": [], "warnings": []}
+    assert result["passed"] is False
+    assert any("project_root is required" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root(tmp_path: Path) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
-    artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
-    artifact_path.parent.mkdir(parents=True)
-    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
-    build_log = tmp_path / "migration_reports" / "build.log"
-    build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _write_strict_opp_fixture(tmp_path)
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_custom_op_final_gate_accepts_strict_opp_fixture_with_build_install_and_generated_artifacts(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -547,11 +609,7 @@ def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root
 def test_custom_op_final_gate_rejects_self_consistent_report_missing_manifest_required_unit(tmp_path: Path) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path, ["ScalarFwd2D", "ScalarBwd2D"])
-    artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
-    artifact_path.parent.mkdir(parents=True)
-    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
-    build_log = tmp_path / "migration_reports" / "build.log"
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _write_strict_opp_fixture(tmp_path)
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -563,9 +621,8 @@ def test_custom_op_final_gate_rejects_self_consistent_report_missing_manifest_re
 def test_custom_op_final_gate_rejects_missing_native_artifact_with_project_root(tmp_path: Path) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
-    build_log = tmp_path / "migration_reports" / "build.log"
-    build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _write_strict_opp_fixture(tmp_path)
+    (tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so").unlink()
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -576,12 +633,9 @@ def test_custom_op_final_gate_rejects_missing_native_artifact_with_project_root(
 def test_custom_op_final_gate_rejects_text_file_disguised_as_native_artifact(tmp_path: Path) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
     artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
-    artifact_path.parent.mkdir(parents=True)
     _ = artifact_path.write_text("not a binary", encoding="utf-8")
-    build_log = tmp_path / "migration_reports" / "build.log"
-    build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -622,8 +676,141 @@ def test_custom_op_final_gate_rejects_torch_cpu_extension_masquerading_as_ascend
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
     assert result["passed"] is False
+    assert any("NpuExtension/CppExtension/ATen/libtorch-only" in error for error in result["errors"])
     assert any("CANN/ACL/AscendC/OPP build" in error for error in result["errors"])
     assert any("independent CANN/ACL/AscendC binary or source evidence" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_npuextension_aten_only_project_local_opp_artifact(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    artifact = cast(dict[str, object], rows[0]["opp_custom_op_artifact_evidence"])
+    fake_path = "project_local_opp/ascend/custom_op/op_plugin/lib/_ext.so"
+    artifact.clear()
+    artifact.update(
+        {
+            "path": fake_path,
+            "project_relative_path": fake_path,
+            "runtime_loaded_artifact_path": fake_path,
+            "project_local": True,
+            "built": True,
+            "native_custom_op_artifact": fake_path,
+            "build_provenance": {
+                "command": "python setup.py build_ext --inplace # torch_npu.utils.cpp_extension.NpuExtension",
+                "log_path": "migration_reports/build_ext_npu.log",
+            },
+        }
+    )
+    artifact_path = tmp_path / fake_path
+    artifact_path.parent.mkdir(parents=True)
+    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00torch_npu ATen torch/extension.h")
+    build_log = tmp_path / "migration_reports" / "build_ext_npu.log"
+    build_log.parent.mkdir(parents=True, exist_ok=True)
+    build_log_text = (
+        "setup.py uses torch_npu.utils.cpp_extension.NpuExtension\n"
+        "g++ npu_ops.cpp -Itorch/include -ltorch_npu -ltorch_cpu -ltorch_python\n"
+        "npu_ops.cpp includes torch/extension.h and ATen/ATen.h\n"
+    )
+    _ = build_log.write_text(build_log_text, encoding="utf-8")
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("NpuExtension/CppExtension/ATen/libtorch-only" in error for error in result["errors"])
+    assert any("op_host source path" in error for error in result["errors"])
+    assert any("op_kernel/AscendC source path" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_existing_generic_so_without_opp_evidence(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    artifact = cast(dict[str, object], rows[0]["opp_custom_op_artifact_evidence"])
+    generic_path = "ascend/custom_op/lib/libgeneric.so"
+    artifact.clear()
+    artifact.update(
+        {
+            "path": generic_path,
+            "project_relative_path": generic_path,
+            "runtime_loaded_artifact_path": generic_path,
+            "project_local": True,
+            "built": True,
+            "build_provenance": {
+                "command": "g++ -shared generic.cpp -o ascend/custom_op/lib/libgeneric.so",
+                "log_path": "migration_reports/build.log",
+            },
+        }
+    )
+    artifact_path = tmp_path / generic_path
+    artifact_path.parent.mkdir(parents=True)
+    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00generic shared library")
+    build_log = tmp_path / "migration_reports" / "build.log"
+    build_log.parent.mkdir(parents=True, exist_ok=True)
+    _ = build_log.write_text("g++ -shared generic.cpp -o libgeneric.so\n", encoding="utf-8")
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("op_host source path" in error for error in result["errors"])
+    assert any("OPP build script" in error for error in result["errors"])
+    assert any("generated OPP artifact categories" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_opp_named_paths_without_generated_opp_categories(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    artifact = cast(dict[str, object], rows[0]["opp_custom_op_artifact_evidence"])
+    _ = artifact.pop("generated_header_path")
+    _ = artifact.pop("op_info_path")
+    _ = artifact.pop("kernel_meta_path")
+    artifact["generated_artifacts"] = ["opp/ScalarFwd2D/build_out/not_real_opp_marker.txt"]
+    marker = tmp_path / "opp" / "ScalarFwd2D" / "build_out" / "not_real_opp_marker.txt"
+    _ = marker.write_text("not a generated OPP category\n", encoding="utf-8")
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("generated OPP artifact categories" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_accepts_opp_package_artifact_as_generated_evidence(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    artifact = cast(dict[str, object], rows[0]["opp_custom_op_artifact_evidence"])
+    _ = artifact.pop("generated_header_path")
+    _ = artifact.pop("op_info_path")
+    _ = artifact.pop("kernel_meta_path")
+    package_path = "opp/ScalarFwd2D/packages/scalar_fwd_2d.run"
+    artifact["opp_package_artifact"] = package_path
+    package = tmp_path / package_path
+    package.parent.mkdir(parents=True, exist_ok=True)
+    _ = package.write_bytes(b"CANN OPP package")
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_custom_op_final_gate_accepts_install_provenance_mapping_with_command(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    artifact = cast(dict[str, object], rows[0]["opp_custom_op_artifact_evidence"])
+    _ = artifact.pop("install_log_path")
+    artifact["install_provenance"] = {
+        "command": "bash opp/ScalarFwd2D/build.sh --install",
+        "log_path": "migration_reports/opp_install.log",
+    }
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
 
 
 def test_custom_op_final_gate_rejects_spoofed_cann_words_without_native_link_or_source(tmp_path: Path) -> None:
@@ -672,22 +859,20 @@ def test_custom_op_final_gate_rejects_evidence_only_native_marker_artifact(tmp_p
     _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt op_host op_kernel aicore")
     for source_path in (tmp_path / host_source, tmp_path / kernel_source):
         source_path.parent.mkdir(parents=True, exist_ok=True)
-    _ = (tmp_path / host_source).write_text(
+    host_text = (
         "extern \"C\" int pointnet2_ascend_record_unit_call(unsigned long i) { return 1000 + i; }\n"
-        "const char* marker = \"aclrt libascendcl op_host evidence\";\n",
-        encoding="utf-8",
+        "const char* marker = \"aclrt libascendcl op_host evidence\";\n"
     )
-    _ = (tmp_path / kernel_source).write_text(
-        "extern \"C\" const char* pointnet2_ascendc_kernel_evidence() { return \"kernel_operator.h op_kernel aicore\"; }\n",
-        encoding="utf-8",
-    )
+    _ = (tmp_path / host_source).write_text(host_text, encoding="utf-8")
+    kernel_text = 'extern "C" const char* pointnet2_ascendc_kernel_evidence() { return "kernel_operator.h op_kernel aicore"; }\n'
+    _ = (tmp_path / kernel_source).write_text(kernel_text, encoding="utf-8")
     build_log = tmp_path / "migration_reports" / "ascend_custom_op_build.log"
-    _ = build_log.write_text(
+    build_log_text = (
         f"command: g++ -shared {host_source} {kernel_source} -lascendcl -o {fake_path}\n"
         "native_tokens: -lascendcl libascendcl aclrt op_host op_kernel aicore kernel_operator.h\n"
-        "returncode: 0\n",
-        encoding="utf-8",
+        "returncode: 0\n"
     )
+    _ = build_log.write_text(build_log_text, encoding="utf-8")
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -698,16 +883,14 @@ def test_custom_op_final_gate_rejects_evidence_only_native_marker_artifact(tmp_p
 def test_custom_op_final_gate_rejects_symlink_escape_native_artifact(tmp_path: Path) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
     outside_dir = tmp_path.parent / f"{tmp_path.name}_outside"
     outside_dir.mkdir()
     outside_artifact = outside_dir / "libscalar_fwd_2d.so"
     _ = outside_artifact.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
     artifact_link = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
-    artifact_link.parent.mkdir(parents=True)
+    artifact_link.unlink()
     artifact_link.symlink_to(outside_artifact)
-    build_log = tmp_path / "migration_reports" / "build.log"
-    build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -796,16 +979,17 @@ def test_custom_op_final_gate_rejects_boolean_native_claim_without_compiled_arti
     assert any("native compiled Ascend custom-op artifact" in error for error in result["errors"])
 
 
-def test_custom_op_final_gate_accepts_native_artifact_under_python_bindings_dir() -> None:
+def test_custom_op_final_gate_rejects_native_artifact_under_python_bindings_dir_without_project_root() -> None:
     payload = _valid_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
     artifact = cast(dict[str, object], rows[0]["opp_custom_op_artifact_evidence"])
-    artifact["path"] = "opp/python_bindings/libscalar_fwd_2d.so"
-    artifact["runtime_loaded_artifact_path"] = "opp/python_bindings/libscalar_fwd_2d.so"
+    artifact["path"] = "opp/python_bindings/op_plugin/libscalar_fwd_2d.so"
+    artifact["runtime_loaded_artifact_path"] = "opp/python_bindings/op_plugin/libscalar_fwd_2d.so"
 
     result = validate_custom_op_final_gate(payload)
 
-    assert result == {"passed": True, "errors": [], "warnings": []}
+    assert result["passed"] is False
+    assert any("project_root is required" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_accepts_indexed_device_strings() -> None:
@@ -825,7 +1009,8 @@ def test_custom_op_final_gate_accepts_indexed_device_strings() -> None:
 
     result = validate_custom_op_final_gate(payload)
 
-    assert result == {"passed": True, "errors": [], "warnings": []}
+    assert result["passed"] is False
+    assert any("project_root is required" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_rejects_diagnostic_only_baseline() -> None:
@@ -1032,7 +1217,7 @@ def test_custom_op_final_gate_rejects_deepwave_like_collapsed_two_row_inventory(
     assert any("coarse" in error.lower() or "nested family" in error.lower() for error in result["errors"])
 
 
-def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory() -> None:
+def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(tmp_path: Path) -> None:
     payload = _valid_custom_op_final_gate()
     payload["inventory_count"] = 2
     payload["manifest_entries"] = 2
@@ -1090,7 +1275,10 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
         "entries": performance_entries,
     }
 
-    result = validate_custom_op_final_gate(payload)
+    _write_custom_op_manifest(tmp_path, ["op_alpha_float32", "op_alpha_float16"])
+    _write_strict_opp_fixture(tmp_path)
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
     assert result == {"passed": True, "errors": [], "warnings": []}
 
@@ -1168,6 +1356,39 @@ def test_custom_op_final_gate_rejects_missing_row_evidence() -> None:
 
     assert result["passed"] is False
     assert any("adapter_evidence" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_scalar_adapter_evidence() -> None:
+    payload = _valid_custom_op_final_gate()
+    rows = cast(list[dict[str, object]], payload["rows"])
+    rows[0]["adapter_evidence"] = 1
+
+    result = validate_custom_op_final_gate(payload)
+
+    assert result["passed"] is False
+    assert any("adapter_evidence" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_non_passing_parity_numeric() -> None:
+    payload = _valid_custom_op_final_gate()
+    rows = cast(list[dict[str, object]], payload["rows"])
+    rows[0]["parity_evidence"] = {"max_abs_error": 999.0, "tolerance": 1e-5}
+
+    result = validate_custom_op_final_gate(payload)
+
+    assert result["passed"] is False
+    assert any("parity_evidence" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_accepts_parity_within_tolerance() -> None:
+    payload = _valid_custom_op_final_gate()
+    rows = cast(list[dict[str, object]], payload["rows"])
+    rows[0]["parity_evidence"] = {"max_abs_error": 1e-6, "tolerance": 1e-5}
+
+    result = validate_custom_op_final_gate(payload)
+
+    assert result["passed"] is False
+    assert not any("parity_evidence" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_rejects_row_count_mismatch() -> None:
@@ -1375,9 +1596,12 @@ def test_entry_static_validator_accepts_custom_op_booleans_when_all_true() -> No
             "script_maps_public_api_to_units": True,
             "script_discovers_full_inventory": True,
             "script_records_native_operator_symbols": True,
+            "script_requires_strict_opp_producer_evidence": True,
+            "script_rejects_non_opp_producer_success": True,
             "script_runs_project_api_custom_ops": True,
             "script_rejects_report_only_success": True,
             "script_requires_project_local_artifacts": True,
+            "script_requires_project_root_artifact_existence": True,
             "script_requires_numeric_performance": True,
             "script_checks_no_fallback": True,
         }
@@ -1399,9 +1623,12 @@ def test_entry_static_validator_rejects_failed_custom_op_boolean() -> None:
             "script_maps_public_api_to_units": True,
             "script_discovers_full_inventory": True,
             "script_records_native_operator_symbols": True,
+            "script_requires_strict_opp_producer_evidence": True,
+            "script_rejects_non_opp_producer_success": True,
             "script_runs_project_api_custom_ops": False,
             "script_rejects_report_only_success": True,
             "script_requires_project_local_artifacts": True,
+            "script_requires_project_root_artifact_existence": True,
             "script_requires_numeric_performance": True,
             "script_checks_no_fallback": True,
         }
@@ -1424,8 +1651,11 @@ def test_entry_static_validator_rejects_missing_native_symbol_inventory_boolean(
             "script_maps_public_api_to_units": True,
             "script_discovers_full_inventory": True,
             "script_runs_project_api_custom_ops": True,
+            "script_requires_strict_opp_producer_evidence": True,
+            "script_rejects_non_opp_producer_success": True,
             "script_rejects_report_only_success": True,
             "script_requires_project_local_artifacts": True,
+            "script_requires_project_root_artifact_existence": True,
             "script_requires_numeric_performance": True,
             "script_checks_no_fallback": True,
         }

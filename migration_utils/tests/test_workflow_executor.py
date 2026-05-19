@@ -2699,9 +2699,12 @@ def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tm
             "script_maps_public_api_to_units": True,
             "script_discovers_full_inventory": True,
             "script_records_native_operator_symbols": True,
+            "script_requires_strict_opp_producer_evidence": True,
+            "script_rejects_non_opp_producer_success": True,
             "script_runs_project_api_custom_ops": True,
             "script_rejects_report_only_success": True,
             "script_requires_project_local_artifacts": True,
+            "script_requires_project_root_artifact_existence": True,
             "script_requires_numeric_performance": True,
             "script_checks_no_fallback": True,
         }),
@@ -2962,8 +2965,16 @@ def _custom_op_gate_payload() -> dict[str, object]:
                 "opp_custom_op_artifact_evidence": {
                     "path": "opp/op_1/libop_1.so",
                     "runtime_loaded_artifact_path": "opp/op_1/libop_1.so",
+                    "op_host_source_path": "opp/op_1/op_host/op_1.cpp",
+                    "op_kernel_source_path": "opp/op_1/op_kernel/op_1.cpp",
+                    "build_script_path": "opp/op_1/build.sh",
+                    "install_log_path": "migration_reports/opp_install.log",
+                    "generated_header_path": "opp/op_1/build_out/autogen/op_1.h",
+                    "op_info_path": "opp/op_1/build_out/op_info/op_1.json",
+                    "kernel_meta_path": "opp/op_1/build_out/kernel_meta/op_1.o",
                     "project_local": True,
                     "built": True,
+                    "installed": True,
                     "native_artifact": True,
                     "compiled_extension": True,
                     "build_provenance": {
@@ -3009,10 +3020,32 @@ def _custom_op_gate_payload() -> dict[str, object]:
 def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
     artifact_path = project_dir / "opp" / "op_1" / "libop_1.so"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
+    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt op_host op_kernel kernel_operator aicore")
+    host_source = project_dir / "opp" / "op_1" / "op_host" / "op_1.cpp"
+    kernel_source = project_dir / "opp" / "op_1" / "op_kernel" / "op_1.cpp"
+    host_source.parent.mkdir(parents=True, exist_ok=True)
+    kernel_source.parent.mkdir(parents=True, exist_ok=True)
+    _ = host_source.write_text("#include <acl/acl.h>\n// op_host registration\n", encoding="utf-8")
+    _ = kernel_source.write_text("#include <kernel_operator.h>\n// op_kernel AscendC aicore\n", encoding="utf-8")
+    build_script = project_dir / "opp" / "op_1" / "build.sh"
+    _ = build_script.write_text("cmake -S . -B build_out && cmake --build build_out && cmake --install build_out\n", encoding="utf-8")
+    generated_header = project_dir / "opp" / "op_1" / "build_out" / "autogen" / "op_1.h"
+    op_info = project_dir / "opp" / "op_1" / "build_out" / "op_info" / "op_1.json"
+    kernel_meta = project_dir / "opp" / "op_1" / "build_out" / "kernel_meta" / "op_1.o"
+    generated_header.parent.mkdir(parents=True, exist_ok=True)
+    op_info.parent.mkdir(parents=True, exist_ok=True)
+    kernel_meta.parent.mkdir(parents=True, exist_ok=True)
+    _ = generated_header.write_text("// generated CANN header\n", encoding="utf-8")
+    _ = op_info.write_text('{"op":"op_1"}\n', encoding="utf-8")
+    _ = kernel_meta.write_bytes(b"\x7fELF\x02\x01\x01\x00kernel_operator op_kernel")
     build_log = project_dir / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libop_1.so\n", encoding="utf-8")
+    build_log_text = (
+        "CANN OPP build: op_host/op_1.cpp op_kernel/op_1.cpp kernel_operator.h -lascendcl\n"
+        "install package to vendors/customize/op_impl/ai_core/tbe\n"
+    )
+    _ = build_log.write_text(build_log_text, encoding="utf-8")
+    _ = (project_dir / "migration_reports" / "opp_install.log").write_text("install OPP package into ASCEND_OPP_PATH vendors/customize\n", encoding="utf-8")
     _ = (project_dir / "migration_reports" / "migration_manifest.json").write_text(
         json.dumps({"required_units": ["op_1"]}),
         encoding="utf-8",
@@ -3218,6 +3251,7 @@ def test_experience_memory_custom_op_gate_skips_for_non_custom_contract(tmp_path
 def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
+    _write_native_custom_op_gate_artifacts(tmp_path)
     executor = _custom_op_gate_executor(tmp_path)
     state = {
         "phase_3_entry_script": {
@@ -3248,9 +3282,42 @@ def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> N
     executor.session_mgr.send_command.assert_called_once()
 
 
+def test_custom_op_opp_preflight_blocks_phase5_before_entry_script(tmp_path: Path) -> None:
+    executor = _custom_op_gate_executor(tmp_path)
+    executor._execute_shell_phase = MagicMock(wraps=executor._execute_shell_phase)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate.py",
+            "reports_dir": str(tmp_path / "migration_reports"),
+        }
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "failure"
+    assert result["loop_state"]["script_exit_code"] == 1
+    assert "Custom-op OPP preflight failed" in result["loop_state"]["script_stderr"]
+    assert result["loop_state"]["custom_op_opp_preflight"]["passed"] is False
+    assert result["loop_state"].get("custom_op_final_gate") is None
+
+
 def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
+    _write_native_custom_op_gate_artifacts(tmp_path)
     payload = _custom_op_gate_payload()
     performance_report = cast(dict[str, object], payload["performance_report"])
     performance_report["complete"] = False
@@ -3287,6 +3354,7 @@ def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path
     outside = tmp_path / "outside_reports"
     outside.mkdir()
     (outside / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
+    _write_native_custom_op_gate_artifacts(tmp_path)
     executor = _custom_op_gate_executor(tmp_path)
     state = {
         "phase_3_entry_script": {
@@ -3319,6 +3387,7 @@ def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path
 def test_custom_op_final_gate_rejects_oversized_report(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
+    _write_native_custom_op_gate_artifacts(tmp_path)
     _ = (reports_dir / "custom_op_final_gate.json").write_text("{" + " " * (5 * 1024 * 1024), encoding="utf-8")
     executor = _custom_op_gate_executor(tmp_path)
     state = {
@@ -3384,6 +3453,73 @@ def test_valid_custom_op_final_gate_allows_phase5_success(tmp_path: Path) -> Non
 def test_non_custom_project_skips_custom_op_final_gate(tmp_path: Path) -> None:
     executor = _custom_op_gate_executor(tmp_path)
     state = {"phase_3_entry_script": {"run_command": "python validate.py"}}
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "success"
+    assert result["loop_state"]["script_exit_code"] == 0
+    assert result["loop_state"]["custom_op_final_gate"] == {
+        "operation": "custom_op_final_gate",
+        "skipped": True,
+        "passed": True,
+    }
+    executor.session_mgr.send_command.assert_not_called()
+
+
+def test_non_custom_project_with_reports_dir_skips_custom_op_final_gate(tmp_path: Path) -> None:
+    executor = _custom_op_gate_executor(tmp_path)
+    state = {
+        "phase_3_entry_script": {
+            "run_command": "python validate.py",
+            "reports_dir": str(tmp_path / "migration_reports"),
+        }
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "success"
+    assert result["loop_state"]["script_exit_code"] == 0
+    assert result["loop_state"]["custom_op_final_gate"] == {
+        "operation": "custom_op_final_gate",
+        "skipped": True,
+        "passed": True,
+    }
+    assert result["loop_state"].get("custom_op_opp_preflight") is None
+    executor.session_mgr.send_command.assert_not_called()
+
+
+def test_non_custom_entry_script_kind_skips_custom_op_final_gate(tmp_path: Path) -> None:
+    executor = _custom_op_gate_executor(tmp_path)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "standard_validation",
+            "run_command": "python validate.py",
+        }
+    }
 
     result = executor._execute_loop_phase(
         PhaseDefinition(
@@ -3616,4 +3752,3 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         import shutil
 
         shutil.rmtree(skill_repo_root, ignore_errors=True)
-
