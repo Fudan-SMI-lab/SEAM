@@ -147,6 +147,8 @@ def validate(data: dict[str, object]) -> ValidationDict:
 def validate_custom_op_final_gate(data: dict[str, object], project_root: str | Path | None = None) -> ValidationDict:
     """Validate the machine-checkable custom-op final evidence gate report."""
     errors: list[str] = []
+    if project_root is None:
+        errors.append("project_root is required for custom-op FULL_PASS validation; OPP artifacts must be verified on disk")
     resolved_project_root = _resolve_existing_project_root(project_root, errors)
 
     inventory_count = _int_field(data, "inventory_count", errors)
@@ -221,12 +223,14 @@ def _validate_gate_row(
         errors.append(f"rows[{index}].status must be a pass state")
 
     for field_name in REQUIRED_ROW_EVIDENCE_FIELDS:
-        if field_name == "no_fallback_no_zero_call_no_builtin_contamination":
+        if field_name in {"adapter_evidence", "parity_evidence", "no_fallback_no_zero_call_no_builtin_contamination"}:
             continue
         if not _has_evidence(row.get(field_name)):
             errors.append(f"rows[{index}].{field_name} must contain evidence")
 
     _validate_project_local_artifact(row.get("opp_custom_op_artifact_evidence"), row, index, errors, project_root)
+    _validate_adapter_evidence(row.get("adapter_evidence"), index, errors)
+    _validate_parity_evidence(row.get("parity_evidence"), index, errors)
     _validate_integration_route(row.get("integration_e2e_evidence"), index, errors)
     _validate_runtime_coverage(row.get("same_run_runtime_coverage"), index, errors)
     _validate_performance(row.get("performance_evidence"), index, errors)
@@ -269,7 +273,51 @@ def _has_evidence(value: object) -> bool:
         if not _mapping_reports_positive_evidence(evidence):
             return False
         return True
-    return True
+    return False
+
+
+def _validate_adapter_evidence(value: object, index: int, errors: list[str]) -> None:
+    if not isinstance(value, Mapping):
+        errors.append(f"rows[{index}].adapter_evidence must be an object with adapter/import/link proof")
+        return
+    evidence = cast(Mapping[object, object], value)
+    if not evidence or _mapping_reports_failure(evidence) or _mapping_is_disallowed_surrogate(evidence):
+        errors.append(f"rows[{index}].adapter_evidence must contain passing adapter/import/link evidence")
+        return
+    if not _has_positive_boolean(
+        evidence,
+        (
+            "imported",
+            "loaded",
+            "linked",
+            "registered",
+            "adapter_imported",
+            "adapter_loaded",
+            "adapter_linked",
+            "adapter_callable",
+            "callable_resolved",
+        ),
+    ):
+        errors.append(f"rows[{index}].adapter_evidence must prove adapter import/link/callable success")
+
+
+def _validate_parity_evidence(value: object, index: int, errors: list[str]) -> None:
+    if not isinstance(value, Mapping):
+        errors.append(f"rows[{index}].parity_evidence must be an object with direct/reference parity proof")
+        return
+    evidence = cast(Mapping[object, object], value)
+    if not evidence or _mapping_reports_failure(evidence) or _mapping_is_disallowed_surrogate(evidence):
+        errors.append(f"rows[{index}].parity_evidence must contain passing direct/reference parity evidence")
+        return
+    if _has_positive_boolean(evidence, ("passed", "verified", "ok", "success", "parity_passed", "comparison_passed")):
+        return
+    if _normalize_status(evidence.get("status")) in EVIDENCE_PASS_STATES:
+        return
+    max_abs_error = evidence.get("max_abs_error")
+    tolerance = evidence.get("tolerance") or evidence.get("atol") or evidence.get("max_abs_error_tolerance")
+    if _non_negative_number(max_abs_error) and _non_negative_number(tolerance) and cast(float, max_abs_error) <= cast(float, tolerance):
+        return
+    errors.append(f"rows[{index}].parity_evidence must prove a passing direct/reference parity comparison")
 
 
 def _mapping_reports_failure(evidence: Mapping[object, object]) -> bool:
@@ -309,13 +357,16 @@ def _mapping_reports_positive_evidence(evidence: Mapping[object, object]) -> boo
         "runtime_call_count",
         "speedup_vs_baseline",
         "throughput_ratio",
-        "max_abs_error",
     )
     for field_name in positive_numeric_fields:
         value = evidence.get(field_name)
         if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
             return True
     return False
+
+
+def _non_negative_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
 
 
 def _validate_source_inventory_completeness(
@@ -586,6 +637,7 @@ def _validate_project_local_artifact(
             errors.append(f"rows[{index}].opp_custom_op_artifact_evidence native artifact path must exist under the project root and be a non-empty compiled binary")
 
     build_log_path = _validate_build_provenance(evidence, index, errors, project_root)
+    _validate_strict_opp_producer_evidence(evidence, row, index, errors, project_root, build_log_path)
     if project_root is not None and existing_paths:
         _validate_native_cann_evidence(evidence, row, index, errors, project_root, existing_paths, build_log_path)
 
@@ -599,7 +651,7 @@ def _validate_integration_route(value: object, index: int, errors: list[str]) ->
         errors.append(f"rows[{index}].integration_e2e_evidence must not be synthetic/monkeypatch/report/benchmark-only")
     if not _has_positive_boolean(evidence, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed")):
         errors.append(f"rows[{index}].integration_e2e_evidence must prove public/project API custom-op execution")
-    if not _has_positive_boolean(evidence, ("native_custom_op_route_executed", "compiled_kernel_executed", "torch_ops_route", "opp_kernel_executed")):
+    if not _has_positive_boolean(evidence, ("native_custom_op_route_executed", "compiled_kernel_executed", "opp_kernel_executed")):
         errors.append(f"rows[{index}].integration_e2e_evidence must prove native compiled custom-op route execution")
 
 
@@ -614,7 +666,7 @@ def _validate_runtime_coverage(value: object, index: int, errors: list[str]) -> 
         errors.append(f"rows[{index}].same_run_runtime_coverage must prove same-run coverage")
     if not _has_positive_boolean(evidence, ("project_api_route", "public_api_route", "custom_op_route_executed")):
         errors.append(f"rows[{index}].same_run_runtime_coverage must prove runtime coverage through the project API route")
-    if not _has_positive_boolean(evidence, ("native_custom_op_route_executed", "compiled_kernel_executed", "torch_ops_route", "opp_kernel_executed")):
+    if not _has_positive_boolean(evidence, ("native_custom_op_route_executed", "compiled_kernel_executed", "opp_kernel_executed")):
         errors.append(f"rows[{index}].same_run_runtime_coverage must prove native compiled custom-op runtime coverage")
 
 
@@ -878,6 +930,30 @@ _NATIVE_BUILD_LOG_TOKENS = (
     "aicpu",
 )
 
+_PYTORCH_EXTENSION_ONLY_TOKENS = (
+    "torch_npu.utils.cpp_extension",
+    "torch_npu.utils.cpp_extension.npuextension",
+    "npuextension",
+    "torch.utils.cpp_extension",
+    "torch.utils.cpp_extension.cppextension",
+    "cppextension",
+    "cudaextension",
+    "torch/extension.h",
+    "<torch/extension.h>",
+    "aten/",
+    "aten::",
+    " at::",
+    "torch::tensor",
+    "pybind11_module",
+    "-ltorch_npu",
+    "-ltorch_cpu",
+    "-ltorch_python",
+    "libtorch",
+    "torch_cpu",
+    "setup.py build_ext",
+    "build_ext --inplace",
+)
+
 _NATIVE_SOURCE_TOKENS = (
     "kernel_operator.h",
     "aclrt",
@@ -923,6 +999,85 @@ _EVIDENCE_ONLY_SOURCE_TOKENS = (
     "placeholder",
     "mock",
     "marker",
+)
+
+_OP_HOST_SOURCE_FIELDS = (
+    "op_host_source_path",
+    "op_host_sources",
+    "op_host_source_paths",
+    "host_source_path",
+    "host_source_paths",
+)
+
+_OP_KERNEL_SOURCE_FIELDS = (
+    "op_kernel_source_path",
+    "op_kernel_sources",
+    "op_kernel_source_paths",
+    "kernel_source_path",
+    "kernel_source_paths",
+    "ascendc_kernel_sources",
+)
+
+_OPP_BUILD_SCRIPT_FIELDS = (
+    "opp_build_script",
+    "opp_build_script_path",
+    "build_script",
+    "build_script_path",
+    "build_file",
+    "build_files",
+    "cmake_path",
+    "cmake_lists_path",
+    "cmakelists_path",
+)
+
+_OPP_INSTALL_FIELDS = (
+    "install_provenance",
+    "install_evidence",
+    "opp_install_provenance",
+    "opp_install_evidence",
+    "install_log_path",
+    "opp_install_log_path",
+    "install_path",
+    "installed_path",
+    "opp_install_path",
+)
+
+_OPP_INSTALL_PATH_FIELDS = (
+    "path",
+    "paths",
+    "log_path",
+    "log_paths",
+    "install_log_path",
+    "install_log_paths",
+    "opp_install_log_path",
+    "opp_install_log_paths",
+    "install_path",
+    "install_paths",
+    "installed_path",
+    "installed_paths",
+    "opp_install_path",
+    "opp_install_paths",
+    "package_path",
+    "package_paths",
+    "provenance_path",
+    "provenance_paths",
+)
+
+_OPP_GENERATED_ARTIFACT_FIELDS = (
+    "generated_header_path",
+    "generated_header_paths",
+    "op_info_path",
+    "op_info_paths",
+    "kernel_meta_path",
+    "kernel_meta_paths",
+    "producer_artifact_path",
+    "producer_artifact_paths",
+    "opp_package_artifact",
+    "opp_package_artifacts",
+    "opp_package_path",
+    "opp_package_paths",
+    "cann_package_artifacts",
+    "generated_artifacts",
 )
 
 
@@ -1128,6 +1283,279 @@ def _validate_native_cann_evidence(
         )
 
 
+def _validate_strict_opp_producer_evidence(
+    evidence: Mapping[object, object],
+    row: Mapping[object, object],
+    index: int,
+    errors: list[str],
+    project_root: Path | None,
+    build_log_path: Path | None,
+) -> None:
+    _ = row
+    producer_text = _flatten_evidence_text(evidence)
+    build_log_text = _read_text_limited(build_log_path)
+    if _text_has_any_token(f"{producer_text}\n{build_log_text}", _PYTORCH_EXTENSION_ONLY_TOKENS):
+        errors.append(
+            f"rows[{index}].opp_custom_op_artifact_evidence must be strict Ascend C/CANN OPP producer evidence, not NpuExtension/CppExtension/ATen/libtorch-only native-extension evidence"
+        )
+
+    op_host_paths = [path for path in _path_candidates_from_fields(evidence, _OP_HOST_SOURCE_FIELDS) if _is_op_host_source_path(path)]
+    op_kernel_paths = [path for path in _path_candidates_from_fields(evidence, _OP_KERNEL_SOURCE_FIELDS) if _is_op_kernel_source_path(path)]
+    build_script_paths = [path for path in _path_candidates_from_fields(evidence, _OPP_BUILD_SCRIPT_FIELDS) if _is_opp_build_script_path(path)]
+    generated_artifact_paths, generated_artifact_categories = _strict_opp_generated_artifacts(evidence)
+
+    if not op_host_paths:
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include an op_host source path")
+    if not op_kernel_paths:
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include an op_kernel/AscendC source path")
+    if not build_script_paths:
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include CMakeLists.txt, build.sh, or equivalent OPP build script path")
+    if not _has_install_provenance(evidence):
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include OPP install/provenance evidence")
+    missing_generated_categories = _missing_generated_opp_categories(generated_artifact_categories)
+    if missing_generated_categories:
+        errors.append(
+            f"rows[{index}].opp_custom_op_artifact_evidence must include generated OPP artifact categories: "
+            + ", ".join(missing_generated_categories)
+            + "; a path that merely looks like /opp/ is not enough"
+        )
+
+    if build_log_path is not None and not _build_log_is_strict_opp(build_log_text):
+        errors.append(
+            f"rows[{index}].opp_custom_op_artifact_evidence.build_provenance.log_path must show a CANN/OPP build-install flow with op_host/op_kernel producer artifacts"
+        )
+
+    if project_root is None:
+        return
+
+    _validate_existing_source_paths(project_root, op_host_paths, f"rows[{index}].opp_custom_op_artifact_evidence.op_host source", errors)
+    _validate_existing_source_paths(project_root, op_kernel_paths, f"rows[{index}].opp_custom_op_artifact_evidence.op_kernel source", errors)
+    _validate_existing_paths(project_root, build_script_paths, f"rows[{index}].opp_custom_op_artifact_evidence OPP build script", errors)
+    _validate_existing_paths(project_root, generated_artifact_paths, f"rows[{index}].opp_custom_op_artifact_evidence generated OPP artifact", errors)
+    _validate_existing_install_paths(project_root, evidence, f"rows[{index}].opp_custom_op_artifact_evidence install/provenance", errors)
+
+    source_text = "\n".join(
+        _read_text_limited(_resolve_path_under_project_root(project_root, path))
+        for path in [*op_host_paths, *op_kernel_paths]
+    )
+    if _text_has_any_token(source_text, _PYTORCH_EXTENSION_ONLY_TOKENS):
+        errors.append(
+            f"rows[{index}].opp_custom_op_artifact_evidence op_host/op_kernel sources must not be ATen/torch extension sources"
+        )
+
+
+def _flatten_evidence_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.lower()
+    if isinstance(value, Mapping):
+        parts: list[str] = []
+        for key, item in cast(Mapping[object, object], value).items():
+            parts.append(str(key).lower())
+            parts.append(_flatten_evidence_text(item))
+        return "\n".join(parts)
+    if isinstance(value, (list, tuple, set)):
+        return "\n".join(_flatten_evidence_text(item) for item in cast(list[object] | tuple[object, ...] | set[object], value))
+    return str(value).lower() if value is not None else ""
+
+
+def _path_candidates_from_fields(evidence: Mapping[object, object], fields: tuple[str, ...]) -> list[str]:
+    candidates: list[str] = []
+    for field_name in fields:
+        candidates.extend(_path_candidates_from_value(evidence.get(field_name)))
+    return candidates
+
+
+def _path_candidates_from_value(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [_strip_source_location(value)]
+    if isinstance(value, Mapping):
+        candidates: list[str] = []
+        for item in cast(Mapping[object, object], value).values():
+            candidates.extend(_path_candidates_from_value(item))
+        return candidates
+    if isinstance(value, (list, tuple, set)):
+        candidates = []
+        for item in cast(list[object] | tuple[object, ...] | set[object], value):
+            candidates.extend(_path_candidates_from_value(item))
+        return candidates
+    return []
+
+
+def _is_op_host_source_path(value: str) -> bool:
+    normalized = value.strip().lower().replace("\\", "/")
+    return _is_safe_project_relative_path(value) and "/op_host/" in f"/{normalized}" and normalized.endswith((".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"))
+
+
+def _is_op_kernel_source_path(value: str) -> bool:
+    normalized = value.strip().lower().replace("\\", "/")
+    return _is_safe_project_relative_path(value) and "/op_kernel/" in f"/{normalized}" and normalized.endswith((".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"))
+
+
+def _is_opp_build_script_path(value: str) -> bool:
+    normalized = value.strip().lower().replace("\\", "/")
+    basename = Path(normalized).name
+    return _is_safe_project_relative_path(value) and (
+        basename in {"cmakelists.txt", "build.sh", "build_opp.sh", "build_custom_op.sh"}
+        or ("opp" in normalized and basename.endswith((".cmake", ".sh")))
+    )
+
+
+def _is_opp_generated_artifact_path(value: str) -> bool:
+    normalized = value.strip().lower().replace("\\", "/")
+    if not _is_safe_project_relative_path(value):
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "/op_info/",
+            "op_info.json",
+            "/kernel_meta/",
+            "kernel_meta",
+            "/vendors/",
+            "/packages/",
+            ".run",
+            ".opp",
+        )
+    )
+
+
+def _strict_opp_generated_artifacts(evidence: Mapping[object, object]) -> tuple[list[str], set[str]]:
+    paths: list[str] = []
+    categories: set[str] = set()
+    for field_name in _OPP_GENERATED_ARTIFACT_FIELDS:
+        for path in _path_candidates_from_value(evidence.get(field_name)):
+            category = _generated_opp_artifact_category(field_name, path)
+            if category is None:
+                continue
+            paths.append(path)
+            categories.add(category)
+    return _dedupe_paths(paths), categories
+
+
+def _generated_opp_artifact_category(field_name: str, value: str) -> str | None:
+    if not _is_safe_project_relative_path(value):
+        return None
+    normalized = value.strip().lower().replace("\\", "/")
+    basename = Path(normalized).name
+    if field_name in {"generated_header_path", "generated_header_paths"}:
+        return "generated_header" if basename.endswith((".h", ".hpp")) else None
+    if field_name in {"op_info_path", "op_info_paths"}:
+        return "op_info" if basename.endswith((".json", ".ini", ".yaml", ".yml")) else None
+    if field_name in {"kernel_meta_path", "kernel_meta_paths"}:
+        return "kernel_meta" if basename.endswith((".o", ".bin", ".json")) else None
+    if field_name in {
+        "producer_artifact_path",
+        "producer_artifact_paths",
+        "opp_package_artifact",
+        "opp_package_artifacts",
+        "opp_package_path",
+        "opp_package_paths",
+        "cann_package_artifacts",
+    }:
+        return "package" if _is_opp_generated_artifact_path(value) else None
+    if basename.endswith((".h", ".hpp")) and any(token in normalized for token in ("/autogen/", "/generated/", "/include/")):
+        return "generated_header"
+    if basename.endswith((".json", ".ini", ".yaml", ".yml")) and ("/op_info/" in normalized or "op_info" in basename):
+        return "op_info"
+    if basename.endswith((".o", ".bin", ".json")) and ("/kernel_meta/" in normalized or "kernel_meta" in basename):
+        return "kernel_meta"
+    if _is_opp_generated_artifact_path(value):
+        return "package"
+    return None
+
+
+def _missing_generated_opp_categories(categories: set[str]) -> list[str]:
+    if "package" in categories:
+        return []
+    required = ("generated_header", "op_info", "kernel_meta")
+    return [category for category in required if category not in categories]
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for path in paths:
+        normalized = _normalize_reported_path(path)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(path)
+    return deduped
+
+
+def _has_install_provenance(evidence: Mapping[object, object]) -> bool:
+    if _has_positive_boolean(evidence, ("installed", "install_verified", "opp_installed", "package_installed")):
+        return True
+    for field_name in _OPP_INSTALL_FIELDS:
+        value = evidence.get(field_name)
+        if isinstance(value, str) and _is_safe_project_relative_path(value):
+            return True
+        if isinstance(value, Mapping):
+            mapped_value = cast(Mapping[object, object], value)
+            if _has_non_empty_inventory_value(mapped_value):
+                return True
+    return False
+
+
+def _build_log_is_strict_opp(text: str) -> bool:
+    normalized = text.lower()
+    if not normalized.strip():
+        return False
+    has_cann = any(token in normalized for token in ("cann", "opp", "msopgen", "opc", "tikcpp", "ascendc", "kernel_operator.h", "-lascendcl"))
+    has_layout = "op_host" in normalized and "op_kernel" in normalized
+    has_install = any(token in normalized for token in ("install", "vendors", "opp_path", "ascend_opp", "package", "deploy"))
+    return has_cann and has_layout and has_install
+
+
+def _validate_existing_source_paths(project_root: Path, paths: list[str], label: str, errors: list[str]) -> None:
+    for path in paths:
+        resolved = _resolve_path_under_project_root(project_root, path)
+        if resolved is None or not resolved.is_file() or resolved.stat().st_size <= 0:
+            errors.append(f"{label} path must exist under the project root and be non-empty: {_normalize_reported_path(path)}")
+
+
+def _validate_existing_paths(project_root: Path, paths: list[str], label: str, errors: list[str]) -> None:
+    for path in paths:
+        resolved = _resolve_path_under_project_root(project_root, path)
+        if resolved is None or not resolved.exists():
+            errors.append(f"{label} path must exist under the project root: {_normalize_reported_path(path)}")
+
+
+def _validate_existing_install_paths(project_root: Path, evidence: Mapping[object, object], label: str, errors: list[str]) -> None:
+    paths = _install_path_candidates(evidence)
+    if not paths:
+        return
+    for path in paths:
+        if _is_safe_project_relative_path(path):
+            resolved = _resolve_path_under_project_root(project_root, path)
+            if resolved is None or not resolved.exists():
+                errors.append(f"{label} path must exist under the project root: {_normalize_reported_path(path)}")
+
+
+def _install_path_candidates(evidence: Mapping[object, object]) -> list[str]:
+    paths: list[str] = []
+    for field_name in _OPP_INSTALL_FIELDS:
+        value = evidence.get(field_name)
+        if isinstance(value, str):
+            paths.append(_strip_source_location(value))
+        elif isinstance(value, Mapping):
+            paths.extend(_install_path_candidates_from_mapping(cast(Mapping[object, object], value)))
+        elif isinstance(value, (list, tuple, set)):
+            for item in cast(list[object] | tuple[object, ...] | set[object], value):
+                if isinstance(item, str):
+                    paths.append(_strip_source_location(item))
+                elif isinstance(item, Mapping):
+                    paths.extend(_install_path_candidates_from_mapping(cast(Mapping[object, object], item)))
+    return _dedupe_paths(paths)
+
+
+def _install_path_candidates_from_mapping(value: Mapping[object, object]) -> list[str]:
+    paths: list[str] = []
+    for field_name in _OPP_INSTALL_PATH_FIELDS:
+        paths.extend(_path_candidates_from_value(value.get(field_name)))
+    return paths
+
+
 def _read_text_limited(path: Path | None, limit: int = 1_000_000) -> str:
     if path is None:
         return ""
@@ -1279,7 +1707,6 @@ def _path_has_ascend_artifact_signal(normalized_path: str) -> bool:
         "aicpu",
         "ascendc",
         "custom_op",
-        "torch_npu",
     )
     return any(token in padded for token in path_tokens)
 
