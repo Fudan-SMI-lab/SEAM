@@ -8,7 +8,7 @@ The failed phase is `{failed_phase}`.
 
 These constraints are binding. When diagnosing failures and suggesting fixes, always prefer solutions that keep computation on NPU. CPU fallback is not acceptable for custom-op contracts and must not be treated as final success.
 
-Custom-op reference: diagnosing custom-op/operator failures 时，查看 `{workspace_root}/cuda_custom_op_skill_test_prompt.md` 第2、3、5、6点要求；不要内联完整规则文本。
+Custom-op reference: only when the Phase 3 contract is an active custom-op contract with positive source inventory, diagnosing custom-op/operator failures 时查看 `{workspace_root}/cuda_custom_op_skill_test_prompt.md` 第2、3、5、6点要求；不要内联完整规则文本。For active custom-op contracts, missing per-row `public_api_route_evidence` or `framework_integration_route_evidence` is a custom-op contract failure. If the contract says no custom ops or has zero inventory, ignore custom-op guidance and use ordinary dependency/code/generic-operator routing.
 
 ## Environment Context (from Phase 0)
 {env_context}
@@ -96,17 +96,18 @@ recommended agent.
    - **dependency**: missing/mismatched packages, import errors, version conflicts
    - **pathing**: wrong file paths, missing files, directory issues
    - **migration logic**: incomplete CUDA-to-NPU code migration (Python-level API replacements)
-   - **operator**: missing/unsupported NPU operators, unsupported math operations, C/CUDA kernel lacking NPU equivalent, shared library with `_cuda` symbols but no `_npu` symbols
+   - **operator**: missing/unsupported NPU operators, unsupported math operations, or a source-confirmed C/CUDA kernel lacking NPU equivalent. For ordinary CUDA projects without an active custom-op contract, this means generic NPU operator repair/composition, not OPP/custom-op generation.
    - **validation**: validation script issues, incorrect pass/fail logic
    - **unknown**: cannot determine root cause
 4. **NPU-First Diagnosis Rule**: When the error involves a compiled shared library (.so) or custom op:
-   a. First check: is the C library calibrated for x86_64 or aarch64? NPU memory (HBM) is not accessible by CPU code.
-   b. If the C library has `_cuda` symbols but NO `_npu` symbols → this is an **operator** issue, not migration logic. The kernel needs to be ported to AscendC.
-   c. Do NOT classify as "migration logic" when the real gap is at the C/kernel level.
-5. **Review Feedback Integration**: If the previous review assessment detected CPU fallback and suggested alternatives, consider classifying this as `"operator"` with `"repair_role": "operator_fixer"` to force operator-level fixes.
-6. Decide whether the Phase 3 entry-script command itself is wrong for the contract. If so, request a bounded entry-script revision instead of routing to a repair agent.
-7. Propose the minimum corrective action that lets the workflow continue, prioritizing NPU-native solutions.
-8. If the failure is package or installation related, recommend domestic mirrors first (阿里云镜像 or 清华镜像).
+    a. First check: is the C library calibrated for x86_64 or aarch64? NPU memory (HBM) is not accessible by CPU code.
+    b. If the C library has `_cuda` symbols but NO `_npu` symbols → this is an **operator** issue, not migration logic. The kernel needs to be ported to AscendC.
+    c. Do NOT classify as "migration logic" when the real gap is at the C/kernel level.
+5. **Transformers Attention Backend Boundary**: If the Phase 3 contract or reports say no custom ops (`custom_op_detected=false`, `operator_unit_count=0`, `custom_op_static_required=false`, or `inventory_count=0`) and the failure mentions `FlashAttention2`, `flash_attn`, or `flash-attn`, classify it as dependency or migration logic and route to `dependency_fixer` or `code_adapter`. The fix is to use an NPU-compatible attention backend such as `attn_implementation="sdpa"` or `"eager"`; do not route to `operator_fixer` or propose OPP/custom-op generation.
+6. **Review Feedback Integration**: If the previous review assessment detected CPU fallback and suggested alternatives, consider classifying this as `"operator"` with `"repair_role": "operator_fixer"` to force operator-level fixes.
+7. Decide whether the Phase 3 entry-script command itself is wrong for the contract. If so, request a bounded entry-script revision instead of routing to a repair agent.
+8. Propose the minimum corrective action that lets the workflow continue, prioritizing NPU-native solutions.
+9. If the failure is package or installation related, recommend domestic mirrors first (阿里云镜像 or 清华镜像).
 
 ## Hard Rules
 - Do not restate the full failure log — quote only short fragments when necessary as evidence.
