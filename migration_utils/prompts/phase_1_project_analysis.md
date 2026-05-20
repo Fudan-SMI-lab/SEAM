@@ -11,7 +11,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 - Understand the project structure and likely execution path.
 - Extract dependency signals relevant to CUDA to NPU migration.
 - Identify the most likely entry script for training, inference, evaluation, or demo execution.
-- When the source surface indicates custom operators, also discover the custom-op surface itself: fine-grained operator units, family/variant/signature identity, native symbols, kernel launch sites, public entry mappings, searched source roots/paths, negative evidence, dynamic loading/build/load checks, unresolved source groups, and the source evidence for each unit.
+- When the source surface indicates custom operators, also discover the custom-op surface itself: fine-grained operator units, family/variant/signature identity, native symbols, kernel launch sites, public entry mappings, candidate public API routes, candidate framework integration routes, searched source roots/paths, negative evidence, dynamic loading/build/load checks, unresolved source groups, and the source evidence for each unit.
 
 ## Required Actions
 1. Map the top-level layout of `{project_dir}` and identify source, config, scripts, and docs directories.
@@ -26,7 +26,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 - Use README guidance and project files as evidence; do not invent an entry point.
 - If multiple entry candidates exist, choose the most likely executable path and make the choice deterministic.
 - If no strong CUDA evidence exists, set `cuda_detected` to `false`.
-- If `custom_op_detected` is `true`, set `discovery_complete` to `true` only when every discovered unit is linked to source evidence and the search/probe trail is source-visible.
+- If `custom_op_detected` is `true`, set `discovery_complete` to `true` only when every discovered unit is linked to source evidence, candidate public API route or framework integration route evidence, and the search/probe trail is source-visible.
 - If `custom_op_detected` is `true` and `discovery_complete` is `true`, keep `unresolved_source_groups` empty.
 - You may reason freely in your response, but end it with a single JSON object containing exactly the required keys for this phase. No other JSON objects should appear.
 - If any package source or version lookup is needed, prefer domestic mirrors such as 阿里云镜像 or 清华镜像 over foreign mirrors.
@@ -56,9 +56,9 @@ Return exactly one JSON object with this shape:
     "unresolved_source_groups": [],
     "out_of_scope_source_groups": [],
     "fine_grained_operator_unit_evidence": [
-      {"unit_identity": "custom_family_alpha:signature_x", "source_evidence": ["csrc/custom_alpha.cpp:signature_x"]},
-      {"unit_identity": "custom_family_alpha:signature_y", "source_evidence": ["csrc/custom_alpha.cpp:signature_y"]},
-      {"unit_identity": "custom_family_beta:mode_z", "source_evidence": ["csrc/custom_beta.cpp:mode_z"]}
+      {"unit_identity": "custom_family_alpha:signature_x", "source_evidence": ["csrc/custom_alpha.cpp:signature_x"], "candidate_public_api_routes": ["pkg.ops.alpha_x"], "candidate_framework_integration_routes": ["pkg.layers.Alpha.forward"]},
+      {"unit_identity": "custom_family_alpha:signature_y", "source_evidence": ["csrc/custom_alpha.cpp:signature_y"], "candidate_public_api_routes": ["pkg.ops.alpha_y"], "candidate_framework_integration_routes": ["pkg.autograd.AlphaY.apply"]},
+      {"unit_identity": "custom_family_beta:mode_z", "source_evidence": ["csrc/custom_beta.cpp:mode_z"], "candidate_public_api_routes": ["pkg.ops.beta"], "candidate_framework_integration_routes": ["pkg.layers.Beta.forward"]}
     ]
   }
 }
@@ -69,4 +69,4 @@ Return exactly one JSON object with this shape:
 - `dependencies`: short list of directly relevant dependencies.
 - `cuda_detected`: whether CUDA-specific code or dependencies were found.
 - `entry_script`: best relative or root-level script path candidate.
-- `custom_op_surface`: optional, only present when custom operators are discovered. Use it to describe the source-discovered fine-grained custom-op inventory shape, the source-visible search trail, negative evidence, source roots/paths searched, dynamic loading/build/load checks, unresolved source groups, and per-unit source evidence without hard-coding a fixed family or variant list.
+- `custom_op_surface`: optional, only present when custom operators are discovered. Use it to describe the source-discovered fine-grained custom-op inventory shape, candidate public API/framework integration routes per unit, the source-visible search trail, negative evidence, source roots/paths searched, dynamic loading/build/load checks, unresolved source groups, and per-unit source evidence without hard-coding a fixed family or variant list.
