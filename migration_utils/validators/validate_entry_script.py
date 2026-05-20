@@ -125,6 +125,7 @@ REPORT_ONLY_ENTRY_PATH_TERMS = (
 UNSAFE_RUN_COMMAND_CONTROLS = ("&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r", "&")
 UNSAFE_RUN_COMMAND_EXECUTORS = {"bash", "sh", "zsh", "fish", "source", "."}
 ENV_EXECUTORS = {"env"}
+CONTAINER_RUNTIME_EXECUTORS = {"docker", "podman"}
 
 
 def validate(data: dict[str, object]) -> ValidationDict:
@@ -139,6 +140,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
         errors.append("run_command must be a non-empty string")
     else:
         _reject_unsafe_run_command(run_command, errors)
+        _reject_container_runtime_run_command(run_command, errors)
 
     _reject_report_only_entry_target(entry_script_path, run_command, errors)
     _reject_benchmark_only_target(entry_script_path, run_command, errors)
@@ -347,3 +349,28 @@ def _env_invokes_shell(tokens: list[str]) -> bool:
         executable = token.rsplit("/", 1)[-1]
         return executable in UNSAFE_RUN_COMMAND_EXECUTORS
     return False
+
+
+def _reject_container_runtime_run_command(run_command: str, errors: list[str]) -> None:
+    """Reject run_command that invokes Docker/Podman, which would nest inside the framework container."""
+    tokens_normalized = run_command.lower().replace("\\", "/")
+    if "docker exec" in tokens_normalized or "podman exec" in tokens_normalized:
+        errors.append(
+            "run_command must not invoke docker/podman exec or pre-existing containers; "
+            "the framework already executes this command inside a newly created container. "
+            "Use a direct in-container command such as python3 /workspace/smoke_validate.py"
+        )
+        return
+    try:
+        tokens = shlex.split(run_command)
+    except ValueError:
+        return  # already caught by _reject_unsafe_run_command
+    if not tokens:
+        return
+    executable = tokens[0].rsplit("/", 1)[-1]
+    if executable in CONTAINER_RUNTIME_EXECUTORS:
+        errors.append(
+            "run_command must not invoke a container runtime (docker/podman); "
+            "the framework already executes this command inside a newly created container. "
+            "Use a direct in-container command such as python3 /workspace/smoke_validate.py"
+        )
