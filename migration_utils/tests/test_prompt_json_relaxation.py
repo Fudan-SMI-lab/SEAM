@@ -70,6 +70,19 @@ def test_custom_op_phase_prompts_use_source_driven_contract_without_external_req
     assert "group multiple source-discovered units into a family-only row" in phase35
 
 
+def test_phase1_prompt_requires_cuda_native_helper_inventory():
+    content = (PROMPTS_DIR / "phase_1_project_analysis.md").read_text()
+
+    assert "CUDA/native helper exports" in content
+    assert "first-class fine-grained units" in content
+    assert "*_cuda" in content
+    assert "*_gpu" in content
+    assert "storage/compression/memory helpers" in content
+    assert "Family-only rows are invalid" in content
+    assert "native_operator_symbols" in content
+    assert "kernel_launch_sites" in content
+
+
 def test_production_custom_op_prompts_do_not_use_project_specific_examples():
     forbidden_terms = (
         "Deepwave",
