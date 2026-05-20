@@ -538,6 +538,7 @@ class Orchestrator:
 
         if eb_cfg.mode == "auto":
             eb_cfg = auto_select_backend(eb_cfg)
+            eb_cfg = self._auto_select_image(eb_cfg)
 
         if eb_cfg.mode != "container":
             return None
@@ -545,6 +546,127 @@ class Orchestrator:
         backend = ContainerBackend(eb_cfg)
         backend.set_project_dir(project_dir)
         return backend
+
+    def _auto_select_image(self, config: object) -> object:
+        """Run agent image-selection for ``mode=auto`` before container creation."""
+        from core.execution_backend import ContainerBackend
+        from core.types import ExecutionBackendConfig as _EBC
+
+        if getattr(config, "mode", None) != "container":
+            return config
+
+        candidates: list[str] = []
+        is_discovered = False
+
+        cfg_list = getattr(config, "images", None) or []
+        # Normalize: filter out None/"None" artifacts
+        candidates = [c for c in cfg_list if str(c).strip() and str(c).strip() != "None"]
+
+        if len(candidates) == 1:
+            return config
+
+        if not candidates:
+            try:
+                probe = ContainerBackend(config)
+                discovered = probe._discover_local_images()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Auto image discovery failed: %s", exc)
+                discovered = []
+
+            if discovered:
+                candidates = discovered
+                is_discovered = True
+            else:
+                import logging
+                logging.getLogger(__name__).info("Auto mode: no images and no local images discovered; falling back to local")
+                return _EBC(mode="local")
+
+        selected = self._send_image_selection_prompt(candidates, is_discovered)
+        if selected and selected in candidates:
+            config = _EBC(
+                mode=config.mode,
+                source=config.source,
+                runtime=config.runtime,
+                image=selected,
+                images=candidates,
+                container_name=config.container_name,
+                container_name_prefix=config.container_name_prefix,
+                devices=config.devices,
+                volumes=config.volumes,
+                env_vars=config.env_vars,
+                required_env_vars=config.required_env_vars,
+                required_devices=config.required_devices,
+                container_workdir=config.container_workdir,
+                network_mode=config.network_mode,
+                runtime_flags=config.runtime_flags,
+                timeout=config.timeout,
+                cleanup=config.cleanup,
+            )
+            import logging
+            logging.getLogger(__name__).info("Auto image selection chosen: %s", selected)
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Auto image selection returned invalid value %r; falling back to local",
+                selected,
+            )
+            return _EBC(mode="local")
+
+        return config
+
+    def _send_image_selection_prompt(
+        self,
+        candidates: list[str],
+        is_discovered: bool = False,
+    ) -> str | None:
+        """Ask the main engineer session to select an image from the list."""
+        from core.prompt_loader import PromptLoader
+        from harness.session.manager import extract_json_response as _extract
+
+        prompts_dir = (
+            Path(__file__).resolve().parent.parent / "prompts"
+        )
+        prompt_loader = PromptLoader(prompts_dir)
+
+        candidates_text = "\n".join(f"  {i+1}. {img}" for i, img in enumerate(candidates))
+
+        guidance = (
+            "Select the most appropriate image for running the migration workflow. "
+            "Consider image suitability for Python, PyTorch, and target hardware."
+        )
+        if is_discovered:
+            guidance = (
+                "These are the images already available on the host. "
+                + guidance
+            )
+
+        prompt_text = prompt_loader.load_prompt(
+            "container_image_select",
+            {
+                "candidate_images": candidates_text,
+                "discovered_images_section": (
+                    "## Discovered Local Images\nThe following images were found on this host:\n"
+                    + candidates_text
+                    if is_discovered
+                    else ""
+                ),
+                "selection_guidance": guidance,
+            },
+        )
+
+        sid = self.session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+        try:
+            raw = self.session_mgr.send_command(sid, prompt_text, timeout=120)
+            parsed = _extract(raw)
+            if isinstance(parsed, dict):
+                selected = parsed.get("selected_image")
+                return str(selected) if selected else None
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Image selection prompt failed: %s", exc)
+
+        return None
 
     @staticmethod
     def _preflight_and_probe(backend: object) -> dict[str, str]:
