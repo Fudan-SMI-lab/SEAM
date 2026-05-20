@@ -39,6 +39,20 @@ _CONCRETE_NATIVE_CUSTOM_OP_TERMS = frozenset({
     "tikcpp",
     "kernel_operator_h",
 })
+_CUSTOM_OP_EXPERIENCE_TERMS = frozenset({
+    "ascendc",
+    "cann_opp",
+    "custom_op",
+    "custom_operator",
+    "custom_operators",
+    "custom_op_final_gate",
+    "cuda_custom_op",
+    "final_gate",
+    "native_custom_op",
+    "op_host",
+    "op_kernel",
+    "opp_custom_op",
+})
 
 
 class ExperienceQuerier:
@@ -146,12 +160,15 @@ class ExperienceQuerier:
         types = self._context_values(context, "type", "types", "experience_type", "experience_types", "allowed_types")
         tags = self._context_values(context, "tags", "query_tags", "experience_tags")
         native_custom_op_gate_required = self._native_custom_op_gate_required(context)
+        exclude_custom_op_experiences = self._exclude_custom_op_experiences(context)
 
         filtered: list[dict[str, Any]] = []
         for entry in index:
             if str(entry.get("status") or "").strip().lower() in _INACTIVE_EXPERIENCE_STATUSES:
                 continue
             if native_custom_op_gate_required and self._is_aten_only_custom_op_entry(entry):
+                continue
+            if exclude_custom_op_experiences and self._is_custom_op_experience_entry(entry):
                 continue
             if not self._derive_experience_file_path(
                 str(entry.get("id", "")), str(entry.get("type", "skill")), entry
@@ -188,6 +205,18 @@ class ExperienceQuerier:
         if values.intersection({"true", "1", "yes"}):
             return True
         return "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only" in values
+
+    def _exclude_custom_op_experiences(self, context: dict) -> bool:
+        values = self._context_values(
+            context,
+            "exclude_custom_op_experiences",
+            "custom_op_experience_excluded",
+        )
+        return bool(values.intersection({"true", "1", "yes"}))
+
+    def _is_custom_op_experience_entry(self, entry: dict) -> bool:
+        text = self._entry_filter_text(entry)
+        return any(term in text for term in _CUSTOM_OP_EXPERIENCE_TERMS)
 
     def _is_aten_only_custom_op_entry(self, entry: dict) -> bool:
         text = self._entry_filter_text(entry)

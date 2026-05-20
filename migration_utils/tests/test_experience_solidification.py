@@ -400,3 +400,44 @@ def test_prefilter_index_keeps_role_match_and_filters_role_mismatch(tmp_path):
     })
 
     assert [entry["id"] for entry in filtered] == ["dep-exp"]
+
+
+def test_prefilter_index_keeps_generic_operator_and_excludes_custom_op_experience_for_ordinary_projects(tmp_path):
+    from core.experience_query import ExperienceQuerier
+
+    store = ExperienceStore(str(tmp_path))
+    generic_asset = tmp_path / "generic_operator.md"
+    custom_asset = tmp_path / "custom_operator.md"
+    generic_asset.write_text("Use supported torch_npu primitives for unsupported aclnn operator.", encoding="utf-8")
+    custom_asset.write_text("Create op_host/op_kernel and satisfy custom_op_final_gate.", encoding="utf-8")
+    entries = [
+        {
+            "id": "generic-op-exp",
+            "type": "document",
+            "status": "promoted",
+            "title": "Generic NPU Operator Fix",
+            "target_roles": ["operator_fixer"],
+            "target_phases": ["phase_5_validation"],
+            "confidence": 0.8,
+            "asset_paths": [str(generic_asset)],
+        },
+        {
+            "id": "custom-op-exp",
+            "type": "document",
+            "status": "promoted",
+            "title": "Custom-op OPP Final Gate Fix",
+            "target_roles": ["operator_fixer"],
+            "target_phases": ["phase_5_validation"],
+            "tags": ["custom-op", "opp"],
+            "confidence": 0.95,
+            "asset_paths": [str(custom_asset)],
+        },
+    ]
+
+    filtered = ExperienceQuerier(store, None)._prefilter_index(entries, {
+        "role": "operator_fixer",
+        "parent_phase": "phase_5_validation",
+        "exclude_custom_op_experiences": "true",
+    })
+
+    assert [entry["id"] for entry in filtered] == ["generic-op-exp"]
