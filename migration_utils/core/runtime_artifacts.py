@@ -386,7 +386,7 @@ def _phase3_contract_operator_units(contract: dict[str, object]) -> list[str]:
     units: list[str] = []
     for item in candidates:
         if isinstance(item, dict):
-            summary = _entry_summary(item)
+            summary = _entry_summary(cast(dict[str, object], item))
         else:
             summary = str(item).strip()
         if summary and summary not in units:
