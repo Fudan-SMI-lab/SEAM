@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.artifact_store import ArtifactStore
 from core.prompt_loader import PromptLoader
 from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState
+from core.repair_loop import force_custom_op_operator_routing_if_needed
 from core.runtime_artifacts import write_operator_repair_context_artifact
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
@@ -318,7 +319,7 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     assert "remaining_entries == 0" in prompt
     assert "full_migration_status == FULL_PASS" in prompt
     assert "same-run runtime coverage > 0" in prompt
-    assert "baseline/custom performance evidence" in prompt
+    assert "CPU baseline runtime against Ascend OPP/custom-op runtime" in prompt
     assert "report-only" in prompt
     assert "MVP-only" in prompt
     assert "zero-call" in prompt
@@ -1178,15 +1179,15 @@ def _custom_op_gate_report() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cuda",
-            "custom_device": "npu",
+            "baseline_device": "cpu",
+            "custom_device": "ascend_opp",
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cuda",
-            "overall_custom_device": "npu",
+            "overall_baseline_device": "cpu",
+            "overall_custom_device": "ascend_opp",
             "entries": [
                 {
                     "unit_identity": "op_1",
@@ -1194,8 +1195,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
-                    "custom_device": "npu",
+                    "baseline_device": "cpu",
+                    "custom_device": "ascend_opp",
                 }
             ],
         },
@@ -1266,6 +1267,15 @@ def _custom_op_gate_report() -> dict[str, object]:
                 "custom_op_route_executed": True,
                 "native_custom_op_route_executed": True,
             },
+            "public_api_route_evidence": {
+                "unit_identity": "op_1",
+                "route_type": "public_api",
+                "entrypoint": "pkg.op_1",
+                "same_run": True,
+                "custom_call_count": 2,
+                "public_api_invoked": True,
+                "native_custom_op_route_executed": True,
+            },
             "same_run_runtime_coverage": {
                 "custom_call_count": 2,
                 "same_run": True,
@@ -1277,8 +1287,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                 "custom_seconds": 0.01,
                 "speedup_vs_baseline": 2.0,
                 "project_api_invoked": True,
-                "baseline_device": "cuda",
-                "custom_device": "npu",
+                "baseline_device": "cpu",
+                "custom_device": "ascend_opp",
             },
             "no_fallback_no_zero_call_no_builtin_contamination": {
                 "passed": True,
@@ -1800,6 +1810,97 @@ def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: 
 
     assert classification["category"] == "pathing"
     assert classification["repair_role"] == "code_adapter"
+
+
+def test_zero_custom_op_contract_does_not_force_final_gate_error_to_operator() -> None:
+    classification = force_custom_op_operator_routing_if_needed(
+        {
+            "category": "validation",
+            "root_cause": "custom-op final gate report is zero-row",
+            "suggested_fix": "continue ordinary runtime repair",
+            "repair_role": "code_adapter",
+        },
+        error_text="Custom-op final evidence gate failed: inventory_count=0 remaining_entries=0 custom_op_final_gate",
+        history=["previous operator_fixer attempt mentioned custom_op_final_gate"],
+        phase3_contract={
+            "entry_script_path": "validate.py",
+            "run_command": "python validate.py",
+            "operator_unit_count": 0,
+            "custom_op_static_required": False,
+            "custom_op_detected": False,
+            "reports_dir": "migration_reports",
+        },
+    )
+
+    assert classification["category"] == "validation"
+    assert classification["repair_role"] == "code_adapter"
+
+
+def test_zero_custom_op_flash_attention_failure_routes_to_code_adapter() -> None:
+    classification = force_custom_op_operator_routing_if_needed(
+        {
+            "category": "operator",
+            "root_cause": "FlashAttention2 has been toggled on but flash_attn is not installed",
+            "suggested_fix": "port as custom op",
+            "repair_role": "operator_fixer",
+        },
+        error_text="ImportError: FlashAttention2 has been toggled on, but package flash_attn seems to be not installed.",
+        phase3_contract={
+            "entry_script_path": "validate.py",
+            "run_command": "python validate.py",
+            "operator_unit_count": 0,
+            "custom_op_static_required": False,
+            "custom_op_detected": False,
+        },
+    )
+
+    assert classification["category"] == "migration logic"
+    assert classification["repair_role"] == "code_adapter"
+    assert "attn_implementation" in str(classification["suggested_fix"])
+    assert "OPP" in str(classification["suggested_fix"])
+
+
+def test_zero_custom_op_generic_operator_failure_stays_operator_fixer() -> None:
+    classification = force_custom_op_operator_routing_if_needed(
+        {
+            "category": "operator",
+            "root_cause": "aclnn unsupported operator in an ordinary CUDA model path",
+            "suggested_fix": "replace with NPU-supported PyTorch primitives",
+            "repair_role": "operator_fixer",
+        },
+        error_text="RuntimeError: aclnnFoo operator is not supported on NPU",
+        phase3_contract={
+            "entry_script_path": "validate.py",
+            "run_command": "python validate.py",
+            "operator_unit_count": 0,
+            "custom_op_static_required": False,
+            "custom_op_detected": False,
+        },
+    )
+
+    assert classification["category"] == "operator"
+    assert classification["repair_role"] == "operator_fixer"
+    assert "NPU-supported" in str(classification["suggested_fix"])
+
+
+def test_real_custom_op_contract_still_forces_final_gate_error_to_operator() -> None:
+    classification = force_custom_op_operator_routing_if_needed(
+        {
+            "category": "validation",
+            "root_cause": "path issue",
+            "suggested_fix": "fix path",
+            "repair_role": "code_adapter",
+        },
+        error_text="Custom-op final evidence gate failed: remaining_entries=1 custom_call_count_total=0",
+        phase3_contract={
+            "entry_script_kind": "custom_op_full_validation",
+            "operator_unit_count": 1,
+            "reports_dir": "migration_reports",
+        },
+    )
+
+    assert classification["category"] == "operator"
+    assert classification["repair_role"] == "operator_fixer"
 
 def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     outside = tmp_path / "outside"

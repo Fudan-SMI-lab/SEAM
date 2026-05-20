@@ -90,10 +90,10 @@ def _workspace_root() -> str:
 
 def _operator_generic_guidance(*, project_dir: str, entry_script: str) -> str:
     return (
-        "4. This is a generic operator-incompatibility repair. Focus on the unsupported or missing "
+        "4. No active custom-op contract is present. This is a generic operator-incompatibility repair. Focus on the unsupported or missing "
         "Ascend NPU operator named by the runtime error, using NPU-native replacements, supported "
-        "torch_npu/PyTorch primitives, or local code changes. Do not add CPU fallback and do not "
-        "turn this into a broader workplan.\n"
+        "torch_npu/PyTorch primitives, or local code changes. Do not generate OPP/custom-op artifacts, "
+        "do not add CPU fallback, and do not turn this into a broader workplan.\n"
         f"5. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证, 只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics。"
     )
@@ -106,9 +106,9 @@ def _operator_custom_op_guidance(
     entry_script: str,
 ) -> str:
     return (
-        f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
+        f"4. Active custom-op contract is present. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
         "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-        "6. Every in-scope row must have strict Ascend C/CANN OPP custom operator producer evidence: op_host source path, op_kernel/AscendC source path, CMakeLists.txt/build.sh or equivalent OPP build script, project-local CANN/OPP build-install logs, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. torch_npu.utils.cpp_extension.NpuExtension, torch.utils.cpp_extension.CppExtension, ATen-only npu_ops.cpp, and libtorch/torch_cpu/torch_npu-only builds are not opp_custom_op_artifact_evidence; NpuExtension may only be adapter evidence when separate strict OPP producer evidence exists. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+        "6. Every in-scope row must have strict Ascend C/CANN OPP custom operator producer evidence: op_host source path, op_kernel/AscendC source path, CMakeLists.txt/build.sh or equivalent OPP build script, project-local CANN/OPP build-install logs, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and performance evidence that compares real CPU baseline runtime against Ascend OPP/custom-op runtime. For this active custom-op contract, missing per-row `public_api_route_evidence` or `framework_integration_route_evidence` is a contract failure: each row must prove same-run public API or framework integration invocation, positive custom call count, native custom-op/OPP execution, and identity correlation to the manifest row. Direct-only, builtin-only, fallback, zero-call, report-only, synthetic/mock, benchmark-only, ATen-only, NpuExtension-only, CppExtension-only, Python-shim, baseline-only, and stub route evidence is not valid. torch_npu.utils.cpp_extension.NpuExtension, torch.utils.cpp_extension.CppExtension, ATen-only npu_ops.cpp, and libtorch/torch_cpu/torch_npu-only builds are not opp_custom_op_artifact_evidence; NpuExtension may only be adapter evidence when separate strict OPP producer evidence exists. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Do not use same-NPU, self-baseline, diagnostic, or placeholder 1.0 speedup evidence; `speedup_vs_baseline` must approximately equal CPU `baseline_seconds / custom_seconds` for the Ascend OPP/custom-op route. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
         f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
     )
@@ -128,6 +128,9 @@ _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
     r"remaining_entries",
     r"opp_custom_op_artifact_evidence",
     r"same_run_runtime_coverage",
+    r"public_api_route_evidence",
+    r"framework_integration_route_evidence",
+    r"route evidence",
     r"custom_call_count",
     r"custom_call_count_total",
     r"zero_call_detected",
@@ -172,24 +175,91 @@ def _has_custom_op_contract_fields(contract: dict[str, object]) -> bool:
     return has_custom_op_contract(contract)
 
 
+def _parse_contract_json(value: object) -> dict[str, object] | None:
+    if isinstance(value, dict):
+        return cast(dict[str, object], value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        return cast(dict[str, object], parsed)
+    return None
+
+
+def _active_custom_op_contract(
+    *,
+    phase3_contract: dict[str, object] | None = None,
+    prompt_context: dict[str, object] | None = None,
+) -> bool:
+    if isinstance(phase3_contract, dict):
+        return _has_custom_op_contract_fields(phase3_contract)
+    if isinstance(prompt_context, dict):
+        parsed_contract = _parse_contract_json(prompt_context.get("entry_script_contract"))
+        if parsed_contract is not None:
+            return _has_custom_op_contract_fields(parsed_contract)
+    return False
+
+
+def _is_flash_attention_backend_error(text: str) -> bool:
+    lowered = text.lower()
+    return "flashattention2" in lowered or "flash_attn" in lowered or "flash-attn" in lowered
+
+
+def _route_flash_attention_backend_failure(
+    classification: dict[str, object],
+    *,
+    error_text: str,
+    history: list[object] | None,
+    prompt_context: dict[str, object] | None,
+) -> dict[str, object] | None:
+    combined = "\n".join(
+        part for part in (
+            error_text,
+            _flatten_for_routing(history or []),
+            _flatten_for_routing(classification),
+            _flatten_for_routing(prompt_context or {}),
+        ) if part
+    )
+    if not _is_flash_attention_backend_error(combined):
+        return None
+    if str(classification.get("repair_role", "")) != "operator_fixer" and str(classification.get("category", "")) != "operator":
+        return classification
+
+    routed = dict(classification)
+    routed["category"] = "migration logic"
+    routed["repair_role"] = "code_adapter"
+    routed["root_cause"] = str(
+        routed.get("root_cause")
+        or "Transformers FlashAttention2 is enabled but flash_attn is unavailable on the NPU runtime"
+    )
+    routed["suggested_fix"] = (
+        "Disable the flash_attn-backed path at the model load/config site and use "
+        'attn_implementation="sdpa" when supported, otherwise "eager"; do not create OPP/custom-op artifacts.'
+    )
+    return routed
+
+
 def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: list[object] | None = None, classification: dict[str, object] | None = None, phase3_contract: dict[str, object] | None = None, prompt_context: dict[str, object] | None = None) -> bool:
     text_parts = [error_text, _flatten_for_routing(history or []), _flatten_for_routing(classification or {}), _flatten_for_routing(prompt_context or {})]
     combined = "\n".join(part for part in text_parts if part).lower()
     if not combined:
         return False
 
-    if any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS):
-        return True
-
-    has_custom_contract = False
-    if isinstance(phase3_contract, dict):
-        has_custom_contract = _has_custom_op_contract_fields(phase3_contract)
-    elif isinstance(prompt_context, dict):
-        contract_text = _flatten_for_routing(prompt_context.get("entry_script_contract", "")).lower()
-        has_custom_contract = any(key in contract_text for key in ("custom_op_full_validation", "required_report_paths", "required_checks", "migration_reports"))
-
+    has_custom_contract = _active_custom_op_contract(
+        phase3_contract=phase3_contract,
+        prompt_context=prompt_context,
+    )
     if not has_custom_contract:
         return False
+
+    if any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS):
+        return True
 
     has_shared_object_failure = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_SHARED_OBJECT_PATTERNS)
     has_custom_context = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_CONTEXT_PATTERNS)
@@ -197,6 +267,16 @@ def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: li
 
 
 def force_custom_op_operator_routing_if_needed(classification: dict[str, object], *, error_text: str = "", history: list[object] | None = None, phase3_contract: dict[str, object] | None = None, prompt_context: dict[str, object] | None = None) -> dict[str, object]:
+    if not _active_custom_op_contract(phase3_contract=phase3_contract, prompt_context=prompt_context):
+        flash_routing = _route_flash_attention_backend_failure(
+            classification,
+            error_text=error_text,
+            history=history,
+            prompt_context=prompt_context,
+        )
+        if flash_routing is not None:
+            return flash_routing
+
     if not _has_custom_op_operator_evidence_signal(
         error_text=error_text,
         history=history,
@@ -1217,6 +1297,7 @@ class RepairLoopEngine:
             return "unsafe_run_command"
         updated_contract = dict(active_contract)
         updated_contract["run_command"] = run_command
+        updated_contract["project_dir"] = project_dir
         if entry_script_path:
             updated_contract["entry_script_path"] = entry_script_path
         elif not updated_contract.get("entry_script_path"):
