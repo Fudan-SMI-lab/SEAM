@@ -27,7 +27,10 @@ COMMON_CONTEXT = {
     "runtime_error_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md",
     "runtime_card_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md",
     "workspace_root": "/workspace",
-    "operator_custom_op_guidance": "4. This is a generic operator-incompatibility repair.\n5. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证, 只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics。",
+    "operator_custom_op_guidance": repair_loop._operator_generic_guidance(
+        project_dir="/tmp/test_project",
+        entry_script="python train.py",
+    ),
 }
 
 
@@ -80,12 +83,15 @@ def test_operator_fixer_prompt_is_generic_without_custom_op_guidance() -> None:
     assert "/tmp/test_project" in prompt
     assert "python train.py" in prompt
     assert "Ascend NPU 原生修复" in prompt
-    assert "严格 Ascend C/CANN OPP custom operator" in prompt
-    assert "op_host" in prompt
-    assert "op_kernel" in prompt
-    assert "NpuExtension" in prompt
-    assert "ATen-only npu_ops.cpp" in prompt
-    assert "adapter evidence" in prompt
+    assert "No active custom-op contract is present" in prompt
+    assert "不要生成 OPP/custom-op 产物" in prompt
+    assert "active custom-op contract" in prompt
+    assert "严格 Ascend C/CANN OPP custom operator" not in prompt
+    assert "op_host" not in prompt
+    assert "op_kernel" not in prompt
+    assert "NpuExtension" not in prompt
+    assert "ATen-only npu_ops.cpp" not in prompt
+    assert "adapter evidence" not in prompt
     assert "CPU fallback" in prompt
     assert "不要启动后台检索/后台 agents 后提前返回" in prompt
     assert "modified_files: []" in prompt
@@ -101,16 +107,15 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
     context = {
         **COMMON_CONTEXT,
         "repair_role": "operator_fixer",
-        "operator_custom_op_guidance": (
-            "4. Read bounded operator context: /tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md; "
-            "this context is the only inventory / manifest / final-gate closure source.\n"
-            "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-            "6. Every in-scope row must have strict Ascend C/CANN OPP custom operator producer evidence: op_host source path, op_kernel/AscendC source path, CMakeLists.txt/build.sh or equivalent OPP build script, project-local CANN/OPP build-install logs, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. torch_npu.utils.cpp_extension.NpuExtension, torch.utils.cpp_extension.CppExtension, ATen-only npu_ops.cpp, and libtorch/torch_cpu/torch_npu-only builds are not opp_custom_op_artifact_evidence; NpuExtension may only be adapter evidence when separate strict OPP producer evidence exists. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
-            "7. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证。只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
+        "operator_custom_op_guidance": repair_loop._operator_custom_op_guidance(
+            "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md",
+            project_dir="/tmp/test_project",
+            entry_script="python train.py",
         ),
     }
     prompt = loader.load_prompt("repair_operator_fixer", context)
     assert "bounded operator context" in prompt
+    assert "Active custom-op contract is present" in prompt
     assert "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md" in prompt
     assert "inventory / manifest / final-gate" in prompt.lower()
     assert "freeze manifest rows" in prompt
@@ -118,7 +123,7 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
     assert "remaining_entries == 0" in prompt
     assert "full_migration_status == FULL_PASS" in prompt
     assert "same-run runtime coverage > 0" in prompt
-    assert "baseline/custom performance evidence" in prompt
+    assert "CPU baseline runtime against Ascend OPP/custom-op runtime" in prompt
     assert "strict Ascend C/CANN OPP custom operator producer evidence" in prompt
     assert "op_host source path" in prompt
     assert "op_kernel/AscendC source path" in prompt
@@ -135,6 +140,8 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
     assert "zero-call" in prompt
     assert "modified_files 必须列出实际修改文件" in prompt
     assert "FAILED/INCOMPLETE" in prompt
+    assert "self-baseline" in prompt
+    assert "speedup_vs_baseline" in prompt
     assert "cuda_custom_op_skill_test_prompt.md" not in prompt
     assert ".skills" not in prompt
 
@@ -158,6 +165,8 @@ def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -
     assert "ATen-only npu_ops.cpp" in guidance
     assert "not opp_custom_op_artifact_evidence" in guidance
     assert "FAILED/INCOMPLETE" in guidance
+    assert "CPU `baseline_seconds / custom_seconds`" in guidance
+    assert "same-NPU" in guidance
 
 
 def test_phase_prompts_require_strict_opp_artifacts_and_final_chinese_table() -> None:
@@ -174,9 +183,12 @@ def test_phase_prompts_require_strict_opp_artifacts_and_final_chinese_table() ->
         assert "NpuExtension" in prompt
         assert "ATen-only" in prompt
 
+    assert "CPU baseline" in phase3
+    assert "Ascend OPP/custom-op" in phase3
     assert "final_chinese_per_row_table_parity" in phase3
     assert "final Chinese summary" in phase6
-    assert "| row | semantic operator | public entries / aliases | OPP artifact | adapter callable | coverage key/count | parity | integration/e2e | baseline/custom performance | status | next action |" in phase6
+    assert "same-NPU/self-baseline placeholder" in phase6
+    assert "| row | semantic operator | public entries / aliases | route evidence type | route evidence summary | OPP artifact | adapter callable | coverage key/count | parity | integration/e2e | CPU baseline vs Ascend OPP/custom-op performance | status | next action |" in phase6
 
 
 def test_dependency_fixer_prompt_is_three_line_artifact_pointer() -> None:
@@ -190,6 +202,8 @@ def test_dependency_fixer_prompt_is_three_line_artifact_pointer() -> None:
     assert "{workspace_root}" not in prompt
     assert "/workspace/cuda_custom_op_skill_test_prompt.md" in prompt
     assert "第5点要求" in prompt
+    assert "只有 active custom-op contract" in prompt
+    assert "普通 CUDA 项目不要生成 OPP/custom-op 产物" in prompt
     assert "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
     assert "ModuleNotFoundError: No module named 'torch_npu'" not in prompt
     assert "Rule 1: No CPU fallback" not in prompt
