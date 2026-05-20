@@ -1,0 +1,8 @@
+name: fail-closed-ascend-npu-validation-entrypoint
+title: Fail closed on Ascend NPU availability in validation entrypoints
+description: Fail closed on Ascend NPU availability in validation entrypoints
+category: code_adaptation
+subtype: fail_closed_npu_device_gate
+target_roles: ["code_adapter", "validator", "error_analyzer"]
+target_phases: ["phase_1_5_constraint_summary", "phase_4_rule_migration", "phase_5_validation"]
+trigger_fingerprint: {'problem_signals': ['validation or inference entrypoint contains cuda/cpu fallback', 'migration constraints require Ascend NPU-only execution', 'torch_npu stack is expected but may be missing or unavailable', 'large model validation could falsely pass on CPU/CUDA or fail with OOM'], 'applicability_conditions': ['entry command is the binding validation surface', 'success requires actual NPU execution rather than generic PyTorch availability', 'processor inputs and generated tensors must follow model.device'], 'core_actions': ['import torch_npu inside a device detection helper', 'raise on missing torch_npu or torch_npu.npu.is_available() false', 'return only the NPU device path', 'move processor outputs to model.device', 'validate with final exit_code 0 and explicit NPU-use evidence']}
