@@ -14,8 +14,10 @@ from core.types import (
     WorkflowDefinition,
     SubWorkflowDefinition,
     TransitionDefinition,
+    ExecutionBackendConfig,
 )
 from core.workflow_executor import WorkflowExecutor
+from core.execution_backend import ContainerBackend
 from core.artifact_store import ArtifactStore
 from core.experience_store import ExperienceStore
 from core.telemetry_bridge import TelemetryBridge
@@ -226,6 +228,96 @@ class TestTransitionResolution:
         next_id = executor._get_next_phase_id(phase, "skipped", {}, {})
 
         assert next_id == executor.workflow.phases[1].id
+
+    def test_stagnation_without_routing_terminates(self, executor):
+        phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
+
+        assert next_id is None
+
+    def test_reject_exhausted_without_routing_terminates(self, executor):
+        phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
+
+        assert next_id is None
+
+    def test_arbitrary_non_success_status_terminates(self, executor):
+        phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
+        executor.phase_index = {"a": 0}
+
+        for status in ("accept", "unknown_fail", "stagnation", "reject_exhausted"):
+            next_id = executor._get_next_phase_id(phase, status, {}, {})
+            assert next_id is None, f"{status} should terminate, not fall through"
+
+    def test_stagnation_explicit_dict_routing_honored(self, executor):
+        phase = PhaseDefinition(
+            id="a", name="A", prompt_template="x", output_schema={},
+            transitions={"stagnation": "error_recovery"},
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
+
+        assert next_id == "error_recovery"
+
+    def test_reject_exhausted_explicit_dict_routing_honored(self, executor):
+        phase = PhaseDefinition(
+            id="a", name="A", prompt_template="x", output_schema={},
+            transitions={"reject_exhausted": "review_cleanup"},
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
+
+        assert next_id == "review_cleanup"
+
+    def test_on_stagnation_yaml_dict_routing_honored(self, executor):
+        phase = PhaseDefinition(
+            id="a", name="A", prompt_template="x", output_schema={},
+            transitions={"on_stagnation": "stagnation_recovery"},
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
+
+        assert next_id == "stagnation_recovery"
+
+    def test_on_reject_exhausted_yaml_dict_routing_honored(self, executor):
+        phase = PhaseDefinition(
+            id="a", name="A", prompt_template="x", output_schema={},
+            transitions={"on_reject_exhausted": "review_cleanup"},
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
+
+        assert next_id == "review_cleanup"
+
+    def test_transition_definition_on_stagnation_honored(self, executor):
+        phase = PhaseDefinition(
+            id="a", name="A", prompt_template="x", output_schema={},
+            transition=TransitionDefinition(on_stagnation="stagnation_recovery"),
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
+
+        assert next_id == "stagnation_recovery"
+
+    def test_transition_definition_on_reject_exhausted_honored(self, executor):
+        phase = PhaseDefinition(
+            id="a", name="A", prompt_template="x", output_schema={},
+            transition=TransitionDefinition(on_reject_exhausted="exhausted_cleanup"),
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
+
+        assert next_id == "exhausted_cleanup"
 
 
 class TestShellPhase:
@@ -3616,4 +3708,107 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         import shutil
 
         shutil.rmtree(skill_repo_root, ignore_errors=True)
+
+
+# ── Container preflight / probe during WorkflowExecutor init ───────────
+
+
+class TestWorkflowExecutorContainerPreflight:
+    @patch("core.execution_backend.ContainerBackend")
+    def test_container_workflow_calls_preflight_and_probe(self, MockBackend, tmp_path: Path):
+        backend = MagicMock()
+        MockBackend.return_value = backend
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+        backend.set_project_dir.assert_called_once()
+        backend.preflight.assert_called_once()
+        backend.probe_environment.assert_called_once()
+        assert executor.exec_backend is backend
+        assert executor._container_env_probe is backend.probe_environment.return_value
+
+    @patch("core.execution_backend.ContainerBackend")
+    def test_local_workflow_does_not_call_preflight(self, MockBackend, tmp_path: Path):
+        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+        MockBackend.assert_not_called()
+        assert executor.exec_backend is None
+        assert executor._container_env_probe is None
+
+    @patch("subprocess.run")
+    def test_container_backend_preflight_is_called_on_init(self, mock_run, tmp_path: Path):
+        mock_run.return_value = MagicMock(returncode=0, stdout="init-cid\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+        assert isinstance(executor.exec_backend, ContainerBackend)
+        assert executor.exec_backend._container_id == "init-cid"
+
+
+# ── Container context injection into LLM prompts ──────────────────────
+
+
+class TestContainerEnvContextInjection:
+    def test_inject_container_env_context_skipped_for_local(self, tmp_path: Path):
+        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+        ctx: dict = {}
+        executor._inject_container_env_context(ctx)
+        assert ctx == {}
+
+    @patch("subprocess.run")
+    def test_inject_container_env_context_adds_keys_for_container(self, mock_run, tmp_path: Path):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"status": "ok", "python_version": "3.10.1", "platform": "Linux", "cwd": "/workspace"}\n',
+            stderr="",
+        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+        ctx: dict = {}
+        executor._inject_container_env_context(ctx)
+        assert "container_env_facts" in ctx
+        assert "container_python_version" in ctx
+        assert ctx["container_python_version"] == "3.10.1"
+
+    def test_inject_container_env_context_uses_setdefault(self, tmp_path: Path):
+        from core.execution_backend import ContainerBackend
+
+        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
+        mock_backend = ContainerBackend(ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"}))
+        mock_backend._container_id = "existing-cid"
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            exec_backend=mock_backend,
+        )
+        executor._container_env_probe = {"container_id": "existing-cid", "status": "ok"}
+        ctx: dict = {"container_name_or_id": "pre-set"}
+        executor._inject_container_env_context(ctx)
+        assert ctx["container_name_or_id"] == "pre-set"
 

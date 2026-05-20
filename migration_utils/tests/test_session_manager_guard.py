@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -10,6 +9,17 @@ import pytest
 
 import harness.session.manager as manager_module
 from harness.session.manager import MigrationSessionManager
+
+# Import after manager_module to ensure conftest has already configured _sqlite3 stub if needed.
+try:
+    import _sqlite3  # noqa: F401
+except NameError:
+    _sqlite3 = None  # type: ignore[misc, assignment]
+
+# Use conftest flag to detect whether real sqlite3 C extension is available.
+from tests.conftest import NO_REAL_SQLITE3 as _NO_REAL_SQLITE
+
+_SKIP_SQLITE = pytest.mark.skipif(_NO_REAL_SQLITE, reason="no sqlite3 C extension on this system")
 
 
 Response = dict[str, Any]
@@ -244,6 +254,7 @@ def test_send_command_times_out_for_incomplete_todos_without_reposting(monkeypat
     assert len(post_calls) == 1
 
 
+@_SKIP_SQLITE
 def test_sqlite_fallback_ignores_unrelated_incomplete_todos(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as conn:
@@ -256,6 +267,7 @@ def test_sqlite_fallback_ignores_unrelated_incomplete_todos(tmp_path: Path) -> N
     assert manager.send_command("ses-1", "do work", retries=0) == "phase complete"
 
 
+@_SKIP_SQLITE
 def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as conn:
@@ -274,6 +286,7 @@ def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, m
     assert "incomplete todos" in result["error"] or "Session still running" in result["error"]
 
 
+@_SKIP_SQLITE
 def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as conn:
@@ -293,6 +306,7 @@ def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, mon
     assert "incomplete todos" in result["error"]
 
 
+@_SKIP_SQLITE
 def test_sqlite_idle_session_with_completed_todos_is_complete(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as conn:
@@ -306,6 +320,7 @@ def test_sqlite_idle_session_with_completed_todos_is_complete(tmp_path: Path) ->
     assert manager.send_command("ses-1", "do work", retries=0) == "phase complete"
 
 
+@_SKIP_SQLITE
 def test_send_command_timeout_none_uses_sqlite_assistant_completion_without_todos(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
     assistant_data = {
@@ -329,6 +344,7 @@ def test_send_command_timeout_none_uses_sqlite_assistant_completion_without_todo
     assert manager.send_command("ses-1", "do work", timeout=None, retries=0) == "phase complete"
 
 
+@_SKIP_SQLITE
 def test_sqlite_assistant_completion_still_blocks_same_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     assistant_data = {
@@ -359,6 +375,7 @@ def test_sqlite_assistant_completion_still_blocks_same_session_pending_todo(tmp_
     assert "incomplete todos" in result["error"] or "Session still running" in result["error"]
 
 
+@_SKIP_SQLITE
 def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     assistant_data = {
@@ -387,6 +404,7 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
     assert "Session still running" in result["error"]
 
 
+@_SKIP_SQLITE
 def test_sqlite_fallback_skips_todo_tables_without_session_column(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as conn:
@@ -474,3 +492,32 @@ def test_hard_error_wait_timeout_none_uses_finite_cap(monkeypatch: pytest.Monkey
     assert result["ok"] is False
     assert "invalid API key" in result["error"]
     assert len(status_calls) == 1
+
+
+def test_wait_for_idle_returns_idle_when_status_empty_and_no_todos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: when /session/status returns {} after a completed response,
+    wait_for_idle must NOT spin until timeout."""
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "phase complete"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [{"todos": [{"status": "completed"}]}]},
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    assert manager.wait_for_idle("ses-1", timeout_s=1, interval_s=0) is True
+
+
+def test_wait_for_idle_tolerant_empty_status_no_todos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same scenario via _wait_after_hard_error: empty status + no todo signal → return."""
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [{"todos": [{"status": "completed"}]}]},
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    manager._wait_after_hard_error("ses-1", timeout=1, interval_s=0)

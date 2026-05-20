@@ -343,3 +343,107 @@ phases:
 
     with pytest.raises(ValueError, match="runtime_skills.*merge"):
         load_workflow(str(workflow_path))
+
+
+def test_transition_on_stagnation_only(tmp_path: Path):
+    """transition: block with only on_stagnation should produce a TransitionDefinition."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: stagnation_test
+version: "1.0"
+terminals: [complete, error_recovery]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition:
+      on_stagnation: error_recovery
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    phase = wf.phases[0]
+
+    assert phase.transition is not None
+    assert phase.transition.on_stagnation == "error_recovery"
+    assert phase.transition.on_success is None
+    assert phase.transition.on_failure is None
+
+
+def test_transition_on_reject_exhausted_only(tmp_path: Path):
+    """transition: block with only on_reject_exhausted should produce a TransitionDefinition."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: reject_exhausted_test
+version: "1.0"
+terminals: [complete, review_cleanup]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition:
+      on_reject_exhausted: review_cleanup
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    phase = wf.phases[0]
+
+    assert phase.transition is not None
+    assert phase.transition.on_reject_exhausted == "review_cleanup"
+    assert phase.transition.on_success is None
+
+
+def test_transition_all_keys_together(tmp_path: Path):
+    """transition: block with all keys including on_stagnation and on_reject_exhausted."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: full_transition_test
+version: "1.0"
+terminals: [complete, error_recovery, skip_target, stagnation_cleanup, exhausted_cleanup]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition:
+      on_success: complete
+      on_failure: error_recovery
+      on_skip: skip_target
+      on_stagnation: stagnation_cleanup
+      on_reject_exhausted: exhausted_cleanup
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    phase = wf.phases[0]
+    td = phase.transition
+
+    assert td is not None
+    assert td.on_success == "complete"
+    assert td.on_failure == "error_recovery"
+    assert td.on_skip == "skip_target"
+    assert td.on_stagnation == "stagnation_cleanup"
+    assert td.on_reject_exhausted == "exhausted_cleanup"
+
+
+def test_empty_transition_dict_returns_none(tmp_path: Path):
+    """Empty transition: {} should not produce a TransitionDefinition."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: empty_transition_test
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition: {}
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.phases[0].transition is None

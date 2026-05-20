@@ -462,6 +462,36 @@ def test_entry_script_validator_rejects_unsafe_shell_run_commands(run_command: s
     assert any("wrapper script" in error or "single process" in error or "shell through env" in error for error in result["errors"])
 
 
+@pytest.mark.parametrize(
+    "run_command",
+    [
+        "podman exec zihang_vllm_ppu python3 /home/zihang/SEAM_PPU_SMOKE/smoke_validate.py",
+        "podman exec -it seam-ppu-smoke python3 smoke_validate.py",
+        "docker exec my-container python3 /workspace/smoke_validate.py",
+        "docker run --rm python:3.10 python3 train.py",
+    ],
+)
+def test_entry_script_validator_rejects_container_runtime_run_commands(run_command: str) -> None:
+    result = validate_entry_script({"entry_script_path": "train.py", "run_command": run_command})
+
+    assert result["passed"] is False
+    assert any("container runtime" in error or "docker/podman" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize(
+    "run_command",
+    [
+        "python3 /workspace/smoke_validate.py",
+        "python3 smoke_validate.py",
+        "/usr/bin/python3 /workspace/smoke_validate.py",
+    ],
+)
+def test_entry_script_validator_accepts_direct_in_container_run_commands(run_command: str) -> None:
+    result = validate_entry_script({"entry_script_path": "smoke_validate.py", "run_command": run_command})
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
 def test_entry_script_validator_rejects_bare_report_only_final_evidence_validator() -> None:
     result = validate_entry_script(
         {
