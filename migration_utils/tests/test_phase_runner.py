@@ -1340,3 +1340,89 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
 
         shutil.rmtree(skill_repo_root, ignore_errors=True)
 
+
+# ── PhaseRunner container context injection ──────────────────────────
+
+
+class TestPhaseRunnerContainerContext:
+    def test_set_container_context_stores_dict(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        ctx = {"execution_backend_mode": "container", "container_name_or_id": "c1"}
+        runner.set_container_context(ctx)
+        assert runner._container_context == ctx
+        ctx["mutated"] = "x"
+        assert "mutated" not in runner._container_context
+
+    def test_build_prompt_context_includes_container_keys(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        runner.set_container_context({
+            "execution_backend_mode": "container",
+            "container_name_or_id": "c1",
+            "container_env_facts": '{"status":"ok"}',
+            "container_python_version": "3.10.0",
+        })
+        phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
+        context = {"project_dir": "/tmp/proj", "user_constraints": ""}
+        result = runner._build_prompt_context(phase_spec, context)
+        assert result["execution_backend_mode"] == "container"
+        assert result["container_name_or_id"] == "c1"
+        assert result["container_env_facts"] == '{"status":"ok"}'
+        assert result["container_python_version"] == "3.10.0"
+
+    def test_container_context_setdefault_preserves_existing(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        runner.set_container_context({"project_dir": "/container/dir"})
+        phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
+        context = {"project_dir": "/host/proj"}
+        result = runner._build_prompt_context(phase_spec, context)
+        assert result["project_dir"] == "/host/proj"
+
+    def test_empty_container_context_adds_nothing(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        assert runner._container_context == {}
+        phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
+        result = runner._build_prompt_context(phase_spec, {"project_dir": "/tmp"})
+        assert "execution_backend_mode" not in result
+        assert "container_name_or_id" not in result
+
+
+def _make_session_mgr() -> SessionManagerLike:
+    def _noop():
+        return "s1"
+    class M:
+        def get_or_create(self, *a, **kw): return "s1"
+        def send_command(self, *a, **kw): return '{"ok": true}'
+    return M()
+
+
+def _make_artifact_store():
+    class S:
+        def __init__(self):
+            self.artifact_dir = "/tmp/test-artifacts"
+            self.saved = {}
+        def save_phase_output(self, *a, **kw): return "raw"
+        def mark_validated(self, *a, **kw): return "v"
+        def write_journal(self, *a, **kw): return "j"
+        def load_phase_output(self, *a, **kw): return None
+    return S()
+
