@@ -37,8 +37,10 @@ from core.variable_resolver import VariableResolver
 from core.session_registry import SessionRegistry
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
+from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
+from migrator.rule_based_ppu import PPURuleBasedMigrator
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.repair_loop import (
     _operator_custom_op_guidance,
@@ -295,6 +297,7 @@ class WorkflowExecutor:
         telemetry_bridge: Any = None,
         hook_manager: HookManager | None = None,
         experience_store=None,
+        exec_backend: Any = None,
     ) -> None:
         self.workflow = workflow
         self.session_mgr = session_mgr
@@ -313,6 +316,9 @@ class WorkflowExecutor:
         self.telemetry_bridge = telemetry_bridge
         self.telemetry_observer = telemetry_observer
         self.experience_store = experience_store
+        self.exec_backend = exec_backend
+        self._initialize_execution_backend()
+        self._container_env_probe = getattr(self, "_container_env_probe", None)
         self._runtime_skill_resolver: RuntimeSkillResolver | None = None
 
         # Execution state
@@ -322,6 +328,39 @@ class WorkflowExecutor:
 
         for i, p in enumerate(self.workflow.phases or []):
             self.phase_index[p.id] = i
+
+    def _initialize_execution_backend(self) -> None:
+        """Create execution backend from workflow config when needed."""
+        if self.exec_backend is not None:
+            return
+        eb = getattr(self.workflow, "execution_backend", None)
+        if eb is None or eb.mode == "local":
+            return
+
+        from core.execution_backend import (
+            ContainerBackend,
+            auto_select_backend,
+        )
+
+        if eb.mode == "auto":
+            eb = auto_select_backend(eb)
+
+        if eb.mode != "container":
+            return
+
+        backend = ContainerBackend(eb)
+        backend.set_project_dir(self.project_dir)
+        backend.preflight()
+        self._container_env_probe = backend.probe_environment()
+        self.exec_backend = backend
+
+    def _cleanup_execution_backend(self) -> None:
+        if self.exec_backend is None:
+            return
+        try:
+            self.exec_backend.cleanup()
+        except Exception as exc:
+            logger.error("Execution backend cleanup failed: %s", exc)
 
     def _set_telemetry_active_phase(self, phase_id: str | None) -> None:
         setter = getattr(self.telemetry_observer, "set_active_phase", None)
@@ -486,7 +525,10 @@ class WorkflowExecutor:
         except Exception as exc:
             logger.error("workflow_end hook failed: %s", exc)
 
-        # 5. Return final result
+        # 6. Cleanup container execution backend (if configured)
+        self._cleanup_execution_backend()
+
+        # 7. Return final result
         return {
             "state": self.state,
             "phase_results": self.phase_results,
@@ -1237,6 +1279,8 @@ class WorkflowExecutor:
                 serialized_state[k] = v
         input_ctx.setdefault("previous_outputs", json.dumps(serialized_state, indent=2, ensure_ascii=False))
 
+        self._inject_container_env_context(input_ctx)
+
     def _inject_llm_phase_specific_context(
         self,
         input_ctx: dict,
@@ -1258,6 +1302,25 @@ class WorkflowExecutor:
         if "phase_6" in pid:
             input_ctx.setdefault("report_dir",
                                  os.path.join(self.artifact_store.artifact_dir, "reports"))
+
+    def _inject_container_env_context(self, input_ctx: dict) -> None:
+        if not isinstance(self.exec_backend, ContainerBackend):
+            return
+        probe = self._container_env_probe
+        if not probe:
+            return
+
+        backend_ctx = _get_exec_ctx(self.exec_backend)
+        for k, v in backend_ctx.items():
+            input_ctx.setdefault(k, v)
+
+        input_ctx.setdefault(
+            "container_env_facts",
+            json.dumps(probe, ensure_ascii=False, indent=2, default=str),
+        )
+        for key in ("python_version", "platform", "platform_machine", "cwd", "torch_version"):
+            if key in probe:
+                input_ctx.setdefault(f"container_{key}", str(probe[key]))
 
     def _inject_sub_workflow_context(
         self,
@@ -1283,6 +1346,12 @@ class WorkflowExecutor:
         raw_files = self._list_attempt_files()
         constraint = self._resolve_constraint_summary(state)
         hist_summary = self._format_history_summary(loop_history)
+
+        # Inject container execution context for Phase 5 sub-workflow phases
+        es = str(entry_script)
+        exec_cmd: str | list[str] = shlex.split(es) if isinstance(self.exec_backend, ContainerBackend) else es
+        exec_ctx = _get_exec_ctx(self.exec_backend, command=exec_cmd)
+        input_ctx.update(exec_ctx)
 
         if phase_id in ("fix_dependency", "fix_code", "fix_operator"):
             if phase_id in {"fix_dependency", "fix_operator"}:
@@ -1422,6 +1491,8 @@ class WorkflowExecutor:
                 "raw_attempt_files": raw_files,
                 "constraint_summary": constraint,
             })
+
+        self._inject_container_env_context(input_ctx)
 
     def _resolve_constraint_summary(self, state: dict) -> str:
         ph = state.get("phase_1_5_constraint_summary", {})
@@ -1661,6 +1732,8 @@ class WorkflowExecutor:
         loop_state: dict | None = None,
     ) -> tuple[str, dict]:
         """Execute a shell command with OOM-safe output tailing."""
+        from core.execution_backend import ContainerBackend
+
         # 1. Resolve command
         cmd = self.resolver.resolve(
             getattr(phase, "command", "") or "",
@@ -1687,6 +1760,95 @@ class WorkflowExecutor:
             cwd = cmd["cwd"]
 
         entry_script_command = self._is_phase5_entry_script_command(phase, loop_vars)
+        timeout = phase.timeout
+
+        # Container backend path
+        if isinstance(self.exec_backend, ContainerBackend):
+            return self._execute_shell_phase_container(
+                phase, cmd, cwd, entry_script_command, timeout, state, context,
+                loop_vars=loop_vars, loop_state=loop_state,
+            )
+
+        # Local path (existing code, unchanged)
+        return self._execute_shell_phase_local(
+            phase, cmd, cwd, entry_script_command, timeout, state, context,
+            loop_vars=loop_vars, loop_state=loop_state,
+        )
+
+    def _execute_shell_phase_container(
+        self,
+        phase: PhaseDefinition,
+        cmd: Any,
+        cwd: str,
+        entry_script_command: bool,
+        timeout: int | None,
+        state: dict,
+        context: dict,
+        *,
+        loop_vars: dict | None = None,
+        loop_state: dict | None = None,
+    ) -> tuple[str, dict]:
+        backend: ContainerBackend = self.exec_backend
+        run_cmd: str | list[str]
+        if entry_script_command:
+            run_cmd = shlex.split(str(cmd))
+        else:
+            run_cmd = str(cmd)
+
+        try:
+            result = backend.run(
+                run_cmd, cwd=cwd, env=None, timeout=timeout,
+            )
+            exit_code = result.exit_code
+            stdout = result.stdout
+            stderr = result.stderr
+            duration = result.duration
+        except subprocess.TimeoutExpired:
+            exit_code = 124
+            duration = timeout if timeout else 0
+            stdout = ""
+            stderr = f"Execution timed out after {timeout}s"
+        except Exception as exc:
+            exit_code = 1
+            duration = 0
+            stdout = ""
+            stderr = str(exc)
+
+        captured = {
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "duration": round(duration, 3),
+            "command": str(cmd),
+        }
+
+        if loop_state is not None:
+            loop_state["script_exit_code"] = exit_code
+            loop_state["script_stdout"] = stdout
+            loop_state["script_stderr"] = stderr
+            loop_state["script_duration"] = captured["duration"]
+
+        on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
+        if exit_code != 0 and on_failure != "break":
+            return ("success", captured)
+        if exit_code != 0:
+            return ("failure", captured)
+        return ("success", captured)
+
+    def _execute_shell_phase_local(
+        self,
+        phase: PhaseDefinition,
+        cmd: Any,
+        cwd: str,
+        entry_script_command: bool,
+        timeout: int | None,
+        state: dict,
+        context: dict,
+        *,
+        loop_vars: dict | None = None,
+        loop_state: dict | None = None,
+    ) -> tuple[str, dict]:
+        """Original local execution path using subprocess + temp files."""
         run_cmd: str | list[str]
         run_shell = not entry_script_command
         if entry_script_command:
@@ -1694,12 +1856,8 @@ class WorkflowExecutor:
         else:
             run_cmd = str(cmd)
 
-        # 3. Resolve timeout; None means subprocess.run has no timeout.
-        timeout = phase.timeout
-
         out_path = err_path = None
         try:
-            # 4. Redirect to temp files
             with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as out_f, \
                  tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as err_f:
                 out_path = out_f.name
@@ -1715,7 +1873,6 @@ class WorkflowExecutor:
 
             exit_code = result.returncode
 
-            # 5. Read tail
             stdout = self._read_tail(out_path)
             stderr = self._read_tail(err_path)
 
@@ -1746,14 +1903,12 @@ class WorkflowExecutor:
             "command": str(cmd),
         }
 
-        # 7. Store in loop_state
         if loop_state is not None:
             loop_state["script_exit_code"] = exit_code
             loop_state["script_stdout"] = stdout
             loop_state["script_stderr"] = stderr
             loop_state["script_duration"] = captured["duration"]
 
-        # on_failure handling
         on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
         if exit_code != 0 and on_failure != "break":
             return ("success", captured)
@@ -1805,10 +1960,21 @@ class WorkflowExecutor:
             return ("success", {"operation": operation, "error_signature": error_sig})
 
         if operation == "rule_based_migration":
+            backend = _params.get("backend", "").lower()
+            if backend == "ppu":
+                migrator = PPURuleBasedMigrator()
+                result = migrator.migrate_directory(self.project_dir, pattern=str(_params.get("pattern", "*.py")))
+                return ("success", {"operation": operation, "result": result, "backend": "ppu"})
             pattern = _params.get("pattern", "*.py")
             migrator = RuleBasedMigrator()
             result = migrator.migrate_directory(self.project_dir, pattern=str(pattern))
             return ("success", {"operation": operation, "result": result})
+
+        if operation == "ppu_rule_based_migration":
+            pattern = _params.get("pattern", "*.py")
+            migrator = PPURuleBasedMigrator()
+            result = migrator.migrate_directory(self.project_dir, pattern=str(pattern))
+            return ("success", {"operation": operation, "result": result, "backend": "ppu"})
 
         if operation == "custom_op_final_gate":
             return self._execute_custom_op_final_gate(state, context, loop_vars, loop_state)
@@ -1998,6 +2164,10 @@ class WorkflowExecutor:
             "iteration": loop_state.get("iteration", 0),
             "last_artifact_path": self._resolve_last_artifact_path(),
         }
+        entry_script = loop_vars.get("entry_script", "")
+        es = str(entry_script)
+        exec_cmd: str | list[str] = shlex.split(es) if isinstance(self.exec_backend, ContainerBackend) else es
+        review_ctx.update(_get_exec_ctx(self.exec_backend, command=exec_cmd))
         review_ctx.update(
             self._resolve_input_mapping(phase, state, context,
                                         loop_vars=loop_vars, loop_state=loop_state,
@@ -3301,6 +3471,8 @@ class WorkflowExecutor:
                 on_success=raw_transition.get("on_success"),
                 on_failure=raw_transition.get("on_failure"),
                 on_skip=raw_transition.get("on_skip"),
+                on_stagnation=raw_transition.get("on_stagnation"),
+                on_reject_exhausted=raw_transition.get("on_reject_exhausted"),
             )
 
         transitions = phase_dict.get("transitions", {})
@@ -3441,10 +3613,11 @@ class WorkflowExecutor:
 
         Priority:
           1. phase.transition (TransitionDefinition)
-          2. phase.transitions dict
+          2. phase.transitions dict (raw keys + on_* YAML-style aliases)
           3. Unhandled failure terminates
-          4. Default: next phase in workflow.phases list
-          5. None (terminate)
+          4. Unhandled non-success / non-skipped status terminates (fail-closed)
+          5. Default: next phase in workflow.phases list
+          6. None (terminate)
         """
         # 1. Check TransitionDefinition
         transition = current_phase.transition
@@ -3455,6 +3628,10 @@ class WorkflowExecutor:
                 return transition.on_failure
             if status == "skipped" and transition.on_skip:
                 return transition.on_skip
+            if status == "stagnation" and transition.on_stagnation:
+                return transition.on_stagnation
+            if status == "reject_exhausted" and transition.on_reject_exhausted:
+                return transition.on_reject_exhausted
 
         # 2. Check transitions dict
         if current_phase.transitions:
@@ -3462,6 +3639,8 @@ class WorkflowExecutor:
                 "success": ("success", "on_success"),
                 "failure": ("failure", "on_failure"),
                 "skipped": ("skipped", "on_skip"),
+                "stagnation": ("stagnation", "on_stagnation"),
+                "reject_exhausted": ("reject_exhausted", "on_reject_exhausted"),
             }
             for key in status_keys.get(status, (status,)):
                 target = current_phase.transitions.get(key)
@@ -3472,13 +3651,20 @@ class WorkflowExecutor:
         if status == "failure":
             return None
 
-        # 4. Default: next phase in list
+        # 4. Fail closed for all non-standard terminal statuses (stagnation,
+        #    reject_exhausted, accept, …) that lack an explicit transition.
+        #    Only `success` and `skipped` are allowed to fall through to the
+        #    default next-phase lookup.
+        if status not in ("success", "skipped"):
+            return None
+
+        # 5. Default: next phase in list
         idx = self.phase_index.get(current_phase.id, -1)
         phases = self.workflow.phases or []
         if idx >= 0 and idx + 1 < len(phases):
             return phases[idx + 1].id
 
-        # 5. Last phase → terminate
+        # 6. Last phase → terminate
         return None
 
     def _build_experience_query_context(

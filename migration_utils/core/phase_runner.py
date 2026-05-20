@@ -150,6 +150,10 @@ class PhaseRunner:
         }
         self._runtime_phase_index = self._build_runtime_phase_index(workflow)
         self._register_default_validators()
+        self._container_context: dict[str, str] = {}
+
+    def set_container_context(self, ctx: dict[str, str]) -> None:
+        self._container_context = dict(ctx)
 
     @staticmethod
     def _session_error_from_response(response: str | None) -> str | None:
@@ -375,6 +379,7 @@ class PhaseRunner:
                 "project_dir": project_dir,
                 "phase_1_context": phase_1_context,
                 "user_constraints": user_constraints,
+                **self._container_context,
             },
         )
         prompt = self._append_explicit_runtime_skill_markdown(
@@ -997,6 +1002,8 @@ class PhaseRunner:
             prompt_ctx["previous_outputs"] = self._serialize_context(previous_outputs)
             entry_script = self._lookup_previous_output(previous_outputs, "phase_3_entry_script", "entry_script_path")
             prompt_ctx["entry_script_path"] = str(entry_script) if entry_script else "(not available)"
+        for k, v in self._container_context.items():
+            prompt_ctx.setdefault(k, v)
         return prompt_ctx
 
     @staticmethod

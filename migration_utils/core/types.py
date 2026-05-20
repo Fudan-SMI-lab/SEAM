@@ -87,6 +87,82 @@ class RepairContext:
 
 
 @dataclass
+class ExecutionBackendConfig:
+    """Optional execution-backend configuration parsed from workflow YAML.
+
+    When *mode* is ``"local"`` (the default), all fields beyond ``mode``
+    are ignored and commands run via local ``subprocess``.
+
+    When *mode* is ``"container"``, the ``source`` field distinguishes between
+    creating a new container from an image versus attaching to an already
+    running container.
+    """
+
+    mode: str = "local"                           # local | container | auto
+    source: str = "image"                         # image | existing_container
+    runtime: str = "docker"                       # docker | podman
+    image: str | None = None                      # source=image only
+    container_name: str | None = None             # source=existing_container only
+    container_name_prefix: str = "seam-migration"
+    devices: list[str] = field(default_factory=list)
+    volumes: list[str] = field(default_factory=list)
+    env_vars: dict[str, str] = field(default_factory=dict)
+    required_env_vars: list[str] = field(default_factory=list)
+    required_devices: list[str] = field(default_factory=list)
+    container_workdir: str = "/workspace"
+    network_mode: str | None = None
+    runtime_flags: list[str] = field(default_factory=list)
+    timeout: int = 7200
+    cleanup: bool = True
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, object] | None) -> "ExecutionBackendConfig":
+        """Build an instance from a parsed YAML dict.
+
+        Returns a local-mode config when *raw* is ``None`` or empty.
+        Raises ``ValueError`` for unrecognised *mode* / *source* values or
+        when *container_name* is missing for ``source=existing_container``.
+        """
+        if not raw:
+            return cls(mode="local")
+
+        mode = str(raw.get("mode", "local"))
+        if mode not in ("local", "container", "auto"):
+            raise ValueError(f"Invalid execution_backend.mode: {mode!r}")
+
+        if mode == "local":
+            return cls(mode="local")
+
+        source = str(raw.get("source", "image"))
+        if source not in ("image", "existing_container"):
+            raise ValueError(f"Invalid execution_backend.source: {source!r}")
+
+        if source == "existing_container" and not raw.get("container_name"):
+            raise ValueError(
+                "execution_backend.container_name is required when source=existing_container"
+            )
+
+        return cls(
+            mode=mode,
+            source=source,
+            runtime=str(raw.get("runtime", "docker")),
+            image=raw.get("image"),
+            container_name=raw.get("container_name"),
+            container_name_prefix=str(raw.get("container_name_prefix", "seam-migration")),
+            devices=list(raw.get("devices", [])),
+            volumes=list(raw.get("volumes", [])),
+            env_vars={str(k): str(v) for k, v in raw.get("env_vars", {}).items()},
+            required_env_vars=list(raw.get("required_env_vars", [])),
+            required_devices=list(raw.get("required_devices", [])),
+            container_workdir=str(raw.get("container_workdir", "/workspace")),
+            network_mode=raw.get("network_mode"),
+            runtime_flags=list(raw.get("runtime_flags", [])),
+            timeout=int(raw.get("timeout", 7200)),
+            cleanup=bool(raw.get("cleanup", True)),
+        )
+
+
+@dataclass
 class WorkflowDefinition:
     """Top-level workflow descriptor loaded from YAML."""
 
@@ -99,6 +175,7 @@ class WorkflowDefinition:
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)
     sub_workflows: dict[str, SubWorkflowDefinition] = field(default_factory=dict)
     hooks: dict[str, list[HookDefinition]] = field(default_factory=dict)
+    execution_backend: ExecutionBackendConfig | None = None
 
 
 class PhaseType(str, Enum):
@@ -149,6 +226,8 @@ class TransitionDefinition:
     on_success: str | None = None
     on_failure: str | None = None
     on_skip: str | None = None
+    on_stagnation: str | None = None
+    on_reject_exhausted: str | None = None
 
 
 @dataclass

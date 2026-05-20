@@ -728,7 +728,8 @@ class MigrationSessionManager:
                 continue
             if sqlite_state is False:
                 return True
-            time.sleep(interval_s)
+            # No running signal found: status OK, no token, no todos, no sqlite → idle.
+            return True
         return False
 
     def _wait_after_hard_error(
