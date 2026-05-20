@@ -13,6 +13,7 @@ from harness.session.manager import SessionManager
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
+from core.execution_backend import get_container_prompt_context
 from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
 from core.prompt_loader import PromptLoader
 from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
@@ -129,7 +130,13 @@ class Orchestrator:
             workflow=workflow,
             framework_config=fw_config,
         )
-        repair_engine = RepairLoopEngine(repair_session_mgr, artifact_store, prompt_loader, validator, config=fw_config)
+        exec_backend = self._resolve_execution_backend(workflow, active_project_dir)
+        container_ctx = self._preflight_and_probe(exec_backend)
+        runner.set_container_context(container_ctx)
+        repair_engine = RepairLoopEngine(
+            repair_session_mgr, artifact_store, prompt_loader, validator,
+            config=fw_config, exec_backend=exec_backend,
+        )
         migrator = RuleBasedMigrator()
         phase_results: dict[str, object] = {}
 
@@ -292,6 +299,7 @@ class Orchestrator:
             return result
         finally:
             cleaned = self.session_mgr.cleanup_all()
+            self._cleanup_execution_backend(exec_backend)
             self._journal(
                 artifact_store,
                 phase_id="orchestrator",
@@ -515,6 +523,53 @@ class Orchestrator:
     @staticmethod
     def _serialize(value: object) -> str:
         return value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+    def _resolve_execution_backend(
+        self,
+        workflow: object,
+        project_dir: str,
+    ) -> object:
+        """Create an execution backend from workflow config, mirroring WorkflowExecutor behavior."""
+        eb_cfg = getattr(workflow, "execution_backend", None)
+        if eb_cfg is None or eb_cfg.mode == "local":
+            return None
+
+        from core.execution_backend import ContainerBackend, auto_select_backend
+
+        if eb_cfg.mode == "auto":
+            eb_cfg = auto_select_backend(eb_cfg)
+
+        if eb_cfg.mode != "container":
+            return None
+
+        backend = ContainerBackend(eb_cfg)
+        backend.set_project_dir(project_dir)
+        return backend
+
+    @staticmethod
+    def _preflight_and_probe(backend: object) -> dict[str, str]:
+        if backend is None:
+            return {}
+        preflight = getattr(backend, "preflight", None)
+        if callable(preflight):
+            preflight()
+        probe_fn = getattr(backend, "probe_environment", None)
+        probe_facts: dict[str, object] | None = None
+        if callable(probe_fn):
+            probe_facts = probe_fn()
+        return get_container_prompt_context(backend, probe_facts)
+
+    @staticmethod
+    def _cleanup_execution_backend(backend: object) -> None:
+        if backend is None:
+            return
+        try:
+            backend.cleanup()
+        except Exception as exc:
+            # Cleanup failures are logged, never crash the workflow.
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error("Execution backend cleanup failed: %s", exc)
 
     @staticmethod
     def _journal(

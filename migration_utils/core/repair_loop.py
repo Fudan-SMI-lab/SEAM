@@ -18,6 +18,7 @@ from typing import Any, Callable, Protocol, TypedDict, cast
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
+from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx
 from core.paths import workspace_root
 from core.prompt_loader import PromptLoader
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
@@ -76,6 +77,11 @@ _REPAIR_PROMPT_IDS = {
     "dependency_fixer": "repair_dependency_fixer",
     "code_adapter": "repair_code_adapter",
     "operator_fixer": "repair_operator_fixer",
+}
+_REPAIR_PROMPT_IDS_CONTAINER = {
+    "dependency_fixer": "repair_dependency_fixer_container",
+    "code_adapter": "repair_code_adapter_container",
+    "operator_fixer": "repair_operator_fixer_container",
 }
 
 
@@ -269,12 +275,14 @@ class RepairLoopEngine:
         prompt_loader: PromptLoader,
         validator: ValidatorEngine,
         config: ConfigDict | None = None,
+        exec_backend: object = None,
     ) -> None:
         self.session_mgr = session_mgr
         self.artifact_store = artifact_store
         self.prompt_loader = prompt_loader
         self.validator = validator
         self.config = config
+        self.exec_backend = exec_backend
         self.validator.register_validator("validation_final", validate_validation_final)
         self.validator.register_validator("repair_classification", self._validate_classification)
 
@@ -505,40 +513,64 @@ class RepairLoopEngine:
                 self._log(f"[Iter {iteration}/{max_iterations}] Running entry script...", logger)
                 try:
                     run_start = time.monotonic()
-                    run_env = os.environ.copy()
-                    run_env.update(env_vars)
 
-                    with open(stdout_log_path, "w", encoding="utf-8") as stdout_handle, open(
-                        stderr_log_path, "w", encoding="utf-8"
-                    ) as stderr_handle:
-                        if use_shell:
-                            completed = subprocess.run(
-                                cmd_argv,
-                                stdout=stdout_handle,
-                                stderr=stderr_handle,
+                    if isinstance(self.exec_backend, ContainerBackend):
+                        try:
+                            exec_result = self.exec_backend.run(
+                                command=" ".join(cmd_argv) if use_shell else cmd_argv,
                                 cwd=script_cwd,
-                                shell=True,
-                                executable="/bin/bash",
+                                env=env_vars if env_vars else None,
                                 timeout=entry_script_timeout,
-                                env=run_env,
                             )
-                        else:
-                            completed = subprocess.run(
-                                cmd_argv,
-                                stdout=stdout_handle,
-                                stderr=stderr_handle,
-                                cwd=script_cwd,
-                                shell=False,
-                                timeout=entry_script_timeout,
-                                env=run_env,
-                            )
+                            final_exit_code = exec_result.exit_code
+                            final_stdout = exec_result.stdout
+                            final_stderr = exec_result.stderr
+                            execution_duration = exec_result.duration
+                        except subprocess.TimeoutExpired:
+                            final_exit_code = 124
+                            final_stdout = ""
+                            final_stderr = f"Execution timed out after {entry_script_timeout}s"
+                            execution_duration = entry_script_timeout if entry_script_timeout else 0
+                        except Exception as exc:
+                            final_exit_code = 1
+                            final_stdout = ""
+                            final_stderr = str(exc)
+                            execution_duration = round(time.monotonic() - run_start, 1)
+                    else:
+                        run_env = os.environ.copy()
+                        run_env.update(env_vars)
 
-                    execution_duration = round(time.monotonic() - run_start, 1)
-                    final_stdout = self._read_tail(stdout_log_path)
-                    final_stderr = self._read_tail(stderr_log_path)
-                    final_exit_code = completed.returncode
+                        with open(stdout_log_path, "w", encoding="utf-8") as stdout_handle, open(
+                            stderr_log_path, "w", encoding="utf-8"
+                        ) as stderr_handle:
+                            if use_shell:
+                                completed = subprocess.run(
+                                    cmd_argv,
+                                    stdout=stdout_handle,
+                                    stderr=stderr_handle,
+                                    cwd=script_cwd,
+                                    shell=True,
+                                    executable="/bin/bash",
+                                    timeout=entry_script_timeout,
+                                    env=run_env,
+                                )
+                            else:
+                                completed = subprocess.run(
+                                    cmd_argv,
+                                    stdout=stdout_handle,
+                                    stderr=stderr_handle,
+                                    cwd=script_cwd,
+                                    shell=False,
+                                    timeout=entry_script_timeout,
+                                    env=run_env,
+                                )
 
-                    if completed.returncode == 0:
+                        execution_duration = round(time.monotonic() - run_start, 1)
+                        final_stdout = self._read_tail(stdout_log_path)
+                        final_stderr = self._read_tail(stderr_log_path)
+                        final_exit_code = completed.returncode
+
+                    if final_exit_code == 0:
                         gate_result = self._validate_custom_op_final_gate_for_contract(
                             active_phase3_contract, project_dir
                         )
@@ -630,7 +662,7 @@ class RepairLoopEngine:
                                 snapshot = self._snapshot_project_files(project_dir, f"iter{iteration}")
                                 gate_state.best_passing_version = {
                                     "iteration": iteration,
-                                    "exit_code": completed.returncode,
+                                    "exit_code": final_exit_code,
                                     "modified_files": last_fix_metadata.get("modified_files", []),
                                     "fix_summary": str(last_fix_metadata.get("summary", "")),
                                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -676,7 +708,7 @@ class RepairLoopEngine:
                                     context.iteration_count = iteration
                                     iteration_record_exit0: IterationRecord = {
                                         "iteration": iteration,
-                                        "exit_code": completed.returncode,
+                                        "exit_code": final_exit_code,
                                         "stdout": final_stdout,
                                         "stderr": final_stderr,
                                         "error": "",
@@ -705,11 +737,11 @@ class RepairLoopEngine:
                             status = "success"
                             break
 
-                    if final_exit_code == 0 and completed.returncode == 0:
+                    if final_exit_code == 0:
                         pass
-                    elif completed.returncode < 0:
+                    elif final_exit_code < 0:
                         error_text = (
-                            f"Entry script terminated by Signal {abs(completed.returncode)}. "
+                            f"Entry script terminated by Signal {abs(final_exit_code)}. "
                             "Likely caused by OOM or system limits."
                         )
                     else:
@@ -744,6 +776,10 @@ class RepairLoopEngine:
                     last_review=last_review,
                     env_context=env_context or {},
                     phase3_contract=active_phase3_contract,
+                    cmd_argv=cmd_argv,
+                    use_shell=use_shell,
+                    script_cwd=script_cwd,
+                    env_vars=env_vars,
                 )
                 last_classification = classification
                 self._log(
@@ -828,6 +864,10 @@ class RepairLoopEngine:
                         last_review=last_review,
                         env_context=env_context or {},
                         phase3_contract=active_phase3_contract,
+                        cmd_argv=cmd_argv,
+                        use_shell=use_shell,
+                        script_cwd=script_cwd,
+                        env_vars=env_vars,
                     )
                     last_fix_instruction = repair_prompt
                     repair_response: str | None = None
@@ -972,6 +1012,10 @@ class RepairLoopEngine:
         last_review: dict[str, object] | None = None,
         env_context: dict[str, object] | None = None,
         phase3_contract: dict[str, object] | None = None,
+        cmd_argv: list[str] | None = None,
+        use_shell: bool = False,
+        script_cwd: str | None = None,
+        env_vars: dict[str, str] | None = None,
     ) -> ClassificationDict:
         prompt_context: dict[str, str] = {
             "phase_name": _PHASE_ID,
@@ -992,7 +1036,13 @@ class RepairLoopEngine:
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
         }
-        analyzer_prompt = self.prompt_loader.load_prompt("phase_error_recovery", prompt_context)
+        exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
+        prompt_context.update(_get_exec_ctx(
+            getattr(self, "exec_backend", None), command=exec_cmd, cwd=script_cwd,
+            env=env_vars,
+        ))
+        analyzer_prompt_id = "phase_error_recovery_container" if isinstance(getattr(self, "exec_backend", None), ContainerBackend) else "phase_error_recovery"
+        analyzer_prompt = self.prompt_loader.load_prompt(analyzer_prompt_id, prompt_context)
         max_send_retries = 2
         retry_delays = [5, 15]
         raw_response: str | None = None
@@ -1649,9 +1699,16 @@ class RepairLoopEngine:
         last_review: dict[str, object] | None = None,
         env_context: dict[str, object] | None = None,
         phase3_contract: dict[str, object] | None = None,
+        cmd_argv: list[str] | None = None,
+        use_shell: bool = False,
+        script_cwd: str | None = None,
+        env_vars: dict[str, str] | None = None,
     ) -> str:
         repair_role = classification["repair_role"]
-        prompt_id = _REPAIR_PROMPT_IDS.get(repair_role, "repair_code_adapter")
+        if isinstance(getattr(self, "exec_backend", None), ContainerBackend):
+            prompt_id = _REPAIR_PROMPT_IDS_CONTAINER.get(repair_role, "repair_code_adapter_container")
+        else:
+            prompt_id = _REPAIR_PROMPT_IDS.get(repair_role, "repair_code_adapter")
         context: dict[str, str] = {
             "repair_role": repair_role,
             "entry_script": entry_script,
@@ -1670,6 +1727,10 @@ class RepairLoopEngine:
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
         }
+        exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
+        context.update(_get_exec_ctx(
+            getattr(self, "exec_backend", None), command=exec_cmd, cwd=script_cwd, env=env_vars,
+        ))
         if repair_role in {"dependency_fixer", "operator_fixer"}:
             runtime_error_path, runtime_card_path = write_repair_runtime_artifacts(
                 artifact_dir=str(getattr(self.artifact_store, "artifact_dir", project_dir)),
@@ -1779,7 +1840,11 @@ class RepairLoopEngine:
             "constraint_summary": constraint_summary,
             "improvement_history": "\n".join(f"- {r}" for r in history_lines) if history_lines else "(none)",
         }
-        imp_prompt = self.prompt_loader.load_prompt("phase_review_improvement", prompt_context)
+        prompt_context.update(_get_exec_ctx(
+            getattr(self, "exec_backend", None), command=shlex.split(entry_script),
+        ))
+        imp_prompt_id = "phase_review_improvement_container" if isinstance(getattr(self, "exec_backend", None), ContainerBackend) else "phase_review_improvement"
+        imp_prompt = self.prompt_loader.load_prompt(imp_prompt_id, prompt_context)
         analyzer_session_id = self.session_mgr.get_or_create("error_analyzer", "persistent")
         try:
             raw = self.session_mgr.send_command(
@@ -1807,6 +1872,22 @@ class RepairLoopEngine:
             f"Please execute the necessary modifications to address this improvement.\n"
             f"Project directory: {project_dir}\n"
             f"\n"
+        )
+        imp_exec_ctx = _get_exec_ctx(
+            getattr(self, "exec_backend", None), command=shlex.split(entry_script),
+        )
+        if imp_exec_ctx.get("execution_backend_mode") == "container":
+            improvement_instruction += (
+                f"**Container Execution Context**:\n"
+                f"- Execution mode: {imp_exec_ctx['execution_backend_mode']}\n"
+                f"- Actual execution command: {imp_exec_ctx['actual_execution_command']}\n"
+                f"- Container: {imp_exec_ctx['container_name_or_id']}\n"
+                f"\n"
+                f"When validating manually, use `actual_execution_command` — do NOT run "
+                f"`{entry_script}` directly on the host.\n"
+                f"\n"
+            )
+        improvement_instruction += (
             f"End your response with a JSON code block:\n"
             f'```{ "json" }\n'
             f'{{"modified_files": [...], "summary": "..."}}\n'

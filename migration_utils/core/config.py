@@ -7,6 +7,7 @@ import yaml
 
 from .paths import resolve_relative_path
 from .types import (
+    ExecutionBackendConfig,
     PhaseDefinition,
     RuntimeSkillsConfig,
     WorkflowDefinition,
@@ -51,6 +52,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
     agents = _parse_agents(raw.get("agents", {}))
     sub_workflows = _parse_sub_workflows(raw.get("sub_workflows", {}))
     hooks = _parse_hooks(raw.get("hooks", {}))
+    execution_backend = _parse_execution_backend(raw.get("execution_backend"))
 
     return WorkflowDefinition(
         name=raw["name"],
@@ -62,6 +64,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
         agents=agents,
         sub_workflows=sub_workflows,
         hooks=hooks,
+        execution_backend=execution_backend,
     )
 
 
@@ -222,6 +225,8 @@ def _parse_transition_def(raw: dict[str, Any]) -> TransitionDefinition | None:
           on_success: next_phase
           on_failure: failed
           on_skip: skipped
+          on_stagnation: error_recovery
+          on_reject_exhausted: cleanup
     """
     if not raw:
         return None
@@ -229,14 +234,18 @@ def _parse_transition_def(raw: dict[str, Any]) -> TransitionDefinition | None:
     on_success = raw.get("on_success")
     on_failure = raw.get("on_failure")
     on_skip = raw.get("on_skip")
+    on_stagnation = raw.get("on_stagnation")
+    on_reject_exhausted = raw.get("on_reject_exhausted")
 
-    if on_success is None and on_failure is None and on_skip is None:
+    if on_success is None and on_failure is None and on_skip is None and on_stagnation is None and on_reject_exhausted is None:
         return None
 
     return TransitionDefinition(
         on_success=str(on_success) if on_success is not None else None,
         on_failure=str(on_failure) if on_failure is not None else None,
         on_skip=str(on_skip) if on_skip is not None else None,
+        on_stagnation=str(on_stagnation) if on_stagnation is not None else None,
+        on_reject_exhausted=str(on_reject_exhausted) if on_reject_exhausted is not None else None,
     )
 
 
@@ -430,6 +439,22 @@ def _parse_sub_workflows(raw_sub_wfs: dict[str, dict[str, Any]]) -> dict[str, Su
     return result
 
 
+def _parse_execution_backend(raw: Any) -> ExecutionBackendConfig | None:
+    """Parse optional top-level ``execution_backend`` YAML key.
+
+    Returns ``None`` when the key is absent (backward-compatible default that
+    results in local-mode execution).  Any parsing errors from
+    :meth:`ExecutionBackendConfig.from_dict` propagate to the caller.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return ExecutionBackendConfig.from_dict(raw)
+    raise ValueError(
+        f"execution_backend must be a mapping or absent, got {type(raw).__name__}"
+    )
+
+
 def _validate_phase_types(phases: list[PhaseDefinition]) -> None:
     """Ensure all phase types are in the set of valid types."""
     for phase in phases:
@@ -444,7 +469,7 @@ def _validate_transitions(phases: list[PhaseDefinition], terminals: list[str]) -
 
     Validates both:
     1. The flat `transitions` dict (e.g. {"on_success": "next"})
-    2. The new `transition` object (TransitionDefinition with on_success/on_failure/on_skip)
+    2. The new `transition` object (TransitionDefinition with on_success/on_failure/on_skip/on_stagnation/on_reject_exhausted)
     """
     valid_targets = set(terminals) | {p.id for p in phases}
 
@@ -463,7 +488,7 @@ def _validate_transitions(phases: list[PhaseDefinition], terminals: list[str]) -
         # Validate TransitionDefinition object
         if phase.transition is not None:
             td = phase.transition
-            for field_name in ("on_success", "on_failure", "on_skip"):
+            for field_name in ("on_success", "on_failure", "on_skip", "on_stagnation", "on_reject_exhausted"):
                 target = getattr(td, field_name, None)
                 if target is not None and target not in valid_targets:
                     raise ValueError(
