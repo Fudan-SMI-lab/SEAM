@@ -700,7 +700,7 @@ class TestContainerBackendValidation:
         cfg = ExecutionBackendConfig.from_dict({"mode": "container"})
         backend = ContainerBackend(cfg)
         backend.set_project_dir("/tmp/proj")
-        with pytest.raises(ValueError, match="image is required"):
+        with pytest.raises(ValueError, match="image or execution_backend.images"):
             backend._ensure_container()
 
 
@@ -1317,4 +1317,503 @@ class TestGetContainerPromptContext:
         assert result["container_name_or_id"] == "c3"
         assert "container_env_facts" not in result
 
+
+# ── Image list config parsing ────────────────────────────────────────
+
+
+class TestImageListConfigParsing:
+    def test_from_dict_single_image_populates_images(self):
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "ascendhub:24.03"}
+        )
+        assert cfg.image == "ascendhub:24.03"
+        assert cfg.images == ["ascendhub:24.03"]
+
+    def test_from_dict_images_list(self):
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["img-a:1.0", "img-b:2.0"]}
+        )
+        assert cfg.images == ["img-a:1.0", "img-b:2.0"]
+        assert cfg.image == "img-a:1.0"
+
+    def test_from_dict_both_image_and_images(self):
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "legacy:old", "images": ["new:v1", "new:v2"]}
+        )
+        assert cfg.images == ["new:v1", "new:v2"]
+        # config.image is the first candidate from images for compatibility
+        assert cfg.image == "new:v1"
+
+    def test_from_dict_auto_with_images(self):
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "auto", "images": ["auto-img:1", "auto-img:2"]}
+        )
+        assert cfg.mode == "auto"
+        assert cfg.images == ["auto-img:1", "auto-img:2"]
+
+    def test_backward_compat_single_image(self):
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "source": "image", "image": "test:latest"}
+        )
+        assert cfg.mode == "container"
+        assert cfg.source == "image"
+        assert cfg.image == "test:latest"
+        assert cfg.images == ["test:latest"]
+
+    def test_from_dict_image_as_list(self):
+        """YAML `image: [a, b]` should be accepted and normalized to images list."""
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": ["img-x:1", "img-y:2"]}
+        )
+        assert cfg.images == ["img-x:1", "img-y:2"]
+        assert cfg.image == "img-x:1"
+
+    def test_images_list_wins_over_single_image(self):
+        """When both `image` and `images` are provided, images list wins for candidate resolution."""
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "legacy:old", "images": ["chosen:a", "chosen:b"]}
+        )
+        assert cfg.images == ["chosen:a", "chosen:b"]
+        # The key contract: _resolve_candidate_images must return the images list, not legacy
+        backend = ContainerBackend(cfg)
+        assert backend._resolve_candidate_images() == ["chosen:a", "chosen:b"]
+        assert "legacy:old" not in backend._resolve_candidate_images()
+
+    def test_from_dict_image_list_wins_for_fallback(self):
+        """`image` as list should populate images and config.image to first entry."""
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": ["fallback:1", "fallback:2"]}
+        )
+        assert cfg.images == ["fallback:1", "fallback:2"]
+        assert cfg.image == "fallback:1"
+        backend = ContainerBackend(cfg)
+        assert backend._resolve_candidate_images() == ["fallback:1", "fallback:2"]
+
+    def test_image_list_filters_none_values(self):
+        """String 'None' should not appear as a candidate."""
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["good:1", None, "None", ""]}
+        )
+        # Normalization in from_dict: [str(x) for x in raw_images]
+        # should handle None gracefully
+        assert cfg.images is not None
+        assert "good:1" in cfg.images
+        # Check that "None" and empty strings are not in resolved images
+        nones = [x for x in cfg.images if str(x) in ("None", "")]
+        assert len(nones) == 0, f"Unexpected None entries: {nones}"
+
+
+# ── ContainerBackend: image candidate resolution ─────────────────────
+
+
+class TestCandidateImageResolution:
+    def test_resolve_from_images_list(self):
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["a:1", "b:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        assert backend._resolve_candidate_images() == ["a:1", "b:2"]
+
+    def test_resolve_from_single_image(self):
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "single:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        assert backend._resolve_candidate_images() == ["single:latest"]
+
+    def test_resolve_empty(self):
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container"})
+        backend = ContainerBackend(cfg)
+        assert backend._resolve_candidate_images() == []
+
+    def test_resolve_images_list_wins_over_single_image(self):
+        """When both image and images are set, images list takes precedence."""
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "legacy:old", "images": ["a:1", "b:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        assert backend._resolve_candidate_images() == ["a:1", "b:2"]
+        assert "legacy:old" not in backend._resolve_candidate_images()
+
+
+# ── ContainerBackend: sequential create fallback ─────────────────────
+
+
+class TestSequentialCreateFallback:
+    @patch("subprocess.run")
+    def test_first_image_succeeds(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["first:1", "second:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._create_container_from_image()
+        assert backend._container_id == "cid-ok"
+        assert mock_run.call_count == 1
+
+    @patch("subprocess.run")
+    def test_second_image_succeeds(self, mock_run):
+        def side_effect(*args, **kwargs):
+            cmd = args[0]
+            if isinstance(cmd, list) and "run" in cmd and "-d" in cmd:
+                if "first:1" in cmd:
+                    return MagicMock(returncode=1, stdout="", stderr="pull failed")
+                return MagicMock(returncode=0, stdout="cid-2\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["first:1", "second:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._create_container_from_image()
+        assert backend._container_id == "cid-2"
+        assert mock_run.call_count == 2
+
+    @patch("subprocess.run")
+    def test_all_images_fail(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="fail")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["bad:1", "worse:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        with pytest.raises(RuntimeError, match="All images failed"):
+            backend._create_container_from_image()
+
+    @patch("subprocess.run")
+    def test_no_image_or_images_raises(self, mock_run):
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container"})
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        with pytest.raises(ValueError, match="image or execution_backend.images"):
+            backend._create_container_from_image()
+
+    @patch("subprocess.run")
+    def test_images_list_wins_over_legacy_image(self, mock_run):
+        """When both `image` and `images` are present, sequential fallback uses `images` list."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "legacy:old", "images": ["new:1", "new:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._create_container_from_image()
+        # Verify the command used the first image from `images`, not the legacy single image
+        create_call = mock_run.call_args[0][0]
+        assert "new:1" in create_call
+        assert "legacy:old" not in create_call
+
+    @patch("subprocess.run")
+    def test_image_as_list_uses_first_candidate(self, mock_run):
+        """yaml `image: [a, b]` populates images; first is tried first."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": ["first-tried:1", "fallback:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._create_container_from_image()
+        assert backend._container_id == "cid-ok"
+        assert mock_run.call_count == 1
+        create_call = mock_run.call_args[0][0]
+        assert "first-tried:1" in create_call
+
+
+# ── ContainerBackend: discover local images ──────────────────────────
+
+
+class TestDiscoverLocalImages:
+    @patch("subprocess.run")
+    def test_discover_returns_images(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="ascendhub:24.03\npytorch:latest\n<none>:<none>\n",
+            stderr="",
+        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container"})
+        backend = ContainerBackend(cfg)
+        images = backend._discover_local_images()
+        assert "ascendhub:24.03" in images
+        assert "pytorch:latest" in images
+        assert "<none>:<none>" not in images
+
+    @patch("subprocess.run")
+    def test_discover_failure_returns_empty(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container"})
+        backend = ContainerBackend(cfg)
+        images = backend._discover_local_images()
+        assert images == []
+
+    @patch("subprocess.run")
+    def test_discover_exception_returns_empty(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("docker not found")
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container"})
+        backend = ContainerBackend(cfg)
+        images = backend._discover_local_images()
+        assert images == []
+
+
+# ── Workflow YAML with image list ────────────────────────────────────
+
+
+class TestConfigIntegrationImageList:
+    def test_workflow_with_images_list(self, tmp_path: Path):
+        wf_path = tmp_path / "wf.yaml"
+        wf_path.write_text(
+            "name: test\nversion: '1.0'\n"
+            "execution_backend:\n"
+            "  mode: container\n"
+            "  source: image\n"
+            "  images:\n"
+            "    - ascendhub:24.03\n"
+            "    - pytorch:latest\n"
+            "phases:\n"
+            "  - id: p1\n    name: P1\n    prompt_template: x\n    transitions:\n      on_success: complete\n"
+            "terminals: [complete]\n",
+            encoding="utf-8",
+        )
+        wf = load_workflow(str(wf_path))
+        assert wf.execution_backend is not None
+        assert wf.execution_backend.images == ["ascendhub:24.03", "pytorch:latest"]
+        assert wf.execution_backend.image == "ascendhub:24.03"
+
+
+# ── Auto backend with images carried through ─────────────────────────
+
+
+class TestAutoSelectWithImages:
+    @patch("subprocess.run")
+    def test_auto_carries_images_through(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        base = ExecutionBackendConfig.from_dict(
+            {"mode": "auto", "images": ["a:1", "b:2"]}
+        )
+        result = auto_select_backend(base)
+        assert result.mode == "container"
+        assert result.images == ["a:1", "b:2"]
+
+        # Verify auto_select_backend also carries the new field
+        assert result.images is not None
+
+
+# ── Auto image selection (workflow_executor mocked) ───────────────────
+
+
+class TestAutoImageSelection:
+    """Test the _auto_select_image path in WorkflowExecutor with mocked session."""
+
+    def _mock_response(self, selected_image):
+        return f'\n```json\n{{"selected_image": "{selected_image}"}}\n```'
+
+    @patch("subprocess.run")
+    def test_auto_select_from_configured_list(
+        self, mock_run, tmp_path,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("img-b:2")
+
+        mock_prompt_loader = MagicMock()
+        mock_prompt_loader.load_prompt.return_value = "fake prompt"
+
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "auto", "images": ["img-a:1", "img-b:2", "img-c:3"]}
+        )
+
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+
+        assert executor.exec_backend is not None
+        assert isinstance(executor.exec_backend, ContainerBackend)
+        assert executor.exec_backend.config.image == "img-b:2"
+
+        # Verify the prompt loader was called with the candidates
+        call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
+        assert "img-a:1" in call_ctx["candidate_images"]
+        assert "img-b:2" in call_ctx["candidate_images"]
+        assert "img-c:3" in call_ctx["candidate_images"]
+
+    @patch("subprocess.run")
+    def test_auto_select_invalid_out_of_list_falls_back(
+        self, mock_run, tmp_path,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("rogue:latest")
+
+        mock_prompt_loader = MagicMock()
+        mock_prompt_loader.load_prompt.return_value = "fake prompt"
+
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "auto", "images": ["good:1", "also-good:2"]}
+        )
+
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+
+        assert executor.exec_backend is None
+
+    @patch("subprocess.run")
+    def test_auto_select_from_discovered_local_images(
+        self, mock_run, tmp_path,
+    ):
+        def _discover_side_effect(*args, **kwargs):
+            cmd = args[0]
+            if isinstance(cmd, list) and "images" in cmd:
+                return MagicMock(
+                    returncode=0,
+                    stdout="local-hub:v1\nlocal-hub:v2\n<none>:<none>\n",
+                    stderr="",
+                )
+            elif isinstance(cmd, list) and cmd[1] in ("run", "--version"):
+                return MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = _discover_side_effect
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("local-hub:v2")
+
+        mock_prompt_loader = MagicMock()
+        mock_prompt_loader.load_prompt.return_value = "fake prompt"
+
+        cfg = ExecutionBackendConfig.from_dict({"mode": "auto"})
+
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+
+        assert executor.exec_backend is not None
+        assert isinstance(executor.exec_backend, ContainerBackend)
+        assert executor.exec_backend.config.image == "local-hub:v2"
+
+    @patch("subprocess.run")
+    def test_auto_no_images_no_discovered_falls_back_to_local(
+        self, mock_run, tmp_path,
+    ):
+        def _no_discovery_side_effect(*args, **kwargs):
+            cmd = args[0]
+            if isinstance(cmd, list) and "images" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="error")
+            elif isinstance(cmd, list) and cmd[1] == "--version":
+                return MagicMock(returncode=0)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = _no_discovery_side_effect
+
+        mock_session = MagicMock()
+        mock_prompt_loader = MagicMock()
+
+        cfg = ExecutionBackendConfig.from_dict({"mode": "auto"})
+
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+
+        assert executor.exec_backend is None
+
+    @patch("subprocess.run")
+    def test_auto_select_ignores_compatibility_image_with_multiple_candidates(
+        self, mock_run, tmp_path,
+    ):
+        """mode: auto + images list + config.image set to first → still does agent selection."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("img-b:2")
+
+        mock_prompt_loader = MagicMock()
+        mock_prompt_loader.load_prompt.return_value = "fake prompt"
+
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "auto", "images": ["img-a:1", "img-b:2"]}
+        )
+
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+
+        assert executor.exec_backend is not None
+        assert executor.exec_backend.config.image == "img-b:2"
+
+        call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
+        assert "img-a:1" in call_ctx["candidate_images"]
+        assert "img-b:2" in call_ctx["candidate_images"]
+
+    @patch("subprocess.run")
+    def test_auto_selection_filters_none_values_in_images(
+        self, mock_run, tmp_path,
+    ):
+        """mode: auto + images with None → filters them out before selection."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("good:1")
+
+        mock_prompt_loader = MagicMock()
+        mock_prompt_loader.load_prompt.return_value = "rendered prompt"
+
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "auto", "images": ["good:1", "also-good:2"]}
+        )
+        cfg.images = ["good:1", None, "None", "also-good:2"]
+
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+
+        assert executor.exec_backend is not None
+        call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
+        assert "None" not in call_ctx["candidate_images"]
+        assert "good:1" in call_ctx["candidate_images"]
+        assert "also-good:2" in call_ctx["candidate_images"]
 
