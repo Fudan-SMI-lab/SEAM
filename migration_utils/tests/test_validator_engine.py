@@ -392,6 +392,8 @@ def _valid_project_analysis_custom_op_surface() -> dict[str, object]:
         "operator_families": ["op_alpha"],
         "fine_grained_operator_units": ["op_alpha:float32", "op_alpha:float16"],
         "discovered_operator_names": ["op_alpha_float32", "op_alpha_float16"],
+        "native_operator_symbols": ["op_alpha_float32", "op_alpha_float16"],
+        "kernel_launch_sites": ["csrc/op_alpha.cpp:op_alpha_float32_launch", "csrc/op_alpha.cpp:op_alpha_float16_launch"],
         "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float32", "csrc/op_alpha.cpp:op_alpha_float16"],
         "negative_evidence": ["grep under src/ and tests/ found no additional operator families"],
         "dynamic_loading_checks": ["import torch.ops.op_alpha succeeded"],
@@ -399,8 +401,16 @@ def _valid_project_analysis_custom_op_surface() -> dict[str, object]:
         "unresolved_source_groups": [],
         "out_of_scope_source_groups": [],
         "fine_grained_operator_unit_evidence": [
-            {"unit_identity": "op_alpha:float32", "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float32"]},
-            {"unit_identity": "op_alpha:float16", "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float16"]},
+            {
+                "unit_identity": "op_alpha:float32",
+                "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float32"],
+                "candidate_public_api_routes": ["pkg.ops.alpha_float32"],
+            },
+            {
+                "unit_identity": "op_alpha:float16",
+                "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float16"],
+                "candidate_framework_integration_routes": ["pkg.layers.AlphaFloat16.forward"],
+            },
         ],
     }
 
@@ -492,6 +502,325 @@ def test_project_analysis_rejects_discovery_complete_with_unresolved_source_grou
 
     assert result["passed"] is False
     assert any("unresolved_source_groups" in error and "must be empty" in error for error in result["errors"])
+
+
+def test_project_analysis_rejects_requirements_doc_discovery_source() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    discovery_sources = cast(list[str], surface["discovery_sources_checked"])
+    surface["discovery_sources_checked"] = [*discovery_sources, "requirements_doc"]
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "validate_custom_ops_full.py",
+            "custom_op_surface": surface,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("requirements_doc" in error for error in result["errors"])
+
+
+def test_project_analysis_rejects_requirements_doc_when_custom_op_detected_false() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["custom_op_detected"] = False
+    surface["discovery_complete"] = False
+    surface["discovery_sources_checked"] = ["requirements_doc"]
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "train.py",
+            "custom_op_surface": surface,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("requirements_doc" in error for error in result["errors"])
+
+
+def test_project_analysis_rejects_unit_evidence_without_route_candidates() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    evidence = cast(list[dict[str, object]], surface["fine_grained_operator_unit_evidence"])
+    _ = evidence[0].pop("candidate_public_api_routes")
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "validate_custom_ops_full.py",
+            "custom_op_surface": surface,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("candidate_public_api_routes or candidate_framework_integration_routes" in error for error in result["errors"])
+
+
+def test_project_analysis_rejects_source_discovered_unit_mentioned_only_in_evidence(tmp_path: Path) -> None:
+    _write_deepwave_like_sources(tmp_path)
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["scalar", "storage", "simple_compress"]
+    surface["fine_grained_operator_units"] = [
+        "scalar:forward_cuda",
+        "scalar:backward_cuda",
+        "simple_compress:compress_cuda",
+        "simple_compress:decompress_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "scalar_forward_cuda",
+        "scalar_backward_cuda",
+        "storage_save_snapshot_gpu",
+        "storage_load_snapshot_gpu",
+        "simple_compress_compress_cuda",
+        "simple_compress_decompress_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "forward_cuda",
+        "backward_cuda",
+        "save_snapshot_gpu",
+        "load_snapshot_gpu",
+        "compress_cuda",
+        "decompress_cuda",
+    ]
+    surface["kernel_launch_sites"] = [
+        "deepwave_original_src/scalar.cu:forward_kernel<<<...>>>",
+        "deepwave_original_src/scalar.cu:backward_kernel<<<...>>>",
+        "deepwave_original_src/storage_utils.cu:save_snapshot_gpu calls compress_cuda",
+        "deepwave_original_src/storage_utils.cu:load_snapshot_gpu calls decompress_cuda",
+        "deepwave_original_src/simple_compress.cu:compress_kernel<<<...>>>",
+        "deepwave_original_src/simple_compress.cu:decompress_kernel<<<...>>>",
+    ]
+    surface["source_evidence"] = [
+        "deepwave_original_src/scalar.cu:FUNC(forward)",
+        "deepwave_original_src/scalar.cu:FUNC(backward)",
+        "deepwave_original_src/storage_utils.h:STORAGE_FUNC(save_snapshot_gpu)",
+        "deepwave_original_src/storage_utils.cu:STORAGE_FUNC(load_snapshot_gpu)",
+        "deepwave_original_src/simple_compress.cu:SC_FUNC(compress_cuda)",
+        "deepwave_original_src/simple_compress.cu:SC_FUNC(decompress_cuda)",
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "scalar:forward_cuda", "source_evidence": ["deepwave_original_src/scalar.cu:FUNC(forward)"], "candidate_public_api_routes": ["deepwave.scalar"]},
+        {"unit_identity": "scalar:backward_cuda", "source_evidence": ["deepwave_original_src/scalar.cu:FUNC(backward)"], "candidate_framework_integration_routes": ["ScalarForwardFunc.backward"]},
+        {"unit_identity": "simple_compress:compress_cuda", "source_evidence": ["deepwave_original_src/simple_compress.cu:SC_FUNC(compress_cuda)"], "candidate_framework_integration_routes": ["storage compression path"]},
+        {"unit_identity": "simple_compress:decompress_cuda", "source_evidence": ["deepwave_original_src/simple_compress.cu:SC_FUNC(decompress_cuda)"], "candidate_framework_integration_routes": ["storage decompression path"]},
+    ]
+
+    result = validate_project_analysis(_project_analysis_payload(tmp_path, surface))
+
+    assert result["passed"] is False
+    assert any("fine_grained_operator_units missing" in error and "storage:save_snapshot_gpu" in error for error in result["errors"])
+    assert any("fine_grained_operator_unit_evidence missing" in error and "storage:load_snapshot_gpu" in error for error in result["errors"])
+
+
+def test_project_analysis_discovers_plain_cuda_exports_in_cpp_sources(tmp_path: Path) -> None:
+    source_root = tmp_path / "csrc"
+    source_root.mkdir()
+    _ = (source_root / "helpers.cpp").write_text(
+        (
+            'extern "C" int fused_helper_cuda(void* stream) { return 0; }\n'
+            'int load_tiles_gpu(void* stream) { return 0; }\n'
+        ),
+        encoding="utf-8",
+    )
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["helpers"]
+    surface["fine_grained_operator_units"] = ["helpers:fused_helper_cuda", "helpers:load_tiles_gpu"]
+    surface["discovered_operator_names"] = ["helpers_fused_helper_cuda", "helpers_load_tiles_gpu"]
+    surface["native_operator_symbols"] = ["fused_helper_cuda", "load_tiles_gpu"]
+    surface["kernel_launch_sites"] = ["csrc/helpers.cpp:fused_helper_cuda", "csrc/helpers.cpp:load_tiles_gpu"]
+    surface["source_evidence"] = ["csrc/helpers.cpp:fused_helper_cuda", "csrc/helpers.cpp:load_tiles_gpu"]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "helpers:fused_helper_cuda", "source_evidence": ["csrc/helpers.cpp:fused_helper_cuda"], "candidate_framework_integration_routes": ["native helper route"]},
+        {"unit_identity": "helpers:load_tiles_gpu", "source_evidence": ["csrc/helpers.cpp:load_tiles_gpu"], "candidate_framework_integration_routes": ["native helper route"]},
+    ]
+
+    result = validate_project_analysis(_project_analysis_payload(tmp_path, surface))
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def _write_deepwave_like_sources(project_root: Path) -> None:
+    source_root = project_root / "deepwave_original_src"
+    source_root.mkdir(parents=True)
+    _ = (source_root / "scalar.cu").write_text(
+        """
+#define CAT_I(name, ndim, accuracy, dtype, device) scalar_##name##_##device
+#define CAT(name, ndim, accuracy, dtype, device) CAT_I(name, ndim, accuracy, dtype, device)
+#define FUNC(name) CAT(name, DW_NDIM, DW_ACCURACY, DW_DTYPE, DW_DEVICE)
+#include "storage_utils.h"
+extern "C"
+int FUNC(forward)(void* stream) {
+  forward_kernel<<<1, 1, 0, stream>>>();
+  return STORAGE_FUNC(save_snapshot_gpu)(nullptr, nullptr, nullptr, nullptr, 0, false, 0, 0, 0, 0, 1, stream);
+}
+extern "C"
+int FUNC(backward)(void* stream) {
+  backward_kernel<<<1, 1, 0, stream>>>();
+  return STORAGE_FUNC(load_snapshot_gpu)(nullptr, nullptr, nullptr, nullptr, 0, false, 0, 0, 0, 0, 1, stream);
+}
+""",
+        encoding="utf-8",
+    )
+    _ = (source_root / "storage_utils.h").write_text(
+        """
+#define STORAGE_FUNC(name) storage_##name##_2d_float
+extern "C" {
+int STORAGE_FUNC(save_snapshot_gpu)(void const* store_1, void* store_2, void* store_3, FILE* fp, int mode, bool compress, int step, size_t uncomp, size_t comp, size_t shots, size_t nx, void* stream);
+int STORAGE_FUNC(load_snapshot_gpu)(void* store_1, void* store_2, void* store_3, FILE* fp, int mode, bool compress, int step, size_t uncomp, size_t comp, size_t shots, size_t nx, void* stream);
+}
+""",
+        encoding="utf-8",
+    )
+    _ = (source_root / "storage_utils.cu").write_text(
+        """
+#define STORAGE_FUNC(name) storage_##name##_2d_float
+#define SC_FUNC(name) simple_compress_##name##_2d_float
+extern "C" {
+int STORAGE_FUNC(save_snapshot_gpu)(void const* store_1, void* store_2, void* store_3, FILE* fp, int mode, bool compress, int step, size_t uncomp, size_t comp, size_t shots, size_t nx, void* stream) {
+  return SC_FUNC(compress_cuda)(store_1, store_2, shots, nx, stream);
+}
+int STORAGE_FUNC(load_snapshot_gpu)(void* store_1, void* store_2, void* store_3, FILE* fp, int mode, bool compress, int step, size_t uncomp, size_t comp, size_t shots, size_t nx, void* stream) {
+  return SC_FUNC(decompress_cuda)(store_2, store_1, shots, nx, stream);
+}
+}
+""",
+        encoding="utf-8",
+    )
+    _ = (source_root / "simple_compress.cu").write_text(
+        """
+#define SC_FUNC(name) simple_compress_##name##_2d_float
+extern "C" {
+int SC_FUNC(compress_cuda)(void const* input, void* output, size_t shots, size_t nx, void* stream) {
+  compress_kernel<<<1, 1, 0, stream>>>();
+  return 0;
+}
+int SC_FUNC(decompress_cuda)(void const* input, void* output, size_t shots, size_t nx, void* stream) {
+  decompress_kernel<<<1, 1, 0, stream>>>();
+  return 0;
+}
+}
+""",
+        encoding="utf-8",
+    )
+
+
+def _project_analysis_payload(project_dir: Path, surface: dict[str, object]) -> dict[str, object]:
+    return {
+        "project_dir": str(project_dir),
+        "dependencies": ["torch"],
+        "cuda_detected": True,
+        "entry_script": "test_data_and_scripts/run_full_fwi_npu.py",
+        "custom_op_surface": surface,
+    }
+
+
+def test_project_analysis_rejects_deepwave_like_inventory_missing_storage_helpers(tmp_path: Path) -> None:
+    _write_deepwave_like_sources(tmp_path)
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["scalar", "simple_compress"]
+    surface["fine_grained_operator_units"] = [
+        "scalar:forward_cuda",
+        "scalar:backward_cuda",
+        "simple_compress:compress_cuda",
+        "simple_compress:decompress_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "scalar_forward_cuda",
+        "scalar_backward_cuda",
+        "simple_compress_compress_cuda",
+        "simple_compress_decompress_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "forward_cuda",
+        "backward_cuda",
+        "compress_cuda",
+        "decompress_cuda",
+    ]
+    surface["kernel_launch_sites"] = [
+        "deepwave_original_src/scalar.cu:forward_kernel<<<...>>>",
+        "deepwave_original_src/scalar.cu:backward_kernel<<<...>>>",
+        "deepwave_original_src/simple_compress.cu:compress_kernel<<<...>>>",
+        "deepwave_original_src/simple_compress.cu:decompress_kernel<<<...>>>",
+    ]
+    surface["source_evidence"] = [
+        "deepwave_original_src/scalar.cu:FUNC(forward)",
+        "deepwave_original_src/scalar.cu:FUNC(backward)",
+        "deepwave_original_src/simple_compress.cu:SC_FUNC(compress_cuda)",
+        "deepwave_original_src/simple_compress.cu:SC_FUNC(decompress_cuda)",
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "scalar:forward_cuda", "source_evidence": ["deepwave_original_src/scalar.cu:FUNC(forward)"], "candidate_public_api_routes": ["deepwave.scalar"]},
+        {"unit_identity": "scalar:backward_cuda", "source_evidence": ["deepwave_original_src/scalar.cu:FUNC(backward)"], "candidate_framework_integration_routes": ["ScalarForwardFunc.backward"]},
+        {"unit_identity": "simple_compress:compress_cuda", "source_evidence": ["deepwave_original_src/simple_compress.cu:SC_FUNC(compress_cuda)"], "candidate_framework_integration_routes": ["storage compression path"]},
+        {"unit_identity": "simple_compress:decompress_cuda", "source_evidence": ["deepwave_original_src/simple_compress.cu:SC_FUNC(decompress_cuda)"], "candidate_framework_integration_routes": ["storage decompression path"]},
+    ]
+
+    result = validate_project_analysis(_project_analysis_payload(tmp_path, surface))
+
+    assert result["passed"] is False
+    assert any("storage:save_snapshot_gpu" in error for error in result["errors"])
+    assert any("storage:load_snapshot_gpu" in error for error in result["errors"])
+
+
+def test_project_analysis_accepts_deepwave_like_inventory_with_storage_helpers(tmp_path: Path) -> None:
+    _write_deepwave_like_sources(tmp_path)
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["scalar", "storage", "simple_compress"]
+    surface["fine_grained_operator_units"] = [
+        "scalar:forward_cuda",
+        "scalar:backward_cuda",
+        "storage:save_snapshot_gpu",
+        "storage:load_snapshot_gpu",
+        "simple_compress:compress_cuda",
+        "simple_compress:decompress_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "scalar_forward_cuda",
+        "scalar_backward_cuda",
+        "storage_save_snapshot_gpu",
+        "storage_load_snapshot_gpu",
+        "simple_compress_compress_cuda",
+        "simple_compress_decompress_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "forward_cuda",
+        "backward_cuda",
+        "save_snapshot_gpu",
+        "load_snapshot_gpu",
+        "compress_cuda",
+        "decompress_cuda",
+    ]
+    surface["kernel_launch_sites"] = [
+        "deepwave_original_src/scalar.cu:forward_kernel<<<...>>>",
+        "deepwave_original_src/scalar.cu:backward_kernel<<<...>>>",
+        "deepwave_original_src/storage_utils.cu:save_snapshot_gpu calls compress_cuda",
+        "deepwave_original_src/storage_utils.cu:load_snapshot_gpu calls decompress_cuda",
+        "deepwave_original_src/simple_compress.cu:compress_kernel<<<...>>>",
+        "deepwave_original_src/simple_compress.cu:decompress_kernel<<<...>>>",
+    ]
+    surface["source_evidence"] = [
+        "deepwave_original_src/scalar.cu:FUNC(forward)",
+        "deepwave_original_src/scalar.cu:FUNC(backward)",
+        "deepwave_original_src/storage_utils.h:STORAGE_FUNC(save_snapshot_gpu)",
+        "deepwave_original_src/storage_utils.cu:STORAGE_FUNC(load_snapshot_gpu)",
+        "deepwave_original_src/simple_compress.cu:SC_FUNC(compress_cuda)",
+        "deepwave_original_src/simple_compress.cu:SC_FUNC(decompress_cuda)",
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "scalar:forward_cuda", "source_evidence": ["deepwave_original_src/scalar.cu:FUNC(forward)"], "candidate_public_api_routes": ["deepwave.scalar"]},
+        {"unit_identity": "scalar:backward_cuda", "source_evidence": ["deepwave_original_src/scalar.cu:FUNC(backward)"], "candidate_framework_integration_routes": ["ScalarForwardFunc.backward"]},
+        {"unit_identity": "storage:save_snapshot_gpu", "source_evidence": ["deepwave_original_src/storage_utils.h:STORAGE_FUNC(save_snapshot_gpu)"], "candidate_framework_integration_routes": ["propagator snapshot save path"]},
+        {"unit_identity": "storage:load_snapshot_gpu", "source_evidence": ["deepwave_original_src/storage_utils.cu:STORAGE_FUNC(load_snapshot_gpu)"], "candidate_framework_integration_routes": ["propagator snapshot load path"]},
+        {"unit_identity": "simple_compress:compress_cuda", "source_evidence": ["deepwave_original_src/simple_compress.cu:SC_FUNC(compress_cuda)"], "candidate_framework_integration_routes": ["storage compression path"]},
+        {"unit_identity": "simple_compress:decompress_cuda", "source_evidence": ["deepwave_original_src/simple_compress.cu:SC_FUNC(decompress_cuda)"], "candidate_framework_integration_routes": ["storage decompression path"]},
+    ]
+
+    result = validate_project_analysis(_project_analysis_payload(tmp_path, surface))
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
 
 
 @pytest.mark.parametrize(
