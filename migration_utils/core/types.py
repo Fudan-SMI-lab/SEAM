@@ -96,12 +96,18 @@ class ExecutionBackendConfig:
     When *mode* is ``"container"``, the ``source`` field distinguishes between
     creating a new container from an image versus attaching to an already
     running container.
+
+    The ``images`` field accepts a list of candidate images for sequential
+    creation fallback (``mode: container``) or agent selection (``mode: auto``).
+    For backward compatibility, a single ``image`` string is stored as
+    ``images=[image]`` when ``images`` is not explicitly provided.
     """
 
     mode: str = "local"                           # local | container | auto
     source: str = "image"                         # image | existing_container
     runtime: str = "docker"                       # docker | podman
-    image: str | None = None                      # source=image only
+    image: str | None = None                      # source=image only (single, legacy)
+    images: list[str] | None = None               # source=image only (list, new)
     container_name: str | None = None             # source=existing_container only
     container_name_prefix: str = "seam-migration"
     devices: list[str] = field(default_factory=list)
@@ -142,11 +148,39 @@ class ExecutionBackendConfig:
                 "execution_backend.container_name is required when source=existing_container"
             )
 
+        # Normalize image candidates with robust type handling.
+        # Priority: explicit "images" list > single "image" (string or list).
+        raw_images = raw.get("images")
+        raw_single = raw.get("image")
+
+        def _normalize_image_value(value: object) -> list[str]:
+            """Convert a YAML value to a list of non-empty image strings."""
+            if value is None:
+                return []
+            if isinstance(value, list):
+                return [
+                    str(item).strip()
+                    for item in value
+                    if str(item).strip() and str(item).strip() != "None"
+                ]
+            s = str(value).strip()
+            if s and s != "None":
+                return [s]
+            return []
+
+        # Explicit images list wins over legacy image for candidate resolution.
+        resolved_images = _normalize_image_value(raw_images)
+        fallback_images = _normalize_image_value(raw_single)
+
+        # If neither was provided, images stays None.
+        resolved_images_final: list[str] | None = resolved_images or fallback_images or None
+
         return cls(
             mode=mode,
             source=source,
             runtime=str(raw.get("runtime", "docker")),
-            image=raw.get("image"),
+            image=resolved_images_final[0] if resolved_images_final else None,
+            images=resolved_images_final,
             container_name=raw.get("container_name"),
             container_name_prefix=str(raw.get("container_name_prefix", "seam-migration")),
             devices=list(raw.get("devices", [])),

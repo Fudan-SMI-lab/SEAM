@@ -142,6 +142,45 @@ class ContainerBackend:
         self._runtime_cmd = "docker" if config.runtime == "docker" else "podman"
         self._host_project_dir: str | None = None
 
+    def _resolve_candidate_images(self) -> list[str]:
+        """Return the ordered list of candidate images, normalized.
+
+        ``images`` list takes full precedence.  Single ``image`` string is a
+        fallback.  Empty strings and ``"None"`` are filtered out.
+        """
+        if self.config.images:
+            return [
+                c for c in self.config.images
+                if str(c).strip() and str(c).strip() != "None"
+            ]
+        if self.config.image:
+            return [self.config.image]
+        return []
+
+    def _discover_local_images(self) -> list[str]:
+        """Read-only listing of local container runtime images.
+
+        Returns image names as reported by ``docker images`` / ``podman images``,
+        excluding ``<none>`` tags and the ``REPOSITORY:TAG`` header.
+        """
+        try:
+            result = subprocess.run(
+                [self._runtime_cmd, "images", "--format", "{{.Repository}}:{{.Tag}}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning("Image listing failed (%s): %s", self._runtime_cmd, result.stderr.strip())
+                return []
+            images = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line and "<none>" not in line:
+                    images.append(line)
+            return images
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("Image listing error (%s): %s", self._runtime_cmd, exc)
+            return []
+
     # -- lifecycle ---------------------------------------------------------
 
     def set_project_dir(self, project_dir: str) -> None:
@@ -157,6 +196,25 @@ class ContainerBackend:
         except (subprocess.SubprocessError, OSError):
             return False
 
+    def _create_container_from_image(self) -> None:
+        """Create a container using normalized candidate images with sequential fallback."""
+        candidates = self._resolve_candidate_images()
+        if not candidates:
+            raise ValueError("execution_backend.image or execution_backend.images is required when source=image")
+        if len(candidates) == 1:
+            self._do_create_container(candidates[0])
+            return
+        errors: list[tuple[str, str]] = []
+        for candidate in candidates:
+            try:
+                self._do_create_container(candidate)
+                return
+            except RuntimeError as exc:
+                errors.append((candidate, str(exc)))
+                logger.warning("Container create failed with image %s: %s", candidate, exc)
+        detail = "; ".join(f"{img}: {err}" for img, err in errors)
+        raise RuntimeError(f"All images failed: {detail}")
+
     def _ensure_container(self) -> str:
         if self._container_id:
             return self._container_id
@@ -168,10 +226,19 @@ class ContainerBackend:
         assert self._container_id is not None
         return self._container_id
 
-    def _create_container_from_image(self) -> None:
-        if not self.config.image:
-            raise ValueError("execution_backend.image is required when source=image")
+    def _create_selected_container(self, image_name: str) -> None:
+        """Create a container from a specific image chosen by auto-selection.
 
+        Used by the ``mode: auto`` path after the agent selects an image from
+        the candidate list.  The chosen image is stored on config before calling
+        the normal creation path so that all downstream code continues to use
+        ``self.config.image``.
+        """
+        self.config.image = image_name
+        self._create_container_from_image()
+
+    def _do_create_container(self, image_name: str) -> None:
+        """Create a single container from a specific image name."""
         run_id = str(int(time.monotonic() * 1000))
         cname = f"{self.config.container_name_prefix}-{run_id}"
         cmd: list[str] = [self._runtime_cmd, "run", "-d", "--name", cname]
@@ -192,7 +259,7 @@ class ContainerBackend:
         if self.config.cleanup:
             cmd.append("--rm")
 
-        cmd.extend([self.config.image, "tail", "-f", "/dev/null"])
+        cmd.extend([image_name, "tail", "-f", "/dev/null"])
 
         logger.info("Container create: %s", " ".join(cmd[:6]))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -575,6 +642,7 @@ def auto_select_backend(config: ExecutionBackendConfig) -> ExecutionBackendConfi
             source=config.source,
             runtime=config.runtime,
             image=config.image,
+            images=config.images,
             container_name=config.container_name,
             container_name_prefix=config.container_name_prefix,
             devices=config.devices,
