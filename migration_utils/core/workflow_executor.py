@@ -1749,10 +1749,9 @@ class WorkflowExecutor:
             if "python_version" not in normalized:
                 normalized["python_version"] = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
-        # phase_1_project_analysis: inject project_dir
+        # phase_1_project_analysis: bind project_dir to framework context, not model output
         if "project_analysis" in phase_id or phase_id == "phase_1":
-            if "project_dir" not in normalized:
-                normalized["project_dir"] = prompt_context.get("project_dir", self.project_dir)
+            normalized["project_dir"] = prompt_context.get("project_dir", self.project_dir)
 
         # phase_3_entry_script: inject entry_script_path
         if "entry_script" in phase_id or phase_id == "phase_3":

@@ -1460,6 +1460,44 @@ def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(tm
     assert normalized["category"] == "pathing"
     assert normalized["repair_role"] == "code_adapter"
 
+
+def test_workflow_executor_phase1_normalization_uses_context_project_dir(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_1_project_analysis",
+        name="Phase 1",
+        prompt_template="phase_1_project_analysis",
+        output_schema={},
+        type="llm",
+        validator="project_analysis",
+        agent="main_engineer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(name="phase1-normalize", version="1.0", phases=[phase], terminals=[]),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path / "fallback_project"),
+        output_dir=str(tmp_path),
+    )
+    trusted_project = tmp_path / "trusted_project"
+    untrusted_project = tmp_path / "untrusted_project"
+
+    normalized = executor._normalize_llm_output(
+        phase,
+        {
+            "project_dir": str(untrusted_project),
+            "dependencies": ["torch"],
+            "cuda_detected": False,
+            "entry_script": "train.py",
+        },
+        {"project_dir": str(trusted_project)},
+        {},
+    )
+
+    assert normalized["project_dir"] == str(trusted_project)
+
+
 def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target_script = tmp_path / "expanded_target.py"
     target_script.write_text("from pathlib import Path\nPath('expanded-ran').write_text('yes')\n", encoding="utf-8")

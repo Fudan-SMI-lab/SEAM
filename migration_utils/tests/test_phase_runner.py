@@ -727,6 +727,27 @@ def test_build_prompt_context_has_constraint_keys() -> None:
     assert result["user_constraints"] == "UC"
 
 
+def test_phase_runner_phase1_normalization_uses_prompt_context_project_dir(tmp_path: Path) -> None:
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore(str(tmp_path), "t"), PromptLoader(), ValidatorEngine())
+    spec = PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis")
+    trusted_project = tmp_path / "trusted_project"
+    untrusted_project = tmp_path / "untrusted_project"
+
+    normalized = runner._normalize_output(
+        spec,
+        {
+            "project_dir": str(untrusted_project),
+            "dependencies": ["torch"],
+            "cuda_detected": False,
+            "entry_script": "train.py",
+        },
+        {"project_dir": str(trusted_project)},
+        {},
+    )
+
+    assert normalized["project_dir"] == str(trusted_project)
+
+
 def test_phase_runner_phase3_legacy_text_mentions_do_not_force_custom_op_context() -> None:
     runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")

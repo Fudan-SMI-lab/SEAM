@@ -1054,7 +1054,7 @@ class PhaseRunner:
         normalized = dict(output)
         if phase.prompt_id == "phase_0_env_detect" and "python_version" not in normalized:
             normalized["python_version"] = self._current_python_version()
-        if phase.prompt_id == "phase_1_project_analysis" and "project_dir" not in normalized:
+        if phase.prompt_id == "phase_1_project_analysis":
             normalized["project_dir"] = str(prompt_context["project_dir"])
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
