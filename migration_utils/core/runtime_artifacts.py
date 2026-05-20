@@ -177,6 +177,17 @@ def _operator_repair_context_markdown(
 
     total_count = _best_effort_total_count(inventory, manifest, gate)
     units = _operator_units(inventory, manifest, gate)
+    inventory_source = "migration_reports"
+    if not units:
+        fallback_units = _phase3_contract_operator_units(contract)
+        if fallback_units:
+            units = fallback_units
+            inventory_source = "phase_3_contract_fallback"
+            warnings.append(
+                "Using Phase 3 custom-op inventory fallback because migration_reports inventory/manifest/final gate are not available yet; fallback rows are scope only, not final evidence."
+            )
+    if total_count is None and units:
+        total_count = len(units)
     progress = _progress_summary(gate)
 
     required_report_paths = _string_list(contract.get("required_report_paths"))
@@ -230,6 +241,7 @@ def _operator_repair_context_markdown(
         "## Operator Inventory Summary",
         f"- Total Count: {total_count if total_count is not None else 'unknown'}",
         f"- Unit Count Listed Here: {len(units)}",
+        f"- Inventory Source: {inventory_source}",
         "",
     ]
     if units:
@@ -339,6 +351,48 @@ def _operator_units(inventory: object, manifest: object, gate: object) -> list[s
                 units.append(summary)
             if len(units) >= 50:
                 return units
+    return units
+
+
+def _phase3_contract_operator_units(contract: dict[str, object]) -> list[str]:
+    candidates: list[object] = []
+
+    schema = contract.get("operator_inventory_schema")
+    if isinstance(schema, dict):
+        schema_dict = cast(dict[str, object], schema)
+        for key in ("fine_grained_operator_units", "operator_units", "operators", "rows"):
+            value = schema_dict.get(key)
+            if isinstance(value, list):
+                candidates.extend(cast(list[object], value))
+                break
+
+    if not candidates:
+        surface = contract.get("custom_op_surface")
+        if isinstance(surface, dict):
+            surface_dict = cast(dict[str, object], surface)
+            for key in ("fine_grained_operator_units", "operator_units", "native_operator_symbols", "discovered_operator_names"):
+                value = surface_dict.get(key)
+                if isinstance(value, list):
+                    candidates.extend(cast(list[object], value))
+                    break
+
+    if not candidates:
+        source_inventory = contract.get("source_inventory")
+        if isinstance(source_inventory, dict):
+            entries = cast(dict[str, object], source_inventory).get("entries")
+            if isinstance(entries, list):
+                candidates.extend(cast(list[object], entries))
+
+    units: list[str] = []
+    for item in candidates:
+        if isinstance(item, dict):
+            summary = _entry_summary(item)
+        else:
+            summary = str(item).strip()
+        if summary and summary not in units:
+            units.append(summary[:300])
+        if len(units) >= 50:
+            break
     return units
 
 
