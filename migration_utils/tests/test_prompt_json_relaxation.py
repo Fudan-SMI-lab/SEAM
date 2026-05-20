@@ -101,16 +101,18 @@ def test_phase3_and_phase5_prompts_require_complete_performance_report_closure()
     assert "overall_speedup_report" in phase3
     assert "overall_baseline_seconds" in phase3
     assert "overall_all_units_replaced" in phase3
-    assert "overall/end-to-end speedup" in phase5
+    assert "overall/end-to-end CPU-baseline vs Ascend OPP/custom-op speedup" in phase5
+    assert "same-NPU/self-baseline placeholder" in phase5
     assert "migration_reports/performance.json" in phase5
     assert "covers every manifest/source-inventory unit" in phase5
     assert "overall_baseline_seconds" in phase5
+    assert "CPU baseline_seconds / Ascend OPP custom_seconds" in phase5
     assert "overall_all_units_replaced" in phase5
 
 
 def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline_rules():
     expectations = {
-        "phase_error_recovery.md": ("{workspace_root}/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
+        "phase_error_recovery.md": ("{workspace_root}/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求", "only when the Phase 3 contract is an active custom-op contract"),
         "repair_dependency_fixer.md": ("{workspace_root}/cuda_custom_op_skill_test_prompt.md", "第5点要求"),
     }
 
