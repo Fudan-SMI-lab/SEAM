@@ -39,6 +39,8 @@ REQUIRED_VALIDATION_OBLIGATIONS = {
     "reject_non_opp_producer_evidence",
     "project_root_artifact_existence",
     "runtime_project_api",
+    "per_row_public_or_framework_route_evidence",
+    "reject_direct_builtin_only_routes",
     "numeric_performance",
     "complete_speedup_report",
     "overall_speedup_report",
@@ -55,6 +57,9 @@ REQUIRED_INVENTORY_SCHEMA_FIELDS = {
     "kernel_functions",
     "kernel_launch_sites",
     "public_entry_mapping",
+    "candidate_public_api_routes",
+    "candidate_framework_integration_routes",
+    "route_evidence_fields",
     "source_evidence",
     "inventory_granularity",
     "out_of_scope_source_groups",
@@ -73,6 +78,9 @@ REQUIRED_CHECKS = {
     "per_entry_adapter_evidence",
     "per_entry_parity_evidence",
     "integration_e2e_evidence",
+    "per_entry_public_api_or_framework_integration_route_evidence",
+    "correlate_route_evidence_to_manifest_rows",
+    "reject_direct_or_builtin_only_routes",
     "same_run_runtime_coverage",
     "performance_evidence",
     "complete_performance_report",
@@ -170,9 +178,18 @@ def _has_custom_op_contract(data: dict[str, object]) -> bool:
 
 
 def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> None:
+    project_root = _validate_custom_op_project_root(data.get("project_dir"), errors)
+
     _require_existing_custom_op_entry_script(
         data.get("entry_script_path"),
         data.get("reports_dir"),
+        project_root,
+        errors,
+    )
+    _validate_custom_op_run_command_project_local(
+        data.get("run_command"),
+        data.get("entry_script_path"),
+        project_root,
         errors,
     )
 
@@ -185,6 +202,8 @@ def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> 
         errors.append("reports_dir must be a non-empty string for custom-op contracts")
     elif "migration_reports" not in reports_dir:
         errors.append("reports_dir must point to the target project's migration_reports directory")
+    elif project_root is not None:
+        _validate_custom_op_reports_dir(reports_dir, project_root, errors)
 
     required_report_paths = _string_list(data.get("required_report_paths"))
     if required_report_paths is None or not required_report_paths:
@@ -251,21 +270,23 @@ def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> 
 def _require_existing_custom_op_entry_script(
     entry_script_path: object,
     reports_dir: object,
+    project_root: Path | None,
     errors: list[str],
 ) -> None:
     if not isinstance(entry_script_path, str) or not entry_script_path.strip():
         return
     if not isinstance(reports_dir, str) or not reports_dir.strip():
         return
+    if project_root is None:
+        return
 
-    project_dir = Path(reports_dir).expanduser().parent.resolve(strict=False)
     entry_path = Path(entry_script_path).expanduser()
-    candidate = entry_path if entry_path.is_absolute() else project_dir / entry_path
+    candidate = entry_path if entry_path.is_absolute() else project_root / entry_path
     try:
         resolved_entry = candidate.resolve(strict=True)
         if not resolved_entry.is_file():
             raise FileNotFoundError
-        _ = resolved_entry.relative_to(project_dir)
+        _ = resolved_entry.relative_to(project_root)
         return
     except (OSError, ValueError):
         pass
@@ -274,6 +295,76 @@ def _require_existing_custom_op_entry_script(
         + "create or select the full validation script before returning Phase 3 JSON"
     )
     errors.append(error)
+
+
+def _validate_custom_op_project_root(value: object, errors: list[str]) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append("project_dir must be a non-empty string for custom-op contracts")
+        return None
+    try:
+        return Path(value).expanduser().resolve(strict=False)
+    except OSError as exc:
+        errors.append(f"project_dir could not be resolved for custom-op contracts: {exc}")
+        return None
+
+
+def _validate_custom_op_reports_dir(reports_dir: str, project_root: Path, errors: list[str]) -> None:
+    raw_path = Path(reports_dir).expanduser()
+    candidate = raw_path if raw_path.is_absolute() else project_root / raw_path
+    expected = project_root / "migration_reports"
+    try:
+        resolved_reports = candidate.resolve(strict=False)
+    except OSError as exc:
+        errors.append(f"reports_dir could not be resolved for custom-op contracts: {exc}")
+        return
+    if resolved_reports != expected:
+        errors.append("reports_dir must be the target project's trusted migration_reports directory")
+
+
+def _validate_custom_op_run_command_project_local(
+    run_command: object,
+    entry_script_path: object,
+    project_root: Path | None,
+    errors: list[str],
+) -> None:
+    if project_root is None:
+        return
+    if not isinstance(run_command, str) or not run_command.strip():
+        return
+    try:
+        tokens = shlex.split(run_command)
+    except ValueError:
+        return
+
+    script_tokens = [token for token in tokens[1:] if Path(token).suffix == ".py" or token.endswith(".py")]
+    if not script_tokens:
+        errors.append("run_command must invoke the custom-op entry script file under the trusted project directory")
+        return
+
+    resolved_entry = _resolve_project_local_path(entry_script_path, project_root)
+    matched_entry = False
+    for token in script_tokens:
+        resolved_token = _resolve_project_local_path(token, project_root)
+        if resolved_token is None:
+            errors.append("run_command script operands must stay under the trusted project directory")
+            return
+        if resolved_entry is not None and resolved_token == resolved_entry:
+            matched_entry = True
+    if resolved_entry is not None and not matched_entry:
+        errors.append("run_command must execute the same project-local script named by entry_script_path")
+
+
+def _resolve_project_local_path(value: object, project_root: Path) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw_path = Path(value).expanduser()
+    candidate = raw_path if raw_path.is_absolute() else project_root / raw_path
+    try:
+        resolved = candidate.resolve(strict=True)
+        _ = resolved.relative_to(project_root)
+    except (OSError, ValueError):
+        return None
+    return resolved
 
 
 def _string_list(value: object) -> list[str] | None:

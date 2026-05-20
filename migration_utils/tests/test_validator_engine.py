@@ -99,6 +99,7 @@ def _valid_custom_op_contract(
         project_dir = str(Path(script_path).parent)
     reports_dir = f"{project_dir}/migration_reports"
     return {
+        "project_dir": project_dir,
         "entry_script_path": script_path,
         "run_command": f"{project_dir}/.venv/bin/python {script_path}",
         "entry_script_kind": "custom_op_full_validation",
@@ -122,6 +123,9 @@ def _valid_custom_op_contract(
             "kernel_functions": "CUDA/Ascend kernel functions per row",
             "kernel_launch_sites": "kernel launch sites per row",
             "public_entry_mapping": "public API to unit mapping per row",
+            "candidate_public_api_routes": "candidate public API routes per row",
+            "candidate_framework_integration_routes": "candidate framework integration routes per row",
+            "route_evidence_fields": "final rows include public_api_route_evidence or framework_integration_route_evidence",
             "source_evidence": "source files/functions per row",
             "inventory_granularity": "fine_grained",
             "out_of_scope_source_groups": "excluded source families with reason",
@@ -152,6 +156,9 @@ def _valid_custom_op_contract(
             "per_entry_adapter_evidence",
             "per_entry_parity_evidence",
             "integration_e2e_evidence",
+            "per_entry_public_api_or_framework_integration_route_evidence",
+            "correlate_route_evidence_to_manifest_rows",
+            "reject_direct_or_builtin_only_routes",
             "same_run_runtime_coverage",
             "performance_evidence",
             "complete_performance_report",
@@ -177,6 +184,8 @@ def _valid_custom_op_contract(
             "reject_non_opp_producer_evidence",
             "project_root_artifact_existence",
             "runtime_project_api",
+            "per_row_public_or_framework_route_evidence",
+            "reject_direct_builtin_only_routes",
             "numeric_performance",
             "complete_speedup_report",
             "overall_speedup_report",
@@ -201,15 +210,15 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cuda",
-            "custom_device": "npu",
+            "baseline_device": "cpu",
+            "custom_device": "ascend_opp",
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cuda",
-            "overall_custom_device": "npu",
+            "overall_baseline_device": "cpu",
+            "overall_custom_device": "ascend_opp",
             "entries": [
                 {
                     "unit_identity": "ScalarFwd2D",
@@ -217,8 +226,8 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
-                    "custom_device": "npu",
+                    "baseline_device": "cpu",
+                    "custom_device": "ascend_opp",
                 }
             ],
         },
@@ -291,6 +300,15 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "custom_op_route_executed": True,
                     "native_custom_op_route_executed": True,
                 },
+                "public_api_route_evidence": {
+                    "unit_identity": "ScalarFwd2D",
+                    "route_type": "public_api",
+                    "entrypoint": "deepwave.scalar",
+                    "same_run": True,
+                    "custom_call_count": 3,
+                    "public_api_invoked": True,
+                    "native_custom_op_route_executed": True,
+                },
                 "same_run_runtime_coverage": {
                     "custom_call_count": 3,
                     "same_run": True,
@@ -302,8 +320,8 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
-                    "custom_device": "npu",
+                    "baseline_device": "cpu",
+                    "custom_device": "ascend_opp",
                 },
                 "no_fallback_no_zero_call_no_builtin_contamination": _valid_no_fallback_evidence(),
             }
@@ -552,6 +570,25 @@ def test_entry_script_validator_accepts_relative_custom_op_entry_script(tmp_path
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
+def test_entry_script_validator_requires_custom_op_route_evidence_contract_fields(tmp_path: Path) -> None:
+    script_path = tmp_path / "validate_custom_ops_full.py"
+    _ = script_path.write_text("print('custom-op validation')\n", encoding="utf-8")
+    payload = _valid_custom_op_contract(str(script_path))
+    schema = cast(dict[str, object], payload["operator_inventory_schema"])
+    _ = schema.pop("route_evidence_fields")
+    checks = cast(list[str], payload["required_checks"])
+    checks.remove("per_entry_public_api_or_framework_integration_route_evidence")
+    obligations = cast(list[str], payload["validation_obligations"])
+    obligations.remove("per_row_public_or_framework_route_evidence")
+
+    result = validate_entry_script(payload)
+
+    assert result["passed"] is False
+    assert any("route_evidence_fields" in error for error in result["errors"])
+    assert any("per_entry_public_api_or_framework_integration_route_evidence" in error for error in result["errors"])
+    assert any("per_row_public_or_framework_route_evidence" in error for error in result["errors"])
+
+
 def test_entry_script_validator_rejects_missing_custom_op_entry_script(tmp_path: Path) -> None:
     missing_script = tmp_path / "validate_custom_ops_full.py"
 
@@ -579,6 +616,41 @@ def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(tm
     assert any("existing file for custom-op contracts" in error for error in result["errors"])
 
 
+def test_entry_script_validator_rejects_spoofed_reports_dir_project_root(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    external_script = external_dir / "validate_custom_ops_full.py"
+    _ = external_script.write_text("print('outside project')\n", encoding="utf-8")
+
+    payload = _valid_custom_op_contract(str(external_script), str(external_dir))
+    payload["project_dir"] = str(project_dir)
+
+    result = validate_entry_script(payload)
+
+    assert result["passed"] is False
+    assert any("trusted migration_reports" in error for error in result["errors"])
+    assert any("existing file for custom-op contracts" in error for error in result["errors"])
+
+
+def test_entry_script_validator_rejects_run_command_script_outside_project(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    script_path = project_dir / "validate_custom_ops_full.py"
+    _ = script_path.write_text("print('custom-op validation')\n", encoding="utf-8")
+    outside_script = tmp_path / "outside.py"
+    _ = outside_script.write_text("print('outside')\n", encoding="utf-8")
+
+    payload = _valid_custom_op_contract(str(script_path), str(project_dir))
+    payload["run_command"] = f"{project_dir / '.venv' / 'bin' / 'python'} {outside_script}"
+
+    result = validate_entry_script(payload)
+
+    assert result["passed"] is False
+    assert any("run_command script operands must stay under the trusted project directory" in error for error in result["errors"])
+
+
 def test_custom_op_final_gate_rejects_full_pass_without_project_root() -> None:
     result = validate_custom_op_final_gate(_valid_custom_op_final_gate())
 
@@ -602,6 +674,126 @@ def test_custom_op_final_gate_accepts_strict_opp_fixture_with_build_install_and_
     _write_strict_opp_fixture(tmp_path)
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_custom_op_final_gate_accepts_framework_integration_route_evidence(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    _ = rows[0].pop("public_api_route_evidence")
+    rows[0]["framework_integration_route_evidence"] = {
+        "unit_identity": "ScalarFwd2D",
+        "route_type": "framework_integration",
+        "entrypoint": "ScalarForward.apply",
+        "same_run": True,
+        "custom_call_count": 3,
+        "framework_integration_invoked": True,
+        "native_custom_op_route_executed": True,
+    }
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_custom_op_final_gate_rejects_missing_route_evidence(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    _ = rows[0].pop("public_api_route_evidence")
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("public_api_route_evidence or framework_integration_route_evidence" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_zero_call_route_evidence(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    route = cast(dict[str, object], rows[0]["public_api_route_evidence"])
+    route["custom_call_count"] = 0
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("public_api_route_evidence must include custom call count > 0" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_public_route_without_public_entry_invocation(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    route = cast(dict[str, object], rows[0]["public_api_route_evidence"])
+    _ = route.pop("public_api_invoked")
+    route["custom_op_route_executed"] = True
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("public_api_route_evidence must prove public/project API entry invocation" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_framework_route_without_framework_entry_invocation(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    _ = rows[0].pop("public_api_route_evidence")
+    rows[0]["framework_integration_route_evidence"] = {
+        "unit_identity": "ScalarFwd2D",
+        "route_type": "framework_integration",
+        "entrypoint": "ScalarForward.apply",
+        "same_run": True,
+        "custom_call_count": 3,
+        "custom_op_route_executed": True,
+        "native_custom_op_route_executed": True,
+    }
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("framework_integration_route_evidence must prove framework integration entry invocation" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_direct_or_builtin_only_route_evidence(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    route = cast(dict[str, object], rows[0]["public_api_route_evidence"])
+    route["direct_only"] = True
+    route["builtin_only"] = True
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("direct-only, builtin-only" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_route_evidence_row_mismatch(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    rows = cast(list[dict[str, object]], payload["rows"])
+    route = cast(dict[str, object], rows[0]["public_api_route_evidence"])
+    route["unit_identity"] = "ScalarBwd2D"
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("identity must match the manifest row identity" in error for error in result["errors"])
+
+
+def test_non_custom_final_validation_does_not_require_route_evidence() -> None:
+    result = validate_validation_final({"success": True, "iteration_count": 0, "errors": []})
 
     assert result == {"passed": True, "errors": [], "warnings": []}
 
@@ -995,17 +1187,17 @@ def test_custom_op_final_gate_rejects_native_artifact_under_python_bindings_dir_
 def test_custom_op_final_gate_accepts_indexed_device_strings() -> None:
     payload = _valid_custom_op_final_gate()
     performance_report = cast(dict[str, object], payload["performance_report"])
-    performance_report["baseline_device"] = "cuda:0"
-    performance_report["custom_device"] = "npu:0"
-    performance_report["overall_baseline_device"] = "torch.cuda"
-    performance_report["overall_custom_device"] = "Ascend 910B"
+    performance_report["baseline_device"] = "cpu"
+    performance_report["custom_device"] = "ascend_opp"
+    performance_report["overall_baseline_device"] = "torch.cpu"
+    performance_report["overall_custom_device"] = "ascend_opp"
     entries = cast(list[dict[str, object]], performance_report["entries"])
-    entries[0]["baseline_device"] = "cuda:0"
-    entries[0]["custom_device"] = "torch_npu.npu"
+    entries[0]["baseline_device"] = "cpu"
+    entries[0]["custom_device"] = "ascend_opp_custom_op"
     rows = cast(list[dict[str, object]], payload["rows"])
     performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
-    performance_evidence["baseline_device"] = "torch.cuda"
-    performance_evidence["custom_device"] = "npu:0"
+    performance_evidence["baseline_device"] = "torch.cpu"
+    performance_evidence["custom_device"] = "ascend_opp"
 
     result = validate_custom_op_final_gate(payload)
 
@@ -1028,6 +1220,72 @@ def test_custom_op_final_gate_rejects_diagnostic_only_baseline() -> None:
     assert result["passed"] is False
     assert any("diagnostic-only" in error for error in result["errors"])
 
+
+
+def test_custom_op_final_gate_rejects_same_npu_self_baseline_placeholder(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    performance_report = cast(dict[str, object], payload["performance_report"])
+    performance_report.update({
+        "baseline_device": "npu",
+        "custom_device": "npu",
+        "overall_baseline_device": "torch_npu.npu",
+        "overall_custom_device": "torch_npu.npu",
+        "overall_baseline_seconds": 0.04,
+        "overall_custom_seconds": 0.04,
+        "overall_speedup_vs_baseline": 1.0,
+        "same_npu_baseline": True,
+    })
+    entries = cast(list[dict[str, object]], performance_report["entries"])
+    entries[0].update({
+        "baseline_device": "npu",
+        "custom_device": "npu",
+        "baseline_seconds": 0.01,
+        "custom_seconds": 0.01,
+        "speedup_vs_baseline": 1.0,
+        "same_route_baseline": True,
+    })
+    rows = cast(list[dict[str, object]], payload["rows"])
+    performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
+    performance_evidence.update({
+        "baseline_device": "npu",
+        "custom_device": "npu",
+        "baseline_seconds": 0.01,
+        "custom_seconds": 0.01,
+        "speedup_vs_baseline": 1.0,
+        "self_baseline": True,
+    })
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("CPU baseline" in error and "Ascend OPP/custom-op" in error for error in result["errors"])
+    assert any("same-NPU" in error or "self-baseline" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_rejects_speedup_formula_mismatch(tmp_path: Path) -> None:
+    payload = _valid_custom_op_final_gate()
+    _write_custom_op_manifest(tmp_path)
+    _write_strict_opp_fixture(tmp_path)
+    performance_report = cast(dict[str, object], payload["performance_report"])
+    performance_report["overall_baseline_seconds"] = 0.09
+    performance_report["overall_custom_seconds"] = 0.03
+    performance_report["overall_speedup_vs_baseline"] = 1.0
+    entries = cast(list[dict[str, object]], performance_report["entries"])
+    entries[0]["baseline_seconds"] = 0.09
+    entries[0]["custom_seconds"] = 0.03
+    entries[0]["speedup_vs_baseline"] = 1.0
+    rows = cast(list[dict[str, object]], payload["rows"])
+    performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
+    performance_evidence["baseline_seconds"] = 0.09
+    performance_evidence["custom_seconds"] = 0.03
+    performance_evidence["speedup_vs_baseline"] = 1.0
+
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+
+    assert result["passed"] is False
+    assert any("baseline_seconds / custom_seconds" in error for error in result["errors"])
 
 def test_custom_op_final_gate_rejects_missing_complete_performance_report() -> None:
     payload = _valid_custom_op_final_gate()
@@ -1241,6 +1499,9 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
         entries.append({"name": unit_name, **common})
         row = dict(row_template)
         row.update({"row_id": unit_name, **common})
+        route = dict(cast(dict[str, object], row["public_api_route_evidence"]))
+        route.update({"unit_identity": unit_name, "entrypoint": "pkg.ops.alpha"})
+        row["public_api_route_evidence"] = route
         rows.append(row)
         performance_entries.append(
             {
@@ -1249,8 +1510,8 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
                 "custom_seconds": 0.01,
                 "speedup_vs_baseline": 2.0,
                 "project_api_invoked": True,
-                "baseline_device": "cuda",
-                "custom_device": "npu",
+                "baseline_device": "cpu",
+                "custom_device": "ascend_opp",
             }
         )
     source_inventory["entries"] = entries
@@ -1260,13 +1521,13 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
         "unit_count": 2,
         "path": "migration_reports/performance.json",
         "project_api_invoked": True,
-        "baseline_device": "cuda",
-        "custom_device": "npu",
+        "baseline_device": "cpu",
+        "custom_device": "ascend_opp",
         "overall_baseline_seconds": 0.05,
         "overall_custom_seconds": 0.04,
         "overall_speedup_vs_baseline": 1.25,
-        "overall_baseline_device": "cuda",
-        "overall_custom_device": "npu",
+        "overall_baseline_device": "cpu",
+        "overall_custom_device": "ascend_opp",
         "overall_evidence": {
             "project_api_invoked": True,
             "custom_op_route_executed": True,
@@ -1599,6 +1860,9 @@ def test_entry_static_validator_accepts_custom_op_booleans_when_all_true() -> No
             "script_requires_strict_opp_producer_evidence": True,
             "script_rejects_non_opp_producer_success": True,
             "script_runs_project_api_custom_ops": True,
+            "script_requires_per_row_route_evidence": True,
+            "script_correlates_route_evidence_to_manifest_rows": True,
+            "script_rejects_direct_or_builtin_only_routes": True,
             "script_rejects_report_only_success": True,
             "script_requires_project_local_artifacts": True,
             "script_requires_project_root_artifact_existence": True,
@@ -1626,6 +1890,9 @@ def test_entry_static_validator_rejects_failed_custom_op_boolean() -> None:
             "script_requires_strict_opp_producer_evidence": True,
             "script_rejects_non_opp_producer_success": True,
             "script_runs_project_api_custom_ops": False,
+            "script_requires_per_row_route_evidence": True,
+            "script_correlates_route_evidence_to_manifest_rows": True,
+            "script_rejects_direct_or_builtin_only_routes": True,
             "script_rejects_report_only_success": True,
             "script_requires_project_local_artifacts": True,
             "script_requires_project_root_artifact_existence": True,
@@ -1653,6 +1920,9 @@ def test_entry_static_validator_rejects_missing_native_symbol_inventory_boolean(
             "script_runs_project_api_custom_ops": True,
             "script_requires_strict_opp_producer_evidence": True,
             "script_rejects_non_opp_producer_success": True,
+            "script_requires_per_row_route_evidence": True,
+            "script_correlates_route_evidence_to_manifest_rows": True,
+            "script_rejects_direct_or_builtin_only_routes": True,
             "script_rejects_report_only_success": True,
             "script_requires_project_local_artifacts": True,
             "script_requires_project_root_artifact_existence": True,
@@ -1663,6 +1933,36 @@ def test_entry_static_validator_rejects_missing_native_symbol_inventory_boolean(
 
     assert result["passed"] is False
     assert any("script_records_native_operator_symbols" in error for error in result["errors"])
+
+
+def test_entry_static_validator_requires_route_evidence_booleans() -> None:
+    result = validate_entry_static(
+        {
+            "validation_passed": True,
+            "issues": [],
+            "fix_plan": "Script was checked.",
+            "custom_op_static_required": True,
+            "custom_op_requirements_checked": True,
+            "script_source_driven_inventory": True,
+            "script_emits_fine_grained_units": True,
+            "script_maps_public_api_to_units": True,
+            "script_discovers_full_inventory": True,
+            "script_records_native_operator_symbols": True,
+            "script_requires_strict_opp_producer_evidence": True,
+            "script_rejects_non_opp_producer_success": True,
+            "script_runs_project_api_custom_ops": True,
+            "script_rejects_report_only_success": True,
+            "script_requires_project_local_artifacts": True,
+            "script_requires_project_root_artifact_existence": True,
+            "script_requires_numeric_performance": True,
+            "script_checks_no_fallback": True,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("script_requires_per_row_route_evidence" in error for error in result["errors"])
+    assert any("script_correlates_route_evidence_to_manifest_rows" in error for error in result["errors"])
+    assert any("script_rejects_direct_or_builtin_only_routes" in error for error in result["errors"])
 
 
 def test_entry_static_validator_rejects_custom_marker_without_required_booleans() -> None:

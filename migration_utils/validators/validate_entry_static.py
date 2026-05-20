@@ -14,6 +14,9 @@ CUSTOM_OP_BOOLEAN_FIELDS = (
     "script_requires_strict_opp_producer_evidence",
     "script_rejects_non_opp_producer_success",
     "script_runs_project_api_custom_ops",
+    "script_requires_per_row_route_evidence",
+    "script_correlates_route_evidence_to_manifest_rows",
+    "script_rejects_direct_or_builtin_only_routes",
     "script_rejects_report_only_success",
     "script_requires_project_local_artifacts",
     "script_requires_project_root_artifact_existence",
@@ -69,9 +72,6 @@ def validate(data: dict[str, object]) -> ValidationDict:
 
         if not validation_passed and not non_empty_issues:
             errors.append("validation_passed=false requires at least one issue")
-
-        if data.get("custom_op_static_required") is False:
-            errors.append("custom_op_static_required must be true when present")
 
         entry_script_kind = data.get("entry_script_kind")
         if entry_script_kind is not None and entry_script_kind != "custom_op_full_validation":

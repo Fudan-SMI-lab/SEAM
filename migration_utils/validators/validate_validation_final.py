@@ -36,6 +36,8 @@ REQUIRED_ROW_EVIDENCE_FIELDS = (
     "no_fallback_no_zero_call_no_builtin_contamination",
 )
 
+ROUTE_EVIDENCE_FIELDS = ("public_api_route_evidence", "framework_integration_route_evidence")
+
 SYNTHETIC_ONLY_FLAGS = (
     "synthetic_only",
     "monkeypatch_only",
@@ -95,6 +97,41 @@ NEGATIVE_FALLBACK_FIELDS = (
     "builtin_contamination_detected",
     "baseline_only_detected",
     "stub_detected",
+)
+
+NEGATIVE_ROUTE_FIELDS = (
+    "direct_only",
+    "direct_invocation_only",
+    "direct_custom_op_only",
+    "builtin_only",
+    "aten_only",
+    "npuextension_only",
+    "cppextension_only",
+    "python_shim_only",
+    "fallback_detected",
+    "zero_call_detected",
+    "builtin_contamination_detected",
+    "baseline_only_detected",
+    "stub_detected",
+)
+
+ROUTE_BLOCKING_TEXT_TOKENS = (
+    "direct_only",
+    "direct-only",
+    "builtin_only",
+    "builtin-only",
+    "aten_only",
+    "aten-only",
+    "npuextension_only",
+    "cppextension_only",
+    "fallback",
+    "zero_call",
+    "zero-call",
+    "baseline_only",
+    "stub",
+    "synthetic",
+    "mock",
+    "report_only",
 )
 
 REQUIRED_FINE_GRAINED_FIELDS = (
@@ -232,6 +269,7 @@ def _validate_gate_row(
     _validate_adapter_evidence(row.get("adapter_evidence"), index, errors)
     _validate_parity_evidence(row.get("parity_evidence"), index, errors)
     _validate_integration_route(row.get("integration_e2e_evidence"), index, errors)
+    _validate_per_row_route_evidence(row, index, errors)
     _validate_runtime_coverage(row.get("same_run_runtime_coverage"), index, errors)
     _validate_performance(row.get("performance_evidence"), index, errors)
     _validate_no_fallback_evidence(row.get("no_fallback_no_zero_call_no_builtin_contamination"), index, errors)
@@ -653,6 +691,122 @@ def _validate_integration_route(value: object, index: int, errors: list[str]) ->
         errors.append(f"rows[{index}].integration_e2e_evidence must prove public/project API custom-op execution")
     if not _has_positive_boolean(evidence, ("native_custom_op_route_executed", "compiled_kernel_executed", "opp_kernel_executed")):
         errors.append(f"rows[{index}].integration_e2e_evidence must prove native compiled custom-op route execution")
+
+
+def _validate_per_row_route_evidence(row: Mapping[object, object], index: int, errors: list[str]) -> None:
+    route_errors: list[str] = []
+    valid_route_found = False
+    for field_name in ROUTE_EVIDENCE_FIELDS:
+        value = row.get(field_name)
+        if value is None:
+            continue
+        field_errors: list[str] = []
+        if not isinstance(value, Mapping):
+            field_errors.append(f"rows[{index}].{field_name} must be an object")
+        else:
+            evidence = cast(Mapping[object, object], value)
+            _validate_single_route_evidence(row, evidence, field_name, index, field_errors)
+        if field_errors:
+            route_errors.extend(field_errors)
+        else:
+            valid_route_found = True
+    if not valid_route_found:
+        errors.append(
+            f"rows[{index}] must include valid public_api_route_evidence or framework_integration_route_evidence for same-run custom-op execution"
+        )
+    errors.extend(route_errors)
+
+
+def _validate_single_route_evidence(
+    row: Mapping[object, object],
+    evidence: Mapping[object, object],
+    field_name: str,
+    index: int,
+    errors: list[str],
+) -> None:
+    label = f"rows[{index}].{field_name}"
+    if not evidence:
+        errors.append(f"{label} must not be empty")
+        return
+    if _mapping_reports_failure(evidence) or _mapping_is_disallowed_surrogate(evidence):
+        errors.append(f"{label} must be real passing evidence, not report/synthetic/mock/benchmark-only")
+    if _has_negative_route_signal(evidence):
+        errors.append(f"{label} must not be direct-only, builtin-only, fallback, zero-call, baseline-only, stub, ATen-only, or Python-shim evidence")
+    if evidence.get("same_run") is not True:
+        errors.append(f"{label} must prove same_run=true")
+    custom_call_count = _extract_custom_call_count(evidence)
+    if custom_call_count is None or custom_call_count <= 0:
+        errors.append(f"{label} must include custom call count > 0")
+    if not _has_positive_boolean(
+        evidence,
+        (
+            "native_custom_op_route_executed",
+            "compiled_kernel_executed",
+            "opp_kernel_executed",
+            "opp_custom_op_executed",
+            "native_opp_execution",
+            "native_custom_op_executed",
+        ),
+    ):
+        errors.append(f"{label} must prove native custom-op/OPP execution")
+    if field_name == "public_api_route_evidence":
+        if not _has_positive_boolean(
+            evidence,
+            (
+                "public_api_invoked",
+                "project_api_invoked",
+                "public_entry_invoked",
+                "project_public_api_invoked",
+            ),
+        ):
+            errors.append(f"{label} must prove public/project API entry invocation")
+    else:
+        if not _has_positive_boolean(
+            evidence,
+            (
+                "framework_integration_invoked",
+                "framework_entry_invoked",
+                "module_forward_invoked",
+                "autograd_invoked",
+                "training_step_invoked",
+            ),
+        ):
+            errors.append(f"{label} must prove framework integration entry invocation")
+    _validate_route_identity(row, evidence, label, errors)
+
+
+def _has_negative_route_signal(evidence: Mapping[object, object]) -> bool:
+    if any(evidence.get(field_name) is True for field_name in NEGATIVE_ROUTE_FIELDS):
+        return True
+    if _normalize_status(evidence.get("route_type")) in {"DIRECT_ONLY", "BUILTIN_ONLY", "ATEN_ONLY", "FALLBACK", "STUB"}:
+        return True
+    text = _flatten_string_values(evidence)
+    return any(token in text for token in ROUTE_BLOCKING_TEXT_TOKENS)
+
+
+def _flatten_string_values(value: object) -> str:
+    if isinstance(value, str):
+        return value.lower()
+    if isinstance(value, Mapping):
+        parts: list[str] = []
+        for item in cast(Mapping[object, object], value).values():
+            parts.append(_flatten_string_values(item))
+        return "\n".join(parts)
+    if isinstance(value, (list, tuple, set)):
+        return "\n".join(_flatten_string_values(item) for item in cast(list[object] | tuple[object, ...] | set[object], value))
+    return ""
+
+
+def _validate_route_identity(
+    row: Mapping[object, object],
+    evidence: Mapping[object, object],
+    label: str,
+    errors: list[str],
+) -> None:
+    row_identity = _first_string_field(row, ("unit_identity", "row_id", "name", "operator", "op_name", "id"))
+    evidence_identity = _first_string_field(evidence, ("unit_identity", "row_id", "manifest_row_id", "name", "operator", "op_name", "id"))
+    if row_identity and evidence_identity and row_identity != evidence_identity:
+        errors.append(f"{label} identity must match the manifest row identity")
 
 
 def _validate_runtime_coverage(value: object, index: int, errors: list[str]) -> None:
@@ -1718,14 +1872,17 @@ def _validate_baseline_and_custom_device_proof(
 ) -> None:
     if _has_diagnostic_baseline(evidence):
         errors.append(f"{label} must not use diagnostic-only or metadata-only baseline timings")
-    if not _has_cuda_baseline_proof(evidence):
-        errors.append(f"{label} must prove timings include a CUDA baseline path")
-    if not _has_npu_custom_proof(evidence):
-        errors.append(f"{label} must prove timings include an Ascend/NPU custom-op path")
+    if not _has_cpu_baseline_proof(evidence):
+        errors.append(f"{label} must prove timings include a real CPU baseline path")
+    if not _has_ascend_opp_custom_proof(evidence):
+        errors.append(f"{label} must prove timings include an Ascend OPP/custom-op route")
+    if _has_self_or_same_route_baseline(evidence):
+        errors.append(f"{label} must not use self-baseline, same-route, or same-NPU placeholder timings; compare CPU baseline runtime against Ascend OPP/custom-op runtime")
+    _validate_speedup_formula(evidence, label, errors)
 
 
 def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
-    if any(evidence.get(flag_name) is True for flag_name in ("diagnostic_only", "baseline_diagnostic_only", "baseline_missing", "cuda_baseline_missing")):
+    if any(evidence.get(flag_name) is True for flag_name in ("diagnostic_only", "baseline_diagnostic_only", "baseline_missing", "cuda_baseline_missing", "cpu_baseline_missing")):
         return True
     for field_name in ("baseline_mode", "baseline_source", "comparison_mode", "mode"):
         value = evidence.get(field_name)
@@ -1736,16 +1893,91 @@ def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
     return False
 
 
-def _has_cuda_baseline_proof(evidence: Mapping[object, object]) -> bool:
-    if _has_positive_boolean(evidence, ("cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked")):
+def _has_cpu_baseline_proof(evidence: Mapping[object, object]) -> bool:
+    if _has_positive_boolean(evidence, ("cpu_baseline", "baseline_cpu", "cpu_baseline_invoked", "baseline_cpu_invoked")):
         return True
-    return _has_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"), {"cuda", "gpu", "torch_cuda"})
+    return _has_device_value(
+        evidence,
+        ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device", "baseline_route"),
+        {"cpu", "torch_cpu", "python_cpu", "cpu_reference"},
+    )
 
 
-def _has_npu_custom_proof(evidence: Mapping[object, object]) -> bool:
-    if _has_positive_boolean(evidence, ("npu_custom", "custom_npu", "npu_custom_invoked", "ascend_custom_invoked")):
+def _has_ascend_opp_custom_proof(evidence: Mapping[object, object]) -> bool:
+    if _has_positive_boolean(evidence, (
+        "npu_custom",
+        "custom_npu",
+        "npu_custom_invoked",
+        "ascend_custom_invoked",
+        "ascend_opp_custom_op_invoked",
+        "opp_custom_op_invoked",
+        "custom_op_route_executed",
+        "opp_kernel_executed",
+    )):
         return True
-    return _has_device_value(evidence, ("custom_device", "custom_backend", "target_device", "overall_custom_device"), {"npu", "ascend", "torch_npu"})
+    if _has_device_value(
+        evidence,
+        ("custom_device", "custom_backend", "target_device", "overall_custom_device", "custom_route"),
+        {"npu", "ascend", "torch_npu", "ascend_opp", "opp_custom_op", "ascend_opp_custom_op"},
+    ):
+        return True
+    return _text_field_has_token(evidence, ("custom_route", "target_route", "route", "custom_backend"), ("opp", "custom_op", "ascend"))
+
+
+def _has_self_or_same_route_baseline(evidence: Mapping[object, object]) -> bool:
+    if any(evidence.get(flag_name) is True for flag_name in (
+        "self_baseline",
+        "same_route_baseline",
+        "same_npu_baseline",
+        "baseline_is_custom",
+        "custom_as_baseline",
+        "placeholder_speedup",
+    )):
+        return True
+    baseline = _normalized_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device", "baseline_route"))
+    custom = _normalized_device_value(evidence, ("custom_device", "custom_backend", "target_device", "overall_custom_device", "custom_route"))
+    if baseline and custom and baseline == custom:
+        return True
+    if baseline and custom and _is_npu_like_device(baseline) and _is_npu_like_device(custom):
+        return True
+    baseline_route = _normalized_device_value(evidence, ("baseline_route", "comparison_route", "baseline_mode"))
+    custom_route = _normalized_device_value(evidence, ("custom_route", "target_route", "route"))
+    return bool(baseline_route and custom_route and baseline_route == custom_route)
+
+
+def _validate_speedup_formula(evidence: Mapping[object, object], label: str, errors: list[str]) -> None:
+    baseline = evidence.get("baseline_seconds") or evidence.get("overall_baseline_seconds")
+    custom = evidence.get("custom_seconds") or evidence.get("overall_custom_seconds")
+    speedup = evidence.get("speedup_vs_baseline") or evidence.get("overall_speedup_vs_baseline")
+    if not (_positive_number(baseline) and _positive_number(custom) and _positive_number(speedup)):
+        return
+    expected = cast(float, baseline) / cast(float, custom)
+    actual = cast(float, speedup)
+    tolerance = max(1e-6, abs(expected) * 0.02)
+    if abs(actual - expected) > tolerance:
+        errors.append(f"{label} speedup_vs_baseline must approximately equal baseline_seconds / custom_seconds for CPU baseline versus Ascend OPP/custom-op runtime")
+
+
+def _normalized_device_value(evidence: Mapping[object, object], fields: tuple[str, ...]) -> str:
+    for field_name in fields:
+        value = evidence.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower().replace("-", "_").replace(" ", "_").replace(".", "_")
+    return ""
+
+
+def _is_npu_like_device(value: str) -> bool:
+    return value.startswith(("npu", "ascend", "torch_npu")) or "ascend" in value or "npu" in value
+
+
+def _text_field_has_token(evidence: Mapping[object, object], fields: tuple[str, ...], tokens: tuple[str, ...]) -> bool:
+    for field_name in fields:
+        value = evidence.get(field_name)
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+            if all(token in normalized for token in tokens):
+                return True
+    return False
 
 
 def _has_device_value(evidence: Mapping[object, object], fields: tuple[str, ...], accepted: set[str]) -> bool:
