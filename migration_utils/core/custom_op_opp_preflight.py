@@ -26,6 +26,30 @@ _CUSTOM_OP_CHECK_TOKENS = frozenset({
     "op_kernel",
     "native_operator_symbol",
 })
+_CUSTOM_OP_NEGATIVE_BOOL_FIELDS = frozenset({
+    "custom_op_detected",
+    "custom_op_required",
+    "custom_op_static_required",
+    "native_custom_op_required",
+})
+_CUSTOM_OP_ZERO_COUNT_FIELDS = frozenset({
+    "operator_unit_count",
+    "inventory_count",
+    "manifest_entries",
+})
+_CUSTOM_OP_POSITIVE_COUNT_FIELDS = frozenset({
+    "operator_unit_count",
+    "inventory_count",
+    "manifest_entries",
+    "closed_pass_entries",
+    "remaining_entries",
+})
+_CUSTOM_OP_POSITIVE_LIST_FIELDS = frozenset({
+    "operators",
+    "rows",
+})
+_FALSE_STRINGS = frozenset({"false", "0", "no", "none", "null", "not_applicable", "not-applicable"})
+_TRUE_STRINGS = frozenset({"true", "1", "yes"})
 _SKIP_DIR_NAMES = frozenset({
     ".git",
     ".hg",
@@ -65,6 +89,10 @@ _MAX_EVIDENCE_PER_KIND = 20
 
 
 def has_custom_op_contract(contract: Mapping[str, object]) -> bool:
+    if _has_positive_custom_op_inventory(contract):
+        return True
+    if has_explicit_no_custom_op_contract(contract):
+        return False
     if contract.get("entry_script_kind") == "custom_op_full_validation":
         return True
     if any(field in contract for field in _CUSTOM_OP_STRUCTURAL_CONTRACT_FIELDS):
@@ -74,6 +102,109 @@ def has_custom_op_contract(contract: Mapping[str, object]) -> bool:
         return True
     required_checks = contract.get("required_checks")
     return _value_contains_token(required_checks, _CUSTOM_OP_CHECK_TOKENS)
+
+
+def has_explicit_no_custom_op_contract(contract: Mapping[str, object]) -> bool:
+    if _has_positive_custom_op_inventory(contract):
+        return False
+
+    for field in _CUSTOM_OP_NEGATIVE_BOOL_FIELDS:
+        if field in contract and _is_false_value(contract.get(field)):
+            return True
+    for field in _CUSTOM_OP_ZERO_COUNT_FIELDS:
+        if field in contract and _is_zero_value(contract.get(field)):
+            return True
+
+    custom_op_surface = contract.get("custom_op_surface")
+    if isinstance(custom_op_surface, Mapping):
+        surface = cast(Mapping[str, object], custom_op_surface)
+        if _has_positive_custom_op_inventory(surface):
+            return False
+        if has_explicit_no_custom_op_contract(surface):
+            return True
+
+    source_inventory = contract.get("source_inventory")
+    if isinstance(source_inventory, Mapping):
+        inventory = cast(Mapping[str, object], source_inventory)
+        entries = inventory.get("entries")
+        if isinstance(entries, list) and entries:
+            return False
+        if isinstance(entries, list) and not entries:
+            return True
+
+    return False
+
+
+def _has_positive_custom_op_inventory(contract: Mapping[str, object]) -> bool:
+    for field in _CUSTOM_OP_NEGATIVE_BOOL_FIELDS:
+        if field in contract and _is_true_value(contract.get(field)):
+            return True
+    for field in _CUSTOM_OP_POSITIVE_COUNT_FIELDS:
+        count = _coerce_int(contract.get(field))
+        if count is not None and count > 0:
+            return True
+    for field in _CUSTOM_OP_POSITIVE_LIST_FIELDS:
+        value = contract.get(field)
+        if isinstance(value, list) and value:
+            return True
+
+    custom_op_surface = contract.get("custom_op_surface")
+    if isinstance(custom_op_surface, Mapping):
+        surface = cast(Mapping[str, object], custom_op_surface)
+        if _has_positive_custom_op_inventory(surface):
+            return True
+        for field in ("fine_grained_operator_units", "operator_units", "native_operator_symbols"):
+            value = surface.get(field)
+            if isinstance(value, list) and value:
+                return True
+
+    source_inventory = contract.get("source_inventory")
+    if isinstance(source_inventory, Mapping):
+        inventory = cast(Mapping[str, object], source_inventory)
+        entries = inventory.get("entries")
+        if isinstance(entries, list) and entries:
+            return True
+
+    return False
+
+
+def _is_false_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, str):
+        return value.strip().lower() in _FALSE_STRINGS
+    return False
+
+
+def _is_true_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value is True
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_STRINGS
+    return False
+
+
+def _is_zero_value(value: object) -> bool:
+    count = _coerce_int(value)
+    return count == 0
+
+
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        unsigned = stripped.lstrip("+-")
+        if unsigned and unsigned.isdigit():
+            try:
+                return int(stripped)
+            except ValueError:
+                return None
+    return None
 
 
 def _value_contains_token(value: object, tokens: frozenset[str]) -> bool:

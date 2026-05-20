@@ -727,7 +727,7 @@ def test_build_prompt_context_has_constraint_keys() -> None:
     assert result["user_constraints"] == "UC"
 
 
-def test_phase_runner_phase3_legacy_output_fails_when_custom_op_context_required() -> None:
+def test_phase_runner_phase3_legacy_text_mentions_do_not_force_custom_op_context() -> None:
     runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
@@ -744,10 +744,9 @@ def test_phase_runner_phase3_legacy_output_fails_when_custom_op_context_required
         },
     )
 
-    assert normalized["entry_script_kind"] == "custom_op_full_validation"
+    assert "entry_script_kind" not in normalized
     validation = runner.validator.validate("entry_script", normalized)
-    assert validation.passed is False
-    assert any("required_report_paths" in error for error in validation.errors)
+    assert validation.passed is True
 
 
 def test_phase_runner_phase3_legacy_output_passes_without_custom_op_context() -> None:
@@ -811,6 +810,24 @@ def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_con
     assert "entry_script_kind" not in false_surface
     validation = runner.validator.validate("entry_script", false_surface)
     assert validation.passed is True
+
+    zero_surface_with_stale_text = runner._normalize_output(
+        spec,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "custom_op_surface": {"custom_op_detected": False},
+                    "operator_unit_count": 0,
+                    "notes": "custom_op_final_gate and torch.ops were checked; no custom operators found",
+                },
+                "phase_35_static_validate": {"custom_op_static_required": False},
+            },
+            "previous_outputs_text": "custom_op_final_gate mentioned in logs",
+        },
+    )
+    assert "entry_script_kind" not in zero_surface_with_stale_text
 
     true_surface = runner._normalize_output(
         spec,
@@ -1014,6 +1031,9 @@ def custom_op_phase3_output(tmp_path: Path, *, create_script: bool = True) -> di
             "kernel_functions": "CUDA/Ascend kernel functions per row",
             "kernel_launch_sites": "kernel launch sites per row",
             "public_entry_mapping": "public API to unit mapping per row",
+            "candidate_public_api_routes": "candidate public API routes per row",
+            "candidate_framework_integration_routes": "candidate framework integration routes per row",
+            "route_evidence_fields": "final rows include public_api_route_evidence or framework_integration_route_evidence",
             "source_evidence": "source files/functions per row",
             "inventory_granularity": "fine_grained",
             "out_of_scope_source_groups": "excluded source families with reason",
@@ -1044,6 +1064,9 @@ def custom_op_phase3_output(tmp_path: Path, *, create_script: bool = True) -> di
             "per_entry_adapter_evidence",
             "per_entry_parity_evidence",
             "integration_e2e_evidence",
+            "per_entry_public_api_or_framework_integration_route_evidence",
+            "correlate_route_evidence_to_manifest_rows",
+            "reject_direct_or_builtin_only_routes",
             "same_run_runtime_coverage",
             "performance_evidence",
             "complete_performance_report",
@@ -1069,6 +1092,8 @@ def custom_op_phase3_output(tmp_path: Path, *, create_script: bool = True) -> di
             "reject_non_opp_producer_evidence",
             "project_root_artifact_existence",
             "runtime_project_api",
+            "per_row_public_or_framework_route_evidence",
+            "reject_direct_builtin_only_routes",
             "numeric_performance",
             "complete_speedup_report",
             "overall_speedup_report",
@@ -1093,6 +1118,9 @@ def custom_op_phase35_output() -> dict[str, object]:
         "script_requires_strict_opp_producer_evidence": True,
         "script_rejects_non_opp_producer_success": True,
         "script_runs_project_api_custom_ops": True,
+        "script_requires_per_row_route_evidence": True,
+        "script_correlates_route_evidence_to_manifest_rows": True,
+        "script_rejects_direct_or_builtin_only_routes": True,
         "script_rejects_report_only_success": True,
         "script_requires_project_local_artifacts": True,
         "script_requires_project_root_artifact_existence": True,

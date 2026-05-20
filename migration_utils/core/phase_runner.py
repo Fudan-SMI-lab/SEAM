@@ -13,6 +13,7 @@ from typing import Protocol, cast, runtime_checkable
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
+from core.custom_op_opp_preflight import has_custom_op_contract, has_explicit_no_custom_op_contract
 from core.paths import resolve_relative_path, workspace_root
 from core.prompt_loader import PromptLoader
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
@@ -1061,8 +1062,9 @@ class PhaseRunner:
                 entry_script = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "entry_script")
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
-            if self._custom_op_required_signal(previous_outputs, context):
+            if normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(previous_outputs, context):
                 _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+                normalized["project_dir"] = str(prompt_context["project_dir"])
         if phase.prompt_id == "phase_35_static_validate":
             previous_outputs = context.get("previous_outputs", {})
             entry_script_kind = self._lookup_previous_output(
@@ -1091,28 +1093,17 @@ class PhaseRunner:
     def _custom_op_signal(cls, value: object) -> bool | None:
         if isinstance(value, str):
             if any(pattern.search(value) for pattern in CUSTOM_OP_NEGATIVE_PATTERNS):
-                return None
-            lowered = value.lower()
-            if any(term.lower() in lowered for term in CUSTOM_OP_REQUIRED_TERMS):
-                return True
+                return False
             return None
         if isinstance(value, dict):
             value_dict = cast(dict[object, object], value)
-            if value_dict.get("entry_script_kind") == "custom_op_full_validation":
+            contract_dict = cast(dict[str, object], value)
+            if has_custom_op_contract(contract_dict):
                 return True
-            if value_dict.get("custom_op_detected") is True:
-                return True
-            if value_dict.get("custom_op_detected") is False:
+            if has_explicit_no_custom_op_contract(contract_dict):
                 return False
-            if any(key in value_dict for key in CUSTOM_OP_CONTRACT_KEYS):
-                return True
             custom_op_surface = value_dict.get("custom_op_surface")
             if isinstance(custom_op_surface, dict):
-                surface = cast(dict[object, object], custom_op_surface)
-                if surface.get("custom_op_detected") is True:
-                    return True
-                if surface.get("custom_op_detected") is False:
-                    return False
                 return cls._custom_op_signal_from_iterable(
                     item for key, item in value_dict.items() if key not in {"_meta", "custom_op_surface"}
                 )
@@ -1129,10 +1120,15 @@ class PhaseRunner:
 
     @classmethod
     def _custom_op_signal_from_iterable(cls, values: Iterable[object]) -> bool | None:
+        saw_negative = False
         for item in values:
             signal = cls._custom_op_signal(item)
-            if signal is not None:
-                return signal
+            if signal is True:
+                return True
+            if signal is False:
+                saw_negative = True
+        if saw_negative:
+            return False
         return None
 
     @staticmethod
