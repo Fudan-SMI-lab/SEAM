@@ -31,6 +31,7 @@ The entry command is executed automatically in Phase 5:
 - If the existing launcher is interactive, prefer documented non-interactive flags/env vars. Otherwise create a wrapper that calls the real entry point with safe defaults.
 - Do not invent unsupported CLI flags.
 - If you create or select a generated/wrapper script, physically write it under `{project_dir}` before returning JSON. Never return an `entry_script_path` for a file that does not exist; custom-op Phase 3 validation fails before Phase 3.5 when the selected script is missing.
+- **Verification requirement**: Before returning the final JSON, confirm the selected/created script file exists by reading its contents or listing it. Do NOT execute the full migration workload during Phase 3; you are selecting and verifying the entry script path, not running validation.
 
 You may reason freely about the choice, but return exactly one JSON object.
 
@@ -40,7 +41,8 @@ Return exactly one JSON object. Legacy projects may return only the two existing
 ```json
 {
   "entry_script_path": "/path/to/project/generate.py",
-  "run_command": "/path/to/project/.venv/bin/python /path/to/project/generate.py --config /path/to/project/config.yml"
+  "run_command": "/path/to/project/.venv/bin/python /path/to/project/generate.py --config /path/to/project/config.yml",
+  "phase5_entry_script_revision_allowed": true
 }
 ```
 
@@ -82,8 +84,8 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 ```
 
 ## Field Semantics
-- `entry_script_path`: absolute path to the selected script or wrapper.
-- `run_command`: exact non-interactive command Phase 5 will execute, using the venv interpreter when available.
+- `entry_script_path`: host-visible absolute path to the selected or created script. This path is readable by the framework (OpenCode tools such as `read`), by Phase 3.5 (static validator), and by the Phase 5 execution backend after any container path mapping.
+- `run_command`: exact non-interactive command Phase 5 will execute. In container workflows, the framework executes this command inside its created container; use container-visible paths or host paths that the backend can map. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
 - `entry_script_kind`: use `custom_op_full_validation` for custom-op projects; omit for normal projects.
 - `reports_dir`: target project's `migration_reports` directory for custom-op evidence.
 - `operator_discovery_sources`: source locations the script must discover before validating; do not rely on external requirements docs for completion.
@@ -92,4 +94,4 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 - `required_report_paths`: required migration reports the script must produce/check.
 - `required_checks`: fail-closed checks including native operator symbol/kernel inventory, complete `migration_reports/performance.json` per-unit speedup-report closure, and one overall/end-to-end speedup after every discovered custom-op unit has been replaced.
 - `validation_obligations`: machine-checkable validation obligations; they must enforce full project-local runtime migration, a complete per-unit speedup report, and an overall all-units-replaced speedup report, not smoke/MVP/report-only success.
-- `phase5_entry_script_revision_allowed`: `true` means Phase 5 may revise the entry script only to enforce this same full custom-op contract.
+- `phase5_entry_script_revision_allowed`: `true` means Phase 5 may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract. For non-custom-op projects, revision is similarly bounded to finding a working entry that matches the project's actual migration target.
