@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from core.config import load_workflow
-from core.types import RuntimeSkillsConfig
+from core.types import RuntimeSkillsConfig, ExperienceConfig
 
 # Get the package root for path resolution
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -447,3 +447,82 @@ phases:
 
     wf = load_workflow(str(workflow_path))
     assert wf.phases[0].transition is None
+
+
+def test_experience_defaults_to_enabled(tmp_path: Path):
+    """Workflow without experience: section should default to enabled/true."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: no_experience
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.experience.enabled is True
+    assert wf.experience.phase7_enabled is True
+
+
+def test_experience_explicit_disabled(tmp_path: Path):
+    """experience: block with both flags set to false."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: disabled_experience
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+experience:
+  enabled: false
+  phase7_enabled: false
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.experience.enabled is False
+    assert wf.experience.phase7_enabled is False
+
+
+def test_experience_partial_disable(tmp_path: Path):
+    """Only phase7_enabled: false should leave enabled as true."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: partial_experience
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+experience:
+  phase7_enabled: false
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.experience.enabled is True
+    assert wf.experience.phase7_enabled is False
+
+
+def test_smoke_workflow_has_experience_disabled():
+    """The auto smoke workflow should have experience disabled."""
+    wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "ppu_migration_v2_auto_vllm018_smoke.yaml"))
+    assert wf.experience.enabled is False
+    assert wf.experience.phase7_enabled is False
+
+
+def test_v2_workflow_has_experience_default():
+    """The canonical v2 workflow should have default experience config."""
+    wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
+    assert wf.experience.enabled is True
+    assert wf.experience.phase7_enabled is True
