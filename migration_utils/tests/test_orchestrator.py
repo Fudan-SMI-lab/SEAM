@@ -132,10 +132,12 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
 
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, session_mgr, artifact_store, prompt_loader, validator, *, workflow=None, framework_config=None) -> None:
             call_order.append("phase_runner_init")
             phase_runner_init_args.append((workflow, framework_config))
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def run_phase_0_to_3(self, project_dir: str, session_mgr, artifact_store) -> dict[str, dict[str, object]]:
             call_order.append("run_phase_0_to_3")
             return {
@@ -350,6 +352,7 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
 
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, *args, **kwargs) -> None:
             pass
 
@@ -481,6 +484,7 @@ def test_orchestrator_passes_container_backend_to_repair_loop(monkeypatch: pytes
 
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, *a, **kw) -> None: pass
         def run_phase_0_to_1(self, *a, **kw) -> dict: return {"phase_0_env_detect": {}, "phase_1_project_analysis": {}}
         def run_phase_1_5(self, *a, **kw) -> str: return ""
@@ -553,6 +557,7 @@ def test_orchestrator_passes_none_backend_for_local_config(monkeypatch: pytest.M
         def current_terminal(self) -> str | None: return self.terminal
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, *a, **kw) -> None: pass
         def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
         def run_phase_1_5(self, *a, **kw) -> str: return ""
@@ -622,6 +627,7 @@ def test_orchestrator_cleans_up_backend_in_finally(monkeypatch: pytest.MonkeyPat
         def current_terminal(self) -> str | None: return self.terminal
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, *a, **kw) -> None: pass
         def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
         def run_phase_1_5(self, *a, **kw) -> str: return ""
@@ -698,8 +704,10 @@ def test_orchestrator_calls_preflight_for_container_backend(monkeypatch: pytest.
 
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, *a, **kw) -> None: pass
         def set_container_context(self, ctx) -> None: set_container_ctxs.append(dict(ctx))
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
         def run_phase_1_5(self, *a, **kw) -> str: return ""
         def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
@@ -764,6 +772,7 @@ def test_orchestrator_preflight_failure_stops_early(monkeypatch: pytest.MonkeyPa
         def current_terminal(self) -> str | None: return self.terminal
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, *a, **kw) -> None: pass
     class FakeRepairLoopEngine:
         def __init__(self, *a, exec_backend=None, **kw) -> None: pass

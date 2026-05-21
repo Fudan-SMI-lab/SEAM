@@ -1426,3 +1426,89 @@ def _make_artifact_store():
         def load_phase_output(self, *a, **kw): return None
     return S()
 
+
+# ── Phase-aware previous_outputs filtering ────────────────────────
+
+
+def test_phase_35_previous_outputs_excludes_early_phases() -> None:
+    """Phase 3.5 should receive only phase_3_entry_script, not Phase 0/1/2."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    spec = PhaseSpec("phase_35", "phase_35_static_validate", "entry_static")
+    ctx: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "previous_outputs": {
+            "phase_0_env_detect": {"platform": "npu", "npu_detected": True},
+            "phase_1_project_analysis": {"entry_script": "train.py", "dependencies": ["torch"]},
+            "phase_2_venv_create": {"venv_path": "/tmp/.venv"},
+            "phase_3_entry_script": {
+                "entry_script_path": "/tmp/project/train.py",
+                "entry_script_kind": "custom_op_full_validation",
+            },
+        },
+    }
+    result = runner._build_prompt_context(spec, ctx)
+    parsed_previous = json.loads(result["previous_outputs"])
+    assert "phase_3_entry_script" in parsed_previous
+    assert "phase_0_env_detect" not in parsed_previous
+    assert "phase_1_project_analysis" not in parsed_previous
+    assert "phase_2_venv_create" not in parsed_previous
+    assert result["entry_script_path"] == "/tmp/project/train.py"
+
+
+def test_phase_1_5_does_not_get_duplicated_previous_outputs() -> None:
+    """Phase 1.5 context should receive empty previous_outputs (no duplication of Phase 0/1)."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    spec = PhaseSpec("phase_1_5", "phase_1_5_constraint_summary", "constraint_summary")
+    ctx: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "previous_outputs": {
+            "phase_0_env_detect": {"platform": "npu"},
+            "phase_1_project_analysis": {"entry_script": "train.py"},
+        },
+    }
+    result = runner._build_prompt_context(spec, ctx)
+    parsed = json.loads(result["previous_outputs"])
+    assert parsed == {}
+    assert "phase_0_env_detect" not in parsed
+    assert "phase_1_project_analysis" not in parsed
+
+
+def test_early_phases_get_empty_previous_outputs() -> None:
+    """Phase 0/1/2/3 receive empty previous_outputs; _SHARED_SESSION_PHASES omit the key."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    ctx_with_noise: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "previous_outputs": {
+            "phase_0_env_detect": {"platform": "npu"},
+            "phase_1_project_analysis": {"entry_script": "train.py"},
+        },
+    }
+    for prompt_id in ("phase_0_env_detect", "phase_1_project_analysis", "phase_2_venv_create", "phase_3_entry_script"):
+        spec = PhaseSpec(prompt_id.rsplit("_", 1)[0], prompt_id, prompt_id.split("_", 1)[-1])
+        result = runner._build_prompt_context(spec, ctx_with_noise)
+        if prompt_id in PhaseRunner._SHARED_SESSION_PHASES:
+            assert "previous_outputs" not in result, f"{prompt_id} is shared-session and should omit key"
+        else:
+            assert result.get("previous_outputs") == "{}", f"{prompt_id} should get empty previous_outputs"
+
+
+def test_phase_6_still_receives_all_previous_outputs() -> None:
+    """Phase 6/report should still receive the full previous_outputs (no whitelist entry)."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    spec = PhaseSpec("phase_6", "phase_6_report", "report")
+    ctx: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "previous_outputs": {
+            "phase_0_env_detect": {"platform": "npu"},
+            "phase_1_project_analysis": {"entry_script": "train.py"},
+            "phase_3_entry_script": {"entry_script_path": "/tmp/train.py"},
+            "phase_4_rule_migration": {"files_migrated": 10},
+        },
+    }
+    result = runner._build_prompt_context(spec, ctx)
+    parsed = json.loads(result["previous_outputs"])
+    assert "phase_0_env_detect" in parsed
+    assert "phase_1_project_analysis" in parsed
+    assert "phase_3_entry_script" in parsed
+    assert "phase_4_rule_migration" in parsed
+

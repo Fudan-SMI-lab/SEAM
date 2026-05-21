@@ -15,6 +15,7 @@ from core.types import (
     SubWorkflowDefinition,
     TransitionDefinition,
     ExecutionBackendConfig,
+    ExperienceConfig,
 )
 from core.workflow_executor import WorkflowExecutor
 from core.execution_backend import ContainerBackend
@@ -3811,4 +3812,323 @@ class TestContainerEnvContextInjection:
         ctx: dict = {"container_name_or_id": "pre-set"}
         executor._inject_container_env_context(ctx)
         assert ctx["container_name_or_id"] == "pre-set"
+
+
+class TestExperienceConfigGate:
+    def test_experience_injection_gated_when_workflow_disabled(self, tmp_path: Path):
+        phase = PhaseDefinition(
+            id="test", name="T", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer", retrieve_experience=True,
+        )
+        workflow = WorkflowDefinition(
+            name="exp_disabled", version="1.0", phases=[phase], terminals=["complete"],
+            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            experience=ExperienceConfig(enabled=False, phase7_enabled=True),
+        )
+        mock_store = MagicMock()
+        session_mgr = MagicMock()
+        session_mgr.get_or_create.return_value = "session_1"
+        session_mgr.send_command.return_value = '{"ok": true}'
+        prompt_loader = MagicMock()
+        prompt_loader.load_prompt.return_value = "BASE PROMPT"
+
+        with patch("core.experience_query.ExperienceQuerier") as MockQuerier:
+            executor = WorkflowExecutor(
+                workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
+                project_dir=str(tmp_path), output_dir=str(tmp_path),
+                experience_store=mock_store,
+            )
+            result = executor._append_dynamic_experience_markdown(
+                "PROMPT", phase, {}, {}, None
+            )
+            MockQuerier.assert_not_called()
+            assert result == "PROMPT"
+
+    def test_experience_injection_allowed_when_enabled(self, tmp_path: Path):
+        from dataclasses import dataclass, field
+        from core.types import ExperienceConfig
+        phase = PhaseDefinition(
+            id="test", name="T", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer", retrieve_experience=True,
+        )
+        workflow = WorkflowDefinition(
+            name="exp_enabled", version="1.0", phases=[phase], terminals=["complete"],
+            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            experience=ExperienceConfig(enabled=True, phase7_enabled=True),
+        )
+        mock_store = MagicMock()
+        session_mgr = MagicMock()
+        session_mgr.get_or_create.return_value = "session_1"
+        session_mgr.send_command.return_value = '{"ok": true}'
+        prompt_loader = MagicMock()
+        prompt_loader.load_prompt.return_value = "BASE PROMPT"
+
+        query_result = {
+            "selected_experiences": [],
+            "summary": "",
+            "warning": "",
+        }
+
+        with patch("core.experience_query.ExperienceQuerier") as MockQuerier:
+            mock_querier = MagicMock()
+            mock_querier.query.return_value = query_result
+            MockQuerier.return_value = mock_querier
+
+            executor = WorkflowExecutor(
+                workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
+                project_dir=str(tmp_path), output_dir=str(tmp_path),
+                experience_store=mock_store,
+            )
+            executor._append_dynamic_experience_markdown(
+                "PROMPT", phase, {}, {}, None
+            )
+            MockQuerier.assert_called_once()
+
+
+class TestPhase7SkipAndReroute:
+    def _executor_with_phases(self, tmp_path: Path, phases: list, experience_cfg=None):
+        if experience_cfg is None:
+            experience_cfg = ExperienceConfig(enabled=True, phase7_enabled=True)
+        workflow = WorkflowDefinition(
+            name="phase7_test", version="1.0", phases=phases,
+            terminals=["complete", "failed"],
+            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            experience=experience_cfg,
+        )
+        session_mgr = MagicMock()
+        session_mgr.get_or_create.return_value = "session_1"
+        session_mgr.send_command.return_value = '{"ok": true}'
+        prompt_loader = MagicMock()
+        prompt_loader.load_prompt.return_value = "PROMPT"
+        return WorkflowExecutor(
+            workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            experience_store=None,
+        ), session_mgr
+
+    def test_phase7_rerouted_in_transition_definition(self, tmp_path: Path):
+        from core.types import TransitionDefinition
+        phase = PhaseDefinition(
+            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer",
+            transition=TransitionDefinition(on_success="phase_7a_evaluate", on_failure="complete"),
+        )
+        executor, _ = self._executor_with_phases(
+            tmp_path, [phase],
+            experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
+        )
+        next_id = executor._get_next_phase_id(phase, "success", {}, {})
+        assert next_id == "complete"
+
+    def test_phase7_rerouted_in_transitions_dict(self, tmp_path: Path):
+        phase = PhaseDefinition(
+            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer",
+            transitions={"on_success": "phase_7a_evaluate", "on_failure": "complete"},
+        )
+        executor, _ = self._executor_with_phases(
+            tmp_path, [phase],
+            experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
+        )
+        next_id = executor._get_next_phase_id(phase, "success", {}, {})
+        assert next_id == "complete"
+
+    def test_phase7b_rerouted(self, tmp_path: Path):
+        from core.types import TransitionDefinition
+        phase = PhaseDefinition(
+            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
+            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            transition=TransitionDefinition(on_success="phase_7b_refine", on_failure="complete"),
+        )
+        executor, _ = self._executor_with_phases(
+            tmp_path, [phase],
+            experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
+        )
+        next_id = executor._get_next_phase_id(phase, "success", {}, {})
+        assert next_id == "complete"
+
+    def test_phase7_not_rerouted_when_enabled(self, tmp_path: Path):
+        from core.types import TransitionDefinition
+        phase = PhaseDefinition(
+            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer",
+            transition=TransitionDefinition(on_success="phase_7a_evaluate"),
+        )
+        executor, _ = self._executor_with_phases(
+            tmp_path, [phase],
+            experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=True),
+        )
+        next_id = executor._get_next_phase_id(phase, "success", {}, {})
+        assert next_id == "phase_7a_evaluate"
+
+    def test_phase7_default_next_reroute(self, tmp_path: Path):
+        phase_6 = PhaseDefinition(
+            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer",
+        )
+        phase_7a = PhaseDefinition(
+            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
+            type="orchestration", handler="x.y.z",
+        )
+        executor, _ = self._executor_with_phases(
+            tmp_path, [phase_6, phase_7a],
+            experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
+        )
+        next_id = executor._get_next_phase_id(phase_6, "success", {}, {})
+        assert next_id == "complete"
+
+    def test_phase7_skipped_in_execute_loop(self, tmp_path: Path):
+        from core.types import TransitionDefinition
+        phase_6 = PhaseDefinition(
+            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer",
+            transition=TransitionDefinition(on_success="phase_7a_evaluate"),
+        )
+        phase_7a = PhaseDefinition(
+            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
+            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            transition=TransitionDefinition(on_success="phase_7b_refine"),
+        )
+        phase_7b = PhaseDefinition(
+            id="phase_7b_refine", name="Refine", prompt_template="x", output_schema={},
+            type="orchestration", handler="experience_dispatcher.ExperienceDispatcher.dispatch_and_refine",
+            transition=TransitionDefinition(on_success="complete"),
+        )
+        executor, session_mgr = self._executor_with_phases(
+            tmp_path, [phase_6, phase_7a, phase_7b],
+            experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
+        )
+        executor.hook_manager = MagicMock()
+
+        result = executor.execute({"PROJECT_DIR": str(tmp_path)})
+
+        assert result["status"] == "complete"
+        assert "phase_6_report" in executor.phase_results
+        assert executor.phase_results["phase_6_report"]["status"] == "success"
+        assert "phase_7a_evaluate" not in executor.phase_results
+        assert "phase_7b_refine" not in executor.phase_results
+
+    def test_phase7_direct_start_skipped(self, tmp_path: Path):
+        phase_7a = PhaseDefinition(
+            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
+            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+        )
+        phase_end = PhaseDefinition(
+            id="phase_end", name="End", prompt_template="x", output_schema={},
+            type="llm", agent="main_engineer",
+        )
+        executor, session_mgr = self._executor_with_phases(
+            tmp_path, [phase_7a, phase_end],
+            experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
+        )
+        executor.hook_manager = MagicMock()
+
+        result = executor.execute({"PROJECT_DIR": str(tmp_path)})
+
+        assert result["status"] == "complete"
+        assert "phase_7a_evaluate" in executor.phase_results
+        assert executor.phase_results["phase_7a_evaluate"]["status"] == "skipped"
+        assert executor.phase_results["phase_7a_evaluate"]["reason"] == "phase7_disabled"
+        assert "phase_end" in executor.phase_results
+
+
+# ── Phase-aware previous_outputs filtering ────────────────────────
+
+
+def test_we_filter_previous_outputs_empty_for_early_phases(temp_dir):
+    """Phase 0/1/2/3 should receive empty previous_outputs."""
+    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    executor = WorkflowExecutor(
+        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=temp_dir, output_dir=temp_dir,
+    )
+    state = {
+        "phase_0_env_detect": {"platform": "npu"},
+        "phase_1_project_analysis": {"entry_script": "train.py"},
+        "phase_2_venv_create": {"venv_path": "/.venv"},
+    }
+    for pid in ("phase_0_env_detect", "phase_1_project_analysis",
+                "phase_2_venv_create", "phase_3_entry_script"):
+        phase = PhaseDefinition(id=pid, name=pid, prompt_template=pid, output_schema={}, type="llm")
+        assert executor._filter_previous_outputs(phase, state) == {}
+
+
+def test_we_filter_previous_outputs_phase35_only_includes_phase3(temp_dir):
+    """Phase 3.5 must receive only phase_3_entry_script, not earlier phases."""
+    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    executor = WorkflowExecutor(
+        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=temp_dir, output_dir=temp_dir,
+    )
+    state = {
+        "phase_0_env_detect": {"platform": "npu"},
+        "phase_1_project_analysis": {"entry_script": "train.py"},
+        "phase_2_venv_create": {"venv_path": "/.venv"},
+        "phase_3_entry_script": {"entry_script_path": "/train.py", "entry_script_kind": "custom_op_full_validation"},
+    }
+    phase = PhaseDefinition(
+        id="phase_35_static_validate", name="3.5", prompt_template="phase_35_static_validate",
+        output_schema={}, type="llm",
+    )
+    filtered = executor._filter_previous_outputs(phase, state)
+    assert "phase_3_entry_script" in filtered
+    assert "phase_0_env_detect" not in filtered
+    assert "phase_1_project_analysis" not in filtered
+    assert "phase_2_venv_create" not in filtered
+
+
+def test_we_filter_previous_outputs_fallback_to_all_for_unlisted(temp_dir):
+    """Phases not in whitelist should fall back to all state (backward compat)."""
+    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    executor = WorkflowExecutor(
+        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=temp_dir, output_dir=temp_dir,
+    )
+    state = {"phase_1_entry_script": {}, "phase_5_validation": {}}
+    phase = PhaseDefinition(id="phase_5_validation", name="5", prompt_template="phase_5_validation", output_schema={}, type="llm")
+    filtered = executor._filter_previous_outputs(phase, state)
+    assert filtered == state
+
+
+def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
+    """Integration: _inject_llm_baseline_context produces filtered JSON for Phase 3.5."""
+    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    executor = WorkflowExecutor(
+        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=temp_dir, output_dir=temp_dir,
+    )
+    state = {
+        "phase_0_env_detect": {"platform": "npu", "python_version": "3.10"},
+        "phase_1_project_analysis": {"entry_script": "train.py"},
+        "phase_2_venv_create": {"venv_path": "/.venv"},
+        "phase_3_entry_script": {"entry_script_path": "/train.py", "run_command": "python train.py"},
+    }
+    phase = PhaseDefinition(
+        id="phase_35_static_validate", name="3.5", prompt_template="phase_35_static_validate",
+        output_schema={}, type="llm",
+    )
+    ctx: dict = {}
+    executor._inject_llm_baseline_context(ctx, phase, state)
+    parsed = json.loads(ctx["previous_outputs"])
+    assert "phase_3_entry_script" in parsed
+    assert "phase_0_env_detect" not in parsed
+    assert "phase_1_project_analysis" not in parsed
+    assert "phase_2_venv_create" not in parsed
+
+
+def test_we_inject_llm_baseline_context_early_phase_empty(temp_dir):
+    """Integration: Phase 0 gets empty previous_outputs."""
+    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    executor = WorkflowExecutor(
+        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=temp_dir, output_dir=temp_dir,
+    )
+    state = {"phase_0_env_detect": {"platform": "npu"}}
+    phase = PhaseDefinition(
+        id="phase_0_env_detect", name="0", prompt_template="phase_0_env_detect",
+        output_schema={}, type="llm",
+    )
+    ctx: dict = {}
+    executor._inject_llm_baseline_context(ctx, phase, state)
+    assert json.loads(ctx["previous_outputs"]) == {}
 

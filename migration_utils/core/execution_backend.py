@@ -660,6 +660,51 @@ def auto_select_backend(config: ExecutionBackendConfig) -> ExecutionBackendConfi
         return ExecutionBackendConfig(mode="local")
 
 
+def get_execution_environment_context(
+    backend: ExecutionBackend | None,
+    probe_facts: dict[str, Any] | None = None,
+) -> str:
+    is_container = (
+        backend is not None
+        and not isinstance(backend, LocalBackend)
+        and hasattr(backend, "get_execution_context")
+    )
+    if is_container:
+        parts: list[str] = []
+        parts.append("## Execution Environment Context")
+        parts.append("")
+        parts.append("- **execution_backend_mode**: container")
+        parts.append("- **Target runtime**: Phase 5 executes inside the framework-created container.")
+        host_proj = getattr(backend, "_host_project_dir", None) or "(not yet set)"
+        parts.append(f"- **Host project dir**: {host_proj}")
+        container_proj = getattr(getattr(backend, "config", None), "container_workdir", "(unknown)")
+        parts.append(f"- **Container project dir**: {container_proj}")
+        if probe_facts and probe_facts.get("status") == "ok":
+            probe_summary = []
+            for key in ("python_version", "torch_version", "platform", "cwd"):
+                if key in probe_facts:
+                    probe_summary.append(f"{key}: {probe_facts[key]}")
+            if probe_summary:
+                parts.append(f"- **Container probe facts**: {', '.join(probe_summary)}")
+            parts.append("- **Probe interpreter**: the probe ran `python3` inside the container; this command is confirmed callable on the container PATH.")
+        elif probe_facts:
+            status = probe_facts.get("status", "unknown")
+            error = probe_facts.get("error", "")
+            extra = f" — {error}" if error else ""
+            parts.append(f"- **Container probe**: status={status}{extra}")
+        parts.append("- **Tooling note**: OpenCode file tools (read, grep, etc.) observe the host filesystem, not the container. For Phase 5 execution, use paths and commands valid inside the target container environment.")
+        return "\n".join(parts)
+
+    # LocalBackend or None
+    return (
+        "## Execution Environment Context\n\n"
+        "- **execution_backend_mode**: local\n"
+        "- **Target runtime**: Phase 5 executes on the host/local environment directly.\n"
+        "- **Tooling note**: OpenCode tools and Phase 5 observe the same local environment.\n"
+        "  File paths, Python interpreters, and commands you see are exactly what Phase 5 will use."
+    )
+
+
 def get_container_prompt_context(
     backend: ExecutionBackend | None,
     probe_facts: dict[str, Any] | None = None,
