@@ -10,7 +10,7 @@ Analyze the `entry_script_path` selected in Phase 3 and determine if it can run 
 
 ## Analysis Checklist
 
-Examine the entry script file at `{entry_script_path}` (resolve from Phase 3 output) and check for:
+Examine the entry script file at `{entry_script_path}`. This path is a **host-visible absolute path** provided by the Phase 3 output; it is readable via OpenCode file tools (e.g. `read`) and accessible inside the execution container. Check for:
 
 1. **Interactive input calls**: `input()`, `raw_input()`, `getpass()`, `getpass.getpass()`, `code.interact()`, `cmd.Cmd()`, `click.prompt()`, `rich.prompt.*`
 2. **Infinite loops without exit**: `while True:` or `while 1:` loops that have no `break`, no signal handler, no epoch/step limit, and no timeout mechanism.
@@ -20,7 +20,7 @@ Examine the entry script file at `{entry_script_path}` (resolve from Phase 3 out
 
 ## Custom-Op Contract Gate
 
-Use the existing `previous_outputs` context below to inspect `phase_3_entry_script`:
+The `previous_outputs` block below contains **only** the `phase_3_entry_script` output (entry script path, run command, and custom-op contract fields). It does not include outputs from earlier phases.
 
 ```json
 {previous_outputs}
