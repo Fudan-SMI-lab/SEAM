@@ -197,6 +197,14 @@ class ExecutionBackendConfig:
 
 
 @dataclass
+class ExperienceConfig:
+    """Top-level experience retrieval and injection configuration."""
+
+    enabled: bool = True
+    phase7_enabled: bool = True
+
+
+@dataclass
 class WorkflowDefinition:
     """Top-level workflow descriptor loaded from YAML."""
 
@@ -210,6 +218,7 @@ class WorkflowDefinition:
     sub_workflows: dict[str, SubWorkflowDefinition] = field(default_factory=dict)
     hooks: dict[str, list[HookDefinition]] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig | None = None
+    experience: ExperienceConfig = field(default_factory=ExperienceConfig)
 
 
 class PhaseType(str, Enum):

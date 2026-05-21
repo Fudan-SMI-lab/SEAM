@@ -8,6 +8,7 @@ import yaml
 from .paths import resolve_relative_path
 from .types import (
     ExecutionBackendConfig,
+    ExperienceConfig,
     PhaseDefinition,
     RuntimeSkillsConfig,
     WorkflowDefinition,
@@ -53,6 +54,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
     sub_workflows = _parse_sub_workflows(raw.get("sub_workflows", {}))
     hooks = _parse_hooks(raw.get("hooks", {}))
     execution_backend = _parse_execution_backend(raw.get("execution_backend"))
+    experience = _parse_experience(raw.get("experience"))
 
     return WorkflowDefinition(
         name=raw["name"],
@@ -65,6 +67,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
         sub_workflows=sub_workflows,
         hooks=hooks,
         execution_backend=execution_backend,
+        experience=experience,
     )
 
 
@@ -452,6 +455,23 @@ def _parse_execution_backend(raw: Any) -> ExecutionBackendConfig | None:
         return ExecutionBackendConfig.from_dict(raw)
     raise ValueError(
         f"execution_backend must be a mapping or absent, got {type(raw).__name__}"
+    )
+
+
+def _parse_experience(raw: Any) -> ExperienceConfig:
+    """Parse optional top-level ``experience`` YAML key.
+
+    Returns defaults (enabled=True, phase7_enabled=True) when absent.
+    """
+    if raw is None:
+        return ExperienceConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"experience must be a mapping or absent, got {type(raw).__name__}"
+        )
+    return ExperienceConfig(
+        enabled=bool(raw.get("enabled", True)),
+        phase7_enabled=bool(raw.get("phase7_enabled", True)),
     )
 
 
