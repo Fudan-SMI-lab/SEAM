@@ -97,8 +97,13 @@ class TelemetryBridge:
     def set_metadata(self, key: str, value: object) -> None:
         self._metadata[key] = value
 
-    def save_metrics(self) -> dict[str, str]:
-        output_path = self._output_dir / "telemetry.json"
+    def save_metrics(
+        self,
+        *,
+        filename: str = "telemetry.json",
+        return_key: str = "telemetry_json",
+    ) -> dict[str, str]:
+        output_path = self._output_dir / filename
         phases_list = list(self._phase_timings.values())
         payload = {
             "metadata": {
@@ -115,4 +120,4 @@ class TelemetryBridge:
             "events": self._events,
         }
         output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        return {"telemetry_json": str(output_path)}
+        return {return_key: str(output_path)}

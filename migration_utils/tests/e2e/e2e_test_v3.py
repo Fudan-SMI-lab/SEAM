@@ -344,7 +344,6 @@ def run_e2e_v3(
     from core.artifact_store import ArtifactStore
     from core.config import load_workflow
     from core.config_loader import load_framework_config
-    from core.experience_store import ExperienceStore
     from core.paths import default_output_projects_root
     from core.prompt_loader import PromptLoader
     from core.telemetry_bridge import TelemetryBridge
@@ -431,7 +430,6 @@ def run_e2e_v3(
         observer.set_metadata("review_gate", review_gate)
 
         artifact_store = ArtifactStore(str(temp_dir), run_id)
-        experience_store = ExperienceStore(str(REPO_ROOT))
         prompt_loader = PromptLoader()
         validator = ValidatorEngine()
         validator.register_validator("env_detect", validate_env_detect)
@@ -453,6 +451,11 @@ def run_e2e_v3(
 
         telemetry_bridge = TelemetryBridge(str(output_dir))
         framework_config = load_framework_config(framework_config_path)
+
+        experience_store = None
+        if workflow.experience.enabled:
+            from core.experience_store import ExperienceStore
+            experience_store = ExperienceStore(str(REPO_ROOT))
 
         executor = WorkflowExecutor(
             workflow=workflow,
@@ -501,7 +504,9 @@ def run_e2e_v3(
             log(f"Artifacts copied to {artifact_dir}")
 
         observer_paths = observer.save_metrics()
-        bridge_paths = telemetry_bridge.save_metrics()
+        bridge_paths = telemetry_bridge.save_metrics(
+            filename="telemetry_bridge.json", return_key="telemetry_bridge_json",
+        )
         telemetry_paths = {**observer_paths, **bridge_paths}
         if agent_io_logger is not None:
             agent_io_paths = agent_io_logger.paths()
