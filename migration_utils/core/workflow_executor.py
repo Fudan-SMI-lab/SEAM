@@ -37,7 +37,7 @@ from core.variable_resolver import VariableResolver
 from core.session_registry import SessionRegistry
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
-from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx
+from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_exec_env_ctx
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
 from migrator.rule_based_ppu import PPURuleBasedMigrator
@@ -533,6 +533,24 @@ class WorkflowExecutor:
 
             logger.info(">>> Executing phase: %s (%s)", phase.id, phase.type)
 
+            # Skip Phase 7 when experience.phase7_enabled is false
+            if phase.id in ("phase_7a_evaluate", "phase_7b_refine"):
+                p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                if not p7_cfg:
+                    logger.info("Phase '%s' skipped (phase7_enabled=false)", phase.id)
+                    self.phase_results[phase.id] = {
+                        "status": "skipped",
+                        "duration": 0,
+                        "reason": "phase7_disabled",
+                    }
+                    idx = self.phase_index.get(phase.id, -1)
+                    phases_list = self.workflow.phases or []
+                    if idx >= 0 and idx + 1 < len(phases_list):
+                        current_phase_id = phases_list[idx + 1].id
+                    else:
+                        current_phase_id = "complete"
+                    continue
+
             # Evaluate condition
             if phase.condition:
                 cond_met = self._evaluate_condition(
@@ -812,6 +830,10 @@ class WorkflowExecutor:
         log_phase_id: str | None = None,
     ) -> str:
         if not getattr(phase, 'retrieve_experience', False) or not self.experience_store:
+            return prompt_text
+
+        exp_cfg = getattr(getattr(self.workflow, 'experience', None), 'enabled', True)
+        if not exp_cfg:
             return prompt_text
 
         phase_id = log_phase_id or phase.id
@@ -1384,6 +1406,39 @@ class WorkflowExecutor:
                 pass
         return str(self.session_mgr.get_or_create(role=retry_role, lifecycle="ephemeral"))
 
+    # ── Phase-aware previous_outputs whitelist ────────────────────────
+    # Maps prompt_id patterns to a whitelist of state keys that should appear
+    # in the serialized `previous_outputs` context.  An empty list means the
+    # phase receives no previous_outputs at all.  A missing key falls back to
+    # the legacy "all state" behaviour so we stay backward-compatible.
+
+    _PREVIOUS_OUTPUTS_WHITELIST: dict[str, list[str]] = {
+        # Early phases: no prior outputs needed.
+        "phase_0_env_detect": [],
+        "phase_1_project_analysis": [],
+        "phase_2_venv_create": [],
+        # Phase 1.5 gets `phase_1_context` separately; do not duplicate.
+        "phase_1_5_constraint_summary": [],
+        # Phase 3 only needs its own input mapping; no prior outputs required.
+        "phase_3_entry_script": [],
+        # Phase 3.5 needs ONLY Phase 3 entry script output, not Phase 0/1/1.5/2 noise.
+        "phase_35_static_validate": ["phase_3_entry_script"],
+        # Phase 6/report still receives all prior outputs (full context required).
+        # No entry → falls through to legacy "all" behaviour.
+    }
+
+    def _filter_previous_outputs(self, phase: PhaseDefinition, state: dict) -> dict[str, Any]:
+        """Return only the whitelisted state keys as `previous_outputs` for a phase."""
+        pid = phase.id
+        pt = phase.prompt_template or ""
+        for key in (pid, pt):
+            if key in self._PREVIOUS_OUTPUTS_WHITELIST:
+                allowed = self._PREVIOUS_OUTPUTS_WHITELIST[key]
+                if not allowed:
+                    return {}
+                return {k: v for k, v in state.items() if k in allowed}
+        return dict(state)
+
     def _inject_llm_baseline_context(
         self,
         input_ctx: dict,
@@ -1398,8 +1453,9 @@ class WorkflowExecutor:
         input_ctx.setdefault("constraint_summary", constraint_summary)
         input_ctx.setdefault("platform", "NPU")
 
+        filtered_state = self._filter_previous_outputs(phase, state)
         serialized_state = {}
-        for k, v in state.items():
+        for k, v in filtered_state.items():
             if isinstance(v, dict):
                 sanitized = {kk: vv for kk, vv in v.items()
                              if isinstance(vv, (str, int, float, bool, list))}
@@ -1409,6 +1465,13 @@ class WorkflowExecutor:
         input_ctx.setdefault("previous_outputs", json.dumps(serialized_state, indent=2, ensure_ascii=False))
 
         self._inject_container_env_context(input_ctx)
+        self._inject_execution_environment_context(input_ctx)
+
+    def _inject_execution_environment_context(self, input_ctx: dict) -> None:
+        if "execution_environment_context" in input_ctx:
+            return
+        probe = getattr(self, "_container_env_probe", None)
+        input_ctx["execution_environment_context"] = _get_exec_env_ctx(self.exec_backend, probe)
 
     def _inject_llm_phase_specific_context(
         self,
@@ -1622,6 +1685,7 @@ class WorkflowExecutor:
             })
 
         self._inject_container_env_context(input_ctx)
+        self._inject_execution_environment_context(input_ctx)
 
     def _resolve_constraint_summary(self, state: dict) -> str:
         ph = state.get("phase_1_5_constraint_summary", {})
@@ -3752,7 +3816,12 @@ class WorkflowExecutor:
         transition = current_phase.transition
         if transition is not None:
             if status == "success" and transition.on_success:
-                return transition.on_success
+                target = transition.on_success
+                if target in ("phase_7a_evaluate", "phase_7b_refine"):
+                    p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                    if not p7_cfg:
+                        return "complete"
+                return target
             if status == "failure" and transition.on_failure:
                 return transition.on_failure
             if status == "skipped" and transition.on_skip:
@@ -3774,6 +3843,10 @@ class WorkflowExecutor:
             for key in status_keys.get(status, (status,)):
                 target = current_phase.transitions.get(key)
                 if target:
+                    if target in ("phase_7a_evaluate", "phase_7b_refine"):
+                        p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                        if not p7_cfg:
+                            return "complete"
                     return target
 
         # 3. Fail closed when a phase fails without an explicit recovery route.
@@ -3791,7 +3864,12 @@ class WorkflowExecutor:
         idx = self.phase_index.get(current_phase.id, -1)
         phases = self.workflow.phases or []
         if idx >= 0 and idx + 1 < len(phases):
-            return phases[idx + 1].id
+            next_id = phases[idx + 1].id
+            if next_id in ("phase_7a_evaluate", "phase_7b_refine"):
+                p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                if not p7_cfg:
+                    return "complete"
+            return next_id
 
         # 6. Last phase → terminate
         return None

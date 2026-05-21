@@ -13,7 +13,7 @@ from harness.session.manager import SessionManager
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
-from core.execution_backend import get_container_prompt_context
+from core.execution_backend import get_container_prompt_context, get_execution_environment_context
 from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
 from core.prompt_loader import PromptLoader
 from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
@@ -133,6 +133,8 @@ class Orchestrator:
         exec_backend = self._resolve_execution_backend(workflow, active_project_dir)
         container_ctx = self._preflight_and_probe(exec_backend)
         runner.set_container_context(container_ctx)
+        exec_env_ctx = self._build_execution_environment_context(exec_backend, container_ctx)
+        runner.set_execution_environment_context(exec_env_ctx)
         repair_engine = RepairLoopEngine(
             repair_session_mgr, artifact_store, prompt_loader, validator,
             config=fw_config, exec_backend=exec_backend,
@@ -680,6 +682,20 @@ class Orchestrator:
         if callable(probe_fn):
             probe_facts = probe_fn()
         return get_container_prompt_context(backend, probe_facts)
+
+    @staticmethod
+    def _build_execution_environment_context(backend: object, container_ctx: dict[str, str] | None = None) -> str:
+        from core.execution_backend import LocalBackend as _LocalBackend
+        probe_facts: dict[str, object] | None = None
+        if container_ctx and "container_env_facts" in container_ctx:
+            import json
+            try:
+                probe_facts = json.loads(container_ctx["container_env_facts"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if backend is None or isinstance(backend, _LocalBackend):
+            return get_execution_environment_context(None, probe_facts)
+        return get_execution_environment_context(backend, probe_facts or {})
 
     @staticmethod
     def _cleanup_execution_backend(backend: object) -> None:

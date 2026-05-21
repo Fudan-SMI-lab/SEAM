@@ -13,6 +13,7 @@ from typing import Protocol, cast, runtime_checkable
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
+from core.execution_backend import get_execution_environment_context as _get_env_ctx
 from core.paths import resolve_relative_path, workspace_root
 from core.prompt_loader import PromptLoader
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
@@ -151,9 +152,13 @@ class PhaseRunner:
         self._runtime_phase_index = self._build_runtime_phase_index(workflow)
         self._register_default_validators()
         self._container_context: dict[str, str] = {}
+        self._exec_env_context: str = ""
 
     def set_container_context(self, ctx: dict[str, str]) -> None:
         self._container_context = dict(ctx)
+
+    def set_execution_environment_context(self, ctx: str) -> None:
+        self._exec_env_context = ctx
 
     @staticmethod
     def _session_error_from_response(response: str | None) -> str | None:
@@ -988,6 +993,24 @@ class PhaseRunner:
         )
         return f"{prompt_text}{separator}{bundle.markdown}"
 
+    # Phase-aware previous_outputs whitelist (shared with WorkflowExecutor strategy).
+    _PREVIOUS_OUTPUTS_WHITELIST: dict[str, list[str]] = {
+        "phase_0_env_detect": [],
+        "phase_1_project_analysis": [],
+        "phase_2_venv_create": [],
+        "phase_1_5_constraint_summary": [],
+        "phase_3_entry_script": [],
+        "phase_35_static_validate": ["phase_3_entry_script"],
+    }
+
+    def _filter_previous_outputs(self, prompt_id: str, previous_outputs: JsonObject) -> JsonObject:
+        allowed = self._PREVIOUS_OUTPUTS_WHITELIST.get(prompt_id)
+        if allowed is None:
+            return previous_outputs  # no whitelist → legacy "all" behaviour
+        if not allowed:
+            return {}
+        return {k: v for k, v in previous_outputs.items() if k in allowed}
+
     def _build_prompt_context(self, phase: PhaseSpec, context: JsonObject) -> dict[str, str]:
         previous_outputs = context.get("previous_outputs", {})
         prompt_ctx: dict[str, str] = {
@@ -997,13 +1020,16 @@ class PhaseRunner:
             "user_constraints": str(context.get("user_constraints", "")),
         }
         if phase.prompt_id not in self._SHARED_SESSION_PHASES:
-            prompt_ctx["previous_outputs"] = self._serialize_context(previous_outputs)
+            filtered = self._filter_previous_outputs(phase.prompt_id, previous_outputs)
+            prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
         if phase.prompt_id == "phase_35_static_validate":
-            prompt_ctx["previous_outputs"] = self._serialize_context(previous_outputs)
-            entry_script = self._lookup_previous_output(previous_outputs, "phase_3_entry_script", "entry_script_path")
+            filtered = self._filter_previous_outputs(phase.prompt_id, previous_outputs)
+            prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
+            entry_script = self._lookup_previous_output(filtered, "phase_3_entry_script", "entry_script_path")
             prompt_ctx["entry_script_path"] = str(entry_script) if entry_script else "(not available)"
         for k, v in self._container_context.items():
             prompt_ctx.setdefault(k, v)
+        prompt_ctx.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
         return prompt_ctx
 
     @staticmethod
