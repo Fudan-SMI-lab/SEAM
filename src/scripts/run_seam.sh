@@ -22,9 +22,9 @@ PROJECT_SEARCH_DIRS=(
 )
 
 # ── Defaults (mirroring the V1 successful run pattern) ──
-SERVER_HOSTNAME="127.0.0.1"
-SERVER_PORT="4098"
 SERVER_TYPE="opencode"
+SERVER_URL="http://127.0.0.1:4098"
+SERVER_CONFLICT_ACTION="prompt"
 MAX_ITER=""
 KEEP_TEMP=true
 REVIEW_GATE=true
@@ -56,9 +56,10 @@ Preferred substructure for <PROJECT_NAME>:
 Flat cuda_projects are also accepted; Phase 3 will discover an entry script.
 
 Options:
-  --hostname HOST        Server hostname (default: 127.0.0.1)
-  --port PORT            Server port (default: 4098)
   --server_type TYPE     Server backend type (default: opencode)
+  --server_url URL       Server base URL (default: http://127.0.0.1:4098)
+  --server-conflict-action ACTION
+                         Port conflict behavior: prompt, start, or error (default: prompt)
   --max-iter N           Max Phase 5 repair iterations (default: 10)
   --review               Enable Review Gate (default: enabled)
   --no-review            Disable Review Gate
@@ -71,7 +72,7 @@ Options:
 
 Examples:
   ./run_seam.sh 01_Hallo
-  ./run_seam.sh 07_IndexTTS --no-review --hostname 10.0.0.1 --port 4096 --server_type opencode
+  ./run_seam.sh 07_IndexTTS --no-review --server_type opencode --server_url http://127.0.0.1:4098
   ./run_seam.sh 05_InsectID --dry-run
 EOF
     exit 0
@@ -83,9 +84,9 @@ PROJECT_NAME=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)              usage ;;
-        --hostname)             SERVER_HOSTNAME="$2"; shift 2 ;;
-        --port)                 SERVER_PORT="$2"; shift 2 ;;
         --server_type|--server-type) SERVER_TYPE="$2"; shift 2 ;;
+        --server_url)           SERVER_URL="$2"; shift 2 ;;
+        --server-conflict-action) SERVER_CONFLICT_ACTION="$2"; shift 2 ;;
         --max-iter)             MAX_ITER="$2"; shift 2 ;;
         --review)               REVIEW_GATE=true; shift ;;
         --no-review)            REVIEW_GATE=false; shift ;;
@@ -140,12 +141,12 @@ echo ""
 
 echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
 echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
-SERVER_URL="http://$SERVER_HOSTNAME:$SERVER_PORT"
 if [[ "$SERVER_TYPE" != "opencode" ]]; then
     echo -e "${RED}Unsupported server_type: $SERVER_TYPE${NC}" >&2
     exit 1
 fi
 echo -e "${GREEN}Server:${NC}    $SERVER_TYPE at $SERVER_URL"
+echo -e "${GREEN}Conflict:${NC}  $SERVER_CONFLICT_ACTION"
 echo -e "${GREEN}Max iter:${NC}  ${MAX_ITER:-10 (default)}"
 echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
@@ -196,21 +197,13 @@ else
     echo -e "${YELLOW}⚠  original_src/ not found (will use project root directly)${NC}"
 fi
 
-# Check OpenCode server
+# Let the Python E2E runner manage the selected server_type:
+# - free port: start it automatically
+# - matching server already running: reuse it
+# - other service on the port: prompt/error according to SERVER_CONFLICT_ACTION
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
-    echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
-else
-    echo ""
-    echo -e "${CYAN}Checking $SERVER_TYPE server at $SERVER_URL ...${NC}"
-    if curl -fsS -o /dev/null --max-time 5 "$SERVER_URL/agent" 2>/dev/null; then
-        AGENT_INFO=$(curl -fsS --max-time 5 "$SERVER_URL/agent" 2>/dev/null | head -c 200 || echo "")
-        echo -e "${GREEN}✓${NC} Server reachable: ${AGENT_INFO:-OK}"
-    else
-        echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
-        echo -e "${YELLOW}  Start the server before running E2E tests.${NC}"
-        exit 1
-    fi
+    echo -e "${YELLOW}⚠  Dry-run mode: skipping server management${NC}"
 fi
 
 echo ""
@@ -223,9 +216,9 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "Would execute:"
     echo "  cd $REPO_ROOT && \\"
     echo "  python -m tests.e2e.e2e_test_v2 \\"
-    echo "    --hostname $SERVER_HOSTNAME \\"
-    echo "    --port $SERVER_PORT \\"
     echo "    --server_type $SERVER_TYPE \\"
+    echo "    --server_url $SERVER_URL \\"
+    echo "    --server-conflict-action $SERVER_CONFLICT_ACTION \\"
     echo "    --project-dir $PROJECT_DIR \\"
     echo "    --output_dir $OUTPUT_PROJECTS_DIR \\"
     if [[ -n "$MAX_ITER" ]]; then
@@ -268,9 +261,9 @@ fi
 cd "$REPO_ROOT"
 
 python -m tests.e2e.e2e_test_v2 \
-    --hostname "$SERVER_HOSTNAME" \
-    --port "$SERVER_PORT" \
     --server_type "$SERVER_TYPE" \
+    --server_url "$SERVER_URL" \
+    --server-conflict-action "$SERVER_CONFLICT_ACTION" \
     --project-dir "$PROJECT_DIR" \
     --output_dir "$OUTPUT_PROJECTS_DIR" \
     $MAX_ITER_FLAG \

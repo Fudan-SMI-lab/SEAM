@@ -16,9 +16,8 @@ PROJECT_SEARCH_DIRS=(
     "$REPO_ROOT/../cuda_projects"
 )
 
-SERVER_HOSTNAME="127.0.0.1"
-SERVER_PORT="4098"
 SERVER_TYPE="opencode"
+SERVER_URL="http://127.0.0.1:4098"
 MAX_ITER=""
 KEEP_TEMP=true
 REVIEW_GATE=true
@@ -41,9 +40,8 @@ PROJECT_NAME is resolved root-first under:
   Legacy fallback: ../original_projects/<PROJECT_NAME>/ or ../cuda_projects/<PROJECT_NAME>/
 
 Options:
-  --hostname HOST        Server hostname (default: 127.0.0.1)
-  --port PORT            Server port (default: 4098)
   --server_type TYPE     Server backend type (default: opencode)
+  --server_url URL       Server base URL (default: http://127.0.0.1:4098)
   --max-iter N           Max Phase 5 repair iterations (default: 10)
   --no-review            Disable Review Gate (default: enabled)
   --no-keep-temp         Don't keep output project directory (default: keep)
@@ -58,9 +56,8 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage ;;
-        --hostname) SERVER_HOSTNAME="$2"; shift 2 ;;
-        --port) SERVER_PORT="$2"; shift 2 ;;
         --server_type|--server-type) SERVER_TYPE="$2"; shift 2 ;;
+        --server_url) SERVER_URL="$2"; shift 2 ;;
         --max-iter) MAX_ITER="$2"; shift 2 ;;
         --no-review) REVIEW_GATE=false; shift ;;
         --no-keep-temp) KEEP_TEMP=false; shift ;;
@@ -110,7 +107,6 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
 echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
-SERVER_URL="http://$SERVER_HOSTNAME:$SERVER_PORT"
 if [[ "$SERVER_TYPE" != "opencode" ]]; then
     echo -e "${RED}Unsupported server_type: $SERVER_TYPE${NC}" >&2
     exit 1
@@ -157,16 +153,7 @@ fi
 
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
-    echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
-else
-    echo ""
-    echo -e "${CYAN}Checking $SERVER_TYPE server at $SERVER_URL ...${NC}"
-    if curl -fsS -o /dev/null --max-time 5 "$SERVER_URL/agent" 2>/dev/null; then
-        echo -e "${GREEN}✓${NC} Server reachable"
-    else
-        echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
-        exit 1
-    fi
+    echo -e "${YELLOW}⚠  Dry-run mode: skipping server management${NC}"
 fi
 
 echo ""
@@ -196,9 +183,8 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "Would execute:"
     echo "  cd $REPO_ROOT && \\"
     echo "  python src/tests/e2e/e2e_test.py \\"
-    echo "    --hostname $SERVER_HOSTNAME \\"
-    echo "    --port $SERVER_PORT \\"
     echo "    --server_type $SERVER_TYPE \\"
+    echo "    --server_url $SERVER_URL \\"
     echo "    --project-dir $PROJECT_DIR \\"
     echo "    --output-project-dir $OUTPUT_PROJECTS_DIR \\"
     if [[ -n "$MAX_ITER" ]]; then
@@ -217,9 +203,8 @@ fi
 
 cd "$REPO_ROOT"
 python src/tests/e2e/e2e_test.py \
-    --hostname "$SERVER_HOSTNAME" \
-    --port "$SERVER_PORT" \
     --server_type "$SERVER_TYPE" \
+    --server_url "$SERVER_URL" \
     --project-dir "$PROJECT_DIR" \
     --output-project-dir "$OUTPUT_PROJECTS_DIR" \
     $MAX_ITER_FLAG \

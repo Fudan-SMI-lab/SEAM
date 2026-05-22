@@ -23,9 +23,8 @@ PROJECT_SEARCH_DIRS=(
 )
 
 # ── Defaults ──
-SERVER_HOSTNAME="127.0.0.1"
-SERVER_PORT="4098"
 SERVER_TYPE="opencode"
+SERVER_URL="http://127.0.0.1:4098"
 MAX_ITER=""
 REVIEW_GATE=false
 KEEP_TEMP=true
@@ -45,9 +44,8 @@ usage() {
 Usage: test_e2e_memory.sh <PROJECT_NAME> [OPTIONS]
 
 Options:
-  --hostname HOST     Server hostname (default: 127.0.0.1)
-  --port PORT         Server port (default: 4098)
   --server_type TYPE  Server backend type (default: opencode)
+  --server_url URL    Server base URL (default: http://127.0.0.1:4098)
   --max-iter N        Max Phase 5 repair iterations (default: 10)
   --run-only N        Run only 1 (extract) or 2 (retrieve), or 'both' (default)
   --no-review         Disable Review Gate (default)
@@ -60,9 +58,8 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage ;;
-        --hostname) SERVER_HOSTNAME="$2"; shift 2 ;;
-        --port) SERVER_PORT="$2"; shift 2 ;;
         --server_type|--server-type) SERVER_TYPE="$2"; shift 2 ;;
+        --server_url) SERVER_URL="$2"; shift 2 ;;
         --max-iter) MAX_ITER="$2"; shift 2 ;;
         --run-only) RUN_ONLY="$2"; shift 2 ;;
         --no-review) REVIEW_GATE=false; shift ;;
@@ -110,7 +107,6 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
 echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
-SERVER_URL="http://$SERVER_HOSTNAME:$SERVER_PORT"
 if [[ "$SERVER_TYPE" != "opencode" ]]; then
     echo -e "${RED}Unsupported server_type: $SERVER_TYPE${NC}" >&2
     exit 1
@@ -134,13 +130,8 @@ if [[ -z "$PROJECT_DIR" || ! -d "$PROJECT_DIR" ]]; then
     exit 1
 fi
 
-if ! curl -fsS -o /dev/null --max-time 5 "$SERVER_URL/agent" 2>/dev/null; then
-    echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
-    exit 1
-fi
-
 echo -e "${GREEN}✓${NC} Project exists"
-echo -e "${GREEN}✓${NC} Server reachable"
+echo -e "${GREEN}✓${NC} Server configuration accepted"
 echo ""
 
 # ── Run unit tests first ──
@@ -163,9 +154,8 @@ if [[ "$RUN_ONLY" == "1" || "$RUN_ONLY" == "both" ]]; then
 
     cd "$REPO_ROOT"
     python -m tests.e2e.e2e_test_v2 \
-        --hostname "$SERVER_HOSTNAME" \
-        --port "$SERVER_PORT" \
         --server_type "$SERVER_TYPE" \
+        --server_url "$SERVER_URL" \
         --project-dir "$PROJECT_DIR" \
         --output_dir "$OUTPUT_PROJECTS_DIR" \
         $MAX_ITER_FLAG \
@@ -213,9 +203,8 @@ if [[ "$RUN_ONLY" == "2" || "$RUN_ONLY" == "both" ]]; then
 
     cd "$REPO_ROOT"
     python -m tests.e2e.e2e_test_v2 \
-        --hostname "$SERVER_HOSTNAME" \
-        --port "$SERVER_PORT" \
         --server_type "$SERVER_TYPE" \
+        --server_url "$SERVER_URL" \
         --project-dir "$PROJECT_DIR" \
         --output_dir "$OUTPUT_PROJECTS_DIR" \
         $MAX_ITER_FLAG \
