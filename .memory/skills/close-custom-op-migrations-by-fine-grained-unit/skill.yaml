@@ -1,0 +1,8 @@
+name: close-custom-op-migrations-by-fine-grained-unit
+title: Close custom-op migrations by fine-grained operator unit
+description: Close custom-op migrations by fine-grained operator unit
+category: code_adaptation
+subtype: fine_grained_custom_op_unit_closure
+target_roles: ["migration_planner", "migration_implementer", "migration_validator"]
+target_phases: ["analysis", "implementation", "validation"]
+trigger_fingerprint: CUDA custom-op projects with multiple native symbols behind one family/package name; closure must be tracked per stable unit_identity across source, bindings, autograd, launch, setup, tests, and runtime evidence.

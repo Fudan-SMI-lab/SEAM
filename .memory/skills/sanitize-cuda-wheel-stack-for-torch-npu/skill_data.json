@@ -1,0 +1,167 @@
+{
+  "type": "skill",
+  "skill_name": "sanitize-cuda-wheel-stack-for-torch-npu",
+  "title": "Sanitize CUDA wheel stacks for torch-npu environments",
+  "category": "dependency_issue",
+  "subtype": "cuda_wheel_stack_replacement",
+  "tags": [
+    "torch-npu",
+    "dependencies",
+    "torchaudio",
+    "numpy",
+    "cann",
+    "cuda-wheels"
+  ],
+  "symptom": "A CUDA-oriented requirements stack pins nvidia-* cu12 wheels, triton, flash-attn, torch/torchaudio/torchvision CUDA-linked variants, and numpy 2.x. On Ascend NPU this can install incompatible CUDA binaries or fail imports, including torchaudio attempting to load libtorch_cuda.so.",
+  "root_cause": "The original dependency manifest targets a CUDA PyTorch runtime rather than an Ascend torch-npu runtime. CUDA wheel families such as nvidia-*cu12, CUDA triton, flash-attn, and CUDA-linked torchaudio are not valid runtime dependencies for the NPU environment, while the observed CANN 8.x torch-npu stack required the host-compatible torch CPU wheel family, matching torch-npu, PyYAML, and numpy 1.26.x.",
+  "fix_steps": [
+    "1. Before creating the virtual environment, scan the project dependency files for CUDA-only package families: nvidia-*cu12, triton, flash-attn, and unqualified torch, torchaudio, or torchvision pins.",
+    "2. Do not install nvidia-*cu12 packages, CUDA triton, or flash-attn into the torch-npu environment.",
+    "3. Create the project virtual environment without modifying the global Python environment; in this run, the working approach used python3 -m venv --system-site-packages .venv to inherit the host NPU stack.",
+    "4. Install the NPU-compatible core stack: torch==2.5.1+cpu, torch-npu==2.5.1, torchvision==0.20.1+cpu, torchaudio==2.5.1+cpu, numpy==1.26.4, and PyYAML==6.0.2.",
+    "5. Install the non-CUDA application dependencies from the project requirements, preserving needed packages such as transformers==4.46.1, accelerate==1.3.0, gradio==5.13.1, librosa==0.10.2.post1, and soundfile==0.13.1.",
+    "6. If torchaudio was installed from a mirror and importing it fails with a CUDA-linked libtorch_cuda.so error, force reinstall the CPU wheel with --no-deps from the PyTorch CPU wheel index: torchaudio==2.5.1+cpu.",
+    "7. Probe the environment before Phase 5 validation by importing torch, torch_npu, torchvision, and torchaudio, then checking that torch.npu is available and selects the intended Ascend device.",
+    "8. Run the migration validation entry only after dependency import probes pass; in the source run, final validation exercised t2t, t2s, s2t, and s2s on npu:0 with exit_code=0."
+  ],
+  "affected_patterns": [
+    "flash-attn==2.7.3",
+    "triton==3.1.0",
+    "nvidia-cuda-runtime-cu12==12.4.127",
+    "nvidia-nccl-cu12==2.21.5",
+    "numpy==2.1.3",
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "torchvision==0.20.1"
+  ],
+  "code_changes": [
+    {
+      "file": "original_src/requirements.txt",
+      "before": "numpy==2.1.3\nnvidia-cuda-runtime-cu12==12.4.127\nnvidia-nccl-cu12==2.21.5\ntorch==2.5.1\ntorchaudio==2.5.1\ntorchvision==0.20.1\ntriton==3.1.0",
+      "after": "torch==2.5.1+cpu\ntorch-npu==2.5.1\ntorchvision==0.20.1+cpu\ntorchaudio==2.5.1+cpu\nnumpy==1.26.4\nPyYAML==6.0.2"
+    },
+    {
+      "file": "environment install procedure",
+      "before": "pip install -r original_src/requirements.txt",
+      "after": "python3 -m venv --system-site-packages .venv\n.venv/bin/python -m pip install non-CUDA project dependencies\n.venv/bin/python -m pip install --force-reinstall --no-deps torchaudio==2.5.1+cpu --index-url https://download.pytorch.org/whl/cpu"
+    }
+  ],
+  "references": [
+    "validated/phase_1_project_analysis_canonical.json",
+    "validated/phase_1_5_constraint_summary_canonical.json",
+    "validated/phase_2_venv_create_canonical.json",
+    "reports/TOOLS_EXECUTION_REPORT.md",
+    "reports/SUMMARY_REPORT.md"
+  ],
+  "tools_needed": [
+    "rg",
+    "python3 -m venv",
+    "pip",
+    "python import probes"
+  ],
+  "antipatterns": [
+    "Do NOT install nvidia-*cu12 wheels in a torch-npu runtime environment.",
+    "Do NOT install CUDA triton or flash-attn for Ascend NPU validation.",
+    "Do NOT leave torchaudio as a CUDA-linked wheel if import errors reference libtorch_cuda.so.",
+    "Do NOT silently fall back to CPU for model, codec, tensor, or audio-token computation when the migration target requires NPU execution.",
+    "Do NOT use numpy>=2.0 with this observed CANN 8.x torch-npu stack if it causes ACL/CANN initialization failures."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-98ea2e024ee4",
+    "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/08_SpeechGPT-2.0-preview_20260521_032038",
+    "source_project": "SpeechGPT-2.0-preview",
+    "verified_on_cann_version": "8.1.RC1",
+    "verified_runtime_stack": [
+      "torch==2.5.1+cpu",
+      "torch-npu==2.5.1",
+      "torchvision==0.20.1+cpu",
+      "torchaudio==2.5.1+cpu",
+      "numpy==1.26.4"
+    ],
+    "final_validation_exit_code": 0,
+    "validated_modes": [
+      "t2t",
+      "t2s",
+      "s2t",
+      "s2s"
+    ],
+    "refiner_reasoning": "The artifacts show the original requirements contained CUDA-specific packages and numpy 2.1.3, the constraint summary required removing CUDA-only dependency resolution, the created venv used torch CPU wheels plus torch-npu and numpy 1.26.4, and the tools report documents replacing CUDA-linked torchaudio with torchaudio==2.5.1+cpu after a libtorch_cuda.so failure. Final validation passed all four modes on npu:0.",
+    "created_at": "2026-05-21T04:15:29.579050+00:00"
+  },
+  "confidence": 0.92,
+  "target_roles": [
+    "cuda_to_npu_migration_agent",
+    "dependency_setup_agent",
+    "torch_npu_validation_agent"
+  ],
+  "target_phases": [
+    "dependency_analysis",
+    "environment_creation",
+    "runtime_validation"
+  ],
+  "trigger_fingerprint": {
+    "category": "dependency_issue",
+    "subtype": "cuda_wheel_stack_replacement",
+    "signals": [
+      "requirements include nvidia-*cu12 packages",
+      "requirements include triton or flash-attn",
+      "torch/torchaudio/torchvision pinned without CPU/NPU-compatible variants",
+      "numpy>=2 with CANN 8.x torch-npu stack",
+      "torchaudio import failure references libtorch_cuda.so",
+      "migration target is Ascend NPU with torch-npu"
+    ],
+    "recommended_action": "sanitize dependency manifest before venv creation and validate torch, torch_npu, torchaudio, torchvision, and torch.npu availability"
+  },
+  "solidifier": "skill_solidifier",
+  "classifier": {
+    "type": "skill",
+    "target_roles": [
+      "cuda_to_npu_migration_agent",
+      "dependency_setup_agent",
+      "torch_npu_validation_agent"
+    ],
+    "target_phases": [
+      "dependency_analysis",
+      "environment_creation",
+      "runtime_validation"
+    ],
+    "solidifier": "skill_solidifier",
+    "reasoning": "The candidate describes a reusable, actionable procedure for sanitizing CUDA-oriented PyTorch dependency stacks during torch-npu migration: remove CUDA wheel families, replace PyTorch ecosystem packages with CPU host wheels plus matching torch-npu, constrain numpy/PyYAML for CANN compatibility, and verify imports/NPU availability before validation. This is more than a mechanical one-line transformation because it requires environment-aware package selection and validation sequencing.",
+    "confidence": 0.94,
+    "trigger_fingerprint": {
+      "category": "dependency_issue",
+      "subtype": "cuda_wheel_stack_replacement",
+      "signals": [
+        "requirements include nvidia-*cu12 packages",
+        "requirements include triton or flash-attn",
+        "torch/torchaudio/torchvision pinned without CPU/NPU-compatible variants",
+        "numpy>=2 with CANN 8.x torch-npu stack",
+        "torchaudio import failure references libtorch_cuda.so",
+        "migration target is Ascend NPU with torch-npu"
+      ],
+      "recommended_action": "sanitize dependency manifest before venv creation and validate torch, torch_npu, torchaudio, torchvision, and torch.npu availability"
+    }
+  },
+  "candidate_id": "candidate-001",
+  "problem_description": "The source requirements pinned CUDA-oriented packages including nvidia-* cu12 wheels, triton, torch/torchaudio CUDA-linked variants, and numpy 2.x. On Ascend NPU this can install incompatible CUDA binaries or trigger import/runtime failures such as CUDA-linked torchaudio requiring libtorch_cuda.so.",
+  "rough_fix_approach": "Filter requirements before venv creation: remove nvidia-* CUDA wheels, CUDA triton, and flash-attn; install host-compatible torch CPU wheels plus matching torch-npu; pin torchvision/torchaudio CPU variants, PyYAML, and numpy<2 for CANN 8.x compatibility; verify imports and torch.npu availability before validation.",
+  "recommended_type": "skill",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/08_SpeechGPT-2.0-preview_20260521_032038",
+  "name": "sanitize-cuda-wheel-stack-for-torch-npu",
+  "asset_names": [
+    "SKILL.md",
+    "references/sources.md",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ],
+  "id": "e2e-v2-98ea2e024ee4-exp-20260521041529",
+  "run_id": "e2e-v2-98ea2e024ee4",
+  "created_at": "2026-05-21T04:15:29.579527+00:00",
+  "merged_from_runs": [
+    "e2e-v2-98ea2e024ee4-exp-20260521041529",
+    "e2e-v2-f3828806dcb5"
+  ],
+  "promoted_at": "2026-05-21T04:18:25.977066+00:00",
+  "promotion_type": "skill"
+}

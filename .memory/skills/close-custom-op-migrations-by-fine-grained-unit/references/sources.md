@@ -1,0 +1,11 @@
+# References
+
+- output_projects/pointnet2_ops_20260518_082637/validate_custom_ops_full.py
+- output_projects/pointnet2_ops_20260518_082637/migration_reports/operator_inventory.json
+- output_projects/pointnet2_ops_20260518_082637/migration_reports/migration_manifest.json
+- output_projects/pointnet2_ops_20260518_082637/migration_reports/runtime_coverage.json
+- output_projects/pointnet2_ops_20260518_082637/migration_reports/performance.json
+- output_projects/pointnet2_ops_20260518_082637/migration_reports/custom_op_final_gate.json
+- output_projects/pointnet2_ops_20260518_082637/migration_reports/evidence_validation.json
+- output_projects/pointnet2_ops_20260518_082637/pointnet2_ops/pointnet2_utils.py
+- output_projects/pointnet2_ops_20260518_082637/pointnet2_ops/pointnet2_modules.py
