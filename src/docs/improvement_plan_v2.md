@@ -328,11 +328,11 @@ Config: server.url
 | D2 | Port discovery: find available port if `port_preference=0` | `socket` + bind test, fallback range 4096-4099 | `harness/server/lifecycle.py` |
 | D3 | Auto-start before e2e_test if `server.url=""` | In `run_e2e()` before `check_server_running()` | `tests/e2e/e2e_test.py` |
 | D4 | Cleanup: stop server on E2E exception/completion | `try/finally` in `run_e2e()` | `tests/e2e/e2e_test.py` |
-| D5 | CLI args: `--hostname`/`--port`/`--server_type` endpoint args | In `build_parser()` | `tests/e2e/e2e_test.py` |
+| D5 | CLI args: `--server_type`/`--server_url` endpoint args | In `build_parser()` | `tests/e2e/e2e_test.py` |
 
 ### Verification
-- Default `--hostname 127.0.0.1 --port 4098 --server_type opencode` selects the local OpenCode endpoint
-- `--hostname host --port 4098 --server_type opencode --server-no-auto-start` uses a pre-started server
+- Default `--server_type opencode --server_url http://127.0.0.1:4098` selects the local OpenCode endpoint
+- `--server_type opencode --server_url http://host:4098` uses a pre-started server when it is already reachable
 - Server crashed mid-run → detect + report, don't hang
 
 ---

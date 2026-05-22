@@ -200,7 +200,7 @@ unknown ──────────────┘    (默认 dependency_fixe
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                         E2E 测试入口 (e2e_test_v2.py)                        │
-│  CLI: --project-dir / --output_dir / --hostname/port/server_type / --review-gate │
+│  CLI: --project-dir / --output_dir / --server_type/server_url / --review-gate │
 └────────────────────────┬─────────────────────────────────────────────────┘
                          │
                          ▼
@@ -772,9 +772,9 @@ AND cpu_fallback_detected?
 ┌──────────────────────────────────────────────────────────┐
 │                    预阶段引导 (Bootstrap)                  │
 │                                                           │
-│  1. Server auto-start (如果无base_url或默认地址)          │
-│     → find_available_port(4096-4099)                      │
-│     → start_server() → Popen("opencode server --port X")  │
+│  1. Server auto-start/reuse (根据 --server_url)            │
+│     → probe_server(server_url, server_type)                │
+│     → start_server() → Popen("opencode serve --port X")   │
 │     → wait_for_server() → health_check(/agent)           │
 │                                                           │
 │  2. 项目复制                                              │
