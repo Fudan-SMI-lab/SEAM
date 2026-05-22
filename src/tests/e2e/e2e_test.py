@@ -38,9 +38,8 @@ from harness.session.manager import SessionManager
 from migrator.rule_based import RuleBasedMigrator
 from tests.e2e.e2e_observer import TelemetryObserver
 
-DEFAULT_HOSTNAME = "127.0.0.1"
-DEFAULT_PORT = 4098
 DEFAULT_SERVER_TYPE = "opencode"
+DEFAULT_SERVER_URL = "http://127.0.0.1:4098"
 DEFAULT_MAX_PHASE5_ITER = 10
 EXCLUDED_SNAPSHOT_DIRS = {".git", ".sm-artifacts", ".venv", "__pycache__"}
 
@@ -113,14 +112,11 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def build_server_base_url(hostname: str, port: int, server_type: str) -> str:
-    normalized_type = server_type.strip().lower()
-    if normalized_type != DEFAULT_SERVER_TYPE:
-        raise ValueError(f"Unsupported server_type: {server_type!r}; supported values: {DEFAULT_SERVER_TYPE}")
-    if port < 1 or port > 65535:
-        raise ValueError(f"Invalid port: {port}; expected 1-65535")
-    host = hostname.strip() or DEFAULT_HOSTNAME
-    return f"http://{host}:{port}"
+def normalize_server_url(server_url: str, server_type: str) -> str:
+    from harness.server.lifecycle import parse_server_url, validate_server_type
+
+    _ = validate_server_type(server_type)
+    return parse_server_url(server_url).server_url
 
 
 def print_phase_running(phase_number: int, phase_total: int, label: str) -> None:
@@ -391,8 +387,7 @@ def print_summary(summary: RunSummary) -> None:
 
 def run_e2e(
     *,
-    hostname: str,
-    port: int,
+    server_url: str,
     server_type: str,
     max_phase5_iter: int,
     keep_temp_dir: bool,
@@ -401,6 +396,7 @@ def run_e2e(
     output_project_dir: Path | None = None,
     user_constraints: str = "",
     server_auto_start: bool = True,
+    server_conflict_action: str = "prompt",
     review_gate: bool = False,
     framework_config_path: str | None = None,
 ) -> int:
@@ -422,20 +418,20 @@ def run_e2e(
     phase_total = 7 if user_constraints else 6
 
     try:
-        base_url = build_server_base_url(hostname, port, server_type)
-        if server_auto_start:
-            try:
-                check_server_running(base_url)
-            except RuntimeError:
-                from harness.server.lifecycle import start_server, stop_server, wait_for_server
+        _ = normalize_server_url(server_url, server_type)
+        from harness.server.lifecycle import ensure_server
 
-                server_proc = start_server(work_dir=str(REPO_ROOT), hostname=hostname, port=port)
-                if not wait_for_server(base_url, timeout=30):
-                    _ = stop_server(server_proc)
-                    server_proc = None
-                    raise RuntimeError(f"Server failed to start on {base_url}")
-        check_server_running(base_url)
-        log(f"{server_type} server reachable at {base_url}")
+        managed_server = ensure_server(
+            work_dir=str(REPO_ROOT),
+            server_url=server_url,
+            server_type=server_type,
+            auto_start=server_auto_start,
+            conflict_action=server_conflict_action,
+        )
+        base_url = managed_server.base_url
+        server_proc = managed_server.process
+        server_status = "reused" if managed_server.reused else "started"
+        log(f"{server_type} server {server_status} at {base_url}")
     except Exception as exc:
         print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
         return 1
@@ -744,9 +740,8 @@ def run_e2e(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the real src E2E workflow against the test project template.")
-    _ = parser.add_argument("--hostname", default=DEFAULT_HOSTNAME, help=f"Server hostname (default: {DEFAULT_HOSTNAME})")
-    _ = parser.add_argument("--port", type=positive_int, default=DEFAULT_PORT, help=f"Server port (default: {DEFAULT_PORT})")
     _ = parser.add_argument("--server_type", default=DEFAULT_SERVER_TYPE, choices=[DEFAULT_SERVER_TYPE], help="Server backend type")
+    _ = parser.add_argument("--server_url", default=DEFAULT_SERVER_URL, help=f"Server base URL (default: {DEFAULT_SERVER_URL})")
     _ = parser.add_argument(
         "--max-phase5-iter",
         type=positive_int,
@@ -785,6 +780,12 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument("--review-gate", action="store_true", help="Enable review gate improvement mode")
     _ = parser.add_argument("--framework-config", type=str, default=None, help="Path to framework config YAML")
     _ = parser.add_argument("--server-no-auto-start", action="store_true", help="Disable auto-start of OpenCode server")
+    _ = parser.add_argument(
+        "--server-conflict-action",
+        choices=["prompt", "start", "error"],
+        default="prompt",
+        help="When the requested port is occupied by another service: prompt, start on another free port, or error.",
+    )
     return parser
 
 
@@ -800,8 +801,7 @@ def _resolve_user_constraints(raw: str) -> str:
 
 def main() -> int:
     args = build_parser().parse_args()
-    hostname = cast(str, args.hostname)
-    port = cast(int, args.port)
+    server_url = cast(str, args.server_url)
     server_type = cast(str, args.server_type)
     max_phase5_iter = cast(int, args.max_phase5_iter)
     keep_temp_dir = cast(bool, args.keep_temp_dir)
@@ -812,9 +812,9 @@ def main() -> int:
     review_gate = cast(bool, args.review_gate)
     framework_config_path = cast(str | None, args.framework_config)
     server_no_auto_start = cast(bool, args.server_no_auto_start)
+    server_conflict_action = cast(str, args.server_conflict_action)
     return run_e2e(
-        hostname=hostname,
-        port=port,
+        server_url=server_url,
         server_type=server_type,
         max_phase5_iter=max_phase5_iter,
         keep_temp_dir=keep_temp_dir,
@@ -823,6 +823,7 @@ def main() -> int:
         output_project_dir=output_project_dir,
         user_constraints=user_constraints,
         server_auto_start=not server_no_auto_start,
+        server_conflict_action=server_conflict_action,
         review_gate=review_gate,
         framework_config_path=framework_config_path,
     )

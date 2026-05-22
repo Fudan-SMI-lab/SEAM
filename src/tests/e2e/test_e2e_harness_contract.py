@@ -7,11 +7,29 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tests.e2e import e2e_test, e2e_test_v2
+
+
+def test_e2e_parsers_use_server_url_not_host_port_flags() -> None:
+    for build_parser in (e2e_test.build_parser, e2e_test_v2.build_parser):
+        parser = build_parser()
+        help_text = parser.format_help()
+
+        assert "--server_url" in help_text
+        assert "--server_type" in help_text
+        assert "--hostname" not in help_text
+        assert "--port" not in help_text
+
+        _ = parser.parse_args(["--server_type", "opencode", "--server_url", "http://127.0.0.1:5000"])
+
+        with pytest.raises(SystemExit):
+            _ = parser.parse_args(["--hostname", "127.0.0.1"])
 
 
 def test_direct_e2e_harness_passes_phase3_contract_to_repair_loop() -> None:

@@ -19,6 +19,9 @@ def test_root_module_entrypoint_shows_v2_help() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "Run YAML-driven src E2E migration workflow" in completed.stdout
     assert "--project-dir" in completed.stdout
+    assert "--server_url" in completed.stdout
+    assert "--hostname" not in completed.stdout
+    assert "--port" not in completed.stdout
 
 
 def test_src_module_entrypoint_still_shows_v2_help() -> None:
@@ -33,3 +36,6 @@ def test_src_module_entrypoint_still_shows_v2_help() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "Run YAML-driven src E2E migration workflow" in completed.stdout
     assert "--output_dir" in completed.stdout
+    assert "--server_url" in completed.stdout
+    assert "--hostname" not in completed.stdout
+    assert "--port" not in completed.stdout
