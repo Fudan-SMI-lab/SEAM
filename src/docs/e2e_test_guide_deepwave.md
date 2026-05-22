@@ -192,7 +192,7 @@ popd
 当前 V2 launcher 提供 dry-run，用于检查项目路径、输出目录和即将执行的命令，不会启动 OpenCode 迁移：
 
 ```bash
-bash src/scripts/run_e2e_v2.sh 04_Deepwave \
+bash src/scripts/run_seam.sh 04_Deepwave \
   --dry-run \
   --hostname 127.0.0.1 --port 4098 --server_type opencode
 ```
