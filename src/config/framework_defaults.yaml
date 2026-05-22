@@ -1,0 +1,18 @@
+framework:
+  stagnation_threshold: 3           # consecutive same-error breaks
+  max_iterations: 10                # default max repair iterations
+  max_entry_script_revisions: 2       # bounded Phase 5 entry command revisions
+
+  review:
+    enabled: false                    # opt-in review gate
+    gate_on_cpu_fallback: true        # trigger on CPU fallback detection
+    max_review_iterations: 3          # max improvement cycles
+
+  server:
+    hostname: "127.0.0.1"             # default server hostname
+    port: 4098                        # default server port
+    server_type: "opencode"           # backend server adapter
+    auto_start: true                  # auto-start OpenCode server when allowed
+
+  artifacts:
+    key_prefix: "phase"               # consistent artifact key format
