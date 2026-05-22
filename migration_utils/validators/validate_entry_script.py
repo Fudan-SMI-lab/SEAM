@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import Path
 from typing import cast
 
 from core.validator_engine import ValidationDict
+
+_ENV_VAR_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 CUSTOM_OP_FIELDS = {
     "entry_script_kind",
@@ -126,6 +129,44 @@ UNSAFE_RUN_COMMAND_CONTROLS = ("&&", "||", ";", "|", "`", "$(", ">", "<", "\n", 
 UNSAFE_RUN_COMMAND_EXECUTORS = {"bash", "sh", "zsh", "fish", "source", "."}
 ENV_EXECUTORS = {"env"}
 CONTAINER_RUNTIME_EXECUTORS = {"docker", "podman"}
+
+
+def _extract_env_prefix(
+    command: str,
+) -> tuple[dict[str, str], str]:
+    """Strip leading KEY=VALUE env assignments from *command*.
+
+    Returns (env_dict, remaining_command) where remaining_command is the
+    original command with the env-leading tokens removed.  Only tokens that
+    look like ``KEY=VALUE`` with a valid shell-style env variable name are
+    treated as env assignments; the first token that does not match ends the
+    prefix region.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return {}, command
+
+    env: dict[str, str] = {}
+    first_non_env = 0
+    for token in tokens:
+        eq = token.find('=')
+        if eq > 0:
+            name = token[:eq]
+            if _ENV_VAR_NAME.match(name):
+                env[name] = token[eq + 1:]
+                first_non_env += 1
+                continue
+        break
+
+    if not env:
+        return {}, command
+
+    # Reconstruct the remaining command from the tokens we did not consume.
+    remaining_tokens = tokens[first_non_env:]
+    if not remaining_tokens:
+        return env, ""
+    return env, shlex.join(remaining_tokens)
 
 
 def validate(data: dict[str, object]) -> ValidationDict:
@@ -334,6 +375,18 @@ def _reject_unsafe_run_command(run_command: str, errors: list[str]) -> None:
     if not tokens:
         errors.append("run_command must be a non-empty string")
         return
+
+    _, stripped = _extract_env_prefix(run_command)
+    if stripped:
+        try:
+            tokens = shlex.split(stripped)
+        except ValueError:
+            pass
+
+    if not tokens:
+        errors.append("run_command must contain a real executable after env assignments")
+        return
+
     executable = tokens[0].rsplit("/", 1)[-1]
     if executable in UNSAFE_RUN_COMMAND_EXECUTORS:
         errors.append("run_command must not invoke a shell or shell builtin; create a wrapper script instead")
@@ -352,7 +405,6 @@ def _env_invokes_shell(tokens: list[str]) -> bool:
 
 
 def _reject_container_runtime_run_command(run_command: str, errors: list[str]) -> None:
-    """Reject run_command that invokes Docker/Podman, which would nest inside the framework container."""
     tokens_normalized = run_command.lower().replace("\\", "/")
     if "docker exec" in tokens_normalized or "podman exec" in tokens_normalized:
         errors.append(
@@ -364,9 +416,23 @@ def _reject_container_runtime_run_command(run_command: str, errors: list[str]) -
     try:
         tokens = shlex.split(run_command)
     except ValueError:
-        return  # already caught by _reject_unsafe_run_command
+        return
     if not tokens:
         return
+
+    _, stripped = _extract_env_prefix(run_command)
+    if stripped:
+        try:
+            tokens = shlex.split(stripped)
+        except ValueError:
+            pass
+    elif stripped == "":
+        errors.append("run_command must contain a real executable after env assignments")
+        return
+
+    if not tokens:
+        return
+
     executable = tokens[0].rsplit("/", 1)[-1]
     if executable in CONTAINER_RUNTIME_EXECUTORS:
         errors.append(

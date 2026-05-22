@@ -48,7 +48,7 @@ from core.repair_loop import (
     _operator_repair_has_custom_op_contract,
     force_custom_op_operator_routing_if_needed,
 )
-from validators.validate_entry_script import validate as validate_entry_script
+from validators.validate_entry_script import validate as validate_entry_script, _extract_env_prefix
 from validators.validate_validation_final import validate_custom_op_final_gate
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,26 @@ RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",
 }
+
+
+def _rewrite_container_to_host_path(
+    path_str: str,
+    project_dir: str,
+    container_workdir: str,
+) -> str:
+    """Convert a container-visible path to its host-visible equivalent."""
+    if not path_str:
+        return path_str
+    safe = container_workdir.rstrip("/")
+    if not safe:
+        return path_str
+    if not (path_str == safe or path_str.startswith(safe + "/")):
+        return path_str
+    rel = path_str[len(safe):].lstrip("/")
+    if not rel:
+        return project_dir
+    return str(Path(project_dir) / rel)
+
 
 CUSTOM_OP_REQUIRED_TERMS = (
     "custom_op",
@@ -1836,6 +1856,9 @@ class WorkflowExecutor:
                     normalized["entry_script_path"] = prompt_context["entry_script"]
             if self._custom_op_required_signal(state, prompt_context):
                 _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+            normalized = self._normalize_phase3_container_paths(
+                normalized, prompt_context,
+            )
 
         if "phase_35" in phase_id or "static_validate" in phase_id:
             phase_3_output = state.get("phase_3_entry_script")
@@ -1912,6 +1935,48 @@ class WorkflowExecutor:
                 return signal
         return None
 
+    def _normalize_phase3_container_paths(
+        self,
+        output: dict,
+        prompt_context: dict,
+    ) -> dict:
+        """Rewrite host-visible path fields when the model returns container paths.
+
+        Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
+        is NOT rewritten.
+        """
+        from pathlib import Path
+
+        project_dir = prompt_context.get("project_dir") or getattr(self, "project_dir", None)
+        container_workdir = (
+            prompt_context.get("container_workdir")
+            or prompt_context.get("container_project_dir")
+        )
+        if not project_dir or not container_workdir:
+            return output
+
+        if not project_dir.startswith("/"):
+            try:
+                project_dir = str(Path(project_dir).resolve())
+            except OSError:
+                return output
+
+        normalized = dict(output)
+
+        entry = normalized.get("entry_script_path")
+        if isinstance(entry, str) and entry.strip():
+            normalized["entry_script_path"] = _rewrite_container_to_host_path(
+                entry, project_dir, container_workdir,
+            )
+
+        reports = normalized.get("reports_dir")
+        if isinstance(reports, str) and reports.strip():
+            normalized["reports_dir"] = _rewrite_container_to_host_path(
+                reports, project_dir, container_workdir,
+            )
+
+        return normalized
+
     # ── Shell phase ─────────────────────────────────────────────────────
 
     _MAX_TAIL = 500_000  # 500 KB
@@ -1983,14 +2048,20 @@ class WorkflowExecutor:
     ) -> tuple[str, dict]:
         backend: ContainerBackend = self.exec_backend
         run_cmd: str | list[str]
+        run_env: dict[str, str] | None = None
         if entry_script_command:
-            run_cmd = shlex.split(str(cmd))
+            tokens = shlex.split(str(cmd))
+            run_env, stripped = _extract_env_prefix(str(cmd))
+            if stripped:
+                run_cmd = shlex.split(stripped)
+            else:
+                run_cmd = tokens
         else:
             run_cmd = str(cmd)
 
         try:
             result = backend.run(
-                run_cmd, cwd=cwd, env=None, timeout=timeout,
+                run_cmd, cwd=cwd, env=run_env or None, timeout=timeout,
             )
             exit_code = result.exit_code
             stdout = result.stdout
@@ -2041,11 +2112,17 @@ class WorkflowExecutor:
         loop_vars: dict | None = None,
         loop_state: dict | None = None,
     ) -> tuple[str, dict]:
-        """Original local execution path using subprocess + temp files."""
         run_cmd: str | list[str]
         run_shell = not entry_script_command
+        run_env: dict[str, str] | None = None
         if entry_script_command:
-            run_cmd = shlex.split(str(cmd))
+            tokens = shlex.split(str(cmd))
+            run_env, stripped = _extract_env_prefix(str(cmd))
+            if stripped:
+                run_cmd = shlex.split(stripped)
+            else:
+                run_cmd = tokens
+            run_shell = False
         else:
             run_cmd = str(cmd)
 
@@ -2057,8 +2134,11 @@ class WorkflowExecutor:
                 err_path = err_f.name
 
             start_t = time.time()
+            env_for_subprocess = None
+            if run_env:
+                env_for_subprocess = {**os.environ, **run_env}
             result = subprocess.run(
-                run_cmd, shell=run_shell, cwd=cwd,
+                run_cmd, shell=run_shell, cwd=cwd, env=env_for_subprocess,
                 stdout=open(out_path, "w"), stderr=open(err_path, "w"),
                 timeout=timeout,
             )
@@ -3225,7 +3305,22 @@ class WorkflowExecutor:
         shell_controls = {"&&", "||", ";", "|", "`", "$()", ">", "<"}
         if tokens[0] in shell_builtins or any(token in shell_controls for token in tokens):
             return "unsafe_run_command"
-        if tokens[0] in {"bash", "sh", "/bin/bash", "/bin/sh"} or tokens[0].endswith(".sh"):
+
+        real_executable = tokens[0].rsplit("/", 1)[-1]
+        _, stripped_cmd = _extract_env_prefix(run_command)
+        if stripped_cmd:
+            try:
+                stripped_tokens = shlex.split(stripped_cmd)
+                if stripped_tokens:
+                    real_executable = stripped_tokens[0].rsplit("/", 1)[-1]
+            except ValueError:
+                pass
+
+        if real_executable in shell_builtins:
+            return "unsafe_run_command"
+        if real_executable in {"bash", "sh", "/bin/bash", "/bin/sh"} or real_executable.endswith(".sh"):
+            return "unsafe_run_command"
+        if real_executable in {"docker", "podman"}:
             return "unsafe_run_command"
         updated_contract = dict(contract)
         updated_contract["run_command"] = run_command
@@ -3248,6 +3343,12 @@ class WorkflowExecutor:
             tokens = shlex.split(run_command)
         except ValueError:
             return ""
+        _, stripped = _extract_env_prefix(run_command)
+        if stripped:
+            try:
+                tokens = shlex.split(stripped)
+            except ValueError:
+                pass
         for token in tokens:
             if token.endswith(".py") or Path(token).suffix == ".py":
                 return token
