@@ -12,16 +12,7 @@
 
 ## 快速开始
 
-### 1. 准备 OpenCode Server
-
-从 SEAM 仓库根目录启动推荐端口：
-
-```bash
-opencode serve --port 4098 --hostname 127.0.0.1
-curl -fsS http://127.0.0.1:4098/agent
-```
-
-### 2. 准备待迁移项目
+### 1. 准备待迁移项目
 
 ```bash
 cd /path/to/SEAM
@@ -39,24 +30,24 @@ cuda_projects/my_project/
     └── run_e2e.py
 ```
 
-### 3. 推荐运行方式
+### 2. 推荐运行方式
 
 ```bash
 bash src/scripts/run_seam.sh my_project \
-  --hostname 127.0.0.1 \
-  --port 4098 \
   --server_type opencode \
+  --server_url http://127.0.0.1:5000 \
   --max-iter 8 \
   --review
 ```
 
-### 4. Direct Python entrypoint
+SEAM 会根据 `--server_type` 和 `--server_url` 自动复用或启动服务：URL 端口空闲时自动启动，同类型服务已存在时直接复用，被其他服务占用时提示是否由 SEAM 建立新的同类型服务。
+
+### 3. Direct Python entrypoint
 
 ```bash
 python -m tests.e2e.e2e_test_v2 \
-  --hostname 127.0.0.1 \
-  --port 4098 \
   --server_type opencode \
+  --server_url http://127.0.0.1:5000 \
   --project-dir /path/to/your/cuda/project \
   --output_dir ./output_projects \
   --keep-temp-dir \
@@ -71,7 +62,7 @@ python -m tests.e2e.e2e_test_v2 \
 | `--output_dir` | 迁移产物输出根目录，通常是 `./output_projects`。 |
 | `--max-phase5-iter` / `--max-iter` | Phase 5 修复循环最大迭代次数，默认 10。 |
 | `--review-gate` / `--review` | 开启可选 review gate。 |
-| `--hostname` / `--port` / `--server_type` | 服务器连接参数；当前 `server_type` 支持 `opencode`。 |
+| `--server_type` / `--server_url` | 服务器类型和基础 URL；当前 `server_type` 支持 `opencode`。 |
 
 ## YAML runtime skills
 

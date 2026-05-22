@@ -217,24 +217,15 @@ pip install -e ".[dev]"
 
 ## ⚡ 快速开始
 
-先启动用户预先管理的 OpenCode 服务：
+从 SEAM 仓库根目录运行迁移入口：
 
 ```bash
-opencode serve --port 4098 --hostname 127.0.0.1
-```
-
-然后从 SEAM 仓库根目录运行迁移入口：
-
-```bash
-python -m tests.e2e.e2e_test_v2 \
-  --hostname 127.0.0.1 \
-  --port 4098 \
+bash src/scripts/run_seam.sh /path/to/cuda/project \
   --server_type opencode \
-  --project-dir /path/to/cuda/project \
-  --output_dir ./output_projects
+  --server_url http://127.0.0.1:5000
 ```
 
-`--hostname`、`--port` 和 `--server_type` 共同描述外部服务端点；当前 `server_type` 支持 `opencode`，后续可扩展到其他迁移服务。`--project-dir` 指向待迁移 CUDA/PyTorch 项目，`--output_dir` 指向迁移产物输出根目录。
+`--server_type` 和 `--server_url` 共同决定 SEAM 要连接或启动哪个服务。当前 `server_type` 支持 `opencode`，后续可扩展到其他迁移服务。SEAM 会按 URL 端口状态自动处理：端口空闲时按 `server_type` 自动创建服务；端口上已经是同类型服务时直接沿用；端口被其他服务占用时提示是否由 SEAM 在其他可用端口创建同类型服务，选择 `no` 则退出并提示冲突。迁移产物默认写入 `./output_projects`。
 
 用户全程只需要：**输入项目路径，输出可用代码 + 迁移报告。** 中间涉及的 CUDA API 适配、缺失算子重新实现、环境变量配置，全部由五个持久化智能体协同完成。
 
