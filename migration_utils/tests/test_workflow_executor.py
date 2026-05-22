@@ -1512,6 +1512,147 @@ def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: 
     assert loop_state["script_exit_code"] == 0
     assert loop_state["script_stderr"] == ""
 
+
+def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target_script = tmp_path / "env_target.py"
+    target_script.write_text(
+        "import os\nfrom pathlib import Path\nPath('env_ok').write_text(os.environ.get('MPLBACKEND', 'missing'))\n",
+        encoding="utf-8",
+    )
+    workflow = WorkflowDefinition(
+        name="entry-env-prefix",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="run_entry_script",
+        name="Run Entry",
+        prompt_template="",
+        output_schema={},
+        type="shell",
+        on_failure="break",
+    )
+    setattr(phase, "command", "${loop_vars.entry_script}")
+
+    status, output = executor._execute_shell_phase(
+        phase,
+        state={},
+        context={},
+        loop_vars={"entry_script": "MPLBACKEND=Agg python3 env_target.py"},
+        loop_state={},
+    )
+
+    assert status == "success"
+    assert output["exit_code"] == 0
+    assert (tmp_path / "env_ok").read_text(encoding="utf-8") == "Agg"
+
+
+def test_phase5_env_prefix_multiple_env_vars(tmp_path: Path) -> None:
+    target_script = tmp_path / "multi_env.py"
+    target_script.write_text(
+        "import os\nfrom pathlib import Path\nPath('multi_ok').write_text(os.environ.get('FOO', 'x') + os.environ.get('BAR', 'y'))\n",
+        encoding="utf-8",
+    )
+    workflow = WorkflowDefinition(
+        name="entry-multi-env",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="run_entry_script",
+        name="Run Entry",
+        prompt_template="",
+        output_schema={},
+        type="shell",
+        on_failure="break",
+    )
+    setattr(phase, "command", "${loop_vars.entry_script}")
+
+    status, output = executor._execute_shell_phase(
+        phase,
+        state={},
+        context={},
+        loop_vars={"entry_script": "FOO=hello BAR=world python3 multi_env.py"},
+        loop_state={},
+    )
+
+    assert status == "success"
+    assert output["exit_code"] == 0
+    assert (tmp_path / "multi_ok").read_text(encoding="utf-8") == "helloworld"
+
+
+def test_phase5_entry_script_action_allows_env_prefix_command() -> None:
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "old.py",
+            "run_command": "python old.py",
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
+    workflow = WorkflowDefinition(
+        name="env-prefix-revision",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir="/tmp/test",
+        output_dir="/tmp/test",
+    )
+    loop_vars = {"entry_script": "python old.py"}
+    loop_state: dict[str, object] = {
+        "entry_script_revision_count": 0,
+        "entry_script_revision_requests": [],
+        "max_entry_script_revisions": 2,
+    }
+
+    result = executor._maybe_apply_entry_script_action(
+        {
+            "entry_script_action": {
+                "needed": True,
+                "action": "modify",
+                "reason": "use env-prefix command",
+                "entry_script_path": "new.py",
+                "run_command": "MPLBACKEND=Agg python3 new.py",
+            }
+        },
+        loop_vars,
+        state,
+        {},
+        loop_state,
+    )
+
+    assert result is not None
+    assert result["applied"] is True
+    assert state["phase_3_entry_script"]["run_command"] == "MPLBACKEND=Agg python3 new.py"
+    assert loop_vars["entry_script"] == "MPLBACKEND=Agg python3 new.py"
+
+
 def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validated(tmp_path: Path) -> None:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -2544,6 +2685,10 @@ def test_entry_script_action_blocks_when_phase3_contract_flag_false(tmp_path: Pa
         "python new.py\npython other.py",
         "python new.py\rpython other.py",
         "python new.py & python other.py",
+        "FOO=bar bash -c id",
+        "X=1 sh run_validation.sh",
+        "CUDA_VISIBLE_DEVICES=0 docker run --rm python3 train.py",
+        "MPLBACKEND=Agg bash new.py",
     ],
 )
 def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_command: str):
@@ -3712,6 +3857,89 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
 
 
 # ── Container preflight / probe during WorkflowExecutor init ───────────
+
+
+class TestPhase5ContainerEnvPrefix:
+    def test_env_prefix_passed_as_env_not_argv(self, tmp_path: Path) -> None:
+        cmd = "MPLBACKEND=Agg python3 /workspace/057_example_fwi.py"
+        workflow = WorkflowDefinition(
+            name="container-env-prefix",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+        )
+        mock_backend = MagicMock(spec=ContainerBackend)
+        mock_backend.run.return_value = MagicMock(
+            exit_code=0, stdout="", stderr="", duration=0.1,
+        )
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            exec_backend=mock_backend,
+        )
+        phase = PhaseDefinition(
+            id="run_entry_script",
+            name="Run Entry",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="break",
+        )
+        setattr(phase, "command", "${loop_vars.entry_script}")
+
+        executor._execute_shell_phase(
+            phase, state={}, context={}, loop_vars={"entry_script": cmd}, loop_state={},
+        )
+
+        mock_backend.run.assert_called_once()
+        call_kwargs = mock_backend.run.call_args.kwargs
+        run_cmd = call_kwargs.get("command") or mock_backend.run.call_args[0][0]
+        env = call_kwargs.get("env")
+
+        assert isinstance(run_cmd, list)
+        assert run_cmd[0] == "python3"
+        assert run_cmd[1] == "/workspace/057_example_fwi.py"
+        assert env == {"MPLBACKEND": "Agg"}
+
+    def test_multiple_env_prefix_passed_as_env_not_argv(self, tmp_path: Path) -> None:
+        cmd = "CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/workspace/src python3 /workspace/script.py"
+        workflow = WorkflowDefinition(
+            name="container-multi-env",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+        )
+        mock_backend = MagicMock(spec=ContainerBackend)
+        mock_backend.run.return_value = MagicMock(
+            exit_code=0, stdout="", stderr="", duration=0.1,
+        )
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            exec_backend=mock_backend,
+        )
+        phase = PhaseDefinition(
+            id="run_entry_script",
+            name="Run Entry",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="break",
+        )
+        setattr(phase, "command", "${loop_vars.entry_script}")
+
+        executor._execute_shell_phase(
+            phase, state={}, context={}, loop_vars={"entry_script": cmd}, loop_state={},
+        )
+
+        call_kwargs = mock_backend.run.call_args.kwargs
+        run_cmd = call_kwargs.get("command") or mock_backend.run.call_args[0][0]
+        env = call_kwargs.get("env")
+
+        assert isinstance(run_cmd, list)
+        assert run_cmd[0] == "python3"
+        assert env["CUDA_VISIBLE_DEVICES"] == "0"
+        assert env["PYTHONPATH"] == "/workspace/src"
 
 
 class TestWorkflowExecutorContainerPreflight:
