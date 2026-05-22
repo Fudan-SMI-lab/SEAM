@@ -490,7 +490,7 @@ _record_iteration(): 提取 agent_diagnostics 加入 summary_entry
 ### 5.1 如何运行 08_SpeechGPT-2.0-preview 端到端测试
 
 **前提条件**：
-- OpenCode server 推荐运行在端口 `4098`（或通过 `--hostname` / `--port` / `--server_type` 指定其他端口）
+- OpenCode server 默认 URL 为 `http://127.0.0.1:4098`（可通过 `--server_type` / `--server_url` 指定其他地址）
 - 08_SpeechGPT-2.0-preview 项目已准备好在 `original_projects/08_SpeechGPT-2.0-preview/`
 - 模型权重已下载到 `uploaded_files/SpeechGPT-2.0-preview-7B/` 和 `uploaded_files/SpeechGPT-2.0-preview-Codec/`
 
@@ -500,7 +500,7 @@ _record_iteration(): 提取 agent_diagnostics 加入 summary_entry
 cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
 python -m tests.e2e.e2e_test_v2 \
-  --hostname 127.0.0.1 --port 4098 --server_type opencode \
+  --server_type opencode --server_url http://127.0.0.1:4098 \
   --project-dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/original_projects/08_SpeechGPT-2.0-preview/ \
   --output_dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/ \
   --user-constraints /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/original_projects/08_SpeechGPT-2.0-preview/ADAPTATION_REQUIREMENTS.md \
@@ -512,7 +512,7 @@ python -m tests.e2e.e2e_test_v2 \
 
 | 参数 | 值 | 作用 |
 |------|-----|------|
-| `--hostname` / `--port` / `--server_type` | `http://127.0.0.1:4098` | OpenCode LLM server 地址 |
+| `--server_type` / `--server_url` | `opencode` / `http://127.0.0.1:4098` | OpenCode LLM server 类型和 URL |
 | `--max-phase5-iter` | 默认 `10` | Phase 5 最大修复迭代次数；显式传入时覆盖默认值 |
 | `--project-dir` | 源项目路径 | 原始 CUDA 项目目录 |
 | `--output_dir` | 输出根目录 | 迁移后的项目会创建到 `{output_dir}/{项目名}_{时间戳}/` |

@@ -458,7 +458,7 @@ SM_ADAPT_FULL_AGENT_IO=1 bash scripts/run_e2e.sh 05_InsectID --dry-run
 
 ```bash
 SM_ADAPT_FULL_AGENT_IO=1 python -m tests.e2e.e2e_test_v2 \
-  --hostname 127.0.0.1 --port 4098 --server_type opencode \
+  --server_type opencode --server_url http://127.0.0.1:4098 \
   --project-dir src/test_project_template \
   --keep-temp-dir
 ```
