@@ -42,7 +42,7 @@ cuda_projects/my_project/
 ### 3. 推荐运行方式
 
 ```bash
-bash src/scripts/run_e2e_v2.sh my_project \
+bash src/scripts/run_seam.sh my_project \
   --hostname 127.0.0.1 \
   --port 4098 \
   --server_type opencode \

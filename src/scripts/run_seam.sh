@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
 # E2E Migration Test Launcher (V2 — YAML-driven workflow)
-# Usage: run_e2e_v2.sh <project_name> [options]
+# Usage: run_seam.sh <project_name> [options]
 #
 # Examples:
-#   ./run_e2e_v2.sh 01_Hallo
-#   ./run_e2e_v2.sh 02_ChaiLab --dry-run
-#   ./run_e2e_v2.sh 07_IndexTTS --max-iter 10
+#   ./run_seam.sh 01_Hallo
+#   ./run_seam.sh 02_ChaiLab --dry-run
+#   ./run_seam.sh 07_IndexTTS --max-iter 10
 #
 set -euo pipefail
 
@@ -41,7 +41,7 @@ NC='\033[0m'
 # ── Usage ──
 usage() {
     cat <<'EOF'
-Usage: run_e2e_v2.sh <PROJECT_NAME> [OPTIONS]
+Usage: run_seam.sh <PROJECT_NAME> [OPTIONS]
 
 PROJECT_NAME must have a corresponding directory under:
   ./original_projects/<PROJECT_NAME>/ or ./cuda_projects/<PROJECT_NAME>/
@@ -70,9 +70,9 @@ Options:
   -h, --help             Show this help message
 
 Examples:
-  ./run_e2e_v2.sh 01_Hallo
-  ./run_e2e_v2.sh 07_IndexTTS --no-review --hostname 10.0.0.1 --port 4096 --server_type opencode
-  ./run_e2e_v2.sh 05_InsectID --dry-run
+  ./run_seam.sh 01_Hallo
+  ./run_seam.sh 07_IndexTTS --no-review --hostname 10.0.0.1 --port 4096 --server_type opencode
+  ./run_seam.sh 05_InsectID --dry-run
 EOF
     exit 0
 }
