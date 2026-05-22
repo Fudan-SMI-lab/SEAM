@@ -1,7 +1,7 @@
 # 08_SpeechGPT-2.0-preview 适配失败深度分析与改进方案
 
 > 日期: 2026-04-26
-> 项目: SEAM/migration_utils
+> 项目: SEAM/src
 > 分析对象: 08_SpeechGPT-2.0-preview E2E 适配全流程
 
 ---
@@ -180,7 +180,7 @@ script_code_adapt → hephaestus
 operator_incompat → ultrabrain
 ```
 
-**B. `migration_utils/core/repair_loop.py`** — 使用 LLM Error Analyzer
+**B. `src/core/repair_loop.py`** — 使用 LLM Error Analyzer
 
 实际执行走的是 B 路径。LLM 收到 `phase_error_recovery.md` 的 prompt，由 LLM 自主判断分类。
 
@@ -192,7 +192,7 @@ operator_incompat → ultrabrain
 
 ### 改进 1：Code Adapter Prompt — 加入 Monkeypatch 策略原则（非代码示例）
 
-**修改文件**: `migration_utils/prompts/repair_code_adapter.md`
+**修改文件**: `src/prompts/repair_code_adapter.md`
 
 **新增段落**: 在 "Required Actions" 中插入：
 
@@ -222,7 +222,7 @@ available primitives.
 
 ### 改进 2：给 Error Analyzer 提供 Artifact 路径（非原文填充）
 
-**修改文件**: `migration_utils/core/repair_loop.py`, `migration_utils/prompts/phase_error_recovery.md`
+**修改文件**: `src/core/repair_loop.py`, `src/prompts/phase_error_recovery.md`
 
 **在 `_build_repair_prompt()` 的 context 中新增**:
 
@@ -266,7 +266,7 @@ When analyzing error patterns:
 
 ### 改进 3：Review Gate 增加运行证据（通过 artifact 路径）
 
-**修改文件**: `migration_utils/core/repair_loop.py`, `migration_utils/prompts/phase_5_review.md`
+**修改文件**: `src/core/repair_loop.py`, `src/prompts/phase_5_review.md`
 
 **在 Review Gate 调用处新增 context**:
 
@@ -317,9 +317,9 @@ output:
 #### 步骤 1：在三个 Repair Agent Prompt 中新增输出字段
 
 **修改文件**:
-- `migration_utils/prompts/repair_code_adapter.md`
-- `migration_utils/prompts/repair_dependency_fixer.md`
-- `migration_utils/prompts/repair_operator_fixer.md`
+- `src/prompts/repair_code_adapter.md`
+- `src/prompts/repair_dependency_fixer.md`
+- `src/prompts/repair_operator_fixer.md`
 
 每个文件的末尾 JSON 输出部分，新增 `agent_diagnostics` 字段：
 
@@ -376,7 +376,7 @@ Fill it when ANY of the following applies:
 
 #### 步骤 2：在 `_record_iteration()` 中提取 `agent_diagnostics`
 
-**修改文件**: `migration_utils/core/repair_loop.py`
+**修改文件**: `src/core/repair_loop.py`
 
 在 `_record_iteration()` 方法的 `summary_entry` 构建中新增一个字段：
 
@@ -408,7 +408,7 @@ def _record_iteration(self, iteration, context, record):
 
 #### 步骤 3：在 Fix History 表格中增加一列
 
-**修改文件**: `migration_utils/core/repair_loop.py`
+**修改文件**: `src/core/repair_loop.py`
 
 在 `_format_history_summary()` 和 `_format_error_analyzer_context()` 的表格中增加 `Agent Diagnostics` 列：
 
@@ -428,7 +428,7 @@ for h in history:
 
 #### 步骤 4：指导 Error Analyzer 阅读 diagnostics
 
-**修改文件**: `migration_utils/prompts/phase_error_recovery.md`
+**修改文件**: `src/prompts/phase_error_recovery.md`
 
 在 "Fix History" 段落下方新增：
 
@@ -490,7 +490,7 @@ _record_iteration(): 提取 agent_diagnostics 加入 summary_entry
 ### 5.1 如何运行 08_SpeechGPT-2.0-preview 端到端测试
 
 **前提条件**：
-- OpenCode server 推荐运行在端口 `4098`（或通过 `--server-url` 指定其他端口）
+- OpenCode server 推荐运行在端口 `4098`（或通过 `--hostname` / `--port` / `--server_type` 指定其他端口）
 - 08_SpeechGPT-2.0-preview 项目已准备好在 `original_projects/08_SpeechGPT-2.0-preview/`
 - 模型权重已下载到 `uploaded_files/SpeechGPT-2.0-preview-7B/` 和 `uploaded_files/SpeechGPT-2.0-preview-Codec/`
 
@@ -500,24 +500,22 @@ _record_iteration(): 提取 agent_diagnostics 加入 summary_entry
 cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
 python -m tests.e2e.e2e_test_v2 \
-  --server-url http://127.0.0.1:4098 \
-  --max-phase5-iter 8 \
+  --hostname 127.0.0.1 --port 4098 --server_type opencode \
   --project-dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/original_projects/08_SpeechGPT-2.0-preview/ \
-  --output-dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/ \
+  --output_dir /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/ \
   --user-constraints /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/original_projects/08_SpeechGPT-2.0-preview/ADAPTATION_REQUIREMENTS.md \
   --keep-temp-dir \
-  --review-gate \
-  --verbose
+  --review-gate
 ```
 
 **参数说明**：
 
 | 参数 | 值 | 作用 |
 |------|-----|------|
-| `--server-url` | `http://127.0.0.1:4098` | OpenCode LLM server 地址 |
-| `--max-phase5-iter` | `8` | Phase 5 最大修复迭代次数（建议 8，speechgpt 问题复杂） |
+| `--hostname` / `--port` / `--server_type` | `http://127.0.0.1:4098` | OpenCode LLM server 地址 |
+| `--max-phase5-iter` | 默认 `10` | Phase 5 最大修复迭代次数；显式传入时覆盖默认值 |
 | `--project-dir` | 源项目路径 | 原始 CUDA 项目目录 |
-| `--output-dir` | 输出根目录 | 迁移后的项目会创建到 `{output_dir}/{项目名}_{时间戳}/` |
+| `--output_dir` | 输出根目录 | 迁移后的项目会创建到 `{output_dir}/{项目名}_{时间戳}/` |
 | `--user-constraints` | 约束文件路径 | ADAPTATION_REQUIREMENTS.md，包含 zero CPU fallback 等要求 |
 | `--keep-temp-dir` | (flag) | 保留迁移后的项目目录供检查 |
 | `--review-gate` | (flag) | 开启 review gate，exit 0 后由 review agent 做代码质量确认 |
@@ -639,7 +637,7 @@ print(f"Read guidance in prompt: {has_read_guidance}")
 
 ```python
 # 方法 1：通过代码检查（实施后立即验证）
-with open("migration_utils/prompts/phase_5_review.md") as f:
+with open("src/prompts/phase_5_review.md") as f:
     review_prompt = f.read()
 
 has_runtime_evidence = any(phrase in review_prompt.lower() for phrase in [
@@ -667,19 +665,19 @@ has_runtime_evidence = any(phrase in review_prompt.lower() for phrase in [
 import json
 
 # 验证步骤 1: 检查 Repair Agent prompt 是否要求输出 agent_diagnostics
-with open("migration_utils/prompts/repair_code_adapter.md") as f:
+with open("src/prompts/repair_code_adapter.md") as f:
     code_adapter_prompt = f.read()
 
 has_diag_prompt = "agent_diagnostics" in code_adapter_prompt
 
 # 验证步骤 2: 检查 Error Analyzer prompt 是否引导阅读 diagnostics
-with open("migration_utils/prompts/phase_error_recovery.md") as f:
+with open("src/prompts/phase_error_recovery.md") as f:
     analyzer_prompt = f.read()
 
 has_diag_analyzer = "agent_diagnostics" in analyzer_prompt.lower()
 
 # 验证步骤 3: 检查 repair_loop.py 代码是否提取 agent_diagnostics
-with open("migration_utils/core/repair_loop.py") as f:
+with open("src/core/repair_loop.py") as f:
     repair_loop_code = f.read()
 
 has_diag_code = "agent_diagnostics" in repair_loop_code
@@ -718,7 +716,7 @@ for fp in attempt_files:
 # Usage: verify_improvements.sh <output_project_dir> <repo_root>
 # Example: ./verify_improvements.sh \
 #   output_projects/08_SpeechGPT-2.0-preview_20260426_XXXXXX/ \
-#   migration_utils/
+#   src/
 
 OUTPUT_DIR="$1"
 REPO_ROOT="${2:-.}"
@@ -752,21 +750,21 @@ results = {
 }
 
 # Check code_adapter prompt directly
-prompt_path = f"{repo_root}/migration_utils/prompts/repair_code_adapter.md"
+prompt_path = f"{repo_root}/src/prompts/repair_code_adapter.md"
 if os.path.exists(prompt_path):
     with open(prompt_path) as f:
         ca_prompt = f.read()
     results["Improvement 1: C-Level Strategy"] = "composing the missing" in ca_prompt.lower() or "c-level npu operators" in ca_prompt.lower()
 
 # Check error_recovery prompt
-err_prompt_path = f"{repo_root}/migration_utils/prompts/phase_error_recovery.md"
+err_prompt_path = f"{repo_root}/src/prompts/phase_error_recovery.md"
 if os.path.exists(err_prompt_path):
     with open(err_prompt_path) as f:
         er_prompt = f.read()
     results["Improvement 2: Artifact Paths"] = "artifact_base_path" in er_prompt or "Available Execution Artifacts" in er_prompt
 
 # Check review prompt
-review_prompt_path = f"{repo_root}/migration_utils/prompts/phase_5_review.md"
+review_prompt_path = f"{repo_root}/src/prompts/phase_5_review.md"
 if os.path.exists(review_prompt_path):
     with open(review_prompt_path) as f:
         rev_prompt = f.read()

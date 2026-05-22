@@ -1,306 +1,286 @@
-# SEAM: Ascend NPU Migration Autopilot
+# SEAM：让国产算力迁移从「人工工程」走向「系统能力」
 
-[![Workflow](https://img.shields.io/badge/workflow-YAML--driven-2f6fed)](migration_utils/workflows/npu_migration_v2.yaml)
-[![Runtime](https://img.shields.io/badge/runtime-OpenCode%20Server-111827)](#opencode-server)
-[![Target](https://img.shields.io/badge/target-Ascend%20NPU-c026d3)](#quickstart)
-[![Custom Ops](https://img.shields.io/badge/custom--op-final%20gate-ef4444)](#cuda-custom-op-vs-normal-flow)
+<p align="center">
+  <img src="https://img.shields.io/github/license/seam-project/seam" alt="许可证">
+  <img src="https://img.shields.io/badge/platform-Ascend%20NPU-blue" alt="Ascend NPU">
+  <img src="https://img.shields.io/badge/runtime-OpenCode%20Server-111827" alt="pencode-server">
+  <img src="https://img.shields.io/badge/platform-PPU-orange" alt="PPU">
+  <img src="https://img.shields.io/badge/platform-Muxi-green" alt="Muxi GPU">
+  <img src="https://img.shields.io/badge/framework-PyTorch-red" alt="PyTorch">
+  <img src="https://img.shields.io/badge/code%20style-google-blue" alt="代码风格：Google">
+  <img src="https://img.shields.io/github/contributors/seam-project/seam" alt="贡献者">
+</p>
 
-SEAM is a state-machine migration framework for turning CUDA/PyTorch projects into Ascend NPU-ready projects. It combines YAML-defined phases, persistent OpenCode agents, deterministic CUDA-to-NPU rewrites, validation/repair loops, and experience-memory skills into one auditable migration pipeline.
+<p align="center">
+  <strong>SEAM 是一个自动化迁移工具——帮你把一个原来只能在 NVIDIA 显卡上运行的 AI 项目，自动搬到国产算力卡上，让它能直接跑起来。</strong>
+</p>
 
-The core idea is simple: migration is not finished when code has been rewritten. It is finished only when the generated project runs through validation, repair, review, and final evidence gates.
+---
 
-## What SEAM Does
+## 📖 项目简介
 
-| Capability | What it means |
-| --- | --- |
-| YAML state machine | Phases, agents, validators, transitions, sub-workflows, and runtime skills live in `migration_utils/workflows/npu_migration_v2.yaml`. |
-| OpenCode orchestration | Persistent roles coordinate project analysis, environment setup, code adaptation, dependency repair, and operator repair. |
-| Deterministic migration | Built-in rule migration handles common CUDA-to-NPU replacements before runtime validation. |
-| Validation repair loop | Phase 5 runs the entry command, classifies errors, dispatches specialized repair agents, retries, and fails closed on stalled or invalid evidence. |
-| Custom-op final gate | CUDA custom-op projects must produce strict Ascend C/CANN OPP artifacts plus inventory, manifest, parity, runtime coverage, performance, and no-fallback evidence before passing. |
-| Experience memory | Phase 7 evaluates successful or instructive runs and refines them into reusable skills for later migrations. |
+SEAM (Self-Evolving Agentic Migration) 的起点很具体：**把一个基于 PyTorch 的 CUDA 项目迁移到昇腾 NPU（Ascend NPU），到底难在哪里。**
 
-## Architecture At A Glance
+实际迁移中会遇到三类问题：**代码适配**——CUDA API 需要逐一替换为昇腾对应接口，涉及 `torch.cuda`、设备放置、通信后端等多个层面；**虚拟环境适配**——不同项目的依赖版本、CANN 工具链、驱动版本各不相同，无法用一套模板覆盖；**缺失算子重新生成**——CUDA custom op 没有现成的昇腾等价物，必须从算子语义出发重新实现。
 
-```mermaid
-flowchart LR
-    A[CUDA / PyTorch project] --> B[SEAM launcher]
-    B --> C[YAML workflow]
-    C --> D[OpenCode server]
-    D --> E[Persistent migration roles]
-    E --> F[Artifacts and canonical phase outputs]
-    F --> G[Validation and repair loop]
-    G --> H{Final gate passed?}
-    H -- yes --> I[Reports + experience memory]
-    H -- no --> J[Actionable failure evidence]
-    J --> G
-```
+这些问题叠加在一起，使得迁移不是简单的文本替换，而是一个需要理解项目结构、自动适配环境、并在遇到未知算子时自主寻找解决方案的系统工程。**SEAM 由此诞生。**
 
-## Phase Map
+### 🎯 目标用户与核心痛点
 
-```mermaid
-flowchart TB
-    P0[Phase 0\nEnvironment detection\nNPU / CANN / Python / driver] --> P1[Phase 1\nProject analysis\nCUDA usage, deps, entry candidates]
-    P1 --> P15[Phase 1.5\nConstraint summary\nUser requirements become phase context]
-    P15 --> P2[Phase 2\nVirtualenv and dependencies]
-    P2 --> P3[Phase 3\nEntry script contract]
-    P3 --> P35[Phase 3.5\nStatic entry validation]
-    P35 -- pass --> P4[Phase 4\nRule-based CUDA to NPU migration]
-    P35 -- fail --> P3
-    P4 --> P5[Phase 5\nValidation + repair loop]
-    P5 --> G{Runtime and evidence pass?}
-    G -- dependency error --> FD[dependency_fixer]
-    G -- code/API error --> FC[code_adapter]
-    G -- operator/custom-op error --> FO[operator_fixer]
-    FD --> P5
-    FC --> P5
-    FO --> P5
-    G -- pass --> P6[Phase 6\nMigration report]
-    P6 --> P7A[Phase 7a\nExperience evaluation]
-    P7A --> P7B[Phase 7b\nExperience refinement]
-```
+**目标用户**：面向国产显卡进行模型部署、智能体开发、科学智能研究，以及对算力卡有推理或少量训练需求的开发者与研究员。
 
-## CUDA Custom-Op Vs Normal Flow
+用户拿到一张国产算力卡，想跑一个原来在 CUDA 上的项目，面对的是**三重障碍**：
 
-SEAM uses one framework for both ordinary CUDA projects and CUDA custom-op projects, but custom-op projects activate a stricter evidence chain. The comparison below is distilled from the custom-op flow design note that contrasts projects with and without CUDA custom operators.
+| 障碍 | 说明 |
+|------|------|
+| **🔧 迁移技术栈深、碎片化严重** | 代码适配、虚拟环境适配、缺失算子重新生成——三个层面相互耦合 |
+| **❓ 迁移结果是"薛定谔的"——不敢信** | 代码改了、环境搭了，一跑：精度不对、算子回退、报诡异的错。比完全不迁移更糟糕 |
+| **📭 缺乏可参考的真实案例** | 「别人真的跑通了吗？」——这是决策国产算力时用户最关心的信任问题 |
 
-```mermaid
-flowchart LR
-    subgraph N[No CUDA custom operators]
-      N1[Phase 1: regular project analysis] --> N2[Phase 3: normal entry script]
-      N2 --> N3[Phase 3.5: headless/static check]
-      N3 --> N4[Phase 4: CUDA API rewrite]
-      N4 --> N5[Phase 5: standard repair loop]
-      N5 --> N6[Phase 6/7: report + reusable experience]
-    end
+---
 
-    subgraph C[With CUDA custom operators]
-      C1[Phase 1: discover fine-grained operator units\nsymbols, launch sites, source evidence] --> C2[Phase 1.5: stricter no-fallback constraints]
-      C2 --> C3[Phase 3: custom_op_full_validation contract\nreports_dir + required checks]
-      C3 --> C4[Phase 3.5: contract and evidence static validation]
-      C4 --> C5[Phase 4: deterministic rewrite candidate]
-      C5 --> C6[Phase 5: inventory + manifest + parity + performance\ncustom_op_final_gate.json]
-      C6 --> C7[Phase 6/7: final evidence summary + custom-op skill]
-    end
-```
+## 🔧 SEAM 怎么解决？
 
-| Phase | Normal CUDA project | CUDA custom-op project |
-| --- | --- | --- |
-| Phase 0 | Detect platform and runtime basics. | Same as normal. |
-| Phase 1 | Analyze project structure, dependencies, CUDA patterns, and entry candidates. | Also discover fine-grained operator units, symbols, launch positions, and source evidence. |
-| Phase 1.5 | Summarize migration constraints. | Tighten constraints: full replacement, no CPU fallback, no stub pass. |
-| Phase 2 | Prepare virtualenv and dependencies. | Same environment foundation, but later phases use it for operator validation reports. |
-| Phase 3 | Produce `entry_script_path` and `run_command`. | Produce a full validation contract: `entry_script_kind`, `reports_dir`, `required_report_paths`, `required_checks`, and entry revision policy. |
-| Phase 3.5 | Check that the entry can run headlessly. | Also verify contract coverage and evidence-chain requirements. |
-| Phase 4 | Apply deterministic CUDA-to-NPU migration rules. | Same rewrite phase, but success here is only a candidate state. |
-| Phase 5 | Run standard validation and repair loop. | Must close inventory, manifest, parity, runtime coverage, performance, and final-gate evidence. |
-| Phase 6 | Produce migration report. | Report final-gate status and operator-level closure evidence. |
-| Phase 7 | Extract reusable experience. | Extract specialized custom-op migration skills. |
+SEAM 把迁移问题分解成 **6 步** 来解决：
 
-## Repository Layout
+> **📥 输入项目路径 → SEAM 自动完成全流程 → 📤 输出可用代码 + 迁移报告**
+
+| 步骤 | 你做什么 | SEAM 做什么 |
+|:---|:---|:---|
+| **第 1 步** 🔍 | 输入项目路径 | 自动检测环境、分析项目结构 |
+| **第 2 步** 📦 | 等待 | 准备虚拟环境、安装依赖 |
+| **第 3 步** ✍️ | 等待 | CUDA → NPU 代码适配（确定性规则文本替换，不经过大模型） |
+| **第 4 步** 🔄 | 等待 | 执行迁移后代码 → 分析错误 → 分派修复 → 审查质量 → 直到通过 |
+| **第 5 步** 🛡️ | 等待 | Custom-op 最终关卡验证 |
+| **第 6 步** ✅ | **拿到可用代码 + 迁移报告** | 同时沉淀经验，下次迁移更快 |
+
+---
+
+![SEAM结构介绍](./doc/imgs/SEAM.png)
+
+## ✨ 核心能力
+
+### 🌐 多硬件 × 多框架覆盖
+
+| 硬件 \ 框架 | Torch | vLLM | SGLang |
+|:---:|:---:|:---:|:---:|
+| **🔷 Ascend** | ✅ 已完成 | 🔜 进行中 | 🔜 进行中 |
+| **🔴 PPU** | 🔜 进行中 | 🔜 进行中 | 🔜 进行中 |
+| **🟢 Muxi** | 🔜 进行中 | 🔜 进行中 | 🔜 进行中 |
+
+> ✅ = 已适配 | 🔜 = 规划中
+
+### 📝 端到端自动迁移，覆盖全链路
+
+SEAM 当前实现的核心是一个由 **YAML 状态机驱动的多阶段迁移流水线**，配合 **五个持久化智能体**协同工作。整个流水线包含十个阶段：
 
 ```text
-SEAM/
-├── migration_utils/        # Core state-machine framework, validators, prompts, workflow YAML, tests
-├── .skills/                # Runtime skill packs that can be injected by YAML phases
-├── skills/                 # Promoted experience-memory skills
-├── memory/                 # Experience cases, staging candidates, and refined lessons
-├── docs/                   # Migration notes and project analysis docs
-├── scripts/                # Utility checks for local setup
-├── tests/                  # Root wrappers for E2E entrypoints
-└── e2e-reports/            # Lightweight historical E2E report snapshots
+环境检测 → 项目分析 → 依赖准备 → 规则迁移 → 验证修复循环
+    → Custom-op 最终关卡 → 迁移报告生成 → 经验评估与精炼
 ```
 
-The GitHub repository intentionally excludes local project corpora and generated outputs: `.opencode/`, `_migration_manifest/`, `cuda_projects/`, `original_projects/`, and `output_projects/`.
+其中 **Phase 4 的规则迁移是确定性文本替换，不经过大语言模型**；**Phase 5 是核心验证闭环**，执行迁移后代码、分析错误、分派修复、审查质量，直到成功或达到退出条件。对于 CUDA custom op 项目，SEAM 激活更严格的证据链：算子清单、构建产物、性能对比、无回退证据，全部通过 `custom_op_final_gate` 机器验证。
 
-## Quickstart
+### 🧠 自演化机制 — 越用越聪明
 
-### 1. Clone and enter the repo
+自演化是 SEAM 区别于传统迁移工具的关键：
 
-```bash
-git clone git@github.com:Fudan-SMI-lab/SEAM.git
-cd SEAM
-```
+| 能力 | 说明 |
+|------|------|
+| **🔍 零先验运行** | 系统无需预先了解目标项目的代码结构或依赖关系，从环境检测开始自主完成全流程 |
+| **🔄 跨案例知识迁移** | 每次迁移完成后，评估成功与失败的案例，把有效的适配方案提炼为可复用技能（skill），存入 `.memory/skills/` 和 `.memory/memory/` 目录 |
+| **📈 边际成本趋近于零** | 第 1 次迁移 ResNet50 学一套适配方案，第 10 次迁移 YOLOv8 直接复用经验只处理差异部分 |
 
-### 2. Prepare local project folders
+> 🏆 **当前已沉淀的核心技能：**
+> - `cuda-custom-op-to-npu-custom-op` — 自定义算子从 CUDA 到昇腾的完整移植方案
+> - `cuda-custom-extension-removal` — Apex CUDA 扩展清理策略
+> - `torch-npu-venv-setup-cpu-base` — 虚拟环境搭建标准化流程
+> - `fail-closed-ascend-npu-validation` — 迁移后验证的门控策略
 
-The repository does not ship large project corpora. Put your own CUDA project in one of these local folders:
+### 🛡️ 幻觉控制 — 不让「看起来行了」蒙混过关
 
-```bash
-mkdir -p cuda_projects output_projects
-cp -r /path/to/your_cuda_project cuda_projects/my_project
-```
+> 用户最怕什么？**「看起来迁移了，但实际上不能跑。」** 用 LLM 做代码迁移时，LLM 可能生成「看起来合理但实际不能运行」的代码。在国产算力推广的早期阶段，**一次失败的迁移体验就足以让用户放弃。**
 
-Recommended project shape:
+| 🛡️ 策略 | 说明 |
+|:---|:---|
+| **行为验证 > 静态分析** | 通过实际运行入口脚本来检验迁移结果，而非依赖静态分析或代码生成置信度 |
+| **错误分类 + 精准路由** | 按错误类型（依赖/导入/算子/性能）路由到最擅长的修复角色 |
+| **三振出局** | 连续三次相同错误自动停止迭代，避免 LLM 在幻觉中循环 |
+| **Fail-closed 门控** | 验证不通过就停止，不产出「可能行了」的半成品 |
+| **Custom-op 证据链** | 算子清单、manifest、parity 精度对比、运行时覆盖率、性能对比、无回退证据——全部通过机器验证才标记 FULL_PASS |
+
+> 💫 **自进化与幻觉控制的关系**：两者互为因果的正向循环——
+> **幻觉控制得好** → 迁移成功率高 → 积累的有效经验多 → 自进化基础扎实 → 迁移更少出错 → 幻觉控制压力减小
+
+---
+
+## 🏗️ 技术架构
+
+### YAML 状态机
+
+所有阶段、智能体、验证器、状态转移和子工作流定义在 `src/workflows/npu_migration_v2.yaml` 中。支持运行时技能动态注入、智能体协作策略可配置、验证门控和最大迭代次数可配置。
+
+### 五个持久化智能体
+
+| 智能体 | 职责 |
+|:---|:---|
+| `main_engineer` | 环境检测、项目分析、报告生成等主干阶段 |
+| `error_analyzer` | 在每轮验证中分类错误并推荐修复角色 |
+| `dependency_fixer` | 修复依赖和导入问题 |
+| `code_adapter` | 处理 CUDA 到 NPU 的 API 适配 |
+| `operator_fixer` | 负责自定义算子和内核的移植 |
+
+### 验证闭环
+
+一套不依赖人工判断的机器验证体系，覆盖全链路每个阶段——**每一道关卡都能独立运行、独立审计**：
 
 ```text
-cuda_projects/my_project/
-├── ADAPTATION_REQUIREMENTS.md       # optional user constraints
-├── original_src/                    # optional clean upstream source
-└── test_data_and_scripts/           # optional non-interactive validation entry
-    └── run_e2e.py
+validate_env_detect → validate_project_analysis → validate_venv
+    → validate_rule_migration → validate_entry_script
+    → validate_validation_final → validate_reports
 ```
 
-Flat project roots are also accepted; Phase 3 will discover or synthesize an entry command.
+Phase 4 的规则迁移成功不等于最终通过，最终状态以 Phase 5 行为验证和最终关卡为准。
 
-## OpenCode Server
+### Custom-op 最终关卡
 
-SEAM talks to OpenCode through its HTTP server. Start it before using the shell launcher:
+CUDA custom op 项目必须产出昇腾 C/CANN OPP 制品，通过以下全部机器验证才能标记为 `FULL_PASS`：算子清单 · manifest · parity 精度对比 · 运行时覆盖率 · 性能对比 · 无回退证据。
+
+### 经验记忆系统
+
+Phase 7a 评估迁移结果，Phase 7b 将有效经验精炼为技能，存储于 `.memory/skills/` 和 `.memory/memory/` 目录，供后续迁移检索。技能可通过 YAML 配置注入到任意阶段或智能体。**成功经验和失败教训都沉淀。**
+
+---
+
+## 🔮 完整愿景
+
+SEAM 的长期定位是成为 **🏛️ 国产算力生态基础设施**。
+
+### 覆盖范围
+
+当前版本聚焦昇腾 NPU 迁移。完整愿景中，SEAM 应覆盖更多国产加速卡平台，包括阿里巴巴平头哥 PPU (Alibaba T-Head PPU)、沐曦 GPU (Muxi GPU) 等。框架层面，除 PyTorch 外，还应支持 vLLM、SGLang 等推理框架的适配迁移。
+
+### 生态价值
+
+每次迁移中沉淀的稳定适配算子和软件包可以反哺社区，形成可复用的国产算力适配知识库。
+
+### 更广泛的技术影响
+
+| 🌍 影响 | 说明 |
+|:---|:---|
+| **💎 "经验即资产"的范式** | 让迁移工具自己记录和归纳经验，可推广到跨框架迁移、编译优化等场景 |
+| **🤝 跨厂商合作信任体系** | 通过与硬件厂商的合作，持续丰富适配案例，展现不断增长的信任证据 |
+| **📏 事实参考标准** | 形成一套事实上的适配参考标准：算子映射关系、性能基线、精度验证方法 |
+| **🌱 社区驱动的知识沉淀** | 「每次迁移沉淀技能 → 反哺社区 → 形成国产算力适配知识库」的社区协作范式 |
+
+---
+
+## 🔭 未来方向
+
+### 🧠 自进化增强
+- **跨设备迁移经验积累**：从「昇腾→昇腾」到「昇腾→PPU→Muxi」的跨平台迁移经验复用
+- **硬件感知技能库**：针对不同硬件特性（FP4/FP8 低精度、算子优化路径差异）的自动适配能力
+
+### 📐 低精度推理适配
+- 低精度训练的大模型推理：FP4/FP8 量化模型的推理适配
+- 大规模大模型/智能体部署：低精度推理降低显存与算力开销
+- 具身与边端应用场景：低精度推理适配边缘设备
+
+### ⚖️ 算子优化
+针对不同硬件架构的算子优化路径存在显著差异。SEAM 需要在迁移过程中识别目标设备特征，选择对应的算子优化路径，并将设备特定的优化经验纳入经验记忆系统。
+
+### 🛡️ 幻觉控制持续增强
+- 更精细的错误分类体系：从粗粒度分类到细粒度错误图谱
+- 行为覆盖率量化：从「能不能跑」升级到「跑得多深、覆盖多少用例」
+- 跨案例幻觉模式挖掘：从历史迁移中自动识别高风险组合，提前规避
+- 硬件特性感知的幻觉抑制：在生成阶段就考虑硬件约束，从源头减少偏差
+
+---
+
+## 🚀 安装指南
+
+### 环境要求
+
+- Python 3.9 及以上
+- 昇腾 NPU 驱动及 CANN 工具链（昇腾平台）
+- pip 21.0 及以上
+
+### 从源码安装
+
+```bash
+git clone https://github.com/seam-project/seam.git
+cd seam
+pip install -e ".[dev]"
+```
+
+---
+
+## ⚡ 快速开始
+
+先启动用户预先管理的 OpenCode 服务：
 
 ```bash
 opencode serve --port 4098 --hostname 127.0.0.1
-curl -fsS http://127.0.0.1:4098/agent
 ```
 
-The Python E2E entrypoint can also auto-start a local server when `--server-url` is not explicitly overridden, but for reproducible runs the recommended pattern is to start OpenCode yourself and pass `--server-url`.
-
-## Run A Migration
-
-### Recommended launcher
-
-```bash
-bash migration_utils/scripts/run_e2e_v2.sh my_project \
-  --server-url http://127.0.0.1:4098 \
-  --max-iter 8 \
-  --review \
-  --verbose
-```
-
-The launcher resolves `my_project` from `./cuda_projects/my_project`, `./original_projects/my_project`, or the legacy parent fallbacks. It writes migrated copies into `./output_projects/` and run reports into `./e2e-reports/migration_utils/`.
-
-### Direct Python entrypoint
+然后从 SEAM 仓库根目录运行迁移入口：
 
 ```bash
 python -m tests.e2e.e2e_test_v2 \
-  --server-url http://127.0.0.1:4098 \
-  --project-dir /absolute/path/to/your_cuda_project \
-  --output-dir ./output_projects \
-  --max-phase5-iter 8 \
-  --keep-temp-dir \
-  --review-gate \
-  --verbose
+  --hostname 127.0.0.1 \
+  --port 4098 \
+  --server_type opencode \
+  --project-dir /path/to/cuda/project \
+  --output_dir ./output_projects
 ```
 
-### Dry-run setup check
+`--hostname`、`--port` 和 `--server_type` 共同描述外部服务端点；当前 `server_type` 支持 `opencode`，后续可扩展到其他迁移服务。`--project-dir` 指向待迁移 CUDA/PyTorch 项目，`--output_dir` 指向迁移产物输出根目录。
 
-```bash
-bash migration_utils/scripts/run_e2e_v2.sh my_project \
-  --dry-run \
-  --server-url http://127.0.0.1:4098
+用户全程只需要：**输入项目路径，输出可用代码 + 迁移报告。** 中间涉及的 CUDA API 适配、缺失算子重新实现、环境变量配置，全部由五个持久化智能体协同完成。
+
+---
+
+## 📚 文档
+
+- [用户手册](doc/USER_GUIDE.md) — 详细的功能介绍、配置方法和使用指南
+- [常见问题解答](doc/FAQ.md) — 用户最常遇到的疑问
+- [贡献指南](doc/CONTRIBUTING.md) — 如何参与贡献
+- [更新日志](CHANGELOG.md) — 版本历史与发布说明
+- [项目治理](GOVERNANCE.md) — 项目治理模式
+- [维护者指南](MAINTAINERS.md) — 核心维护者内部工作手册
+
+---
+
+## 🤝 参与贡献
+
+我们欢迎任何形式的贡献！请阅读 [贡献指南](doc/CONTRIBUTING.md) 了解：
+
+- 行为准则
+- 开发环境搭建
+- 测试与代码风格规范
+- Pull Request 提交流程
+
+本项目遵循 [Contributor Covenant](https://www.contributor-covenant.org/) 行为准则。
+
+---
+
+## 📄 版本更新
+
+详见 [CHANGELOG.md](CHANGELOG.md)。我们遵循 [语义化版本](https://semver.org/lang/zh-CN/) 规范（MAJOR.MINOR.PATCH）。
+
+---
+
+## 📜 开源许可证
+
+SEAM 基于 MIT License 开源。详见 [LICENSE](LICENSE) 文件。
+
+```text
+MIT License
+Copyright (c) 2026 Fudan-SMI-lab
 ```
 
-## Command Parameters
+---
 
-### `migration_utils/scripts/run_e2e_v2.sh`
-
-| Parameter | Meaning |
-| --- | --- |
-| `<PROJECT_NAME>` | Required. Directory name or path for the CUDA project. Searched under `cuda_projects/` and `original_projects/`. |
-| `--server-url URL` | OpenCode server URL. Launcher default is `http://127.0.0.1:4098`; pass it explicitly for reproducibility. |
-| `--max-iter N` | Maximum Phase 5 repair iterations. More iterations allow deeper repair but cost more agent time. |
-| `--review` | Enable the Phase 5 review gate. The launcher enables review by default. |
-| `--no-review` | Disable review gate and accept Phase 5 success without the optional review pass. |
-| `--no-keep-temp` | Do not keep the output project directory after the run. Default behavior keeps it. |
-| `--agent NAME` | Override the auto-detected OpenCode agent name. |
-| `--dry-run` | Validate paths and print the command without contacting/running the OpenCode migration. |
-| `--verbose` | Enable verbose logging in the Python E2E harness. |
-| `--extra 'ARGS...'` | Forward additional arguments to `e2e_test_v2.py`. |
-
-### `python -m tests.e2e.e2e_test_v2`
-
-| Parameter | Meaning |
-| --- | --- |
-| `--server-url URL` | Existing OpenCode server URL. Direct entry default is `http://127.0.0.1:4096`; pass explicitly if using another port. |
-| `--max-phase5-iter N` | Maximum repair-loop iterations for Phase 5. |
-| `--keep-temp-dir` | Keep the generated/migrated project copy for inspection. |
-| `--project-dir PATH` | Source CUDA project path. If omitted, the bundled test template is used. |
-| `--agent NAME` | Override the active agent reported by the OpenCode server. |
-| `--output-dir PATH` | Destination root for migrated project copies. Defaults to `output_projects/`. |
-| `--user-constraints PATH_OR_TEXT` | User constraints file or literal constraints text injected into Phase 1.5 and later phases. |
-| `--review-gate` | Enable optional review/improvement loop after runtime success. |
-| `--framework-config PATH` | Override framework defaults such as iteration counts, review settings, and runtime skill root. |
-| `--server-auto-start` | Allow the harness to auto-start OpenCode when using its default URL. Enabled by default. |
-| `--server-no-auto-start` | Disable auto-start and require an already running OpenCode server. |
-| `--server-port PORT` | Preferred local port when auto-starting OpenCode. `0` means choose an available port. |
-| `--verbose` | Enable debug logging. |
-
-## Add Skills In YAML
-
-Runtime skills are attached directly to agents, phases, or sub-workflow phases in `migration_utils/workflows/npu_migration_v2.yaml`.
-
-Minimal list form:
-
-```yaml
-phases:
-  - id: phase_1_project_analysis
-    type: llm
-    agent: main_engineer
-    prompt_template: phase_1_project_analysis
-    runtime_skills:
-      - cuda-custom-op-to-npu-custom-op
-```
-
-Full mapping form:
-
-```yaml
-runtime_skills:
-  include:
-    - cuda-custom-op-to-npu-custom-op
-  inject_full: false
-  missing: error
-```
-
-| Field | Meaning |
-| --- | --- |
-| `include` | Skill names to inject or reference. Skills are resolved from configured runtime skill roots such as `.skills/` and promoted skill stores. |
-| `inject_full` | `false` injects compact references/paths; `true` injects full skill content into the prompt. Use full injection only when the phase needs the entire checklist. |
-| `missing` | Missing skill policy: `error` fails closed, `warn` records a warning, and `ignore` continues silently. |
-
-The built-in custom-op repair path already uses this pattern:
-
-```yaml
-- id: fix_operator
-  type: llm
-  agent: operator_fixer
-  prompt_template: repair_operator_fixer
-  runtime_skills:
-    include:
-      - cuda-custom-op-to-npu-custom-op
-    inject_full: false
-    missing: error
-```
-
-To add a new skill:
-
-1. Create `.skills/<skill-name>/SKILL.md` or a structured promoted skill under `skills/`.
-2. Reference `<skill-name>` in `runtime_skills.include` at the agent or phase that needs it.
-3. Prefer `inject_full: false` for large skills and let agents read the referenced files when needed.
-4. Use `missing: error` for mandatory safety or operator-migration skills.
-
-## Safety And Completion Semantics
-
-SEAM deliberately fails closed in places where migration tools often produce false success:
-
-- Phase/session calls with `ok:false` are rejected before canonical success handling.
-- OpenCode compaction summaries and unfinished todos do not count as completed work.
-- Phase 4 rewrite success is not final success.
-- Custom-op projects must pass `migration_reports/custom_op_final_gate.json` machine validation against real project-local Ascend C/CANN OPP producer artifacts.
-- Strict custom-op `FULL_PASS` requires verifiable `op_host`, `op_kernel`/AscendC, OPP build script, CANN/OPP build-install logs, install/provenance, generated header/op_info/kernel_meta or OPP package artifacts, and the runtime-loaded compiled OPP artifact under the project root.
-- CPU fallback, zero custom-op calls, stubs, report-only/path-only evidence, missing parity, incomplete manifest rows, `NpuExtension`/ATen/libtorch-only builds, and any future non-OPP producer form block final acceptance.
-
-## Useful Checks
-
-```bash
-# Validate local improvement contracts
-bash migration_utils/scripts/verify_improvements.sh --repo-root . --output-dir /tmp/seam-verify
-
-# Show the launcher command without running the migration
-bash migration_utils/scripts/run_e2e_v2.sh my_project --dry-run --server-url http://127.0.0.1:4098
-
-# Run the framework test suite
-python -m pytest migration_utils/tests -q
-```
-
-## License And Citation
-
-This repository packages the SEAM migration framework, workflow definitions, prompts, skills, tests, and documentation for Ascend NPU migration research and engineering use inside the Fudan-SMI-lab organization.
+<p align="center">
+  <sub>❤️由复旦大学SMI Lab和复旦大学CFFF平台共同构建❤️</sub>
+</p>
