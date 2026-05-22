@@ -60,7 +60,7 @@ python -m pytest tests/ -x -q
 cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
 python -m tests.e2e.e2e_test_v2 \
-  --hostname 127.0.0.1 --port 4098 --server_type opencode \
+  --server_type opencode --server_url http://127.0.0.1:4098 \
   --project-dir original_projects/04_Deepwave \
   --output_dir output_projects \
   --keep-temp-dir
@@ -70,7 +70,7 @@ python -m tests.e2e.e2e_test_v2 \
 
 | 参数 | 值 | 说明 |
 |------|---|------|
-| `--hostname` / `--port` / `--server_type` | `http://127.0.0.1:4098` | OpenCode 服务地址 |
+| `--server_type` / `--server_url` | `opencode` / `http://127.0.0.1:4098` | OpenCode 服务类型和 URL |
 | `--project-dir` | `original_projects/04_Deepwave` | Deepwave 源码路径 |
 | `--max-phase5-iter` | 默认 `10` | 修复循环默认最多 10 轮；显式传入时覆盖默认值 |
 | `--keep-temp-dir` | *(flag)* | 保留迁移后的项目副本，方便检查 |
@@ -194,7 +194,7 @@ popd
 ```bash
 bash src/scripts/run_seam.sh 04_Deepwave \
   --dry-run \
-  --hostname 127.0.0.1 --port 4098 --server_type opencode
+  --server_type opencode --server_url http://127.0.0.1:4098
 ```
 
 此模式适合：

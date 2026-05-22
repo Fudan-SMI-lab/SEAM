@@ -13,24 +13,22 @@ cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
 这就是全部 — 脚本会自动:
 1. 验证项目结构完整性
-2. 检查 OpenCode 服务器可达性
+2. 根据 `--server_type` 和 `--server_url` 自动复用或启动服务
 3. 以基准配置启动 E2E 测试
 4. 输出测试报告路径
 
 ## 前置条件
 
-### 1. OpenCode 服务器 (必须)
+### 1. OpenCode 服务 URL
 
-确保服务器运行在 **端口 4098** (基准端口):
+默认服务 URL 是 `http://127.0.0.1:4098`。如果端口空闲，SEAM 会自动启动 `opencode`；如果该 URL 已经是 OpenCode 服务，SEAM 会直接复用；如果端口被其他服务占用，SEAM 会按冲突策略提示或报错。
 
 ```bash
 curl -fsS http://127.0.0.1:4098/agent
-# 应返回 agent 配置信息, 不应连接拒绝
+# 若已启动 OpenCode，应返回 agent 配置信息
 ```
 
-如果服务未运行, 先启动它 (具体启动方式根据你的部署环境)。
-
-> **注意**: 默认端口是 4098, 不是 4096。如果需要自定义, 使用 `--hostname` / `--port` / `--server_type`。
+> **注意**: 如需自定义地址，使用 `--server_type opencode --server_url http://host:port`。
 
 ### 2. 项目目录结构 (必须)
 
@@ -130,7 +128,7 @@ cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 ### 自定义服务器地址
 
 ```bash
-./scripts/run_e2e.sh 07_IndexTTS --hostname 10.0.0.1 --port 8080 --server_type opencode
+./scripts/run_e2e.sh 07_IndexTTS --server_type opencode --server_url http://10.0.0.1:8080
 ```
 
 ### 关闭 Review Gate
@@ -188,7 +186,7 @@ output_projects/<N>_<Name>_YYYYMMDD_HHMMSS/
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--hostname` / `--port` / `--server_type` | `http://127.0.0.1:4098` | OpenCode 服务器地址 |
+| `--server_type` / `--server_url` | `opencode` / `http://127.0.0.1:4098` | OpenCode 服务器类型和 URL |
 | `--max-iter` | `8` | Phase 5 最大修复迭代次数 |
 | `--review-gate` | 启用 | exit 0 后审查 CPU fallback |
 | `--no-keep-temp` | 保留输出 | 不清除临时输出目录 |
