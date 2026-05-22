@@ -51,6 +51,32 @@ CUSTOM_OP_NEGATIVE_PATTERNS = (
     re.compile(r"\bcustom_op_detected\s*[:=]\s*false\b", re.IGNORECASE),
 )
 
+def _rewrite_container_to_host_path(
+    path_str: str,
+    project_dir: str,
+    container_workdir: str,
+) -> str:
+    """Convert a container-visible path to its host-visible equivalent.
+
+    When a model returns a path under ``container_workdir`` (e.g.
+    ``/workspace/validate_fwi.py``), return the corresponding path under
+    ``project_dir`` (e.g. ``{project_dir}/validate_fwi.py``).
+
+    Boundary-safe: ``/workspace2/x`` does NOT match container workdir ``/workspace``.
+    """
+    if not path_str:
+        return path_str
+    safe = container_workdir.rstrip("/")
+    if not safe:
+        return path_str
+    if not (path_str == safe or path_str.startswith(safe + "/")):
+        return path_str
+    rel = path_str[len(safe):].lstrip("/")
+    if not rel:
+        return project_dir
+    return str(Path(project_dir) / rel)
+
+
 CUSTOM_OP_CONTRACT_KEYS = frozenset(
     {
         "reports_dir",
@@ -1096,6 +1122,9 @@ class PhaseRunner:
                     normalized["entry_script_path"] = entry_script
             if self._custom_op_required_signal(previous_outputs, context):
                 _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+            normalized = self._normalize_phase3_container_paths(
+                normalized, prompt_context,
+            )
         if phase.prompt_id == "phase_35_static_validate":
             previous_outputs = context.get("previous_outputs", {})
             entry_script_kind = self._lookup_previous_output(
@@ -1106,6 +1135,51 @@ class PhaseRunner:
             if entry_script_kind == "custom_op_full_validation":
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
+        return normalized
+
+    @staticmethod
+    def _normalize_phase3_container_paths(
+        output: JsonObject,
+        prompt_context: dict[str, str],
+    ) -> JsonObject:
+        """Rewrite host-visible path fields when the model returns container paths.
+
+        Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
+        is NOT rewritten here — the Phase 5 execution backend already handles
+        host-to-container path mapping for command execution.
+
+        When the model returns a path that starts with the container workdir (e.g.
+        ``/workspace/...`` or the value of ``{container_project_dir}``), convert it
+        to the corresponding host-visible path under ``{project_dir}``.
+        """
+        project_dir = prompt_context.get("project_dir")
+        container_workdir = (
+            prompt_context.get("container_workdir")
+            or prompt_context.get("container_project_dir")
+        )
+        if not project_dir or not container_workdir:
+            return output
+
+        if not project_dir.startswith("/"):
+            try:
+                project_dir = str(Path(project_dir).resolve())
+            except OSError:
+                return output
+
+        normalized = dict(output)
+
+        entry = normalized.get("entry_script_path")
+        if isinstance(entry, str) and entry.strip():
+            normalized["entry_script_path"] = _rewrite_container_to_host_path(
+                entry, project_dir, container_workdir,
+            )
+
+        reports = normalized.get("reports_dir")
+        if isinstance(reports, str) and reports.strip():
+            normalized["reports_dir"] = _rewrite_container_to_host_path(
+                reports, project_dir, container_workdir,
+            )
+
         return normalized
 
     @classmethod
