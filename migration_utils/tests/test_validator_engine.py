@@ -492,6 +492,60 @@ def test_entry_script_validator_accepts_direct_in_container_run_commands(run_com
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
+
+@pytest.mark.parametrize(
+    "run_command",
+    [
+        "MPLBACKEND=Agg python3 /workspace/057_example_fwi.py",
+        "CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/workspace/src python3 script.py",
+        "FOO=bar python3 train.py --config cfg.yaml",
+    ],
+)
+def test_entry_script_validator_accepts_env_prefixed_safe_commands(run_command: str) -> None:
+    result = validate_entry_script({"entry_script_path": "script.py", "run_command": run_command})
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+@pytest.mark.parametrize(
+    "run_command",
+    [
+        "FOO=bar bash -c id",
+        "X=1 sh run_validation.sh",
+        "A=b B=c bash train.py",
+        "FOO=bar sh -c id",
+        "X=y env bash -c id",
+    ],
+)
+def test_entry_script_validator_rejects_env_prefixed_unsafe_shell_commands(run_command: str) -> None:
+    result = validate_entry_script({"entry_script_path": "train.py", "run_command": run_command})
+
+    assert result["passed"] is False
+    assert any("wrapper script" in error or "single process" in error or "shell through env" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize(
+    "run_command",
+    [
+        "FOO=bar docker run --rm python:3.10 python3 train.py",
+        "X=1 podman exec my-container python3 script.py",
+        "CUDA_VISIBLE_DEVICES=0 docker exec my-container python3 train.py",
+    ],
+)
+def test_entry_script_validator_rejects_env_prefixed_container_runtime_commands(run_command: str) -> None:
+    result = validate_entry_script({"entry_script_path": "train.py", "run_command": run_command})
+
+    assert result["passed"] is False
+    assert any("container runtime" in error or "docker/podman" in error for error in result["errors"])
+
+
+def test_entry_script_validator_rejects_env_prefix_only_no_executable() -> None:
+    result = validate_entry_script({"entry_script_path": "train.py", "run_command": "FOO=bar"})
+
+    assert result["passed"] is False
+    assert any("real executable" in error for error in result["errors"])
+
+
 def test_entry_script_validator_rejects_bare_report_only_final_evidence_validator() -> None:
     result = validate_entry_script(
         {
