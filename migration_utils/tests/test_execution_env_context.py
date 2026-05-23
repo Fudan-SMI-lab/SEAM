@@ -326,3 +326,330 @@ class TestContainerContextHasPython3Command:
         assert "python3" in result
         assert "callable" in result or "PATH" in result or "probe interpreter" in result.lower()
 
+
+# ── Accelerator context extraction (shared helper) ────────────────────────
+
+
+class TestAcceleratorContextExtraction:
+    """Tests for ``extract_accelerator_context`` — legacy NPU + platform-neutral PPU/XPU/CUDA."""
+
+    # ── Legacy NPU ────────────────────────────────────────────────────
+
+    def test_torch_npu_version_with_equals(self):
+        """torch-npu==2.1.0 → torch_npu_version = '2.1.0'."""
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch-npu==2.1.0"])
+        assert result["torch_npu_version"] == "2.1.0"
+        assert "torch_npu" in result["accelerator_packages"]
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
+
+    def test_torch_npu_version_with_underscore(self):
+        """torch_npu==2.1.0 → torch_npu_version = '2.1.0'."""
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch_npu==2.1.0"])
+        assert result["torch_npu_version"] == "2.1.0"
+
+    def test_torch_npu_version_ge(self):
+        """torch-npu>=2.1.0 → torch_npu_version = '2.1.0' (any comparator works)."""
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch-npu>=2.1.0"])
+        assert result["torch_npu_version"] == "2.1.0"
+
+    def test_no_torch_npu_returns_none(self):
+        """When no torch-npu/torch_npu package, torch_npu_version is None."""
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["numpy==1.24.0", "requests"])
+        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_packages"]
+
+    def test_torch_npu_bare_no_version_returns_none(self):
+        """Bare 'torch-npu' without version: accelerator_packages includes it,
+        but torch_npu_version is None because the legacy code required a version."""
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch-npu"])
+        assert result["torch_npu_version"] is None
+        assert "torch_npu" in result["accelerator_packages"]
+        assert "torch_npu" not in result["accelerator_package_versions"]
+
+    # ── PPU packages ───────────────────────────────────────────────────
+
+    def test_ppukernel_versioned(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["ppukernel==1.2.3"])
+        assert "ppukernel" in result["accelerator_packages"]
+        assert result["accelerator_package_versions"]["ppukernel"] == "1.2.3"
+
+    def test_torch_ppu_versioned(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch-ppu==0.1.0"])
+        assert "torch_ppu" in result["accelerator_packages"]
+        assert result["accelerator_package_versions"]["torch_ppu"] == "0.1.0"
+
+    def test_torch_ppu_underscore_form(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch_ppu==0.2.0"])
+        assert "torch_ppu" in result["accelerator_packages"]
+        assert result["accelerator_package_versions"]["torch_ppu"] == "0.2.0"
+
+    def test_ppuccl(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["ppuccl==1.0.0"])
+        assert "ppuccl" in result["accelerator_packages"]
+        assert result["accelerator_package_versions"]["ppuccl"] == "1.0.0"
+
+    def test_bare_ppu_package_name(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["ppu"])
+        assert "ppu" in result["accelerator_packages"]
+        assert "ppu" not in result["accelerator_package_versions"]
+
+    # ── PPU smoke scenario (vLLM + torch + PPU, no torch-npu) ────────
+
+    def test_ppu_smoke_scenario(self):
+        """Simulate a PPU smoke installed_packages: vllm, torch, ppukernel, ppuccl, cuda."""
+        from core.accelerator_context import extract_accelerator_context
+
+        pkgs = [
+            "vllm==0.18.0",
+            "torch==2.9.0",
+            "ppukernel==1.0.0",
+            "ppuccl==1.0.0",
+            "cuda",  # bare package name (PEP 508; also realistic pip freeze output)
+        ]
+        result = extract_accelerator_context(pkgs)
+
+        assert result["torch_npu_version"] is None
+        assert "vllm" in result["accelerator_packages"]
+        assert "torch" in result["accelerator_packages"]
+        assert "ppukernel" in result["accelerator_packages"]
+        assert "ppuccl" in result["accelerator_packages"]
+        assert "cuda" in result["accelerator_packages"]
+
+        assert result["accelerator_package_versions"]["vllm"] == "0.18.0"
+        assert result["accelerator_package_versions"]["torch"] == "2.9.0"
+        assert result["accelerator_package_versions"]["ppukernel"] == "1.0.0"
+
+    # ── Mixed NPU + PPU ───────────────────────────────────────────────
+
+    def test_mixed_npu_and_ppu(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        pkgs = [
+            "torch-npu==2.1.0",
+            "torch-ppu==0.1.0",
+            "ppukernel==1.0.0",
+            "vllm==0.18.0",
+            "torch==2.9.0",
+        ]
+        result = extract_accelerator_context(pkgs)
+
+        assert result["torch_npu_version"] == "2.1.0"
+        assert set(result["accelerator_packages"]) >= {
+            "torch_npu", "torch_ppu", "ppukernel", "vllm", "torch",
+        }
+
+    # ── Edge cases ─────────────────────────────────────────────────────
+
+    def test_empty_list(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context([])
+        assert result["torch_npu_version"] is None
+        assert result["accelerator_packages"] == []
+        assert result["accelerator_package_versions"] == {}
+
+    def test_none_input(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(None)
+        assert result["torch_npu_version"] is None
+        assert result["accelerator_packages"] == []
+        assert result["accelerator_package_versions"] == {}
+
+    def test_non_string_entries_ignored(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch-npu==2.1.0", 42, None, ["ppukernel"]])
+        assert result["torch_npu_version"] == "2.1.0"
+        assert "torch_npu" in result["accelerator_packages"]
+        assert len(result["accelerator_packages"]) == 1
+
+    def test_all_fields_json_serializable(self):
+        import json
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch-npu==2.1.0", "ppukernel==1.0.0"])
+        serialized = json.dumps(result)
+        assert isinstance(serialized, str)
+        assert "torch_npu_version" in serialized
+        assert "accelerator_packages" in serialized
+        assert "accelerator_package_versions" in serialized
+
+    def test_hyphen_underscore_equivalence(self):
+        """torch-npu and torch_npu normalize to the same name."""
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["torch-npu==2.1.0", "torch_npu==2.2.0"])
+        assert result["torch_npu_version"] == "2.1.0"  # first wins
+        # Both normalize to "torch_npu", so only one entry in the list
+        assert result["accelerator_packages"].count("torch_npu") == 1
+
+    def test_triton_package(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        result = extract_accelerator_context(["triton==2.1.0"])
+        assert "triton" in result["accelerator_packages"]
+        assert result["accelerator_package_versions"]["triton"] == "2.1.0"
+
+    def test_cuda_ecosystem_packages(self):
+        from core.accelerator_context import extract_accelerator_context
+
+        pkgs = ["cuda", "cudnn==8.9.0", "nccl==2.18.0"]
+        result = extract_accelerator_context(pkgs)
+        assert "cuda" in result["accelerator_packages"]
+        assert "cudnn" in result["accelerator_packages"]
+        assert "nccl" in result["accelerator_packages"]
+
+
+# ── orchestrator._build_env_context integration ──────────────────────────
+
+
+class TestOrchestratorBuildEnvContext:
+    def test_includes_legacy_torch_npu_version(self):
+        from core.orchestrator import Orchestrator
+
+        result = Orchestrator._build_env_context(
+            {"os": "Linux"},
+            {"installed_packages": ["torch-npu==2.1.0"]},
+        )
+        assert result["torch_npu_version"] == "2.1.0"
+        assert result["os"] == "Linux"
+
+    def test_includes_accelerator_packages(self):
+        from core.orchestrator import Orchestrator
+
+        result = Orchestrator._build_env_context(
+            {"os": "Linux"},
+            {"installed_packages": ["ppukernel==1.0.0", "torch-ppu==0.1.0"]},
+        )
+        assert result["torch_npu_version"] is None
+        assert "ppukernel" in result["accelerator_packages"]
+        assert "torch_ppu" in result["accelerator_packages"]
+
+    def test_includes_accelerator_package_versions(self):
+        from core.orchestrator import Orchestrator
+
+        result = Orchestrator._build_env_context(
+            {"os": "Linux"},
+            {"installed_packages": ["ppukernel==1.0.0"]},
+        )
+        assert result["accelerator_package_versions"]["ppukernel"] == "1.0.0"
+
+    def test_empty_accelerator_packages_when_no_match(self):
+        from core.orchestrator import Orchestrator
+
+        result = Orchestrator._build_env_context(
+            {"os": "Linux"},
+            {"installed_packages": ["numpy==1.24.0", "requests"]},
+        )
+        assert result["torch_npu_version"] is None
+        assert result["accelerator_packages"] == []
+        assert result["accelerator_package_versions"] == {}
+
+    def test_ppu_smoke_scenario(self):
+        """Full PPU smoke scenario: no torch-npu, has ppukernel, vllm, torch, cuda."""
+        from core.orchestrator import Orchestrator
+
+        result = Orchestrator._build_env_context(
+            {"os": "Linux"},
+            {"installed_packages": [
+                "vllm==0.18.0",
+                "torch==2.9.0",
+                "ppukernel==1.0.0",
+                "ppuccl==1.0.0",
+                "cuda",
+            ]},
+        )
+        assert result["torch_npu_version"] is None
+        assert "vllm" in result["accelerator_packages"]
+        assert "ppukernel" in result["accelerator_packages"]
+        assert "ppuccl" in result["accelerator_packages"]
+
+
+# ── workflow_executor._build_env_context integration ─────────────────────
+
+
+class TestWorkflowExecutorBuildEnvContext:
+    def test_includes_legacy_torch_npu_version(self):
+        from core.workflow_executor import WorkflowExecutor
+
+        wfe = WorkflowExecutor.__new__(WorkflowExecutor)
+        result = wfe._build_env_context({
+            "phase_0_env_detect": {"os": "Linux"},
+            "phase_2_venv_create": {"installed_packages": ["torch-npu==2.1.0"]},
+        })
+        assert result["torch_npu_version"] == "2.1.0"
+        assert result["os"] == "Linux"
+
+    def test_includes_accelerator_packages_and_versions(self):
+        from core.workflow_executor import WorkflowExecutor
+
+        wfe = WorkflowExecutor.__new__(WorkflowExecutor)
+        result = wfe._build_env_context({
+            "phase_0_env_detect": {},
+            "phase_2_venv_create": {
+                "installed_packages": [
+                    "torch-ppu==0.1.0",
+                    "ppukernel==1.0.0",
+                    "numpy==1.24.0",
+                ],
+            },
+        })
+        assert result["torch_npu_version"] is None
+        assert "torch_ppu" in result["accelerator_packages"]
+        assert "ppukernel" in result["accelerator_packages"]
+        assert result["accelerator_package_versions"]["torch_ppu"] == "0.1.0"
+        assert result["accelerator_package_versions"]["ppukernel"] == "1.0.0"
+
+    def test_no_phase2_returns_empty(self):
+        from core.workflow_executor import WorkflowExecutor
+
+        wfe = WorkflowExecutor.__new__(WorkflowExecutor)
+        result = wfe._build_env_context({
+            "phase_0_env_detect": {"os": "Linux"},
+        })
+        assert result["torch_npu_version"] is None
+        assert result["accelerator_packages"] == []
+        assert result["accelerator_package_versions"] == {}
+
+    def test_npu_ppu_mixed_behavior_identical_to_orchestrator(self):
+        from core.orchestrator import Orchestrator
+        from core.workflow_executor import WorkflowExecutor
+
+        packages = ["torch-npu==2.1.0", "torch-ppu==0.1.0", "ppukernel==1.0.0", "vllm==0.18.0"]
+
+        orch_result = Orchestrator._build_env_context(
+            {"os": "Linux"},
+            {"installed_packages": packages},
+        )
+
+        wfe = WorkflowExecutor.__new__(WorkflowExecutor)
+        wf_result = wfe._build_env_context({
+            "phase_0_env_detect": {"os": "Linux"},
+            "phase_2_venv_create": {"installed_packages": packages},
+        })
+
+        assert orch_result["torch_npu_version"] == wf_result["torch_npu_version"]
+        assert set(orch_result["accelerator_packages"]) == set(wf_result["accelerator_packages"])
+        assert orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]
+

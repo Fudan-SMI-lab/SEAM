@@ -450,6 +450,7 @@ def test_experience_query_context_preserves_nested_run_entry_script_stderr(tmp_p
 
 
 def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
+    """Generic workflow name infers generic_accelerator policy."""
     executor = _executor_for_experience_context(tmp_path)
     phase = PhaseDefinition(
         id="analyze_error",
@@ -475,7 +476,93 @@ def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
 
     assert query_ctx["custom_op_native_gate_required"] == "true"
     assert query_ctx["custom_op_evidence_policy"] == (
+        "require_real_custom_op_artifacts"
+    )
+
+
+def test_npu_workflow_keeps_legacy_custom_op_evidence_policy(tmp_path: Path):
+    """Legacy NPU workflow name must still produce NPU-specific policy string."""
+    workflow = WorkflowDefinition(name="npu_migration_v2", version="1.0", phases=[], terminals=[])
+    artifact_store = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        artifact_store,
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="analyze_error",
+        name="Analyze",
+        prompt_template="phase_error_recovery",
+        output_schema={},
+        type="llm",
+        agent="error_analyzer",
+    )
+
+    query_ctx = executor._build_experience_query_context(
+        phase,
+        state={
+            "phase_3_entry_script": {
+                "entry_script_kind": "custom_op_full_validation",
+                "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            }
+        },
+        context={},
+        step_outputs={},
+        loop_history=[],
+    )
+
+    assert query_ctx["custom_op_native_gate_required"] == "true"
+    assert query_ctx["custom_op_evidence_policy"] == (
         "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only"
+    )
+
+
+def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
+    """PPU workflow name infers PPU policy string."""
+    workflow = WorkflowDefinition(name="ppu_migration_v2", version="1.0", phases=[], terminals=[])
+    artifact_store = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        artifact_store,
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="analyze_error",
+        name="Analyze",
+        prompt_template="phase_error_recovery",
+        output_schema={},
+        type="llm",
+        agent="error_analyzer",
+    )
+
+    query_ctx = executor._build_experience_query_context(
+        phase,
+        state={
+            "phase_3_entry_script": {
+                "entry_script_kind": "custom_op_full_validation",
+                "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            }
+        },
+        context={},
+        step_outputs={},
+        loop_history=[],
+    )
+
+    assert query_ctx["custom_op_native_gate_required"] == "true"
+    assert query_ctx["custom_op_evidence_policy"] == (
+        "require_real_ppu_custom_op_artifacts"
     )
 
 
@@ -1883,7 +1970,9 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
 
     assert result["step_outputs"]["repair_dispatch"]["dispatched_to"] == "fix_dependency"
     fix_prompt = session_mgr.send_command.call_args_list[-1][0][1]
-    assert len(fix_prompt.splitlines()) == 3
+    # Dependency fixer prompt now includes constraint_summary, No CPU Fallback, and Native Operator Handoff
+    assert "No CPU Fallback (CRITICAL)" in fix_prompt
+    assert "Native Operator Handoff" in fix_prompt
     assert "## Analyzer-Selected Experience Action Cards" not in fix_prompt
     assert "Read /skills/dependency/SKILL.md" not in fix_prompt
     assert "# unused" not in fix_prompt
@@ -3259,7 +3348,7 @@ def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
 
 def _custom_op_gate_workflow(max_iterations: int = 1) -> WorkflowDefinition:
     return WorkflowDefinition(
-        name="custom_gate",
+        name="npu_migration_custom_gate",
         version="1.0",
         phases=[],
         terminals=["complete"],
@@ -4359,4 +4448,95 @@ def test_we_inject_llm_baseline_context_early_phase_empty(temp_dir):
     ctx: dict = {}
     executor._inject_llm_baseline_context(ctx, phase, state)
     assert json.loads(ctx["previous_outputs"]) == {}
+
+
+# ── disable_custom_op_contract_injection flag regression ──────────────────
+
+
+def test_disable_custom_op_injection_prevents_auto_injection(tmp_path: Path) -> None:
+    """When globals set disable_custom_op_contract_injection=True, custom-op signals
+    in Phase 1 output do NOT trigger entry_script_kind injection."""
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+        validator="entry_script",
+        agent="main_engineer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(
+            name="no-custom-injection",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
+            globals={"disable_custom_op_contract_injection": True},
+        ),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    normalized = executor._normalize_llm_output(
+        phase,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"previous_outputs": "phase_1 says CUDAExtension custom operator is required"},
+        {"phase_1_project_analysis": {"notes": "CUDAExtension custom operator"}},
+    )
+
+    assert "entry_script_kind" not in normalized
+    result = validate_entry_script(normalized)
+    assert result["passed"] is True
+
+
+def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> None:
+    """Without the disable flag (or with explicitly False), custom-op signals
+    trigger entry_script_kind injection — backward-compatible behaviour."""
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+        validator="entry_script",
+        agent="main_engineer",
+    )
+    executor_no_globals = WorkflowExecutor(
+        WorkflowDefinition(name="default-behaviour", version="1.0", phases=[phase], terminals=["complete"]),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+
+    normalized_no_flag = executor_no_globals._normalize_llm_output(
+        phase,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"previous_outputs": "CUDAExtension custom operator is required"},
+        {"phase_1_project_analysis": {"notes": "CUDAExtension custom operator"}},
+    )
+    assert normalized_no_flag["entry_script_kind"] == "custom_op_full_validation"
+
+    executor_flag_false = WorkflowExecutor(
+        WorkflowDefinition(
+            name="explicit-false",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
+            globals={"disable_custom_op_contract_injection": False},
+        ),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+    normalized_false = executor_flag_false._normalize_llm_output(
+        phase,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"previous_outputs": "CUDAExtension custom operator required"},
+        {"phase_1_project_analysis": {"notes": "CUDAExtension custom operator"}},
+    )
+    assert normalized_false["entry_script_kind"] == "custom_op_full_validation"
+    result = validate_entry_script(normalized_false)
+    assert result["passed"] is False
 
