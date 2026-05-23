@@ -26,6 +26,7 @@ if str(SCRIPT_DIR) not in sys.path:
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from core.accelerator_context import extract_accelerator_context
 from core.agent_io_logger import AgentIOLogger
 from core.artifact_store import ArtifactStore
 from core.config_loader import load_framework_config
@@ -244,11 +245,10 @@ def _build_env_context(
 ) -> dict[str, object]:
     env = dict(phase_0_output)
     installed = phase_2_output.get("installed_packages", [])
-    if isinstance(installed, list):
-        for pkg in cast(list[object], installed):
-            if isinstance(pkg, str) and pkg.lower().startswith("torch-npu=="):
-                env["torch_npu_version"] = pkg.split("==", 1)[-1]
-                break
+    accel_ctx = extract_accelerator_context(installed)
+    env["torch_npu_version"] = accel_ctx["torch_npu_version"]
+    env["accelerator_packages"] = accel_ctx["accelerator_packages"]
+    env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
     return env
 
 
