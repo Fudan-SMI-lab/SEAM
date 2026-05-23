@@ -11,7 +11,10 @@ version: "2.0"
 description: >
   CUDA to Ascend NPU automated migration workflow with container execution.
   Commands in Phase 5 (validation/repair) run inside a Docker/Podman container
-  instead of the host.
+     instead of the host.
+
+target_platform:
+  preset: npu_ascend
 
 # ── Execution Backend Configuration ──────────────────────────────────
 #
