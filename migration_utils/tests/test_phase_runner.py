@@ -1512,3 +1512,104 @@ def test_phase_6_still_receives_all_previous_outputs() -> None:
     assert "phase_3_entry_script" in parsed
     assert "phase_4_rule_migration" in parsed
 
+
+# ── disable_custom_op_contract_injection flag regression ──────────────────
+
+
+def test_phase_runner_disable_custom_op_injection_prevents_injection() -> None:
+    """When PhaseRunner is given a workflow with disable_custom_op_contract_injection=True,
+    custom-op signals do NOT trigger entry_script_kind injection."""
+    wf = WorkflowDefinition(
+        name="no-custom-injection",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        globals={"disable_custom_op_contract_injection": True},
+    )
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=wf,
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "notes": "project uses custom operator bindings via torch.ops",
+                }
+            }
+        },
+    )
+
+    assert "entry_script_kind" not in normalized
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is True
+
+
+def test_phase_runner_without_flag_injects_as_before() -> None:
+    """Without any workflow globals (backward-compatible path), custom-op signals
+    still trigger entry_script_kind: custom_op_full_validation injection."""
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=WorkflowDefinition(name="legacy", version="1.0", phases=[], terminals=["complete"]),
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "notes": "project uses custom operator bindings via torch.ops",
+                }
+            }
+        },
+    )
+
+    assert normalized["entry_script_kind"] == "custom_op_full_validation"
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is False
+    assert any("required_report_paths" in error for error in validation.errors)
+
+
+def test_phase_runner_no_workflow_still_injects() -> None:
+    """Backward compatibility: PhaseRunner without any WorkflowDefinition
+    (self.workflow is None) still injects custom-op contract fields."""
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=None,  # explicit None — old constructor style
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "notes": "project uses custom operator bindings via torch.ops",
+                }
+            }
+        },
+    )
+
+    assert normalized["entry_script_kind"] == "custom_op_full_validation"
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is False
+

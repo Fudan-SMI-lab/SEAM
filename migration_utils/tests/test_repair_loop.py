@@ -358,10 +358,13 @@ def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tm
         history=[],
     )
 
-    assert len(prompt.splitlines()) == 3
+    # Prompt now includes constraint_summary, No CPU Fallback, and Native Operator Handoff sections
+    assert "No CPU Fallback (CRITICAL)" in prompt
+    assert "Native Operator Handoff" in prompt
     assert "ModuleNotFoundError" not in prompt
     assert "## Execution Failure" not in prompt
     assert "agent_diagnostics" not in prompt
+    # operator_fixer is mentioned in handoff guidance for native operator issues
 
     runtime_dir = Path(artifact_store.artifact_dir) / "runtime"
     runtime_error = runtime_dir / "runtime_error_demo_dependency_project_.md"

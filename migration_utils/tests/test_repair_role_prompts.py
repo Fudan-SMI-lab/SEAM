@@ -135,11 +135,10 @@ def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -
     assert "FAILED/INCOMPLETE" in guidance
 
 
-def test_dependency_fixer_prompt_is_three_line_artifact_pointer() -> None:
+def test_dependency_fixer_prompt_contains_constraint_summary_and_handoff() -> None:
+    """dependency_fixer prompt receives constraint_summary, no-CPU-fallback, and native-op handoff guidance."""
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
     prompt = _load_role_prompt(loader, "dependency_fixer")
-    lines = prompt.splitlines()
-    assert len(lines) == 3
     assert "dependency_fixer" in prompt
     assert "环境、包、导入、版本、安装和运行依赖问题" in prompt
     assert "算子、custom-op实现或CUDA/NPU代码改写问题" in prompt
@@ -147,8 +146,12 @@ def test_dependency_fixer_prompt_is_three_line_artifact_pointer() -> None:
     assert "/workspace/cuda_custom_op_skill_test_prompt.md" in prompt
     assert "第5点要求" in prompt
     assert "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
+    # New: constraint_summary content is now injected
+    assert "Rule 1: No CPU fallback" in prompt
+    assert "Migration Constraints (from Phase 1.5)" in prompt
+    assert "No CPU Fallback (CRITICAL)" in prompt
+    assert "Native Operator Handoff" in prompt
     assert "ModuleNotFoundError: No module named 'torch_npu'" not in prompt
-    assert "Rule 1: No CPU fallback" not in prompt
     assert "Execution Failure" not in prompt
     assert "Error Classification" not in prompt
     assert "agent_diagnostics" not in prompt
@@ -189,7 +192,7 @@ def test_non_operator_repair_prompts_contain_assigned_role_value() -> None:
 
 def test_non_operator_repair_prompts_contain_constraint_summary() -> None:
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
-    for role in ("code_adapter",):
+    for role in ("code_adapter", "dependency_fixer"):
         prompt = _load_role_prompt(loader, role)
         assert "Rule 1: No CPU fallback" in prompt, f"{role} prompt missing constraint_summary"
 
@@ -212,3 +215,53 @@ def test_non_operator_repair_prompts_contain_last_review() -> None:
     for role in ("code_adapter",):
         prompt = _load_role_prompt(loader, role)
         assert "(No review available)" in prompt, f"{role} prompt missing last_review"
+
+
+# ── normal-entry prompt / constraint wording regression ──────────────────
+
+_NORMAL_ENTRY_BANNED_PHRASES = (
+    "zero custom operators",
+    "ZERO custom",
+    "custom_op_detected MUST be false",
+    "Do NOT search for custom",
+)
+
+_NORMAL_ENTRY_PROMPT_FILES = (
+    "phase_1_project_analysis_ppu_normal_entry_057.md",
+    "phase_3_entry_script_ppu_normal_entry_057.md",
+    "phase_35_static_validate_ppu_normal_entry_057.md",
+)
+
+
+def _read_normal_entry_file(filename: str) -> str:
+    path = PROMPTS_DIR / filename
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def test_normal_entry_prompts_never_claim_zero_custom_operators() -> None:
+    """Every normal-entry 057 prompt file must NOT contain banned phrases
+    that falsely assert the project has zero custom operators."""
+    for filename in _NORMAL_ENTRY_PROMPT_FILES:
+        content = _read_normal_entry_file(filename)
+        for phrase in _NORMAL_ENTRY_BANNED_PHRASES:
+            assert phrase not in content, (
+                f"{filename} contains banned phrase: {phrase!r}"
+            )
+
+
+def test_normal_entry_constraints_never_claim_zero_custom_operators() -> None:
+    """The normal-entry constraints file must NOT contain banned zero-custom phrasing."""
+    constraints_dir = PROJECT_ROOT / "constraints_normal_entry_057.md"
+    if not constraints_dir.exists():
+        return  # skip if not present
+    content = constraints_dir.read_text(encoding="utf-8")
+    for phrase in _NORMAL_ENTRY_BANNED_PHRASES:
+        assert phrase not in content, (
+            f"constraints_normal_entry_057.md contains banned phrase: {phrase!r}"
+        )
+
+
+def test_normal_entry_prompts_exist() -> None:
+    """Sanity: all expected normal-entry prompt files exist."""
+    for filename in _NORMAL_ENTRY_PROMPT_FILES:
+        assert (PROMPTS_DIR / filename).exists(), f"{filename} is missing"
