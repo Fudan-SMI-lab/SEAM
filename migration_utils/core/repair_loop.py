@@ -115,6 +115,46 @@ def _operator_custom_op_guidance(
     entry_script: str,
     platform_policy: PlatformPolicy | None = None,
 ) -> str:
+    perf_mode = "full"
+    perf_mode_note = ""
+    if platform_policy is not None:
+        perf_mode = platform_policy.custom_op_evidence.performance_validation
+        if perf_mode == "presence_only":
+            perf_mode_note = (
+                f"\nPerformance validation mode: {perf_mode}. "
+                "You must still provide real baseline/custom timing presence, route proof, and device proof, "
+                "but speedup_vs_baseline fields are not required to be present or positive."
+            )
+        elif perf_mode == "disabled":
+            perf_mode_note = (
+                f"\nPerformance validation mode: {perf_mode}. "
+                "Performance validation is skipped. All other gates still apply."
+            )
+
+    schema_checklist = (
+        "\nFinal-gate evidence object schema (every in-scope row MUST satisfy):\n"
+        "- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, "
+        "project_relative_path, runtime_loaded_module_file, build_provenance={command, log_path}\n"
+        "- adapter_evidence: object/dict with imported=true, passed=true\n"
+        "- parity_evidence: object/dict with verified=true, passed=true\n"
+        "- integration_e2e_evidence: object/dict with project_api_invoked=true, custom_op_route_executed=true, "
+        "native_custom_op_route_executed=true\n"
+        "- same_run_runtime_coverage: object/dict with same_run=true, custom_call_count > 0, "
+        "project_api_route=true, native_custom_op_route_executed=true\n"
+        "- performance_evidence: object/dict with baseline_seconds > 0, custom_seconds > 0, "
+        "baseline_device (string), custom_device (string), project_api_invoked=true"
+    )
+    if perf_mode == "full":
+        schema_checklist += ", speedup_vs_baseline > 0"
+    schema_checklist += (
+        "\n- no_fallback_no_zero_call_no_builtin_contamination: object/dict with "
+        "fallback_detected=false, zero_call_detected=false, builtin_contamination_detected=false, "
+        "baseline_only_detected=false, stub_detected=false (ALL must be explicit `false`, not absent)\n"
+        "Top-level: inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, "
+        "full_migration_status == FULL_PASS\n"
+        "Script exit code 0 alone is NOT sufficient; the final-gate schema MUST validate."
+    )
+
     if platform_policy is not None and platform_policy.id != "npu_ascend":
         native_label = platform_policy.guidance_native_label
         native_artifact_desc = f"real on-disk {native_label} compiled artifacts"
@@ -123,14 +163,16 @@ def _operator_custom_op_guidance(
         return (
             f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
             "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-            f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+            f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation."
+            + schema_checklist + perf_mode_note + "\n"
             f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
             "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
         )
     return (
         f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
         "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation."
+        + schema_checklist + perf_mode_note + "\n"
         f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
     )
