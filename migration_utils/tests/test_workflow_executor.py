@@ -4540,3 +4540,54 @@ def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> Non
     result = validate_entry_script(normalized_false)
     assert result["passed"] is False
 
+
+class TestProductionWorkflowPlatformPolicy:
+    """Production PPU workflow loads with performance override policy."""
+
+    def test_ppu_entryfix_workflow_loads_performance_presence_only(self):
+        """Load the production PPU entryfix workflow and verify its resolved
+        platform policy includes performance_validation = presence_only and
+        CPU baseline values."""
+        from core.config import load_workflow
+        from core.platform_policy import resolve_policy, get_performance_validation_mode
+        from core.platform_policy import get_performance_baseline_device_values
+        from core.platform_policy import get_performance_baseline_boolean_fields
+
+        wf_path = (
+            Path(__file__).resolve().parent.parent
+            / "workflows"
+            / "ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml"
+        )
+        wf = load_workflow(str(wf_path))
+        assert wf.target_platform is not None, "Workflow must have target_platform"
+        assert wf.target_platform.preset == "ppu_cuda_compatible"
+
+        policy = resolve_policy(wf.target_platform, wf.name)
+        assert policy.id == "ppu_cuda_compatible"
+
+        mode = get_performance_validation_mode(policy)
+        assert mode == "presence_only", f"Expected presence_only, got {mode}"
+
+        baseline_devices = get_performance_baseline_device_values(policy)
+        assert "cpu" in baseline_devices, "CPU baseline must be accepted when configured"
+        assert "cuda" in baseline_devices, "CUDA baseline must still be accepted"
+
+        baseline_fields = get_performance_baseline_boolean_fields(policy)
+        assert "cpu_baseline" in baseline_fields
+        assert "cuda_baseline" in baseline_fields
+
+    def test_default_full_mode_has_cuda_baseline_only(self):
+        """A workflow without performance overrides defaults to full mode
+        with CUDA-only baseline values."""
+        from core.platform_policy import (
+            BUILTIN_PRESETS, get_performance_validation_mode,
+            get_performance_baseline_device_values,
+        )
+        ppu = BUILTIN_PRESETS["ppu_cuda_compatible"]
+        mode = get_performance_validation_mode(ppu)
+        assert mode == "full"
+
+        devices = get_performance_baseline_device_values(ppu)
+        assert "cpu" not in devices, "Default baseline must NOT include CPU"
+        assert "cuda" in devices
+
