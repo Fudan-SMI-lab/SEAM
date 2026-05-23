@@ -8,6 +8,15 @@ from pathlib import Path
 from typing import cast
 
 from core.validator_engine import ValidationDict
+from core.platform_policy import (
+    PlatformPolicy,
+    get_artifact_path_tokens,
+    get_native_build_log_tokens,
+    get_native_source_tokens,
+    get_native_binary_tokens,
+    get_target_device_values,
+    get_positive_boolean_fields,
+)
 
 PASS_STATES = {"PASS", "FULL_PASS", "DONE", "CLOSED_PASS"}
 EVIDENCE_PASS_STATES = PASS_STATES | {"PASSED", "SUCCESS", "OK", "VERIFIED"}
@@ -144,8 +153,19 @@ def validate(data: dict[str, object]) -> ValidationDict:
     return {"passed": not errors, "errors": errors, "warnings": []}
 
 
-def validate_custom_op_final_gate(data: dict[str, object], project_root: str | Path | None = None) -> ValidationDict:
-    """Validate the machine-checkable custom-op final evidence gate report."""
+def validate_custom_op_final_gate(
+    data: dict[str, object],
+    project_root: str | Path | None = None,
+    platform_policy: PlatformPolicy | None = None,
+) -> ValidationDict:
+    """Validate the machine-checkable custom-op final evidence gate report.
+
+    Args:
+        data: The custom-op final gate report as a dict.
+        project_root: Path to the project root for file validation.
+        platform_policy: Optional platform policy; when None, defaults to
+            legacy NPU/Ascend behaviour for backward compatibility.
+    """
     errors: list[str] = []
     resolved_project_root = _resolve_existing_project_root(project_root, errors)
 
@@ -184,10 +204,10 @@ def validate_custom_op_final_gate(data: dict[str, object], project_root: str | P
                 errors.append(f"rows[{index}] must be an object")
                 continue
             row = cast(dict[object, object], row_obj)
-            _validate_gate_row(row, index, errors, resolved_project_root)
+            _validate_gate_row(row, index, errors, resolved_project_root, platform_policy)
         _validate_source_inventory_completeness(cast(Mapping[object, object], data), row_items, errors)
         _validate_performance_report_completeness(
-            cast(Mapping[object, object], data), row_items, manifest_entries, errors
+            cast(Mapping[object, object], data), row_items, manifest_entries, errors, platform_policy
         )
         _validate_required_manifest_units(
             row_items,
@@ -214,6 +234,7 @@ def _validate_gate_row(
     index: int,
     errors: list[str],
     project_root: Path | None,
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     status = row.get("status")
     _reject_blocking_status(status, f"rows[{index}].status", errors)
@@ -226,10 +247,10 @@ def _validate_gate_row(
         if not _has_evidence(row.get(field_name)):
             errors.append(f"rows[{index}].{field_name} must contain evidence")
 
-    _validate_project_local_artifact(row.get("opp_custom_op_artifact_evidence"), row, index, errors, project_root)
+    _validate_project_local_artifact(row.get("opp_custom_op_artifact_evidence"), row, index, errors, project_root, platform_policy)
     _validate_integration_route(row.get("integration_e2e_evidence"), index, errors)
     _validate_runtime_coverage(row.get("same_run_runtime_coverage"), index, errors)
-    _validate_performance(row.get("performance_evidence"), index, errors)
+    _validate_performance(row.get("performance_evidence"), index, errors, platform_policy)
     _validate_no_fallback_evidence(row.get("no_fallback_no_zero_call_no_builtin_contamination"), index, errors)
 
     custom_call_count = _extract_custom_call_count(row)
@@ -560,6 +581,7 @@ def _validate_project_local_artifact(
     index: int,
     errors: list[str],
     project_root: Path | None,
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     if not isinstance(value, Mapping):
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must be an object with project-local proof")
@@ -573,9 +595,13 @@ def _validate_project_local_artifact(
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove artifact was built/loaded")
     if _is_python_shim_artifact(evidence):
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must not be a Python shim or Python binding surface")
-    native_paths = _native_compiled_artifact_paths(evidence)
+    native_paths = _native_compiled_artifact_paths(evidence, platform_policy)
     if not native_paths:
-        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove a native compiled Ascend custom-op artifact")
+        if platform_policy is not None and platform_policy.id != "npu_ascend":
+            native_label = platform_policy.guidance_native_label
+            errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove a native compiled {native_label} custom-op artifact")
+        else:
+            errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove a native compiled Ascend custom-op artifact")
     elif not _runtime_loaded_native_artifact_matches(evidence, native_paths, project_root):
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove the same-run runtime loaded the native compiled artifact, not a Python shim")
 
@@ -587,7 +613,10 @@ def _validate_project_local_artifact(
 
     build_log_path = _validate_build_provenance(evidence, index, errors, project_root)
     if project_root is not None and existing_paths:
-        _validate_native_cann_evidence(evidence, row, index, errors, project_root, existing_paths, build_log_path)
+        _validate_native_platform_evidence(
+            evidence, row, index, errors, project_root,
+            existing_paths, build_log_path, platform_policy,
+        )
 
 
 def _validate_integration_route(value: object, index: int, errors: list[str]) -> None:
@@ -618,7 +647,12 @@ def _validate_runtime_coverage(value: object, index: int, errors: list[str]) -> 
         errors.append(f"rows[{index}].same_run_runtime_coverage must prove native compiled custom-op runtime coverage")
 
 
-def _validate_performance(value: object, index: int, errors: list[str]) -> None:
+def _validate_performance(
+    value: object,
+    index: int,
+    errors: list[str],
+    platform_policy: PlatformPolicy | None = None,
+) -> None:
     if not isinstance(value, Mapping):
         errors.append(f"rows[{index}].performance_evidence must be an object with numeric timings")
         return
@@ -631,7 +665,7 @@ def _validate_performance(value: object, index: int, errors: list[str]) -> None:
         errors.append(f"rows[{index}].performance_evidence missing positive numeric fields: " + ", ".join(missing))
     if not _has_positive_boolean(evidence, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed")):
         errors.append(f"rows[{index}].performance_evidence must prove timing came from public/project API custom-op route")
-    _validate_baseline_and_custom_device_proof(evidence, f"rows[{index}].performance_evidence", errors)
+    _validate_baseline_and_custom_device_proof(evidence, f"rows[{index}].performance_evidence", errors, platform_policy)
 
 
 def _validate_performance_report_completeness(
@@ -639,6 +673,7 @@ def _validate_performance_report_completeness(
     row_items: list[object],
     manifest_entries: int | None,
     errors: list[str],
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     report = data.get("performance_report")
     if report is None:
@@ -656,7 +691,7 @@ def _validate_performance_report_completeness(
         errors.append("performance_report must not be report-only, benchmark-only, synthetic, mock, or manifest-only")
     if not _has_positive_boolean(report_map, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed", "verified")):
         errors.append("performance_report must prove speedup timings came from public/project API custom-op routes")
-    _validate_baseline_and_custom_device_proof(report_map, "performance_report", errors)
+    _validate_baseline_and_custom_device_proof(report_map, "performance_report", errors, platform_policy)
     _validate_overall_performance_report(report_map, errors)
 
     row_names = _extract_row_names(row_items)
@@ -682,7 +717,7 @@ def _validate_performance_report_completeness(
                 details.append("performance entries without manifest rows: " + ", ".join(extra))
             errors.append("performance_report must match manifest rows (" + "; ".join(details) + ")")
         for unit_name, entry in report_entries.items():
-            _validate_performance_report_entry(entry, unit_name, errors)
+            _validate_performance_report_entry(entry, unit_name, errors, platform_policy)
 
 
 def _validate_overall_performance_report(report: Mapping[object, object], errors: list[str]) -> None:
@@ -760,14 +795,19 @@ def _extract_performance_report_entries(report: Mapping[object, object]) -> dict
     return entries_by_name
 
 
-def _validate_performance_report_entry(entry: Mapping[object, object], unit_name: str, errors: list[str]) -> None:
+def _validate_performance_report_entry(
+    entry: Mapping[object, object],
+    unit_name: str,
+    errors: list[str],
+    platform_policy: PlatformPolicy | None = None,
+) -> None:
     required_positive = ("baseline_seconds", "custom_seconds", "speedup_vs_baseline")
     missing = [field_name for field_name in required_positive if not _positive_number(entry.get(field_name))]
     if missing:
         errors.append(f"performance_report.entries[{unit_name}] missing positive numeric fields: " + ", ".join(missing))
     if not _has_positive_boolean(entry, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed")):
         errors.append(f"performance_report.entries[{unit_name}] must prove public/project API custom-op timing route")
-    _validate_baseline_and_custom_device_proof(entry, f"performance_report.entries[{unit_name}]", errors)
+    _validate_baseline_and_custom_device_proof(entry, f"performance_report.entries[{unit_name}]", errors, platform_policy)
 
 
 def _validate_no_fallback_evidence(value: object, index: int, errors: list[str]) -> None:
@@ -926,11 +966,14 @@ _EVIDENCE_ONLY_SOURCE_TOKENS = (
 )
 
 
-def _native_compiled_artifact_paths(evidence: Mapping[object, object]) -> list[str]:
+def _native_compiled_artifact_paths(
+    evidence: Mapping[object, object],
+    platform_policy: PlatformPolicy | None = None,
+) -> list[str]:
     return [
         value
         for value in _native_artifact_path_candidates(evidence)
-        if _is_native_compiled_ascend_artifact_path(value)
+        if _is_native_compiled_platform_artifact_path(value, platform_policy)
     ]
 
 
@@ -956,12 +999,25 @@ def _native_artifact_path_candidates(evidence: Mapping[object, object]) -> list[
 
 
 def _is_native_compiled_ascend_artifact_path(value: str) -> bool:
+    """Legacy NPU-only check.  Prefer ``_is_native_compiled_platform_artifact_path``."""
     if not _is_safe_project_relative_path(value):
         return False
     normalized = value.strip().lower().replace("\\", "/")
     if not normalized.endswith((".so", ".o", ".a", ".om", ".bin")):
         return False
     return _path_has_ascend_artifact_signal(normalized)
+
+
+def _is_native_compiled_platform_artifact_path(
+    value: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> bool:
+    if not _is_safe_project_relative_path(value):
+        return False
+    normalized = value.strip().lower().replace("\\", "/")
+    if not normalized.endswith((".so", ".o", ".a", ".om", ".bin")):
+        return False
+    return _path_has_platform_artifact_signal(normalized, platform_policy)
 
 
 def _runtime_loaded_native_artifact_matches(
@@ -1098,6 +1154,57 @@ def _validate_build_provenance(
     return None
 
 
+def _validate_native_platform_evidence(
+    evidence: Mapping[object, object],
+    row: Mapping[object, object],
+    index: int,
+    errors: list[str],
+    project_root: Path,
+    native_artifact_paths: list[Path],
+    build_log_path: Path | None,
+    platform_policy: PlatformPolicy | None = None,
+) -> None:
+    """Validate native platform evidence using policy-aware tokens.
+
+    When ``platform_policy`` is None, falls back to legacy NPU/CANN behaviour.
+    """
+    build_log_tokens = get_native_build_log_tokens(platform_policy)
+    source_tokens = get_native_source_tokens(platform_policy)
+    binary_tokens = get_native_binary_tokens(platform_policy)
+
+    build_log_text = _read_text_limited(build_log_path) if build_log_path is not None else ""
+    build_log_has_native_evidence = _text_has_any_token(build_log_text, build_log_tokens)
+    binary_has_native_evidence = any(
+        _binary_has_platform_native_token(path, binary_tokens) for path in native_artifact_paths
+    )
+    source_has_native_evidence = _source_evidence_has_platform_native_token(
+        project_root, evidence, row, source_tokens
+    )
+    evidence_only_paths = _evidence_only_native_artifact_labels(evidence, row)
+
+    if platform_policy is not None:
+        build_log_error = platform_policy.custom_op_evidence.build_log_error_message
+        binary_source_error = platform_policy.custom_op_evidence.binary_source_error_message
+    else:
+        build_log_error = "must contain CANN/ACL/AscendC/OPP build or link evidence, not a torch-only extension build"
+        binary_source_error = "must include independent CANN/ACL/AscendC binary or source evidence; an ELF under an Ascend-looking path is not sufficient"
+
+    if not build_log_has_native_evidence:
+        errors.append(
+            f"rows[{index}].opp_custom_op_artifact_evidence.build_provenance.log_path {build_log_error}"
+        )
+    if evidence_only_paths:
+        errors.append(
+            f"rows[{index}].opp_custom_op_artifact_evidence must not use evidence-only/stub/native-marker artifact or source paths: "
+            + ", ".join(sorted(evidence_only_paths))
+        )
+    if not (binary_has_native_evidence or source_has_native_evidence):
+        errors.append(
+            f"rows[{index}].opp_custom_op_artifact_evidence {binary_source_error}"
+        )
+
+
+# Keep legacy name as an alias for backward compatibility
 def _validate_native_cann_evidence(
     evidence: Mapping[object, object],
     row: Mapping[object, object],
@@ -1107,25 +1214,10 @@ def _validate_native_cann_evidence(
     native_artifact_paths: list[Path],
     build_log_path: Path | None,
 ) -> None:
-    build_log_text = _read_text_limited(build_log_path) if build_log_path is not None else ""
-    build_log_has_native_evidence = _text_has_any_token(build_log_text, _NATIVE_BUILD_LOG_TOKENS)
-    binary_has_native_evidence = any(_binary_has_native_token(path) for path in native_artifact_paths)
-    source_has_native_evidence = _source_evidence_has_native_token(project_root, evidence, row)
-    evidence_only_paths = _evidence_only_native_artifact_labels(evidence, row)
-
-    if not build_log_has_native_evidence:
-        errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence.build_provenance.log_path must contain CANN/ACL/AscendC/OPP build or link evidence, not a torch-only extension build"
-        )
-    if evidence_only_paths:
-        errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence must not use evidence-only/stub/native-marker artifact or source paths: "
-            + ", ".join(sorted(evidence_only_paths))
-        )
-    if not (binary_has_native_evidence or source_has_native_evidence):
-        errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence must include independent CANN/ACL/AscendC binary or source evidence; an ELF under an Ascend-looking path is not sufficient"
-        )
+    _validate_native_platform_evidence(
+        evidence, row, index, errors, project_root,
+        native_artifact_paths, build_log_path, platform_policy=None,
+    )
 
 
 def _read_text_limited(path: Path | None, limit: int = 1_000_000) -> str:
@@ -1140,10 +1232,15 @@ def _read_text_limited(path: Path | None, limit: int = 1_000_000) -> str:
 
 def _text_has_any_token(text: str, tokens: tuple[str, ...]) -> bool:
     normalized = text.lower()
-    return any(token in normalized for token in tokens)
+    return any(token.lower() in normalized for token in tokens)
 
 
 def _binary_has_native_token(path: Path) -> bool:
+    """Legacy NPU-only check. Prefer ``_binary_has_platform_native_token``."""
+    return _binary_has_platform_native_token(path, _NATIVE_BINARY_TOKENS)
+
+
+def _binary_has_platform_native_token(path: Path, tokens: tuple[bytes, ...]) -> bool:
     try:
         if path.stat().st_size > _MAX_NATIVE_ARTIFACT_SCAN_BYTES:
             return False
@@ -1154,7 +1251,7 @@ def _binary_has_native_token(path: Path) -> bool:
                 if not chunk:
                     return False
                 window = (overlap + chunk).lower()
-                if any(token in window for token in _NATIVE_BINARY_TOKENS):
+                if any(token.lower() in window for token in tokens):
                     return True
                 overlap = window[-128:]
     except OSError:
@@ -1166,11 +1263,23 @@ def _source_evidence_has_native_token(
     evidence: Mapping[object, object],
     row: Mapping[object, object],
 ) -> bool:
+    """Legacy NPU-only check. Prefer ``_source_evidence_has_platform_native_token``."""
+    return _source_evidence_has_platform_native_token(
+        project_root, evidence, row, _NATIVE_SOURCE_TOKENS
+    )
+
+
+def _source_evidence_has_platform_native_token(
+    project_root: Path,
+    evidence: Mapping[object, object],
+    row: Mapping[object, object],
+    tokens: tuple[str, ...],
+) -> bool:
     for raw_path in _source_path_candidates(evidence, row):
         resolved = _resolve_path_under_project_root(project_root, raw_path)
         if resolved is None or not resolved.is_file():
             continue
-        if _text_has_any_token(_read_text_limited(resolved), _NATIVE_SOURCE_TOKENS):
+        if _text_has_any_token(_read_text_limited(resolved), tokens):
             return True
     return False
 
@@ -1284,17 +1393,27 @@ def _path_has_ascend_artifact_signal(normalized_path: str) -> bool:
     return any(token in padded for token in path_tokens)
 
 
+def _path_has_platform_artifact_signal(
+    normalized_path: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> bool:
+    padded = f"/{normalized_path}"
+    tokens = get_artifact_path_tokens(platform_policy)
+    return any(token in padded for token in tokens)
+
+
 def _validate_baseline_and_custom_device_proof(
     evidence: Mapping[object, object],
     label: str,
     errors: list[str],
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     if _has_diagnostic_baseline(evidence):
         errors.append(f"{label} must not use diagnostic-only or metadata-only baseline timings")
     if not _has_cuda_baseline_proof(evidence):
         errors.append(f"{label} must prove timings include a CUDA baseline path")
-    if not _has_npu_custom_proof(evidence):
-        errors.append(f"{label} must prove timings include an Ascend/NPU custom-op path")
+    if not _has_target_device_custom_proof(evidence, platform_policy):
+        errors.append(f"{label} must prove timings include a target-device custom-op path")
 
 
 def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
@@ -1315,10 +1434,19 @@ def _has_cuda_baseline_proof(evidence: Mapping[object, object]) -> bool:
     return _has_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"), {"cuda", "gpu", "torch_cuda"})
 
 
-def _has_npu_custom_proof(evidence: Mapping[object, object]) -> bool:
-    if _has_positive_boolean(evidence, ("npu_custom", "custom_npu", "npu_custom_invoked", "ascend_custom_invoked")):
+def _has_target_device_custom_proof(
+    evidence: Mapping[object, object],
+    platform_policy: PlatformPolicy | None = None,
+) -> bool:
+    target_device_values = set(get_target_device_values(platform_policy))
+    positive_boolean_fields = get_positive_boolean_fields(platform_policy)
+    if _has_positive_boolean(evidence, tuple(positive_boolean_fields)):
         return True
-    return _has_device_value(evidence, ("custom_device", "custom_backend", "target_device", "overall_custom_device"), {"npu", "ascend", "torch_npu"})
+    return _has_device_value(
+        evidence,
+        ("custom_device", "custom_backend", "target_device", "overall_custom_device"),
+        target_device_values,
+    )
 
 
 def _has_device_value(evidence: Mapping[object, object], fields: tuple[str, ...], accepted: set[str]) -> bool:
