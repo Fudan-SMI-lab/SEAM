@@ -11,6 +11,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.types import PhaseDefinition, WorkflowDefinition, ExecutionBackendConfig
 from core.orchestrator import Orchestrator
+from migrator.rule_based import RuleBasedMigrator
+from migrator.rule_based_ppu import PPURuleBasedMigrator
 
 
 class MockSessionManager:
@@ -184,7 +186,7 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
             }
 
     class FakeRepairLoopEngine:
-        def __init__(self, session_mgr, artifact_store, prompt_loader, validator, config=None, exec_backend=None) -> None:
+        def __init__(self, session_mgr, artifact_store, prompt_loader, validator, config=None, exec_backend=None, platform_policy=None) -> None:
             call_order.append("repair_loop_init")
             self._received_exec_backend = exec_backend
 
@@ -795,4 +797,198 @@ def test_orchestrator_preflight_failure_stops_early(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RuntimeError, match="preflight failed"):
         Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+
+
+# ── PPU rule-based migrator selection tests ──────────────────────────
+
+def _build_ppu_workflow() -> WorkflowDefinition:
+    """Build a test workflow with PPU target_platform preset."""
+    from core.platform_policy import TargetPlatformConfig
+    return WorkflowDefinition(
+        name="ppu_migration_v2",
+        version="2.0",
+        globals={"max_retry_per_phase": 2},
+        phases=[
+            PhaseDefinition("phase_0", "Phase 0", "", {}, None, {"on_success": "phase_1", "on_failure": "phase_error_recovery"}),
+            PhaseDefinition("phase_1", "Phase 1", "", {}, None, {"on_success": "phase_2", "on_failure": "phase_error_recovery"}),
+            PhaseDefinition("phase_2", "Phase 2", "", {}, None, {"on_success": "phase_3", "on_failure": "phase_error_recovery"}),
+            PhaseDefinition("phase_3", "Phase 3", "", {}, None, {"on_success": "phase_4", "on_failure": "phase_error_recovery"}),
+            PhaseDefinition("phase_4", "Phase 4", "", {}, None, {"on_success": "phase_5", "on_failure": "phase_error_recovery"}),
+            PhaseDefinition("phase_5", "Phase 5", "", {}, None, {"on_success": "phase_6", "on_failure": "phase_error_recovery"}),
+            PhaseDefinition("phase_6", "Phase 6", "", {}, None, {"on_success": "complete", "on_failure": "phase_error_recovery"}),
+            PhaseDefinition("phase_error_recovery", "Error Recovery", "", {}, None, {"on_success": "failed", "on_failure": "failed"}),
+        ],
+        terminals=["complete", "failed"],
+        target_platform=TargetPlatformConfig(preset="ppu_cuda_compatible"),
+    )
+
+
+def test_ppu_workflow_uses_ppu_rule_based_migrator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For PPU policy (ppu_cuda_compatible), Phase 4 uses PPURuleBasedMigrator
+    and does NOT instantiate the default RuleBasedMigrator."""
+    instantiated_regular: list[None] = []
+    instantiated_ppu: list[None] = []
+    fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
+
+    class FakeArtifactStore:
+        def __init__(self, *a, **kw) -> None: self.saved = {}
+        def write_journal(self, entry: dict[str, object]) -> str: return "j"
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
+        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
+
+    class FakePromptLoader:
+        def __init__(self, d: str) -> None: pass
+        def load_prompt(self, *a, **kw) -> str: return "prompt"
+
+    class FakeValidatorEngine: pass
+
+    class FakeStateMachine:
+        def __init__(self, wf) -> None:
+            self.current_phase = wf.phases[0].id; self.terminal = None
+        def record_success(self, phase_id: str) -> tuple[bool, str | None]:
+            self.current_phase = None; self.terminal = "complete"; return True, "complete"
+        def record_failure(self, *a): return False, None
+        def current_terminal(self) -> str | None: return self.terminal
+
+    class FakePhaseRunner:
+        def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
+        def __init__(self, *a, **kw) -> None: pass
+        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
+        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
+            return {"phase_3_entry_script": {"run_command": "python t.py"}}
+        def run_phase_4(self, *a, **kw) -> dict: return {}
+        def run_phase_6(self, *a, **kw) -> dict: return {}
+        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:
+        def __init__(self, *a, **kw) -> None: pass
+        @staticmethod
+        def _format_history_summary(h): return ""
+        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeRegularMigrator:
+        def __init__(self) -> None:
+            instantiated_regular.append(None)
+
+    class FakePPUMigrator:
+        def __init__(self) -> None:
+            instantiated_ppu.append(None)
+
+    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_ppu_workflow())
+    monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
+    monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="ppu1"))
+    monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
+    monkeypatch.setattr("core.orchestrator.PromptLoader", FakePromptLoader)
+    monkeypatch.setattr("core.orchestrator.ValidatorEngine", FakeValidatorEngine)
+    monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
+    monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
+    monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
+    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeRegularMigrator)
+    monkeypatch.setattr("core.orchestrator.PPURuleBasedMigrator", FakePPUMigrator)
+
+    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+
+    assert len(instantiated_ppu) == 1, "PPU workflow must use PPURuleBasedMigrator"
+    assert len(instantiated_regular) == 0, "PPU workflow must NOT instantiate regular RuleBasedMigrator"
+
+
+def test_non_ppu_workflow_uses_regular_rule_based_migrator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For non-PPU policies, Phase 4 uses the regular RuleBasedMigrator."""
+    instantiated_regular: list[None] = []
+    instantiated_ppu: list[None] = []
+    fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
+
+    class FakeArtifactStore:
+        def __init__(self, *a, **kw) -> None: self.saved = {}
+        def write_journal(self, entry: dict[str, object]) -> str: return "j"
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
+        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
+
+    class FakePromptLoader:
+        def __init__(self, d: str) -> None: pass
+        def load_prompt(self, *a, **kw) -> str: return "prompt"
+
+    class FakeValidatorEngine: pass
+
+    class FakeStateMachine:
+        def __init__(self, wf) -> None:
+            self.current_phase = wf.phases[0].id; self.terminal = None
+        def record_success(self, phase_id: str) -> tuple[bool, str | None]:
+            self.current_phase = None; self.terminal = "complete"; return True, "complete"
+        def record_failure(self, *a): return False, None
+        def current_terminal(self) -> str | None: return self.terminal
+
+    class FakePhaseRunner:
+        def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
+        def __init__(self, *a, **kw) -> None: pass
+        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
+        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
+            return {"phase_3_entry_script": {"run_command": "python t.py"}}
+        def run_phase_4(self, *a, **kw) -> dict: return {}
+        def run_phase_6(self, *a, **kw) -> dict: return {}
+        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:
+        def __init__(self, *a, **kw) -> None: pass
+        @staticmethod
+        def _format_history_summary(h): return ""
+        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeRegularMigrator:
+        def __init__(self) -> None:
+            instantiated_regular.append(None)
+
+    class FakePPUMigrator:
+        def __init__(self) -> None:
+            instantiated_ppu.append(None)
+
+    # Use the original mock-workflow (non-PPU) → resolves to generic_accelerator
+    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: build_workflow())
+    monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
+    monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="npu1"))
+    monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
+    monkeypatch.setattr("core.orchestrator.PromptLoader", FakePromptLoader)
+    monkeypatch.setattr("core.orchestrator.ValidatorEngine", FakeValidatorEngine)
+    monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
+    monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
+    monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
+    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeRegularMigrator)
+    monkeypatch.setattr("core.orchestrator.PPURuleBasedMigrator", FakePPUMigrator)
+
+    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+
+    assert len(instantiated_regular) == 1, "Non-PPU workflow must use regular RuleBasedMigrator"
+    assert len(instantiated_ppu) == 0, "Non-PPU workflow must NOT instantiate PPURuleBasedMigrator"
+
+
+def test_select_rule_based_migrator_ppu_returns_ppu_type() -> None:
+    """Unit test for _select_rule_based_migrator: PPU policy returns PPURuleBasedMigrator."""
+    from core.platform_policy import BUILTIN_PRESETS
+    ppu_policy = BUILTIN_PRESETS["ppu_cuda_compatible"]
+    migrator = Orchestrator._select_rule_based_migrator(ppu_policy)
+    assert isinstance(migrator, PPURuleBasedMigrator)
+
+
+def test_select_rule_based_migrator_npu_returns_regular_type() -> None:
+    """Unit test for _select_rule_based_migrator: NPU policy returns RuleBasedMigrator."""
+    from core.platform_policy import BUILTIN_PRESETS
+    npu_policy = BUILTIN_PRESETS["npu_ascend"]
+    migrator = Orchestrator._select_rule_based_migrator(npu_policy)
+    assert isinstance(migrator, RuleBasedMigrator)
+    assert not isinstance(migrator, PPURuleBasedMigrator)
+
+
+def test_select_rule_based_migrator_generic_returns_regular_type() -> None:
+    """Unit test for _select_rule_based_migrator: generic policy returns RuleBasedMigrator."""
+    from core.platform_policy import BUILTIN_PRESETS
+    generic_policy = BUILTIN_PRESETS["generic_accelerator"]
+    migrator = Orchestrator._select_rule_based_migrator(generic_policy)
+    assert isinstance(migrator, RuleBasedMigrator)
+    assert not isinstance(migrator, PPURuleBasedMigrator)
 
