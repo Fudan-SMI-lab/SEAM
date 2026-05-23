@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .platform_policy import TargetPlatformConfig
 
 
 @dataclass
@@ -219,6 +222,7 @@ class WorkflowDefinition:
     hooks: dict[str, list[HookDefinition]] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig | None = None
     experience: ExperienceConfig = field(default_factory=ExperienceConfig)
+    target_platform: Any = None  # TargetPlatformConfig | None after platform_policy imported
 
 
 class PhaseType(str, Enum):

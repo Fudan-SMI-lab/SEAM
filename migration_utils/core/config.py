@@ -6,6 +6,7 @@ from typing import Any
 import yaml
 
 from .paths import resolve_relative_path
+from .platform_policy import parse_target_platform
 from .types import (
     ExecutionBackendConfig,
     ExperienceConfig,
@@ -55,6 +56,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
     hooks = _parse_hooks(raw.get("hooks", {}))
     execution_backend = _parse_execution_backend(raw.get("execution_backend"))
     experience = _parse_experience(raw.get("experience"))
+    target_platform = parse_target_platform(raw.get("target_platform"))
 
     return WorkflowDefinition(
         name=raw["name"],
@@ -68,6 +70,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
         hooks=hooks,
         execution_backend=execution_backend,
         experience=experience,
+        target_platform=target_platform,
     )
 
 
