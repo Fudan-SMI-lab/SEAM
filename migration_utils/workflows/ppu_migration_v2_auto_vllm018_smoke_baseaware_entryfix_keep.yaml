@@ -27,6 +27,24 @@ description: >
 
 target_platform:
   preset: ppu_cuda_compatible
+  overrides:
+    custom_op_evidence:
+      performance_validation: presence_only
+      performance_baseline_device_values:
+        - cuda
+        - gpu
+        - torch_cuda
+        - cpu
+        - torch_cpu
+      performance_baseline_boolean_fields:
+        - cuda_baseline
+        - baseline_cuda
+        - cuda_baseline_invoked
+        - baseline_cuda_invoked
+        - cpu_baseline
+        - baseline_cpu
+        - cpu_baseline_invoked
+        - baseline_cpu_invoked
 
 execution_backend:
   mode: auto
