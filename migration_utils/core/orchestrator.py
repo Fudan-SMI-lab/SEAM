@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from harness.session.manager import SessionManager
 
+from core.accelerator_context import extract_accelerator_context
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
@@ -17,9 +18,11 @@ from core.execution_backend import get_container_prompt_context, get_execution_e
 from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
 from core.prompt_loader import PromptLoader
 from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
+from core.platform_policy import PlatformPolicy, resolve_policy
 from core.state_machine import StateMachine
 from core.validator_engine import ValidatorEngine
 from migrator.rule_based import RuleBasedMigrator
+from migrator.rule_based_ppu import PPURuleBasedMigrator
 
 JsonDict = dict[str, object]
 
@@ -135,11 +138,16 @@ class Orchestrator:
         runner.set_container_context(container_ctx)
         exec_env_ctx = self._build_execution_environment_context(exec_backend, container_ctx)
         runner.set_execution_environment_context(exec_env_ctx)
+        platform_policy = resolve_policy(
+            getattr(workflow, "target_platform", None),
+            workflow.name,
+        )
         repair_engine = RepairLoopEngine(
             repair_session_mgr, artifact_store, prompt_loader, validator,
             config=fw_config, exec_backend=exec_backend,
+            platform_policy=platform_policy,
         )
-        migrator = RuleBasedMigrator()
+        migrator = Orchestrator._select_rule_based_migrator(platform_policy)
         phase_results: dict[str, object] = {}
 
         result: dict[str, object] = {
@@ -321,6 +329,18 @@ class Orchestrator:
         if len(phase_4_signature.parameters) == 3:
             return cast(_Phase4RunnerWithProjectDir, phase_4_runner)(project_dir, artifact_store, migrator)
         return cast(_Phase4RunnerWithoutProjectDir, phase_4_runner)(artifact_store, migrator)
+
+    @staticmethod
+    def _select_rule_based_migrator(platform_policy: PlatformPolicy) -> RuleBasedMigrator:
+        """Select the appropriate rule-based migrator for the given platform policy.
+
+        PPU (``ppu_cuda_compatible``) → :class:`PPURuleBasedMigrator`
+        (preserves torch.cuda behaviour)
+        NPU / generic / legacy → :class:`RuleBasedMigrator`.
+        """
+        if platform_policy.id == "ppu_cuda_compatible":
+            return cast(RuleBasedMigrator, PPURuleBasedMigrator())
+        return RuleBasedMigrator()
 
     @staticmethod
     def _phase_5_succeeded(phase_5_output: dict[str, object]) -> bool:
@@ -515,11 +535,10 @@ class Orchestrator:
     ) -> dict[str, object]:
         env = dict(phase_0_output)
         installed = phase_2_output.get("installed_packages", [])
-        if isinstance(installed, list):
-            for pkg in cast(list[object], installed):
-                if isinstance(pkg, str) and pkg.lower().startswith("torch-npu=="):
-                    env["torch_npu_version"] = pkg.split("==", 1)[-1]
-                    break
+        accel_ctx = extract_accelerator_context(installed)
+        env["torch_npu_version"] = accel_ctx["torch_npu_version"]
+        env["accelerator_packages"] = accel_ctx["accelerator_packages"]
+        env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
         return env
 
     @staticmethod

@@ -24,6 +24,7 @@ from core.prompt_loader import PromptLoader
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
+from core.platform_policy import PlatformPolicy
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_validation_final import validate as validate_validation_final, validate_custom_op_final_gate
 
@@ -89,11 +90,18 @@ def _workspace_root() -> str:
     return str(workspace_root())
 
 
-def _operator_generic_guidance(*, project_dir: str, entry_script: str) -> str:
+def _operator_generic_guidance(
+    *,
+    project_dir: str,
+    entry_script: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> str:
+    native_label = platform_policy.guidance_native_label if platform_policy else "Ascend NPU"
+    native_framework = platform_policy.guidance_native_framework if platform_policy else "torch_npu/PyTorch primitives"
     return (
-        "4. This is a generic operator-incompatibility repair. Focus on the unsupported or missing "
-        "Ascend NPU operator named by the runtime error, using NPU-native replacements, supported "
-        "torch_npu/PyTorch primitives, or local code changes. Do not add CPU fallback and do not "
+        f"4. This is a generic operator-incompatibility repair. Focus on the unsupported or missing "
+        f"{native_label} operator named by the runtime error, using {native_label}-native replacements, supported "
+        f"{native_framework}, or local code changes. Do not add CPU fallback and do not "
         "turn this into a broader workplan.\n"
         f"5. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证, 只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics。"
@@ -105,7 +113,20 @@ def _operator_custom_op_guidance(
     *,
     project_dir: str,
     entry_script: str,
+    platform_policy: PlatformPolicy | None = None,
 ) -> str:
+    if platform_policy is not None and platform_policy.id != "npu_ascend":
+        native_label = platform_policy.guidance_native_label
+        native_artifact_desc = f"real on-disk {native_label} compiled artifacts"
+        native_build_desc = f"project-local build provenance/logs with {native_label} build or link evidence"
+        native_path_desc = "runtime-loaded compiled artifact paths (not .py)"
+        return (
+            f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
+            "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
+            f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+            f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
+            "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
+        )
     return (
         f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
         "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
@@ -276,6 +297,7 @@ class RepairLoopEngine:
         validator: ValidatorEngine,
         config: ConfigDict | None = None,
         exec_backend: object = None,
+        platform_policy: PlatformPolicy | None = None,
     ) -> None:
         self.session_mgr = session_mgr
         self.artifact_store = artifact_store
@@ -283,6 +305,7 @@ class RepairLoopEngine:
         self.validator = validator
         self.config = config
         self.exec_backend = exec_backend
+        self.platform_policy = platform_policy
         self.validator.register_validator("validation_final", validate_validation_final)
         self.validator.register_validator("repair_classification", self._validate_classification)
 
@@ -1334,6 +1357,7 @@ class RepairLoopEngine:
         validation = validate_custom_op_final_gate(
             gate_map,
             project_root=reports_dir.parent,
+            platform_policy=self.platform_policy,
         )
         result["passed"] = validation["passed"]
         result["errors"] = validation["errors"]
@@ -1757,11 +1781,13 @@ class RepairLoopEngine:
                     operator_context_path,
                     project_dir=project_dir,
                     entry_script=entry_script,
+                    platform_policy=self.platform_policy,
                 )
             else:
                 context["operator_custom_op_guidance"] = _operator_generic_guidance(
                     project_dir=project_dir,
                     entry_script=entry_script,
+                    platform_policy=self.platform_policy,
                 )
         return self.prompt_loader.load_prompt(prompt_id, context)
 

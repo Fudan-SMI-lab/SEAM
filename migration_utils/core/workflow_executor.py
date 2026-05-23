@@ -35,6 +35,7 @@ from core.types import (
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.variable_resolver import VariableResolver
 from core.session_registry import SessionRegistry
+from core.accelerator_context import extract_accelerator_context
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
 from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_exec_env_ctx
@@ -48,6 +49,7 @@ from core.repair_loop import (
     _operator_repair_has_custom_op_contract,
     force_custom_op_operator_routing_if_needed,
 )
+from core.platform_policy import resolve_policy, PlatformPolicy
 from validators.validate_entry_script import validate as validate_entry_script, _extract_env_prefix
 from validators.validate_validation_final import validate_custom_op_final_gate
 
@@ -340,6 +342,12 @@ class WorkflowExecutor:
         self._initialize_execution_backend()
         self._container_env_probe = getattr(self, "_container_env_probe", None)
         self._runtime_skill_resolver: RuntimeSkillResolver | None = None
+
+        # Resolve platform policy from workflow definition
+        self.platform_policy: PlatformPolicy = resolve_policy(
+            getattr(workflow, "target_platform", None),
+            workflow.name,
+        )
 
         # Execution state
         self.phase_results: dict[str, dict[str, Any]] = {}   # phase_id -> {status, duration, ...}
@@ -1471,7 +1479,12 @@ class WorkflowExecutor:
         input_ctx.setdefault("user_constraints", self.user_constraints)
         constraint_summary = self._resolve_constraint_summary(state)
         input_ctx.setdefault("constraint_summary", constraint_summary)
-        input_ctx.setdefault("platform", "NPU")
+        input_ctx.setdefault("platform", self.platform_policy.id)
+        input_ctx.setdefault("platform_display_name", self.platform_policy.display_name)
+        input_ctx.setdefault("platform_guidance", (
+            f"Target accelerator: {self.platform_policy.display_name}. "
+            f"Use {self.platform_policy.guidance_native_framework}."
+        ))
 
         filtered_state = self._filter_previous_outputs(phase, state)
         serialized_state = {}
@@ -1594,11 +1607,13 @@ class WorkflowExecutor:
                             operator_context_path,
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
                     else:
                         input_ctx["operator_custom_op_guidance"] = _operator_generic_guidance(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
             input_ctx.update({
                 "error_text": script_stderr,
@@ -1653,11 +1668,13 @@ class WorkflowExecutor:
                             operator_context_path,
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
                     else:
                         input_ctx["operator_custom_op_guidance"] = _operator_generic_guidance(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
             input_ctx.update({
                 "error_text": script_stderr,
@@ -1735,13 +1752,13 @@ class WorkflowExecutor:
             env.update({k: v for k, v in ph0.items()
                         if isinstance(v, (str, int, float, bool))})
         ph2 = state.get("phase_2_venv_create", {})
+        installed: object = []
         if isinstance(ph2, dict):
-            pkgs = ph2.get("installed_packages", [])
-            if isinstance(pkgs, list):
-                for pkg in pkgs:
-                    if isinstance(pkg, str) and pkg.lower().startswith("torch-npu=="):
-                        env["torch_npu_version"] = pkg.split("==", 1)[-1]
-                        break
+            installed = ph2.get("installed_packages", [])
+        accel_ctx = extract_accelerator_context(installed)
+        env["torch_npu_version"] = accel_ctx["torch_npu_version"]
+        env["accelerator_packages"] = accel_ctx["accelerator_packages"]
+        env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
         return env
 
     def _format_history_summary(self, loop_history: list) -> str:
@@ -1854,8 +1871,10 @@ class WorkflowExecutor:
                     normalized["entry_script_path"] = ph1["entry_script"]
                 elif prompt_context.get("entry_script"):
                     normalized["entry_script_path"] = prompt_context["entry_script"]
-            if self._custom_op_required_signal(state, prompt_context):
-                _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+            workflow_globals = getattr(self.workflow, "globals", None) or {}
+            if not workflow_globals.get("disable_custom_op_contract_injection", False):
+                if self._custom_op_required_signal(state, prompt_context):
+                    _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
             normalized = self._normalize_phase3_container_paths(
                 normalized, prompt_context,
             )
@@ -2314,7 +2333,10 @@ class WorkflowExecutor:
             return "success", result
 
         gate_map = cast(dict[str, object], gate_data)
-        validation = validate_custom_op_final_gate(gate_map, project_root=reports_dir.parent)
+        validation = validate_custom_op_final_gate(
+            gate_map, project_root=reports_dir.parent,
+            platform_policy=self.platform_policy,
+        )
         result["passed"] = validation["passed"]
         result["errors"] = validation["errors"]
         result["summary"] = {
@@ -4013,7 +4035,8 @@ class WorkflowExecutor:
         if native_custom_op_gate_required:
             result["custom_op_native_gate_required"] = "true"
             result["custom_op_evidence_policy"] = (
-                "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only"
+                self.platform_policy.custom_op_evidence.custom_op_evidence_policy
+                or "require_real_custom_op_artifacts"
             )
 
         # Resolve from known state sources

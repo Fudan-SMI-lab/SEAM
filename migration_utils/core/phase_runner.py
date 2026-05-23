@@ -1120,8 +1120,10 @@ class PhaseRunner:
                 entry_script = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "entry_script")
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
-            if self._custom_op_required_signal(previous_outputs, context):
-                _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            if not workflow_globals.get("disable_custom_op_contract_injection", False):
+                if self._custom_op_required_signal(previous_outputs, context):
+                    _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
             normalized = self._normalize_phase3_container_paths(
                 normalized, prompt_context,
             )
