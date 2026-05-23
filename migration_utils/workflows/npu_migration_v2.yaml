@@ -2,6 +2,9 @@ name: npu_migration
 version: "2.0"
 description: "CUDA to Ascend NPU automated migration workflow (YAML-driven)"
 
+target_platform:
+  preset: npu_ascend
+
 globals:
   max_repair_iterations: 5
   stagnation_threshold: 3
