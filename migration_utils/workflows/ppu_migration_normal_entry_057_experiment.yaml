@@ -1,0 +1,417 @@
+# Normal-Entry E2E Experiment: 057_example_fwi.py (custom-op route disabled).
+#
+# This workflow is a variant derived from
+# ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml.
+#
+# Key differences from the production workflow:
+#   (a) Custom-op contract injection is disabled at the framework level via
+#       `disable_custom_op_contract_injection: true` so the framework never
+#       auto-injects `entry_script_kind: custom_op_full_validation`.
+#   (b) Phase 3 prompt explicitly omits all custom-op contract fields
+#       (entry_script_kind, reports_dir, required_report_paths,
+#        required_checks, etc.) by route policy.
+#   (c) Phase 3.5 validates ordinary headless/non-interactive entry
+#       behavior -- no custom-op contract gate.
+#   (d) Phase 5 custom_op_final_gate auto-skips because Phase 3 output
+#       has no custom-op contract fields (skipped=true, passed=true).
+#   (e) The production workflow and its prompts are NOT modified.
+#
+# PPU environments expose CUDA-compatible APIs (torch.cuda).
+# This workflow does NOT convert torch.cuda to torch.npu.
+#
+# NOTE: runtime: docker is emulated by Podman in this environment.
+# Do NOT run Docker/Podman when validating this file -- only parse/load it.
+# Docker CLI is emulated by Podman here, so runtime is acceptable.
+
+name: ppu_migration_normal_entry_057_experiment
+version: "2.0-experiment"
+description: >
+  CUDA to PPU automated migration workflow for normal application
+  demo (057_example_fwi.py). Custom-op contract injection and
+  final-gate route are disabled via workflow configuration. Phase 3
+  omits custom-op contract fields by route policy, and Phase 5
+  custom_op_final_gate auto-skips.
+
+target_platform:
+  preset: ppu_cuda_compatible
+
+execution_backend:
+  mode: auto
+  source: image
+  runtime: docker
+
+  images:
+    - "localhost/seam-auto-intentionally-missing:latest"
+    - "egslingjun-registry.cn-wulanchabu.cr.aliyuncs.com/egslingjun/inference-xpu-pytorch:26.04-v2.1.0-vllm0.18.0-torch2.9-cu130-20260508"
+
+  container_name_prefix: "seam-ppu-normal-entry-057"
+
+  devices:
+    - /dev/alixpu
+    - /dev/alixpu_ctl
+    - /dev/alixpu_ppu0
+    - /dev/alixpu_ppu1
+    - /dev/alixpu_ppu2
+    - /dev/alixpu_ppu3
+    - /dev/alixpu_ppu4
+    - /dev/alixpu_ppu5
+    - /dev/alixpu_ppu6
+    - /dev/alixpu_ppu7
+
+  container_workdir: "/workspace"
+
+  cleanup: false
+
+globals:
+  max_repair_iterations: 5
+  stagnation_threshold: 3
+  review_gate_enabled: false
+  max_review_iterations: 3
+  max_entry_script_revisions: 2
+  disable_custom_op_contract_injection: true
+
+experience:
+  enabled: false
+  phase7_enabled: false
+
+agents:
+  main_engineer:
+    role: "main_engineer"
+    lifecycle: "persistent"
+  error_analyzer:
+    role: "error_analyzer"
+    lifecycle: "persistent"
+  dependency_fixer:
+    role: "dependency_fixer"
+    lifecycle: "persistent"
+  code_adapter:
+    role: "code_adapter"
+    lifecycle: "persistent"
+  operator_fixer:
+    role: "operator_fixer"
+    lifecycle: "persistent"
+
+hooks:
+  workflow_start:
+    - type: builtin
+      operation: "snapshot_project"
+      save_as: "before_snapshot"
+  workflow_end:
+    - type: builtin
+      operation: "snapshot_project"
+      save_as: "after_snapshot"
+    - type: builtin
+      operation: "copy_artifacts"
+    - type: builtin
+      operation: "write_summary"
+    - type: builtin
+      operation: "save_telemetry"
+
+terminals:
+  complete: "Migration complete"
+  complete_partial: "Partially complete"
+  failed: "Migration failed"
+
+phases:
+
+  - id: phase_0_env_detect
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_0_env_detect_ppu"
+    validator: env_detect
+    transitions:
+      on_success: phase_1_project_analysis
+
+  # -- Normal entry: Phase 1 follows ordinary project analysis (custom-op injection disabled globally) --
+  - id: phase_1_project_analysis
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_1_project_analysis_ppu_normal_entry_057"
+    validator: project_analysis
+    input_mapping:
+      project_dir: "${context.PROJECT_DIR}"
+    retrieve_experience: true
+    experience_query:
+      source: "project_context"
+      signals:
+        - dependencies
+        - cuda_patterns
+        - entry_script
+    transitions:
+      on_success: phase_1_5_constraint_summary
+
+  - id: phase_1_5_constraint_summary
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_1_5_constraint_summary_ppu"
+    validator: null
+    condition: "${context.USER_CONSTRAINTS} != ''"
+    input_mapping:
+      project_dir: "${context.PROJECT_DIR}"
+      user_constraints: "${context.USER_CONSTRAINTS}"
+    transitions:
+      on_success: phase_2_venv_create
+      on_skip: phase_2_venv_create
+
+  - id: phase_2_venv_create
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_2_venv_create_ppu_container_baseaware"
+    validator: venv
+    transitions:
+      on_success: phase_3_entry_script
+
+  # -- Normal entry: Phase 3 omits custom-op contract fields by route policy --
+  - id: phase_3_entry_script
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_3_entry_script_ppu_normal_entry_057"
+    validator: entry_script
+    transitions:
+      on_success: phase_35_static_validate
+
+  # -- Normal entry: Phase 3.5 validates headless/static compliance, no custom-op gate --
+  - id: phase_35_static_validate
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_35_static_validate_ppu_normal_entry_057"
+    validator: entry_static
+    transitions:
+      on_success: phase_4_rule_migration
+      on_failure: phase_3_entry_script
+
+  - id: phase_4_rule_migration
+    type: builtin
+    operation: "ppu_rule_based_migration"
+    validator: rule_migration
+    params:
+      pattern: "*.py"
+    transitions:
+      on_success: phase_5_validation
+
+  # -- Phase 5 custom_op_final_gate auto-skips (no contract fields) --
+  - id: phase_5_validation
+    type: loop
+    sub_workflow: repair_loop
+    input_mapping:
+      entry_script: "${state.phase_3_entry_script.run_command}"
+      project_dir: "${context.PROJECT_DIR}"
+    transitions:
+      on_success: phase_6_report
+      on_failure: complete
+
+  - id: phase_6_report
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_6_report_ppu"
+    validator: null
+    transitions:
+      on_success: phase_7a_evaluate
+      on_failure: complete
+
+  - id: phase_7a_evaluate
+    name: experience_evaluation
+    type: orchestration
+    handler: "experience_evaluator.ExperienceEvaluator.evaluate"
+    output_schema: {}
+    validator: null
+    retrieve_experience: false
+    transitions:
+      on_success: phase_7b_refine
+      on_failure: complete
+
+  - id: phase_7b_refine
+    name: experience_refinement
+    type: orchestration
+    handler: "experience_dispatcher.ExperienceDispatcher.dispatch_and_refine"
+    transitions:
+      on_success: complete
+      on_failure: complete
+
+# -- Repair loop is IDENTICAL to production -- custom_op_final_gate
+#    auto-skips when Phase 3 has no custom-op contract fields --
+sub_workflows:
+  repair_loop:
+    id: repair_loop
+    type: loop
+    max_iterations: 5
+    stagnation_threshold: 3
+    review_gate_enabled: false
+    max_review_iterations: 3
+    stop_conditions:
+      - condition: "$.script_exit_code == 0 and $.review_gate_enabled == false"
+        status: "success"
+      - condition: "$.script_exit_code == 0 and $.review_verdict_status == 'accept'"
+        status: "success"
+      - condition: "$.stagnation_count >= 3"
+        status: "stagnation"
+    phases:
+      # -- Deterministic dep setup (no CPU fallback, runs once) --
+      - id: normal_entry_dep_setup
+        type: shell
+        command: |
+          set -euo pipefail
+          if [ -f .normal_entry_setup_done ]; then
+            echo "[setup] Already done (.normal_entry_setup_done exists). Skipping."
+            exit 0
+          fi
+
+          echo "[setup] Installing non-vendor Python dependencies..."
+          python3 -m pip install matplotlib scikit-image lpips scipy \
+            --no-build-isolation 2>&1 | tail -20
+
+          echo "[setup] Rebuilding deepwave with PPU CUDA support..."
+          export CUDA_TOOLKIT_ROOT_DIR=/usr/local/PPU_SDK/CUDA_SDK
+          export CMAKE_CUDA_COMPILER=/usr/local/PPU_SDK/CUDA_SDK/bin/nvcc
+          export CUDA_HOME=/usr/local/PPU_SDK/CUDA_SDK
+          python3 -m pip install /workspace \
+            --no-build-isolation --force-reinstall --no-deps 2>&1 | tail -30
+
+          echo "[setup] Post-install shared object check..."
+          python3 -c "
+          import importlib.util, subprocess, sys
+          spec = importlib.util.find_spec('deepwave')
+          if spec is None or spec.origin is None:
+              print('ERROR: deepwave not importable')
+              sys.exit(1)
+          pkg_dir = __import__('os').path.dirname(spec.origin)
+          print(f'deepwave location: {pkg_dir}')
+
+          import glob
+          so_files = glob.glob(pkg_dir + '/**/*.so', recursive=True) + \
+                     glob.glob(pkg_dir + '/*.so')
+          if not so_files:
+              print('ERROR: No .so files found in deepwave package -- build may have failed')
+              sys.exit(1)
+
+          # Verify compiled shared objects are non-empty (accelerator-enabled build).
+          all_ok = True
+          for so in so_files:
+              size = __import__('os').path.getsize(so)
+              if size == 0:
+                  print(f'ERROR: {so} is empty -- build may have failed')
+                  all_ok = False
+          if all_ok:
+              print(f'SETUP OK: {len(so_files)} shared object(s) found with non-zero size')
+              sys.exit(0)
+          else:
+              print('ERROR: One or more shared objects are empty. Rebuild with accelerator SDK.')
+              sys.exit(1)
+          "
+
+          echo "[setup] Setup complete. Creating marker file."
+          touch .normal_entry_setup_done
+        cwd: "${loop_vars.project_dir}"
+        timeout: 600
+        on_failure: continue
+
+      - id: run_entry_script
+        type: shell
+        command: "${loop_vars.entry_script}"
+        cwd: "${loop_vars.project_dir}"
+        capture:
+          exit_code: "script_exit_code"
+          stdout: "script_stdout"
+          stderr: "script_stderr"
+          duration: "script_duration"
+        on_failure: "continue"
+
+      # -- custom_op_final_gate auto-skips when contract is absent --
+      - id: custom_op_final_gate
+        type: builtin
+        condition: "$.script_exit_code == 0"
+        params:
+          operation: "custom_op_final_gate"
+
+      - id: analyze_error
+        type: llm
+        agent: error_analyzer
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        prompt_template: "phase_error_recovery_container_ppu"
+        validator: repair_classification
+        output_as: "error_analysis"
+        retrieve_experience: true
+        experience_query:
+          source: "error_analysis"
+          signals:
+            - error_category
+            - error_stderr
+            - classification
+
+      - id: repair_dispatch
+        type: dispatch
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        route_field: "${error_analysis.repair_role}"
+        routes:
+          dependency_fixer: fix_dependency
+          code_adapter: fix_code
+          operator_fixer: fix_operator
+
+      - id: fix_dependency
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: dependency_fixer
+        prompt_template: "repair_dependency_fixer_container_ppu"
+
+      - id: fix_code
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: code_adapter
+        prompt_template: "repair_code_adapter_container_ppu"
+
+      - id: fix_operator
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: operator_fixer
+        prompt_template: "repair_operator_fixer_container_ppu"
+
+      - id: review_gate
+        type: review
+        condition: "$.script_exit_code == 0 and $.review_gate_enabled == true"
+        agent: main_engineer
+        prompt_template: "phase_5_review_container_ppu"
+        retry_json_parse: 2
+        verdicts:
+          accept:
+            action: "break"
+            set_status: "success"
+          reject:
+            action: "continue"
+            increment: "review_reject_count"
+            snapshot: true
+            then: "improvement_block"
+
+    blocks:
+      improvement_block:
+        phases:
+          - id: improvement_plan
+            type: llm
+            agent: error_analyzer
+            prompt_template: "phase_review_improvement_container_ppu"
+            output_as: "improvement_plan"
+
+          - id: improvement_dispatch
+            type: dispatch
+            route_field: "${improvement_plan.repair_role}"
+            routes:
+              dependency_fixer: imp_fix_dependency
+              code_adapter: imp_fix_code
+              operator_fixer: imp_fix_operator
+
+          - id: imp_fix_dependency
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: dependency_fixer
+            prompt_template: "repair_dependency_fixer_container_ppu"
+
+          - id: imp_fix_code
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: code_adapter
+            prompt_template: "repair_code_adapter_container_ppu"
+
+          - id: imp_fix_operator
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: operator_fixer
+            prompt_template: "repair_operator_fixer_container_ppu"
