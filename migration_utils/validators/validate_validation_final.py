@@ -16,6 +16,9 @@ from core.platform_policy import (
     get_native_binary_tokens,
     get_target_device_values,
     get_positive_boolean_fields,
+    get_performance_validation_mode,
+    get_performance_baseline_device_values,
+    get_performance_baseline_boolean_fields,
 )
 
 PASS_STATES = {"PASS", "FULL_PASS", "DONE", "CLOSED_PASS"}
@@ -206,9 +209,11 @@ def validate_custom_op_final_gate(
             row = cast(dict[object, object], row_obj)
             _validate_gate_row(row, index, errors, resolved_project_root, platform_policy)
         _validate_source_inventory_completeness(cast(Mapping[object, object], data), row_items, errors)
-        _validate_performance_report_completeness(
-            cast(Mapping[object, object], data), row_items, manifest_entries, errors, platform_policy
-        )
+        perf_mode = get_performance_validation_mode(platform_policy)
+        if perf_mode != "disabled":
+            _validate_performance_report_completeness(
+                cast(Mapping[object, object], data), row_items, manifest_entries, errors, platform_policy
+            )
         _validate_required_manifest_units(
             row_items,
             inventory_count,
@@ -241,8 +246,11 @@ def _validate_gate_row(
     if _normalize_status(status) not in PASS_STATES:
         errors.append(f"rows[{index}].status must be a pass state")
 
+    perf_mode = get_performance_validation_mode(platform_policy)
     for field_name in REQUIRED_ROW_EVIDENCE_FIELDS:
         if field_name == "no_fallback_no_zero_call_no_builtin_contamination":
+            continue
+        if field_name == "performance_evidence" and perf_mode == "disabled":
             continue
         if not _has_evidence(row.get(field_name)):
             errors.append(f"rows[{index}].{field_name} must contain evidence")
@@ -250,7 +258,8 @@ def _validate_gate_row(
     _validate_project_local_artifact(row.get("opp_custom_op_artifact_evidence"), row, index, errors, project_root, platform_policy)
     _validate_integration_route(row.get("integration_e2e_evidence"), index, errors)
     _validate_runtime_coverage(row.get("same_run_runtime_coverage"), index, errors)
-    _validate_performance(row.get("performance_evidence"), index, errors, platform_policy)
+    if perf_mode != "disabled":
+        _validate_performance(row.get("performance_evidence"), index, errors, platform_policy)
     _validate_no_fallback_evidence(row.get("no_fallback_no_zero_call_no_builtin_contamination"), index, errors)
 
     custom_call_count = _extract_custom_call_count(row)
@@ -331,6 +340,8 @@ def _mapping_reports_positive_evidence(evidence: Mapping[object, object]) -> boo
         "speedup_vs_baseline",
         "throughput_ratio",
         "max_abs_error",
+        "baseline_seconds",
+        "custom_seconds",
     )
     for field_name in positive_numeric_fields:
         value = evidence.get(field_name)
@@ -465,7 +476,8 @@ def _extract_inventory_entries(value: object) -> dict[str, Mapping[object, objec
                     continue
                 if isinstance(item, Mapping):
                     entry = dict(cast(Mapping[object, object], item))
-                    entry["name"] = entry.get("name", key)
+                    if "name" not in entry:
+                        entry["name"] = _first_string_field(entry, ("unit_identity", "name")) or key
                     entries.append(entry)
     elif isinstance(value, list):
         entries = cast(list[object], value)
@@ -474,7 +486,7 @@ def _extract_inventory_entries(value: object) -> dict[str, Mapping[object, objec
         if not isinstance(item, Mapping):
             continue
         entry = cast(Mapping[object, object], item)
-        name = _first_string_field(entry, ("name", "operator", "op_name", "row_id", "id"))
+        name = _first_string_field(entry, ("unit_identity", "name", "operator", "op_name", "row_id", "id"))
         if name:
             entries_by_name[name] = entry
     return entries_by_name
@@ -564,7 +576,7 @@ def _validate_source_inventory_metadata(value: object, errors: list[str]) -> Non
 
 
 def _extract_row_name(row: Mapping[object, object]) -> str | None:
-    return _first_string_field(row, ("name", "operator", "op_name", "row_id", "id"))
+    return _first_string_field(row, ("unit_identity", "name", "operator", "op_name", "row_id", "id"))
 
 
 def _first_string_field(row: Mapping[object, object], fields: tuple[str, ...]) -> str | None:
@@ -659,10 +671,17 @@ def _validate_performance(
     evidence = cast(Mapping[object, object], value)
     if _mapping_is_disallowed_surrogate(evidence):
         errors.append(f"rows[{index}].performance_evidence must not be report-only or benchmark-only without project API proof")
-    required_positive = ("baseline_seconds", "custom_seconds", "speedup_vs_baseline")
-    missing = [field_name for field_name in required_positive if not _positive_number(evidence.get(field_name))]
-    if missing:
-        errors.append(f"rows[{index}].performance_evidence missing positive numeric fields: " + ", ".join(missing))
+
+    perf_mode = get_performance_validation_mode(platform_policy)
+    if perf_mode in ("full", "presence_only"):
+        required_positive = ("baseline_seconds", "custom_seconds")
+        missing = [field_name for field_name in required_positive if not _positive_number(evidence.get(field_name))]
+        if missing:
+            errors.append(f"rows[{index}].performance_evidence missing positive numeric fields: " + ", ".join(missing))
+    if perf_mode == "full":
+        if not _positive_number(evidence.get("speedup_vs_baseline")):
+            errors.append(f"rows[{index}].performance_evidence.speedup_vs_baseline must be a positive number")
+
     if not _has_positive_boolean(evidence, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed")):
         errors.append(f"rows[{index}].performance_evidence must prove timing came from public/project API custom-op route")
     _validate_baseline_and_custom_device_proof(evidence, f"rows[{index}].performance_evidence", errors, platform_policy)
@@ -692,7 +711,7 @@ def _validate_performance_report_completeness(
     if not _has_positive_boolean(report_map, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed", "verified")):
         errors.append("performance_report must prove speedup timings came from public/project API custom-op routes")
     _validate_baseline_and_custom_device_proof(report_map, "performance_report", errors, platform_policy)
-    _validate_overall_performance_report(report_map, errors)
+    _validate_overall_performance_report(report_map, errors, platform_policy)
 
     row_names = _extract_row_names(row_items)
     if manifest_entries is not None:
@@ -720,15 +739,22 @@ def _validate_performance_report_completeness(
             _validate_performance_report_entry(entry, unit_name, errors, platform_policy)
 
 
-def _validate_overall_performance_report(report: Mapping[object, object], errors: list[str]) -> None:
-    required_positive = (
-        "overall_baseline_seconds",
-        "overall_custom_seconds",
-        "overall_speedup_vs_baseline",
-    )
-    missing = [field_name for field_name in required_positive if not _positive_number(report.get(field_name))]
-    if missing:
-        errors.append("performance_report missing positive overall speedup fields: " + ", ".join(missing))
+def _validate_overall_performance_report(report: Mapping[object, object], errors: list[str], platform_policy: PlatformPolicy | None = None) -> None:
+    perf_mode = get_performance_validation_mode(platform_policy)
+    if perf_mode == "full":
+        required_positive = (
+            "overall_baseline_seconds",
+            "overall_custom_seconds",
+            "overall_speedup_vs_baseline",
+        )
+        missing = [field_name for field_name in required_positive if not _positive_number(report.get(field_name))]
+        if missing:
+            errors.append("performance_report missing positive overall speedup fields: " + ", ".join(missing))
+    elif perf_mode == "presence_only":
+        required_positive = ("overall_baseline_seconds", "overall_custom_seconds")
+        missing = [field_name for field_name in required_positive if not _positive_number(report.get(field_name))]
+        if missing:
+            errors.append("performance_report missing positive overall timing fields: " + ", ".join(missing))
 
     route_proven = _has_positive_boolean(report, ("overall_project_api_invoked", "overall_custom_op_route_executed"))
     all_units_replaced_proven = _has_positive_boolean(
@@ -801,10 +827,15 @@ def _validate_performance_report_entry(
     errors: list[str],
     platform_policy: PlatformPolicy | None = None,
 ) -> None:
-    required_positive = ("baseline_seconds", "custom_seconds", "speedup_vs_baseline")
-    missing = [field_name for field_name in required_positive if not _positive_number(entry.get(field_name))]
-    if missing:
-        errors.append(f"performance_report.entries[{unit_name}] missing positive numeric fields: " + ", ".join(missing))
+    perf_mode = get_performance_validation_mode(platform_policy)
+    if perf_mode in ("full", "presence_only"):
+        required_positive = ("baseline_seconds", "custom_seconds")
+        missing = [field_name for field_name in required_positive if not _positive_number(entry.get(field_name))]
+        if missing:
+            errors.append(f"performance_report.entries[{unit_name}] missing positive numeric fields: " + ", ".join(missing))
+    if perf_mode == "full":
+        if not _positive_number(entry.get("speedup_vs_baseline")):
+            errors.append(f"performance_report.entries[{unit_name}].speedup_vs_baseline must be a positive number")
     if not _has_positive_boolean(entry, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed")):
         errors.append(f"performance_report.entries[{unit_name}] must prove public/project API custom-op timing route")
     _validate_baseline_and_custom_device_proof(entry, f"performance_report.entries[{unit_name}]", errors, platform_policy)
@@ -1410,8 +1441,12 @@ def _validate_baseline_and_custom_device_proof(
 ) -> None:
     if _has_diagnostic_baseline(evidence):
         errors.append(f"{label} must not use diagnostic-only or metadata-only baseline timings")
-    if not _has_cuda_baseline_proof(evidence):
-        errors.append(f"{label} must prove timings include a CUDA baseline path")
+    perf_mode = get_performance_validation_mode(platform_policy)
+    if perf_mode == "disabled":
+        return
+    if not _has_baseline_proof(evidence, platform_policy):
+        baseline_devices = get_performance_baseline_device_values(platform_policy)
+        errors.append(f"{label} must prove timings include a baseline path ({', '.join(sorted(baseline_devices))})")
     if not _has_target_device_custom_proof(evidence, platform_policy):
         errors.append(f"{label} must prove timings include a target-device custom-op path")
 
@@ -1428,10 +1463,17 @@ def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
     return False
 
 
-def _has_cuda_baseline_proof(evidence: Mapping[object, object]) -> bool:
-    if _has_positive_boolean(evidence, ("cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked")):
+def _has_baseline_proof(evidence: Mapping[object, object], platform_policy: PlatformPolicy | None = None) -> bool:
+    boolean_fields = get_performance_baseline_boolean_fields(platform_policy)
+    if _has_positive_boolean(evidence, tuple(boolean_fields)):
         return True
-    return _has_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"), {"cuda", "gpu", "torch_cuda"})
+    baseline_devices = get_performance_baseline_device_values(platform_policy)
+    return _has_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"), baseline_devices)
+
+
+def _has_cuda_baseline_proof(evidence: Mapping[object, object]) -> bool:
+    """Legacy CUDA-only check.  Prefer ``_has_baseline_proof``."""
+    return _has_baseline_proof(evidence, platform_policy=None)
 
 
 def _has_target_device_custom_proof(

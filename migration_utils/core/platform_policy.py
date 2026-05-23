@@ -53,6 +53,21 @@ class CustomOpEvidenceConfig:
     custom_op_evidence_policy: str = ""
     """String injected into ``custom_op_evidence_policy`` prompt context."""
 
+    # -- Performance validation configuration --------------------------------
+    performance_validation: str = "full"
+    """Performance validation mode: ``full`` (current strict default),
+    ``presence_only`` (require timing/report presence but skip speedup
+    enforcement), or ``disabled`` (skip performance validation only;
+    no-fallback / source / runtime / native gates remain active)."""
+
+    performance_baseline_device_values: list[str] = field(default_factory=lambda: ["cuda", "gpu", "torch_cuda"])
+    """Accepted baseline device string values.  Configure ``["cpu", "torch_cpu"]``
+    to allow CPU baselines; CPU baseline must NOT imply CPU fallback is allowed
+    in the custom/migrated path."""
+
+    performance_baseline_boolean_fields: list[str] = field(default_factory=lambda: ["cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked"])
+    """Boolean fields that prove a baseline path was exercised."""
+
 
 @dataclass(frozen=True)
 class PlatformPolicy:
@@ -646,6 +661,15 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> Platfor
             custom_op_evidence_policy=str(
                 ce_overrides.get("custom_op_evidence_policy", ce.custom_op_evidence_policy)
             ),
+            performance_validation=str(
+                ce_overrides.get("performance_validation", ce.performance_validation)
+            ),
+            performance_baseline_device_values=_list_override(
+                ce_overrides, "performance_baseline_device_values", ce.performance_baseline_device_values
+            ),
+            performance_baseline_boolean_fields=_list_override(
+                ce_overrides, "performance_baseline_boolean_fields", ce.performance_baseline_boolean_fields
+            ),
         )
 
     return PlatformPolicy(
@@ -732,3 +756,35 @@ def get_positive_boolean_fields(policy: PlatformPolicy | None) -> list[str]:
     if policy is None:
         return ["npu_custom", "custom_npu", "npu_custom_invoked", "ascend_custom_invoked"]
     return list(policy.custom_op_evidence.positive_boolean_fields)
+
+
+def get_performance_validation_mode(policy: PlatformPolicy | None) -> str:
+    """Return the performance validation mode string.
+
+    Valid modes: ``full``, ``presence_only``, ``disabled``.
+    Defaults to ``full`` when *policy* is ``None``.  Normalizes case and whitespace.
+    """
+    if policy is None:
+        return "full"
+    mode = policy.custom_op_evidence.performance_validation.strip().lower()
+    if mode in ("full", "presence_only", "disabled"):
+        return mode
+    return "full"
+
+
+def get_performance_baseline_device_values(policy: PlatformPolicy | None) -> set[str]:
+    """Return accepted baseline device values for baseline proof checks.
+    Defaults to ``{"cuda", "gpu", "torch_cuda"}`` when *policy* is ``None``.
+    """
+    if policy is None:
+        return {"cuda", "gpu", "torch_cuda"}
+    return set(policy.custom_op_evidence.performance_baseline_device_values)
+
+
+def get_performance_baseline_boolean_fields(policy: PlatformPolicy | None) -> list[str]:
+    """Return boolean fields that prove a baseline path was exercised.
+    Defaults to CUDA baseline fields when *policy* is ``None``.
+    """
+    if policy is None:
+        return ["cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked"]
+    return list(policy.custom_op_evidence.performance_baseline_boolean_fields)
