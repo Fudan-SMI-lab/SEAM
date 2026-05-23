@@ -16,7 +16,10 @@ description: >
   CUDA to PPU automated migration workflow with container execution.
   Commands in Phase 5 (validation/repair) run inside a Docker/Podman container
   instead of the host. PPU environments expose CUDA-compatible APIs via
-  torch.cuda; torch.cuda is preserved throughout the migration.
+     torch.cuda; torch.cuda is preserved throughout the migration.
+
+target_platform:
+  preset: ppu_cuda_compatible
 
 # ── Execution Backend Configuration ──────────────────────────────────
 #

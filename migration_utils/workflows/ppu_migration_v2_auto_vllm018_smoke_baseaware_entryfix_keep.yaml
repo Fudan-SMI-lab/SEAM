@@ -23,7 +23,10 @@ description: >
       paths for entry_script_path, reports_dir, and run_command,
   (c) full custom-op contract with required_report_paths including build.
   Containers are NOT cleaned up after workflow completion to allow
-  post-migration E2E validation.
+   post-migration E2E validation.
+
+target_platform:
+  preset: ppu_cuda_compatible
 
 execution_backend:
   mode: auto
