@@ -15,7 +15,10 @@ version: "2.0"
 description: >
   CUDA to PPU automated migration workflow with container execution
   using the vLLM 0.18 / torch 2.9 / CUDA 13.0 image for smoke testing.
-  PPU environments expose CUDA-compatible APIs via torch.cuda.
+   PPU environments expose CUDA-compatible APIs via torch.cuda.
+
+target_platform:
+  preset: ppu_cuda_compatible
 
 execution_backend:
   mode: container

@@ -21,7 +21,10 @@ description: >
   container base Python environment and a project-local venv based
   on observed container and project facts. Verifies mode: auto with
   candidate image list.
-  PPU environments expose CUDA-compatible APIs via torch.cuda.
+   PPU environments expose CUDA-compatible APIs via torch.cuda.
+
+target_platform:
+  preset: ppu_cuda_compatible
 
 execution_backend:
   mode: auto
