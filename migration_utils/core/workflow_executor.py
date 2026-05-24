@@ -44,6 +44,7 @@ from migrator.rule_based import RuleBasedMigrator
 from migrator.rule_based_ppu import PPURuleBasedMigrator
 from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
+from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, collect_phase6_prior_state, resolve_phase6_timeout
 from core.repair_loop import (
     _operator_custom_op_guidance,
     _operator_generic_guidance,
@@ -53,6 +54,7 @@ from core.repair_loop import (
 from core.platform_policy import resolve_policy, PlatformPolicy
 from validators.validate_entry_script import validate as validate_entry_script, _extract_env_prefix
 from validators.validate_validation_final import validate_custom_op_final_gate
+from rule_strategies import create_migrator_resolved, resolve_rule_migration_strategy
 
 logger = logging.getLogger(__name__)
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
@@ -1244,16 +1246,35 @@ class WorkflowExecutor:
         )
 
         # 3. Parse timeout; None means no framework phase wall-clock limit.
-        timeout = phase.timeout
+        timeout = self._llm_timeout_for_phase(phase)
 
         # 4. Send command
-        raw_response = self.session_mgr.send_command(sid, prompt_text, timeout=timeout)
+        try:
+            send_kwargs = {"timeout": timeout}
+            if phase.id == "phase_6_report":
+                send_kwargs["retries"] = 0
+            raw_response = self.session_mgr.send_command(sid, prompt_text, **send_kwargs)
+        except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
+            if phase.id == "phase_6_report":
+                output = self._phase_6_fallback_output(input_ctx, state, str(exc))
+                return "success", output
+            raise
 
         # 5. Parse JSON
         output = extract_json_response(raw_response)
+        if phase.id == "phase_6_report" and self._is_session_error_response(output):
+            reason = str(output.get("error") or "Phase 6 LLM call failed")
+            output = self._phase_6_fallback_output(input_ctx, state, reason)
+            return "success", output
         self._raise_for_session_error_output(output, phase.id)
         if not output:
+            if phase.id == "phase_6_report":
+                output = self._phase_6_fallback_output(input_ctx, state, "Phase 6 LLM response was empty or malformed")
+                return "success", output
             output = {"raw_response": raw_response}
+        elif phase.id == "phase_6_report" and not self._phase_6_output_complete(output):
+            output = self._phase_6_fallback_output(input_ctx, state, "Phase 6 LLM response omitted required report fields")
+            return "success", output
 
         # 6. Normalize and validate with retries
         output = self._normalize_llm_output(phase, output, input_ctx, state)
@@ -1313,6 +1334,38 @@ class WorkflowExecutor:
         assert isinstance(output, dict)
         error = str(output.get("error") or "session command failed")
         raise SessionCommandError(f"Session command failed for {phase_id}: {error}", dict(output))
+
+    def _phase_6_fallback_output(
+        self,
+        input_ctx: dict[str, Any],
+        state: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        prior_outputs = collect_phase6_prior_artifacts(self.artifact_store)
+        prior_outputs.update(collect_phase6_prior_state(state))
+        report_dir = str(
+            input_ctx.get("report_dir")
+            or os.path.join(self.artifact_store.artifact_dir, "reports")
+        )
+        return build_phase6_fallback_report(
+            project_dir=self.project_dir,
+            report_dir=report_dir,
+            prior_outputs=prior_outputs,
+            reason=reason,
+        )
+
+    def _llm_timeout_for_phase(self, phase: PhaseDefinition) -> int | None:
+        if phase.timeout is not None:
+            return phase.timeout
+        if phase.id != "phase_6_report":
+            return None
+        return resolve_phase6_timeout(self.framework_config, phase.timeout, logger)
+
+    @staticmethod
+    def _phase_6_output_complete(output: dict[str, Any]) -> bool:
+        report_paths = output.get("report_paths")
+        migration_summary = output.get("migration_summary")
+        return isinstance(report_paths, list) and isinstance(migration_summary, dict)
 
     @staticmethod
     def _build_validation_correction_prompt(error_msg: str) -> str:
@@ -1498,6 +1551,8 @@ class WorkflowExecutor:
                 serialized_state[k] = v
         input_ctx.setdefault("previous_outputs", json.dumps(serialized_state, indent=2, ensure_ascii=False))
 
+        for key, value in _get_exec_ctx(self.exec_backend).items():
+            input_ctx.setdefault(key, value)
         self._inject_container_env_context(input_ctx)
         self._inject_execution_environment_context(input_ctx)
 
@@ -1544,7 +1599,7 @@ class WorkflowExecutor:
             "container_env_facts",
             json.dumps(probe, ensure_ascii=False, indent=2, default=str),
         )
-        for key in ("python_version", "platform", "platform_machine", "cwd", "torch_version"):
+        for key in ("interpreter_path", "python_version", "platform", "platform_machine", "cwd", "torch_version"):
             if key in probe:
                 input_ctx.setdefault(f"container_{key}", str(probe[key]))
 
@@ -1886,7 +1941,10 @@ class WorkflowExecutor:
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
 
-        if phase_id == "analyze_error" or normalized.get("repair_role") in {"dependency_fixer", "code_adapter", "operator_fixer"}:
+        if (
+            not (getattr(self.workflow, "globals", None) or {}).get("disable_custom_op_contract_injection", False)
+            and (phase_id == "analyze_error" or normalized.get("repair_role") in {"dependency_fixer", "code_adapter", "operator_fixer"})
+        ):
             history_text = str(prompt_context.get("previous_outputs", ""))
             normalized = force_custom_op_operator_routing_if_needed(
                 normalized,
@@ -2253,19 +2311,25 @@ class WorkflowExecutor:
             return ("success", {"operation": operation, "error_signature": error_sig})
 
         if operation == "rule_based_migration":
-            backend = _params.get("backend", "").lower()
-            if backend == "ppu":
-                migrator = PPURuleBasedMigrator()
-                result = migrator.migrate_directory(self.project_dir, pattern=str(_params.get("pattern", "*.py")))
-                return ("success", {"operation": operation, "result": result, "backend": "ppu"})
-            if backend in {"report_only", "scan_only", "conservative"}:
-                migrator = ReportOnlyRuleBasedMigrator()
-                result = migrator.migrate_directory(self.project_dir, pattern=str(_params.get("pattern", "*.py")))
-                return ("success", {"operation": operation, "result": result, "backend": "report_only"})
-            pattern = _params.get("pattern", "*.py")
-            migrator = RuleBasedMigrator()
-            result = migrator.migrate_directory(self.project_dir, pattern=str(pattern))
-            return ("success", {"operation": operation, "result": result})
+            backend = _params.get("backend", "").lower() if isinstance(_params.get("backend"), str) else ""
+            workflow_rule_migration = getattr(self.workflow, "rule_migration", None)
+            platform_strategy = self.platform_policy.default_rule_migration_strategy
+
+            migrator = create_migrator_resolved(
+                workflow_params_backend=backend if backend else None,
+                workflow_rule_migration=workflow_rule_migration,
+                platform_policy_strategy=platform_strategy,
+            )
+            result = migrator.migrate_directory(
+                self.project_dir,
+                pattern=str(_params.get("pattern", "*.py")),
+            )
+            strategy_id = resolve_rule_migration_strategy(
+                workflow_params_backend=backend if backend else None,
+                workflow_rule_migration=workflow_rule_migration,
+                platform_policy_strategy=platform_strategy,
+            )
+            return ("success", {"operation": operation, "result": result, "backend": backend or None, "strategy": strategy_id})
 
         if operation == "ppu_rule_based_migration":
             pattern = _params.get("pattern", "*.py")
@@ -2473,6 +2537,8 @@ class WorkflowExecutor:
                                         loop_vars=loop_vars, loop_state=loop_state,
                                         loop_history=loop_history)
         )
+        self._inject_container_env_context(review_ctx)
+        self._inject_execution_environment_context(review_ctx)
 
         prompt_text = self.prompt_loader.load_prompt(phase.prompt_template, review_ctx)
         prompt_text, _explicit_skill_bundle = self._append_explicit_runtime_skill_markdown(

@@ -1463,6 +1463,51 @@ def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(tm
     assert normalized["category"] == "pathing"
     assert normalized["repair_role"] == "code_adapter"
 
+
+def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tmp_path: Path):
+    phase = PhaseDefinition(
+        id="analyze_error",
+        name="Analyze",
+        prompt_template="analyze_prompt",
+        output_schema={},
+        type="llm",
+        agent="error_analyzer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(
+            name="disabled_force_route",
+            version="1.0",
+            phases=[],
+            terminals=[],
+            globals={"disable_custom_op_contract_injection": True},
+        ),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    normalized = executor._normalize_llm_output(
+        phase,
+        {
+            "repair_role": "code_adapter",
+            "category": "pathing",
+            "root_cause": "custom-op final evidence gate failed",
+            "suggested_fix": "fix path handling",
+        },
+        {
+            "failure_log": "Custom-op final evidence gate failed: full_migration_status is FULL_MIGRATION_INCOMPLETE",
+            "entry_script_contract": json.dumps({"entry_script_kind": "custom_op_full_validation"}),
+            "previous_outputs": "",
+        },
+        {},
+    )
+
+    assert normalized["category"] == "pathing"
+    assert normalized["repair_role"] == "code_adapter"
+
 def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target_script = tmp_path / "expanded_target.py"
     target_script.write_text("from pathlib import Path\nPath('expanded-ran').write_text('yes')\n", encoding="utf-8")
@@ -3413,15 +3458,16 @@ def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
 
 
 
-def test_rule_based_migration_builtin_uses_migrator_api_and_updates_project(tmp_path: Path) -> None:
+def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_default(tmp_path: Path) -> None:
+    """Rule-based migration without explicit backend defaults to report_only (safe)."""
     source_file = tmp_path / "model.py"
-    source_file.write_text(
+    original = (
         "import torch\n"
         "device = 'cuda'\n"
         "with torch.cuda.amp.autocast():\n"
-        "    tensor = torch.ones(1).cuda()\n",
-        encoding="utf-8",
+        "    tensor = torch.ones(1).cuda()\n"
     )
+    source_file.write_text(original, encoding="utf-8")
     workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
     executor = WorkflowExecutor(
         workflow,
@@ -3447,11 +3493,167 @@ def test_rule_based_migration_builtin_uses_migrator_api_and_updates_project(tmp_
     assert status == "success"
     assert output["operation"] == "rule_based_migration"
     assert output["result"]["summary"]["total_files"] == 1
-    assert output["result"]["summary"]["total_replacements"] >= 4
-    assert "import torch_npu" in migrated
-    assert "torch.npu.amp" in migrated
-    assert ".npu()" in migrated
-    assert "'npu'" in migrated
+    assert output["result"]["summary"]["total_replacements"] == 0, (
+        "Without explicit backend, report_only safe default must not modify files"
+    )
+    assert migrated == original, "Report only must not modify source code"
+    assert output.get("strategy") == "report_only"
+
+
+def test_rule_based_migration_builtin_with_backend_ppu(tmp_path: Path) -> None:
+    """Rule-based migration with explicit backend=ppu uses PPU (preserve CUDA, report only)."""
+    source_file = tmp_path / "model.py"
+    original = (
+        "import torch\n"
+        "device = 'cuda'\n"
+        "with torch.cuda.amp.autocast():\n"
+        "    tensor = torch.ones(1).cuda()\n"
+    )
+    source_file.write_text(original, encoding="utf-8")
+    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="phase_4_rule_migration",
+        name="Rule Migration",
+        prompt_template="",
+        output_schema={},
+        type="builtin",
+    )
+    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py", "backend": "ppu"})
+
+    status, output = executor._execute_builtin_phase(phase, state={}, context={})
+
+    migrated = source_file.read_text(encoding="utf-8")
+    assert status == "success"
+    assert output["operation"] == "rule_based_migration"
+    assert output.get("backend") == "ppu"
+    assert output.get("strategy") == "preserve_cuda_report_only"
+    assert migrated == original, "PPU backend must preserve CUDA code"
+    assert "import torch_npu" not in migrated
+
+
+def test_rule_based_migration_builtin_with_backend_report_only(tmp_path: Path) -> None:
+    """Rule-based migration with explicit backend=report_only does not modify files."""
+    source_file = tmp_path / "model.py"
+    original = (
+        "import torch\n"
+        "device = 'cuda'\n"
+        "with torch.cuda.amp.autocast():\n"
+        "    tensor = torch.ones(1).cuda()\n"
+    )
+    source_file.write_text(original, encoding="utf-8")
+    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="phase_4_rule_migration",
+        name="Rule Migration",
+        prompt_template="",
+        output_schema={},
+        type="builtin",
+    )
+    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py", "backend": "report_only"})
+
+    status, output = executor._execute_builtin_phase(phase, state={}, context={})
+
+    migrated = source_file.read_text(encoding="utf-8")
+    assert status == "success"
+    assert output["operation"] == "rule_based_migration"
+    assert output.get("backend") == "report_only"
+    assert output.get("strategy") == "report_only"
+    assert migrated == original, "report_only backend must not modify files"
+
+
+def test_rule_based_migration_top_level_strategy_file_overrides_platform(tmp_path: Path) -> None:
+    from core.platform_policy import TargetPlatformConfig
+
+    source_file = tmp_path / "model.py"
+    original = "import torch\nprint(torch.cuda.is_available())\n"
+    source_file.write_text(original, encoding="utf-8")
+    workflow = WorkflowDefinition(
+        name="rule-builtin",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        target_platform=TargetPlatformConfig(preset="npu_ascend"),
+        rule_migration={"strategy_file": "rule_strategies/report_only.yaml"},
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="phase_4_rule_migration",
+        name="Rule Migration",
+        prompt_template="",
+        output_schema={},
+        type="builtin",
+    )
+    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py"})
+
+    status, output = executor._execute_builtin_phase(phase, state={}, context={})
+
+    assert status == "success"
+    assert output.get("strategy") == "rule_strategies/report_only.yaml"
+    assert source_file.read_text(encoding="utf-8") == original
+
+
+def test_rule_based_migration_platform_strategy_used_without_workflow_override(tmp_path: Path) -> None:
+    from core.platform_policy import TargetPlatformConfig
+
+    source_file = tmp_path / "model.py"
+    source_file.write_text("import torch\nprint(torch.cuda.is_available())\n", encoding="utf-8")
+    workflow = WorkflowDefinition(
+        name="rule-builtin",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        target_platform=TargetPlatformConfig(preset="npu_ascend"),
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="phase_4_rule_migration",
+        name="Rule Migration",
+        prompt_template="",
+        output_schema={},
+        type="builtin",
+    )
+    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py"})
+
+    status, output = executor._execute_builtin_phase(phase, state={}, context={})
+
+    migrated = source_file.read_text(encoding="utf-8")
+    assert status == "success"
+    assert output.get("strategy") == "cuda_to_npu"
+    assert "torch.npu.is_available()" in migrated
 
 
 def test_builtin_phase_missing_operation_fails(tmp_path: Path) -> None:
@@ -4130,6 +4332,63 @@ class TestContainerEnvContextInjection:
         executor._inject_container_env_context(ctx)
         assert ctx["container_name_or_id"] == "pre-set"
 
+    def test_review_phase_receives_execution_environment_context(self, tmp_path: Path):
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review_probe.md").write_text(
+            "{execution_environment_context}\n{container_probe_command_prefix}\n{actual_execution_command}\n",
+            encoding="utf-8",
+        )
+        workflow = WorkflowDefinition(
+            name="review-context", version="1.0", phases=[], terminals=["complete"],
+        )
+        backend = ContainerBackend(ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"}))
+        backend._container_id = "cid-review"
+        backend.set_project_dir(str(tmp_path))
+        session_mgr = MagicMock()
+        session_mgr.get_or_create.return_value = "s-review"
+        session_mgr.send_command.return_value = '{"verdict": "accept", "reasoning": "ok"}'
+        executor = WorkflowExecutor(
+            workflow,
+            session_mgr,
+            MagicMock(),
+            PromptLoader(prompts_dir),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
+            exec_backend=backend,
+        )
+        executor._container_env_probe = {
+            "status": "ok",
+            "interpreter_path": "/opt/conda/bin/python3",
+            "python_version": "3.10.12",
+        }
+        phase = PhaseDefinition(
+            id="review_gate",
+            name="Review",
+            prompt_template="review_probe",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
+        )
+
+        result = executor._execute_review_phase(
+            phase,
+            state={},
+            context={},
+            loop_vars={"entry_script": "/opt/conda/bin/python3 /workspace/train.py"},
+            loop_state={"script_stdout": "ok", "script_duration": 1.0, "iteration": 2},
+            loop_history=[],
+            sub_workflow_def=None,
+            verdicts_cfg={},
+        )
+
+        sent_prompt = session_mgr.send_command.call_args[0][1]
+        assert result["status"] == "success"
+        assert "execution_backend_mode**: container" in sent_prompt
+        assert "/opt/conda/bin/python3" in sent_prompt
+        assert "docker exec -i" in sent_prompt
+
 
 class TestExperienceConfigGate:
     def test_experience_injection_gated_when_workflow_disabled(self, tmp_path: Path):
@@ -4541,6 +4800,116 @@ def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> Non
     assert result["passed"] is False
 
 
+def test_phase_6_report_session_error_generates_fallback(tmp_path: Path) -> None:
+    class Phase6ErrorSessionManager:
+        def __init__(self) -> None:
+            self.send_calls: list[tuple[str, str, int | None, int | None]] = []
+
+        def get_or_create(self, role: str, lifecycle: str) -> str:
+            del role, lifecycle
+            return "main-session"
+
+        def send_command(self, session_id: str, command: str, timeout: int | None = None, retries: int | None = None) -> str:
+            self.send_calls.append((session_id, command, timeout, retries))
+            return json.dumps({"ok": False, "error": "Session still running"})
+
+    phase = PhaseDefinition(
+        id="phase_6_report",
+        name="Phase 6",
+        prompt_template="phase_6_report_musa",
+        output_schema={},
+        type="llm",
+        agent="main_engineer",
+        transitions={"on_success": "complete", "on_failure": "complete"},
+    )
+    workflow = WorkflowDefinition(
+        name="phase6-fallback",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    session_mgr = Phase6ErrorSessionManager()
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        PromptLoader(),
+        ValidatorEngine(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    executor.state["phase_5_validation"] = {"status": "success", "script_exit_code": 0}
+
+    result = executor.execute({"PROJECT_DIR": str(tmp_path)})
+
+    phase6 = result["state"]["phase_6_report"]
+    assert phase6["fallback"] is True
+    assert phase6["migration_summary"]["overall_status"] == "partial"
+    assert phase6["migration_summary"]["files_migrated"] == 0
+    assert phase6["migration_summary"]["files_skipped"] == 0
+    assert phase6["migration_summary"]["phase5_status"] == "success"
+    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][3] == 0
+    assert all(Path(path).exists() for path in phase6["report_paths"])
+
+    saved = artifact_store.load_phase_output("phase_6_report")
+    assert saved is not None
+    assert saved["fallback"] is True
+
+
+def test_phase_6_report_timeout_exception_generates_fallback(tmp_path: Path) -> None:
+    class Phase6TimeoutSessionManager:
+        def __init__(self) -> None:
+            self.send_calls: list[tuple[str, str, int | None, int | None]] = []
+
+        def get_or_create(self, role: str, lifecycle: str) -> str:
+            del role, lifecycle
+            return "main-session"
+
+        def send_command(self, session_id: str, command: str, timeout: int | None = None, retries: int | None = None) -> str:
+            self.send_calls.append((session_id, command, timeout, retries))
+            raise TimeoutError("phase 6 timed out")
+
+    phase = PhaseDefinition(
+        id="phase_6_report",
+        name="Phase 6",
+        prompt_template="phase_6_report_musa",
+        output_schema={},
+        type="llm",
+        agent="main_engineer",
+        transitions={"on_success": "complete", "on_failure": "complete"},
+    )
+    workflow = WorkflowDefinition(
+        name="phase6-timeout-fallback",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    session_mgr = Phase6TimeoutSessionManager()
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        PromptLoader(),
+        ValidatorEngine(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    result = executor.execute({"PROJECT_DIR": str(tmp_path)})
+
+    phase6 = result["state"]["phase_6_report"]
+    assert phase6["fallback"] is True
+    assert phase6["fallback_reason"] == "phase 6 timed out"
+    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][3] == 0
+    assert all(Path(path).exists() for path in phase6["report_paths"])
+
+
 class TestProductionWorkflowPlatformPolicy:
     """Production PPU workflow loads with performance override policy."""
 
@@ -4590,4 +4959,3 @@ class TestProductionWorkflowPlatformPolicy:
         devices = get_performance_baseline_device_values(ppu)
         assert "cpu" not in devices, "Default baseline must NOT include CPU"
         assert "cuda" in devices
-
