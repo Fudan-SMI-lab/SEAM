@@ -175,8 +175,9 @@ def _operator_repair_context_markdown(
     manifest = _read_json_report(manifest_path, warnings)
     gate = _read_json_report(gate_path, warnings)
 
-    total_count = _best_effort_total_count(inventory, manifest, gate)
-    units = _operator_units(inventory, manifest, gate)
+    contract_units = _contract_operator_units(contract)
+    total_count = len(contract_units) if contract_units else _best_effort_total_count(inventory, manifest, gate)
+    units = contract_units or _operator_units(inventory, manifest, gate)
     progress = _progress_summary(gate)
 
     required_report_paths = _string_list(contract.get("required_report_paths"))
@@ -230,6 +231,7 @@ def _operator_repair_context_markdown(
         "## Operator Inventory Summary",
         f"- Total Count: {total_count if total_count is not None else 'unknown'}",
         f"- Unit Count Listed Here: {len(units)}",
+        f"- Unit Source: {'Phase 3 contract' if contract_units else 'current reports'}",
         "",
     ]
     if units:
@@ -283,6 +285,27 @@ def _string_list(value: object) -> list[str]:
         items = cast(list[object], value)
         return [str(item) for item in items if str(item).strip()]
     return []
+
+
+def _contract_operator_units(contract: dict[str, object]) -> list[str]:
+    schema = contract.get("operator_inventory_schema")
+    if not isinstance(schema, dict):
+        return []
+    schema_dict = cast(dict[str, object], schema)
+    raw_units = schema_dict.get("fine_grained_operator_units")
+    if not isinstance(raw_units, list):
+        return []
+    units: list[str] = []
+    for item in cast(list[object], raw_units):
+        if isinstance(item, str) and item.strip() and item.strip() not in units:
+            units.append(item.strip())
+        elif isinstance(item, dict):
+            summary = _entry_summary(item)
+            if summary and summary not in units:
+                units.append(summary)
+        if len(units) >= 50:
+            break
+    return units
 
 
 def _candidate_entries(data: object) -> list[object]:

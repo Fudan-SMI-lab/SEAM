@@ -331,6 +331,55 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     assert "FULL_PASS is required" in context_text
 
 
+def test_operator_repair_context_prefers_phase3_contract_units_over_stale_reports(tmp_path: Path) -> None:
+    session_mgr = MockSessionManager(
+        {
+            "category": "operator",
+            "root_cause": "custom op final gate failed",
+            "suggested_fix": "close custom op reports",
+            "repair_role": "operator_fixer",
+        }
+    )
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    project_dir = tmp_path / "contract source project"
+    reports_dir = project_dir / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    (reports_dir / "operator_inventory.json").write_text(
+        json.dumps({"total_count": 1, "entries": [{"name": "stale_family", "status": "passed"}]}),
+        encoding="utf-8",
+    )
+    contract = _custom_op_phase3_contract(project_dir)
+    contract["operator_inventory_schema"] = {
+        "semantic_rows": "one row per fine-grained source-discovered unit",
+        "fine_grained_operator_units": ["family:kernel_a", "family:kernel_b"],
+    }
+
+    engine._build_repair_prompt(
+        entry_script="python validate.py",
+        project_dir=str(project_dir),
+        iteration=1,
+        error_text="custom_op_final_gate failed",
+        classification={
+            "category": "operator",
+            "root_cause": "custom op final gate failed",
+            "suggested_fix": "close custom op reports",
+            "repair_role": "operator_fixer",
+            "raw_response": "{}",
+        },
+        history=[],
+        phase3_contract=contract,
+    )
+
+    runtime_dir = Path(artifact_store.artifact_dir) / "runtime"
+    operator_context = next(runtime_dir.glob("operatorRepairContext_contract_source_project*.md"))
+    context_text = operator_context.read_text(encoding="utf-8")
+    assert "Unit Source: Phase 3 contract" in context_text
+    assert "Total Count: 2" in context_text
+    assert "Unit 1: family:kernel_a" in context_text
+    assert "Unit 2: family:kernel_b" in context_text
+    assert "stale_family" not in context_text
+
+
 def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tmp_path: Path) -> None:
     session_mgr = MockSessionManager(
         {
