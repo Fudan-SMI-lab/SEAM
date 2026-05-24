@@ -37,7 +37,8 @@ class MockSession:
 
 
 class NoopSessionManager:
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+        del agent
         return f"{role}-{lifecycle}"
 
     def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -50,7 +51,8 @@ class RecordingSessionManager:
         self.get_or_create_calls: list[dict[str, str]] = []
         self.send_calls: list[tuple[str, str, int | None]] = []
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+        del agent
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
@@ -69,7 +71,8 @@ class MockSessionManager:
         self.get_or_create_calls = []
         self.send_calls = []
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+        del agent
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
@@ -412,6 +415,48 @@ def test_run_review_check_json_example_text_not_session_error(tmp_path: Path) ->
     assert len(session_mgr.send_calls) == 2
 
 
+def test_run_review_check_retries_status_only_response(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+
+    class SequentialReviewSessionManager(NoopSessionManager):
+        def __init__(self) -> None:
+            self.responses: list[str] = [
+                json.dumps({"status": "in_progress", "message": "reviewing"}),
+                json.dumps({
+                    "verdict": "accept",
+                    "cpu_fallback_detected": False,
+                    "cpu_fallback_necessary": False,
+                    "alternative_suggestions": "",
+                    "reasoning": "ok",
+                }),
+            ]
+            self.send_calls: list[tuple[str, str, int | None]] = []
+
+        @override
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+            self.send_calls.append((session_id, command, timeout))
+            return self.responses.pop(0)
+
+    session_mgr = SequentialReviewSessionManager()
+    runner = PhaseRunner(
+        session_mgr,
+        artifact_store,
+        StaticPromptLoader(),
+        ValidatorEngine(),
+    )
+
+    result = runner.run_review_check(
+        "review-session",
+        session_mgr,
+        str(tmp_path),
+        repair_history="| Iteration | Status |",
+    )
+
+    assert result["verdict"] == "accept"
+    assert len(session_mgr.send_calls) == 2
+    assert "status/progress-only JSON" in session_mgr.send_calls[1][1]
+
+
 def test_validation_failure_retries_are_written_to_journal(tmp_path: Path) -> None:
     runner, artifact_store = build_runner(tmp_path)
     session = MockSession([
@@ -455,6 +500,42 @@ def test_retry_sends_correction_prompt_not_full_prompt(tmp_path: Path) -> None:
     assert "failed validation" in second_prompt
     assert "Missing required field 'platform'" in second_prompt
     assert "Required keys missing: platform." in second_prompt
+
+
+def test_phase2_progress_text_retries_to_complete_json(tmp_path: Path) -> None:
+    runner, _ = build_runner(tmp_path)
+    session = MockSession([
+        "I am creating the virtual environment now and will report back shortly.",
+        json.dumps(
+            {
+                "venv_path": str(tmp_path / ".venv"),
+                "python_path": str(tmp_path / ".venv" / "bin" / "python"),
+                "installed_packages": ["torch", "torch_npu"],
+            }
+        ),
+    ])
+
+    result = runner.run_single_phase(session, "phase_2", {"max_retry": 2})
+
+    assert result["venv_path"] == str(tmp_path / ".venv")
+    assert result["installed_packages"] == ["torch", "torch_npu"]
+    assert len(session.calls) == 2
+    assert "response contained no parseable JSON object" in session.calls[1][0]
+
+
+def test_phase3_status_only_json_retries_to_complete_schema(tmp_path: Path) -> None:
+    runner, _ = build_runner(tmp_path)
+    session = MockSession([
+        json.dumps({"status": "in_progress", "message": "selecting entry script"}),
+        json.dumps({"entry_script_path": "train.py", "run_command": "python train.py"}),
+    ])
+
+    result = runner.run_single_phase(session, "phase_3", {"max_retry": 2})
+
+    assert result["entry_script_path"] == "train.py"
+    assert result["run_command"] == "python train.py"
+    assert len(session.calls) == 2
+    assert "status/progress-only JSON" in session.calls[1][0]
 
 
 def test_correction_prompt_includes_error_details(tmp_path: Path) -> None:
@@ -617,26 +698,29 @@ def test_phase_runner_uses_configured_backend_agent_for_main_engineer(tmp_path: 
 
 class Phase6SessionManager:
     responses: dict[str, list[str]]
-    phase_6_response: str
+    phase_6_responses: list[str]
 
     def __init__(
         self,
         phase_responses: dict[str, list[str]] | None = None,
-        phase_6_response: str = "",
+        phase_6_response: str | list[str] = "",
     ) -> None:
         self.responses = {k: list(v) for k, v in (phase_responses or {}).items()}
-        self.phase_6_response = phase_6_response
+        self.phase_6_responses = list(phase_6_response) if isinstance(phase_6_response, list) else [phase_6_response]
         self.get_or_create_calls: list[dict[str, str]] = []
         self.send_calls: list[tuple[str, str, int | None]] = []
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+        del agent
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
     def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
         self.send_calls.append((session_id, command, timeout))
         if "Phase 6" in command or "phase_6" in command:
-            return self.phase_6_response
+            if len(self.phase_6_responses) > 1:
+                return self.phase_6_responses.pop(0)
+            return self.phase_6_responses[0]
         for phase_key in ("phase_3", "phase_2", "phase_1", "phase_0"):
             if f"Phase {phase_key[-1]}" in command:
                 return self.responses[phase_key].pop(0)
@@ -705,6 +789,38 @@ def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
     assert len(phase_6_entries) == 1
 
 
+def test_run_phase_6_retries_status_only_response_before_saving(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    status_only_response = json.dumps({"status": "in_progress", "message": "writing reports"})
+    phase_6_json = json.dumps({"report_paths": [], "migration_summary": {}})
+    session_mgr = Phase6SessionManager(
+        phase_6_response=[
+            status_only_response,
+            phase_6_json,
+        ]
+    )
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+
+    assert result["phase_id"] == "phase_6_report"
+    assert len(session_mgr.send_calls) == 2
+    assert "status/progress-only JSON" in session_mgr.send_calls[1][1]
+    journal = artifact_store.get_journal()
+    phase_6_entries = [entry for entry in journal if entry["phase_id"] == "phase_6_report"]
+    assert [entry["status"] for entry in phase_6_entries] == ["response_shape_failed", "succeeded"]
+    failed_attempt = json.loads(Path(str(phase_6_entries[0]["raw_path"])).read_text(encoding="utf-8"))
+    assert failed_attempt["raw_response"] == status_only_response
+    assert failed_attempt["validation_errors"]
+    assert any("status/progress-only JSON" in error for error in failed_attempt["validation_errors"])
+    assert phase_6_entries[0]["canonical_path"] == ""
+
+
 def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
     _ = write_runtime_skill(tmp_path, "agent-skill", "# Agent Skill\n\nAgent guidance")
     _ = write_runtime_skill(tmp_path, "report-skill", "# Report Skill\n\nReport guidance")
@@ -748,7 +864,8 @@ def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
 
 def test_run_phase_0_to_1_returns_outputs(tmp_path: Path) -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+            del agent
             return "sess"
 
         def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -788,7 +905,8 @@ def test_run_phase_2_to_3_accepts_constraint_summary() -> None:
 
 def test_build_prompt_context_has_constraint_keys() -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+            del agent
             return "x"
 
         def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -1211,6 +1329,46 @@ def _runner_phase3_report(variant_ids: list[str], *, verdict: str = "complete") 
         "missing_variants": [] if verdict == "complete" else variant_ids[1:],
         "representative_only_coverage": [] if verdict == "complete" else ["only first variant covered"],
         "non_executable_or_missing_checks": [],
+    }
+
+
+def _runner_generic_template_phase1_output(project_dir: Path) -> dict[str, object]:
+    source_dir = project_dir / "src"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    _ = (source_dir / "kernels.cu").write_text(
+        """#define KERNEL_CAT_I(name, dtype) name##_##dtype
+#define KERNEL_CAT(name, dtype) KERNEL_CAT_I(name, dtype)
+#define DISPATCH_DTYPE(dtype) KERNEL_CAT(scalar_forward, dtype)()
+void DISPATCH_DTYPE(float) {}
+void DISPATCH_DTYPE(double) {}
+""",
+        encoding="utf-8",
+    )
+    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
+    return {
+        "project_dir": str(project_dir),
+        "dependencies": ["torch"],
+        "cuda_detected": True,
+        "entry_script": "train.py",
+        "custom_op_surface": {
+            "custom_op_detected": True,
+            "fine_grained_operator_units": ["scalar_forward"],
+            "variant_axes_detected": True,
+            "variant_axes": {"dtype": ["float", "double"]},
+            "discovered_operator_names": ["scalar_forward_${dtype}"],
+            "native_operator_symbols": ["KERNEL_CAT(scalar_forward, dtype)"],
+            "source_evidence": ["src/kernels.cu:KERNEL_CAT(scalar_forward, dtype)"],
+            "expanded_operator_instances_count": len(variant_ids),
+            "expanded_operator_variants": [
+                {
+                    "unit_identity": variant_id,
+                    "base_unit_identity": "scalar_forward",
+                    "axis_values": {"dtype": variant_id.rsplit("=", 1)[-1]},
+                    "source_evidence": ["src/kernels.cu:KERNEL_CAT(scalar_forward, dtype)"],
+                }
+                for variant_id in variant_ids
+            ],
+        },
     }
 
 
@@ -1710,6 +1868,73 @@ def test_phase1_assisted_report_accepts_structured_source_inventory(tmp_path: Pa
     assert validate_phase1_assisted_report(report, phase_output) == []
 
 
+def test_phase_runner_phase1_assisted_uses_deterministic_report_for_stale_grouped_verifier(tmp_path: Path) -> None:
+    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
+    stale_report = _runner_phase1_report(variant_ids)
+    phase1_inventory = cast(dict[str, object], stale_report["phase1_inventory"])
+    phase1_inventory["expanded_operator_instances_count"] = 1
+    phase1_inventory["expanded_unit_identities"] = ["scalar_forward"]
+    source_inventory = cast(dict[str, object], stale_report["source_evidence_inventory"])
+    source_inventory["expanded_operator_instances_count"] = 1
+    source_inventory["expanded_unit_identities"] = ["scalar_forward"]
+    session_mgr = SequencedAssistedSessionManager([
+        _runner_generic_template_phase1_output(tmp_path),
+        stale_report,
+        stale_report,
+    ])
+    artifact_store = ArtifactStore(str(tmp_path), "assisted-deterministic-fallback")
+    runner = PhaseRunner(
+        session_mgr,
+        artifact_store,
+        StaticPromptLoader(),
+        ValidatorEngine(),
+        framework_config={"assisted_verification": {"enabled": True}},
+    )
+    runner.validator.register_validator("project_analysis", lambda _data: {"passed": True, "errors": [], "warnings": []})
+
+    result = runner.run_single_phase("main-session", "phase_1", {"project_dir": str(tmp_path)})
+
+    assert len(session_mgr.prompts) == 3
+    assert "previous assisted-verification JSON report failed semantic validation" in session_mgr.prompts[2]
+    assisted = cast(dict[str, object], result["assisted_verification"])
+    summary = cast(dict[str, object], assisted["phase_1_custom_op_completeness_check"])
+    assert summary["status"] == "complete"
+    canonical_obj = artifact_store.load_phase_output("phase_1_custom_op_completeness_check")
+    assert isinstance(canonical_obj, dict)
+    canonical = cast(dict[str, object], canonical_obj)
+    assert canonical["deterministic_completion"] is True
+    assert cast(dict[str, object], canonical["phase1_inventory"])["expanded_unit_identities"] == variant_ids
+    assert cast(dict[str, object], canonical["source_evidence_inventory"])["expanded_unit_identities"] == variant_ids
+
+
+def test_phase_runner_phase1_assisted_does_not_fallback_on_real_missing_variants(tmp_path: Path) -> None:
+    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
+    incomplete_report = _runner_phase1_report(variant_ids, verdict="incomplete")
+    cast(dict[str, object], incomplete_report["phase1_inventory"])["expanded_unit_identities"] = [variant_ids[0]]
+    cast(dict[str, object], incomplete_report["source_evidence_inventory"])["expanded_unit_identities"] = [variant_ids[0]]
+    session_mgr = SequencedAssistedSessionManager([
+        _runner_generic_template_phase1_output(tmp_path),
+        incomplete_report,
+    ])
+    artifact_store = ArtifactStore(str(tmp_path), "assisted-real-missing-no-fallback")
+    runner = PhaseRunner(
+        session_mgr,
+        artifact_store,
+        StaticPromptLoader(),
+        ValidatorEngine(),
+        framework_config={"assisted_verification": {"enabled": True}},
+    )
+    runner.validator.register_validator("project_analysis", lambda _data: {"passed": True, "errors": [], "warnings": []})
+    runner.max_retry = 1
+
+    with pytest.raises(ValueError, match="failed validation"):
+        _ = runner.run_single_phase("main-session", "phase_1", {"project_dir": str(tmp_path)})
+
+    assert len(session_mgr.prompts) == 2
+    canonical_obj = artifact_store.load_phase_output("phase_1_custom_op_completeness_check")
+    assert canonical_obj is None
+
+
 def test_phase_runner_phase3_assisted_variant_mismatch_retries_with_corrected_json(tmp_path: Path) -> None:
     script = tmp_path / "validate_custom_ops_full.py"
     _ = script.write_text("print('validate')\n", encoding="utf-8")
@@ -1905,7 +2130,8 @@ def test_phase_runner_phase35_requires_expanded_variant_static_context() -> None
 
 def test_phase_35_prompt_context_includes_previous_outputs() -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+            del agent
             return "x"
 
         def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -1996,7 +2222,8 @@ def test_run_phase_2_to_3_retries_phase_3_after_phase_35_failure(tmp_path: Path)
                 },
             ]
 
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+            del agent
             del role, lifecycle
             return "persistent-main"
 
@@ -2180,7 +2407,8 @@ class CustomOpPhase35SessionManager:
         self.phase35_prompts = []
         self.phase35_outputs = list(phase35_outputs)
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+        del agent
         del role, lifecycle
         return "persistent-main"
 
@@ -2209,7 +2437,8 @@ def test_run_phase_2_to_3_rejects_missing_custom_op_entry_script_before_phase35(
         def __init__(self) -> None:
             self.phase35_prompts = []
 
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+            del agent
             del role, lifecycle
             return "persistent-main"
 
@@ -2268,7 +2497,8 @@ def test_run_phase_2_to_3_accepts_relative_custom_op_entry_script(tmp_path: Path
         def __init__(self) -> None:
             self.phase35_prompts = []
 
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+            del agent
             del role, lifecycle
             return "persistent-main"
 

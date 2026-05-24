@@ -60,6 +60,8 @@ def test_second_attempt_sends_correction_prompt(tmp_path: Path) -> None:
     second_prompt, _ = session.calls[1]
     assert "failed validation" in second_prompt
     assert second_prompt.startswith("Your previous response for phase_0_env_detect")
+    assert "Return one complete replacement JSON object" in second_prompt
+    assert "status" in second_prompt
 
 
 def test_correction_prompt_includes_validation_errors(tmp_path: Path) -> None:

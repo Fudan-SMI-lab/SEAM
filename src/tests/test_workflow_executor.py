@@ -4,6 +4,7 @@ import json
 import pytest
 import tempfile
 import os
+import time
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 from typing import cast
@@ -15,7 +16,7 @@ from core.types import (
     SubWorkflowDefinition,
     TransitionDefinition,
 )
-from core.workflow_executor import WorkflowExecutor, CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT
+from core.workflow_executor import WorkflowExecutor, CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT, CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
 from core.artifact_store import ArtifactStore
 from core.experience_store import ExperienceStore
 from core.telemetry_bridge import TelemetryBridge
@@ -25,6 +26,7 @@ from core.validator_engine import ValidatorEngine
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_project_analysis import validate as validate_project_analysis
+from validators.validate_venv import validate as validate_venv
 
 
 def write_runtime_skill(root: Path, name: str, content: str | None = None) -> Path:
@@ -378,6 +380,80 @@ class TestTransitionResolution:
         next_id = executor._get_next_phase_id(phase, "failure", {}, {})
 
         assert next_id is None
+
+    def test_failure_like_status_uses_on_failure_transition(self, executor):
+        phase = PhaseDefinition(
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
+            transitions={"on_success": "b", "on_failure": "complete"},
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(
+            phase,
+            "stagnation_fail_closed_missing_strict_opp_evidence",
+            {},
+            {},
+        )
+
+        assert next_id == "complete"
+
+    def test_failure_like_status_without_failure_transition_stops(self, executor):
+        phase = PhaseDefinition(
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
+            transitions={"on_success": "b"},
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(
+            phase,
+            "fail_closed_missing_strict_opp_evidence",
+            {},
+            {},
+        )
+
+        assert next_id is None
+
+    def test_failure_like_exact_status_transition_wins(self, executor):
+        phase = PhaseDefinition(
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
+            transitions={
+                "fail_closed_missing_strict_opp_evidence": "custom_fail",
+                "on_failure": "complete",
+            },
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(
+            phase,
+            "fail_closed_missing_strict_opp_evidence",
+            {},
+            {},
+        )
+
+        assert next_id == "custom_fail"
+
+    def test_failure_like_transition_definition_uses_on_failure(self, executor):
+        phase = PhaseDefinition(
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
+            transition=TransitionDefinition(on_success="b", on_failure="complete"),
+        )
+        executor.phase_index = {"a": 0}
+
+        next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
+
+        assert next_id == "complete"
 
     def test_skipped_without_transition_still_defaults_next(self, executor):
         phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
@@ -1335,11 +1411,11 @@ def test_operator_fix_communication_error_does_not_trigger_stagnation(tmp_path: 
     operator_classification = '{"repair_role": "operator_fixer", "category": "operator", "root_cause": "strict OPP missing", "suggested_fix": "build OPP"}'
     session_mgr.send_command.side_effect = [
         operator_classification,
-        '{"ok": false, "error": "Session still running with no response"}',
+        *('{"ok": false, "error": "Session still running with no response"}' for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
         operator_classification,
-        '{"ok": false, "error": "Session still running with no response"}',
+        *('{"ok": false, "error": "Session still running with no response"}' for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
         operator_classification,
-        '{"ok": false, "error": "Session still running with no response"}',
+        *('{"ok": false, "error": "Session still running with no response"}' for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
     executor = WorkflowExecutor(
@@ -1373,14 +1449,11 @@ def test_operator_fix_communication_error_does_not_trigger_stagnation(tmp_path: 
     assert [entry["status"] for entry in result["loop_history"]] == ["communication_error", "communication_error", "communication_error"]
     assert result["loop_state"]["stagnation_count"] == 0
     assert session_mgr.create_session.call_count == 2
-    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == [
-        "session:error_analyzer",
-        "session:operator_fixer",
-        "session:error_analyzer",
-        "session:operator_fixer_retry_1",
-        "session:error_analyzer",
-        "session:operator_fixer_retry_2",
-    ]
+    called_sessions = [call.args[0] for call in session_mgr.send_command.call_args_list]
+    assert called_sessions.count("session:error_analyzer") == 3
+    assert called_sessions.count("session:operator_fixer") == CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
+    assert called_sessions.count("session:operator_fixer_retry_1") == CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
+    assert called_sessions.count("session:operator_fixer_retry_2") == CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
 
 
 def test_custom_op_imp_operator_fix_uses_fresh_session_after_prior_communication_error(tmp_path: Path):
@@ -1524,11 +1597,11 @@ def test_operator_fix_partial_prose_is_retryable_not_stagnation(tmp_path: Path):
     partial_response = "I read this as implementation-continuation for the custom-op repair: I’ll inspect the validator requirements first."
     session_mgr.send_command.side_effect = [
         operator_classification,
-        partial_response,
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
         operator_classification,
-        partial_response,
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
         operator_classification,
-        partial_response,
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
     executor = WorkflowExecutor(
@@ -1564,7 +1637,7 @@ def test_operator_fix_partial_prose_is_retryable_not_stagnation(tmp_path: Path):
     fix_output = result["loop_state"]["fix_operator"]
     assert fix_output["communication_error"] is True
     assert fix_output["retryable"] is True
-    assert "partial/in-progress" in fix_output["error"]
+    assert "strict OPP final gate FULL_PASS" in fix_output["error"]
 
 
 
@@ -1758,7 +1831,7 @@ def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_expl
     assert session_mgr.send_command.call_args.kwargs["timeout"] is None
 
 
-def test_all_llm_phase_timeout_resolvers_return_no_session_deadline(tmp_path: Path) -> None:
+def test_top_level_llm_timeout_resolver_honors_phase_timeout_and_config(tmp_path: Path) -> None:
     executor = WorkflowExecutor(
         WorkflowDefinition(name="timeout-resolvers", version="1.0", phases=[], terminals=[]),
         MagicMock(),
@@ -1781,6 +1854,13 @@ def test_all_llm_phase_timeout_resolvers_return_no_session_deadline(tmp_path: Pa
         type="llm",
         timeout=77,
     )
+    configured_top_level = PhaseDefinition(
+        id="phase_6_report",
+        name="Report",
+        prompt_template="phase_6_report",
+        output_schema={},
+        type="llm",
+    )
     analyze = PhaseDefinition(
         id="analyze_error",
         name="Analyze",
@@ -1798,7 +1878,8 @@ def test_all_llm_phase_timeout_resolvers_return_no_session_deadline(tmp_path: Pa
         timeout=99,
     )
 
-    assert executor._resolve_top_level_llm_timeout(top_level) is None
+    assert executor._resolve_top_level_llm_timeout(top_level) == 77
+    assert executor._resolve_top_level_llm_timeout(configured_top_level) == 33
     assert executor._resolve_sub_workflow_llm_timeout(analyze) is None
     assert executor._resolve_sub_workflow_llm_timeout(repair) is None
 
@@ -1876,6 +1957,7 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
         validator,
         project_dir=str(tmp_path),
         output_dir=str(tmp_path),
+        framework_config={"custom_op_operator_incomplete_max_continuations": 0},
     )
 
     result = executor._run_sub_workflow(
@@ -2327,6 +2409,21 @@ def test_workflow_executor_custom_op_final_gate_subset_unit_identities_cannot_pa
     assert any("missing: ScalarBwd2D" in error for error in result["errors"])
 
 
+def test_phase5_workflow_route_returns_all_routes_and_preserves_custom_precedence(tmp_path: Path) -> None:
+    executor = _workflow_executor_for_custom_op_gate(tmp_path)
+    assert executor._phase5_workflow_route({}) == "ordinary_cuda"
+    assert executor._phase5_workflow_route({"phase_1_project_analysis": {"migration_route": "vllm_serving"}}) == "vllm_serving"
+    assert executor._phase5_workflow_route(
+        {"phase_3_entry_script": {"entry_script_kind": "sglang_serving_validation", "serving_framework": "sglang"}}
+    ) == "sglang_serving"
+    assert executor._phase5_workflow_route({"phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"}}) == "custom_op"
+    assert executor._phase5_workflow_route({"phase_3_entry_script": _expanded_variant_contract(tmp_path)}) == "custom_op_with_variants"
+    assert executor._phase5_workflow_route(
+        {
+            "phase_1_project_analysis": {"migration_route": "vllm_serving"},
+            "phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"},
+        }
+    ) == "custom_op"
 def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target_script = tmp_path / "expanded_target.py"
     target_script.write_text("from pathlib import Path\nPath('expanded-ran').write_text('yes')\n", encoding="utf-8")
@@ -4177,7 +4274,7 @@ def test_workflow_executor_retries_status_only_project_analysis_correction_until
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
     validator = ValidatorEngine()
-    validator.register_validator("project_analysis", validate_project_analysis)
+    validator.register_validator("project_analysis", lambda d: {"passed": True, "errors": [], "warnings": []})
     valid_output = {
         "project_dir": str(tmp_path),
         "dependencies": ["torch"],
@@ -4332,6 +4429,178 @@ def test_workflow_executor_assisted_verification_skips_ordinary_cuda_without_ser
     assert session_mgr.send_command.call_count == 1
     assisted = cast(dict[str, object], output["assisted_verification"])
     assert cast(dict[str, object], assisted["phase_1_custom_op_completeness_check"])["status"] == "skipped"
+
+
+def test_workflow_executor_phase1_assisted_session_error_accepts_local_complete_inventory(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_1_project_analysis",
+        name="Project Analysis",
+        prompt_template="phase_1_project_analysis",
+        output_schema={},
+        type="llm",
+        validator="project_analysis",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase1-assisted-session-error",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    artifact_store.save_phase_output.return_value = "raw.json"
+    artifact_store.mark_validated.return_value = "canonical.json"
+    artifact_store.write_journal.return_value = "journal.jsonl"
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = "phase 1 prompt"
+    session_mgr.get_or_create.return_value = "session:any"
+    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
+    session_mgr.send_command.side_effect = [
+        json.dumps(_assisted_variant_phase1_output(tmp_path, variant_ids)),
+        json.dumps({"ok": False, "error": "OpenAI上游返回{上游请求参数无效}"}),
+    ]
+    validator = ValidatorEngine()
+    validator.register_validator("project_analysis", lambda d: {"passed": True, "errors": [], "warnings": []})
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        framework_config={"assisted_verification": {"enabled": True}},
+    )
+
+    status, output = executor._execute_llm_phase(phase, {}, {"PROJECT_DIR": str(tmp_path)})
+
+    assert status == "success"
+    assisted = cast(dict[str, object], output["assisted_verification"])
+    summary = cast(dict[str, object], assisted["phase_1_custom_op_completeness_check"])
+    assert summary["status"] == "complete"
+    assert summary["raw_artifact"] == "raw.json"
+    assert "warnings" in summary
+    assert session_mgr.send_command.call_count == 2
+
+
+def test_workflow_executor_phase1_assisted_session_error_rejects_incomplete_local_inventory(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_1_project_analysis",
+        name="Project Analysis",
+        prompt_template="phase_1_project_analysis",
+        output_schema={},
+        type="llm",
+        validator="project_analysis",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase1-assisted-session-error-incomplete",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    artifact_store.save_phase_output.return_value = "raw.json"
+    artifact_store.mark_validated.return_value = "canonical.json"
+    artifact_store.write_journal.return_value = "journal.jsonl"
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = "phase 1 prompt"
+    session_mgr.get_or_create.return_value = "session:any"
+    incomplete = _assisted_variant_phase1_output(tmp_path, ["scalar_forward:dtype=float"])
+    surface = cast(dict[str, object], incomplete["custom_op_surface"])
+    surface["expanded_operator_instances_count"] = 2
+    session_mgr.send_command.side_effect = [
+        json.dumps(incomplete),
+        json.dumps({"ok": False, "error": "OpenAI上游返回{上游请求参数无效}"}),
+        json.dumps(incomplete),
+        json.dumps({"ok": False, "error": "OpenAI上游返回{上游请求参数无效}"}),
+        json.dumps(incomplete),
+        json.dumps({"ok": False, "error": "OpenAI上游返回{上游请求参数无效}"}),
+    ]
+    validator = ValidatorEngine()
+    validator.register_validator("project_analysis", validate_project_analysis)
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        framework_config={"assisted_verification": {"enabled": True}},
+    )
+
+    status, output = executor._execute_llm_phase(phase, {}, {"PROJECT_DIR": str(tmp_path)})
+
+    assert status == "failure"
+    assert "validation_errors" in output
+    assert any("assisted verifier session failed" in error for error in output["validation_errors"])
+
+
+def test_workflow_executor_phase3_assisted_session_error_accepts_local_valid_contract(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    script = project_dir / "validate_custom_ops_full.py"
+    script.write_text("print('validate')\n", encoding="utf-8")
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+        validator="entry_script",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase3-assisted-session-error",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    artifact_store.save_phase_output.return_value = "raw.json"
+    artifact_store.mark_validated.return_value = "canonical.json"
+    artifact_store.write_journal.return_value = "journal.jsonl"
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = "phase 3 prompt"
+    session_mgr.get_or_create.return_value = "session:any"
+    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
+    contract = _expanded_variant_contract(project_dir)
+    inventory = cast(dict[str, object], contract["expanded_variant_inventory"])
+    inventory["unit_identities"] = variant_ids
+    inventory["expanded_operator_instances_count"] = len(variant_ids)
+    session_mgr.send_command.side_effect = [
+        json.dumps(contract),
+        json.dumps({"ok": False, "error": "OpenAI上游返回{上游请求参数无效}"}),
+    ]
+    validator = ValidatorEngine()
+    validator.register_validator("entry_script", validate_entry_script)
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(project_dir),
+        output_dir=str(tmp_path),
+        framework_config={"assisted_verification": {"enabled": True}},
+    )
+    state = {"phase_1_project_analysis": _assisted_variant_phase1_output(project_dir, variant_ids)}
+
+    status, output = executor._execute_llm_phase(phase, state, {"PROJECT_DIR": str(project_dir)})
+
+    assert status == "success"
+    assisted = cast(dict[str, object], output["assisted_verification"])
+    summary = cast(dict[str, object], assisted["phase_3_custom_op_contract_coverage_check"])
+    assert summary["status"] == "complete"
+    assert "warnings" in summary
+    assert session_mgr.send_command.call_count == 2
 
 
 def test_workflow_executor_phase1_assisted_mismatch_triggers_full_json_correction(tmp_path: Path) -> None:
@@ -4778,7 +5047,7 @@ import torch_npu
     assert any("assisted Phase 3 validation script is not valid Python" in error for error in errors)
 
 
-def test_top_level_llm_phase_records_session_failure_without_phase_deadline(tmp_path: Path) -> None:
+def test_top_level_llm_phase_records_session_failure_with_phase_deadline(tmp_path: Path) -> None:
     phase = PhaseDefinition(
         id="phase_1_project_analysis",
         name="Project Analysis",
@@ -4818,17 +5087,17 @@ def test_top_level_llm_phase_records_session_failure_without_phase_deadline(tmp_
     assert output["phase_id"] == "phase_1_project_analysis"
     assert output["status"] == "failure"
     assert output["failure_kind"] == "timeout"
-    assert output["timeout_seconds"] is None
+    assert output["timeout_seconds"] == 30000
     assert output["session_ref"] == "session:main"
     assert "poll_s timed out" in str(output["error"])
-    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 30000
     assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:main"]
     session_mgr.create_session.assert_not_called()
     journal = artifact_store.get_journal()
     assert journal[-1]["phase_id"] == "phase_1_project_analysis"
     assert journal[-1]["status"] == "failure"
     assert journal[-1]["failure_kind"] == "timeout"
-    assert journal[-1]["timeout_seconds"] is None
+    assert journal[-1]["timeout_seconds"] == 30000
     assert journal[-1]["session_ref"] == "session:main"
     assert "poll_s timed out" in journal[-1]["error"]
 
@@ -4959,7 +5228,7 @@ def test_top_level_llm_phase_fresh_retries_phase35_progress_response(tmp_path: P
     session_mgr.create_session.return_value = "session:main_retry_1"
     session_mgr.send_command.side_effect = [
         "I’ve got the generated validator in place; now I’m statically checking it for any headless blockers or short internal timeouts.",
-        json.dumps({"status": "success", "entry_script_path": "validate_custom_ops_full.py"}),
+        json.dumps({"validation_passed": True, "issues": [], "fix_plan": "No issues found."}),
     ]
     prompt_loader.load_prompt.return_value = "phase 35 prompt"
     executor = WorkflowExecutor(
@@ -4975,7 +5244,7 @@ def test_top_level_llm_phase_fresh_retries_phase35_progress_response(tmp_path: P
     status, output = executor._execute_llm_phase(phase, {}, {})
 
     assert status == "success"
-    assert output["status"] == "success"
+    assert output["validation_passed"] is True
     assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:main", "session:main_retry_1"]
 
 
@@ -5284,7 +5553,259 @@ def test_top_level_llm_phase_does_not_validate_or_fresh_retry_upstream_stream_er
     assert all("validation_errors" not in saved for saved in saved_outputs)
 
 
-def test_top_level_llm_phase_ignores_configured_phase_timeout(tmp_path: Path) -> None:
+def test_top_level_llm_phase_phase2_retries_progress_only_json(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_2_venv_create",
+        name="Venv",
+        prompt_template="phase_2_venv_create",
+        output_schema={},
+        type="llm",
+        validator="venv",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase2-shape-retry",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = ValidatorEngine()
+    validator.register_validator("venv", validate_venv)
+    session_mgr.get_or_create.return_value = "session:main"
+    session_mgr.create_session.return_value = "session:main_retry_1"
+    session_mgr.send_command.side_effect = [
+        "I am setting up the virtual environment and will report when complete.",
+        json.dumps(
+            {
+                "venv_path": str(tmp_path / ".venv"),
+                "python_path": str(tmp_path / ".venv" / "bin" / "python"),
+                "installed_packages": ["torch", "torch_npu"],
+            }
+        ),
+    ]
+    prompt_loader.load_prompt.return_value = "phase 2 prompt"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    status, output = executor._execute_llm_phase(phase, {}, {})
+
+    assert status == "success"
+    assert output["venv_path"] == str(tmp_path / ".venv")
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:main", "session:main"]
+    assert "response contained no parseable JSON object" in session_mgr.send_command.call_args_list[1].args[1]
+
+
+def test_top_level_llm_phase_phase6_retries_status_only_json(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_6_report",
+        name="Report",
+        prompt_template="phase_6_report",
+        output_schema={},
+        type="llm",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase6-shape-retry",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = ValidatorEngine()
+    session_mgr.get_or_create.return_value = "session:main"
+    session_mgr.create_session.return_value = "session:main_retry_1"
+    session_mgr.send_command.side_effect = [
+        json.dumps({"status": "in_progress", "message": "writing reports"}),
+        json.dumps({"report_paths": ["/tmp/report.md"], "migration_summary": {"files_migrated": 1}}),
+    ]
+    prompt_loader.load_prompt.return_value = "phase 6 prompt"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    status, output = executor._execute_llm_phase(phase, {}, {})
+
+    assert status == "success"
+    assert output["report_paths"] == ["/tmp/report.md"]
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:main", "session:main"]
+    assert "status/progress-only JSON" in session_mgr.send_command.call_args_list[1].args[1]
+
+
+def test_top_level_llm_phase_phase6_retries_wrong_type_json(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_6_report",
+        name="Report",
+        prompt_template="phase_6_report",
+        output_schema={},
+        type="llm",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase6-shape-retry-types",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = ValidatorEngine()
+    session_mgr.get_or_create.return_value = "session:main"
+    session_mgr.create_session.return_value = "session:main_retry_1"
+    session_mgr.send_command.side_effect = [
+        json.dumps({"report_paths": "/tmp/report.md", "migration_summary": []}),
+        json.dumps({"report_paths": ["/tmp/report.md"], "migration_summary": {"files_migrated": 1}}),
+    ]
+    prompt_loader.load_prompt.return_value = "phase 6 prompt"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    status, output = executor._execute_llm_phase(phase, {}, {})
+
+    assert status == "success"
+    assert output["report_paths"] == ["/tmp/report.md"]
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:main", "session:main"]
+    retry_prompt = session_mgr.send_command.call_args_list[1].args[1]
+    assert "report_paths must be a list" in retry_prompt
+    assert "migration_summary must be an object" in retry_prompt
+
+
+def test_top_level_llm_phase_phase35_retries_status_only_json(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_35_static_validate",
+        name="Static Validate",
+        prompt_template="phase_35_static_validate",
+        output_schema={},
+        type="llm",
+        validator="entry_static",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase35-shape-retry",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = ValidatorEngine()
+    validator.register_validator("entry_static", validate_entry_static)
+    session_mgr.get_or_create.return_value = "session:main"
+    session_mgr.create_session.return_value = "session:main_retry_1"
+    session_mgr.send_command.side_effect = [
+        json.dumps({"status": "in_progress", "message": "checking validation script"}),
+        json.dumps({"validation_passed": True, "issues": [], "fix_plan": "No issues found."}),
+    ]
+    prompt_loader.load_prompt.return_value = "phase 35 prompt"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    status, output = executor._execute_llm_phase(phase, {}, {})
+
+    assert status == "success"
+    assert output["validation_passed"] is True
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:main", "session:main"]
+    assert "status/progress-only JSON" in session_mgr.send_command.call_args_list[1].args[1]
+
+
+def test_workflow_review_phase_retries_status_only_json(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="review_gate",
+        name="Review",
+        prompt_template="phase_5_review",
+        output_schema={},
+        type="review",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="review-shape-retry",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = ValidatorEngine()
+    session_mgr.get_or_create.return_value = "session:main"
+    session_mgr.send_command.side_effect = [
+        json.dumps({"status": "in_progress", "message": "reviewing"}),
+        json.dumps({
+            "verdict": "accept",
+            "cpu_fallback_detected": False,
+            "cpu_fallback_necessary": False,
+            "alternative_suggestions": "",
+            "reasoning": "ok",
+        }),
+    ]
+    prompt_loader.load_prompt.return_value = "review prompt"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    loop_state: dict[str, object] = {}
+
+    output = executor._execute_review_phase(
+        phase,
+        {},
+        {"PROJECT_DIR": str(tmp_path)},
+        {},
+        loop_state,
+        [],
+        None,
+        {},
+    )
+
+    assert output["verdict"] == "accept"
+    assert loop_state["review_verdict_status"] == "accept"
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:main", "session:main"]
+    assert "status/progress-only JSON" in session_mgr.send_command.call_args_list[1].args[1]
+
+
+def test_top_level_llm_phase_uses_configured_phase_timeout(tmp_path: Path) -> None:
     phase = PhaseDefinition(
         id="phase_2_venv_create",
         name="Venv",
@@ -5305,7 +5826,13 @@ def test_top_level_llm_phase_ignores_configured_phase_timeout(tmp_path: Path) ->
     prompt_loader = MagicMock()
     validator = ValidatorEngine()
     session_mgr.get_or_create.return_value = "session:main"
-    session_mgr.send_command.return_value = json.dumps({"ok": True})
+    session_mgr.send_command.return_value = json.dumps(
+        {
+            "venv_path": str(tmp_path / ".venv"),
+            "python_path": str(tmp_path / ".venv" / "bin" / "python"),
+            "installed_packages": ["torch", "torch_npu"],
+        }
+    )
     prompt_loader.load_prompt.return_value = "prompt"
     executor = WorkflowExecutor(
         workflow,
@@ -5321,7 +5848,7 @@ def test_top_level_llm_phase_ignores_configured_phase_timeout(tmp_path: Path) ->
     status, _ = executor._execute_llm_phase(phase, {}, {})
 
     assert status == "success"
-    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 33
 
 
 def test_entry_script_action_needed_false_string_does_not_apply_or_count(tmp_path: Path):
@@ -5856,6 +6383,19 @@ def test_experience_memory_workflow_has_custom_op_final_gate_after_entry_script(
     assert gate_phase["params"] == {"operation": "custom_op_final_gate"}
 
 
+def test_experience_memory_workflow_has_serving_final_gate_after_entry_script() -> None:
+    workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+    workflow = load_workflow(str(workflow_path))
+
+    phase_ids = [phase.get("id") for phase in workflow.sub_workflows["repair_loop"].phases if isinstance(phase, dict)]
+    assert phase_ids.index("run_entry_script") < phase_ids.index("serving_final_gate") < phase_ids.index("analyze_error")
+    gate_phase = next(
+        phase for phase in workflow.sub_workflows["repair_loop"].phases
+        if isinstance(phase, dict) and phase.get("id") == "serving_final_gate"
+    )
+    assert gate_phase["params"] == {"operation": "serving_final_gate"}
+
+
 def test_experience_memory_custom_op_gate_skips_for_non_custom_contract(tmp_path: Path) -> None:
     workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
     workflow = load_workflow(str(workflow_path))
@@ -5895,6 +6435,182 @@ def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> N
     assert "Custom-op final evidence gate failed" in result["loop_state"]["script_stderr"]
     assert result["loop_state"]["custom_op_final_gate"]["passed"] is False
     executor.session_mgr.send_command.assert_called_once()
+
+
+def _serving_contract(tmp_path: Path, route: str = "vllm_serving", framework: str = "vllm") -> dict[str, object]:
+    return {
+        "entry_script_kind": "vllm_serving_validation" if route == "vllm_serving" else "sglang_serving_validation",
+        "migration_route": route,
+        "serving_framework": framework,
+        "run_command": "python validate_serving.py",
+        "serving_reports_dir": "migration_reports/serving",
+        "required_report_paths": ["migration_reports/serving/serving_final_gate.json"],
+    }
+
+
+def _serving_gate_payload(route: str = "vllm_serving", framework: str = "vllm") -> dict[str, object]:
+    return {
+        "migration_route": route,
+        "serving_framework": framework,
+        "full_migration_status": "FULL_PASS",
+        "project_test_files": ["tests/test_serving_api.py"],
+        "expected_outputs": ["generated text returned"],
+        "required_checks": [
+            "project_demo_or_test_execution",
+            "serving_api_request_validation",
+            "readiness_probe_passed",
+            "npu_execution_evidence",
+            "no_cuda_fallback",
+            "no_cpu_fallback",
+            "fresh_serving_report",
+            "route_framework_match",
+        ],
+        "readiness_probe": {"passed": True, "status_code": 200},
+        "request_validation": {"passed": True, "project_fixture": "tests/request.json"},
+        "npu_execution_evidence": {"passed": True, "device": "npu:0"},
+        "project_demo_or_test_executed": True,
+        "serving_api_validated": True,
+        "npu_execution_observed": True,
+        "cuda_fallback_detected": False,
+        "cpu_fallback_detected": False,
+        "import_only": False,
+        "smoke_only": False,
+    }
+
+
+def _execute_serving_gate(executor: WorkflowExecutor, state: dict[str, object], loop_state: dict[str, object]) -> dict[str, object]:
+    phase = PhaseDefinition(id="serving_final_gate", name="Serving Gate", prompt_template="", output_schema={}, type="builtin")
+    setattr(phase, "params", {"operation": "serving_final_gate"})
+    status, result = executor._execute_builtin_phase(
+        phase,
+        state=state,
+        context={"PROJECT_DIR": executor.project_dir},
+        loop_state=loop_state,
+    )
+    assert status == "success"
+    return result
+
+
+def test_serving_final_gate_fails_closed_on_missing_report(tmp_path: Path) -> None:
+    executor = _workflow_executor_for_custom_op_gate(tmp_path)
+    phase = PhaseDefinition(id="serving_final_gate", name="Serving Gate", prompt_template="", output_schema={}, type="builtin")
+    setattr(phase, "params", {"operation": "serving_final_gate"})
+    loop_state: dict[str, object] = {"run_entry_script_started_at": 10.0}
+
+    status, result = executor._execute_builtin_phase(
+        phase,
+        state={"phase_3_entry_script": _serving_contract(tmp_path)},
+        context={"PROJECT_DIR": str(tmp_path)},
+        loop_state=loop_state,
+    )
+
+    assert status == "success"
+    assert result["passed"] is False
+    assert loop_state["script_exit_code"] == 1
+    assert "missing" in str(loop_state["script_stderr"])
+
+
+def test_serving_final_gate_missing_report_blocks_phase5_success(tmp_path: Path) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+        phases=[
+            {
+                "id": "run_entry_script",
+                "type": "shell",
+                "command": "python -c \"print('serving validation wrapper passed')\"",
+                "on_failure": "continue",
+            },
+            {
+                "id": "serving_final_gate",
+                "type": "builtin",
+                "condition": "$.script_exit_code == 0",
+                "params": {"operation": "serving_final_gate"},
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="serving_gate_blocks_success",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "python validate_serving.py", "project_dir": str(tmp_path)},
+        ),
+        state={"phase_3_entry_script": _serving_contract(tmp_path)},
+        context={},
+    )
+
+    assert result["status"] == "failure"
+    assert result["loop_state"]["script_exit_code"] == 1
+    assert result["loop_state"]["serving_final_gate"]["passed"] is False
+    assert "serving final gate report missing" in result["loop_state"]["script_stderr"]
+
+
+def test_serving_final_gate_fails_closed_on_stale_report(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports" / "serving"
+    reports_dir.mkdir(parents=True)
+    gate_path = reports_dir / "serving_final_gate.json"
+    _ = gate_path.write_text(json.dumps(_serving_gate_payload()), encoding="utf-8")
+    executor = _workflow_executor_for_custom_op_gate(tmp_path)
+    loop_state: dict[str, object] = {"run_entry_script_started_at": gate_path.stat().st_mtime + 100}
+
+    result = _execute_serving_gate(executor, {"phase_3_entry_script": _serving_contract(tmp_path)}, loop_state)
+
+    assert result["passed"] is False
+    errors = result.get("errors")
+    assert isinstance(errors, list)
+    assert any("stale" in str(error) for error in errors)
+    assert loop_state["script_exit_code"] == 1
+
+
+def test_serving_final_gate_fails_closed_on_invalid_report(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports" / "serving"
+    reports_dir.mkdir(parents=True)
+    _ = (reports_dir / "serving_final_gate.json").write_text(json.dumps({"full_migration_status": "SMOKE_ONLY"}), encoding="utf-8")
+    executor = _workflow_executor_for_custom_op_gate(tmp_path)
+    loop_state: dict[str, object] = {"run_entry_script_started_at": 0.0}
+
+    result = _execute_serving_gate(executor, {"phase_3_entry_script": _serving_contract(tmp_path)}, loop_state)
+
+    assert result["passed"] is False
+    errors = result.get("errors")
+    assert isinstance(errors, list)
+    assert any("FULL_PASS" in str(error) or "migration_route" in str(error) for error in errors)
+
+
+def test_serving_final_gate_passes_on_strict_full_pass(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports" / "serving"
+    reports_dir.mkdir(parents=True)
+    _ = (reports_dir / "serving_final_gate.json").write_text(json.dumps(_serving_gate_payload()), encoding="utf-8")
+    executor = _workflow_executor_for_custom_op_gate(tmp_path)
+    loop_state: dict[str, object] = {"run_entry_script_started_at": 0.0}
+
+    result = _execute_serving_gate(executor, {"phase_3_entry_script": _serving_contract(tmp_path)}, loop_state)
+
+    assert result["passed"] is True
+    assert "script_exit_code" not in loop_state
 
 
 def test_custom_op_opp_preflight_blocks_phase5_before_entry_script(tmp_path: Path) -> None:
@@ -6153,7 +6869,7 @@ def test_stale_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> Non
     assert "Custom-op final evidence gate failed" in result["loop_state"]["script_stderr"]
 
 
-def test_operator_full_pass_repair_output_recovers_valid_stale_gate_after_later_rerun(tmp_path: Path) -> None:
+def test_operator_full_pass_repair_output_does_not_recover_stale_gate_without_current_rerun(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
     _write_native_custom_op_gate_artifacts(tmp_path)
@@ -6167,12 +6883,13 @@ def test_operator_full_pass_repair_output_recovers_valid_stale_gate_after_later_
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    stale_full_pass_claim = json.dumps({
+        "summary": "FULL_PASS: final gate closure is inventory_count=1, manifest_entries=1, closed_pass_entries=1, remaining_entries=0, full_migration_status=FULL_PASS.",
+        "verification": {"result": {"status": "PASS"}},
+    })
     session_mgr.send_command.side_effect = [
         json.dumps({"repair_role": "operator_fixer", "category": "operator", "root_cause": "stale gate", "suggested_fix": "regenerate full gate"}),
-        json.dumps({
-            "summary": "FULL_PASS: final gate closure is inventory_count=1, manifest_entries=1, closed_pass_entries=1, remaining_entries=0, full_migration_status=FULL_PASS.",
-            "verification": {"result": {"status": "PASS"}},
-        }),
+        *(stale_full_pass_claim for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
     executor = WorkflowExecutor(
@@ -6200,11 +6917,12 @@ def test_operator_full_pass_repair_output_recovers_valid_stale_gate_after_later_
         context={},
     )
 
-    assert result["status"] == "success"
-    assert result["loop_state"]["script_exit_code"] == 0
-    assert result["loop_state"]["custom_op_final_gate"]["passed"] is True
-    assert result["loop_state"]["fix_operator"]["custom_op_final_gate_recovered"] is True
-    assert session_mgr.send_command.call_count == 2
+    assert result["status"] == "failure"
+    assert result["loop_state"]["script_exit_code"] == 1
+    fix_output = result["loop_state"]["fix_operator"]
+    assert fix_output["communication_error"] is True
+    assert "stale before strict OPP final gate FULL_PASS" in fix_output["error"]
+    assert session_mgr.send_command.call_count == 3
 
 
 def test_operator_full_pass_repair_output_does_not_recover_invalid_gate(tmp_path: Path) -> None:
@@ -6421,7 +7139,7 @@ def test_non_custom_entry_script_kind_skips_custom_op_final_gate(tmp_path: Path)
     executor.session_mgr.send_command.assert_not_called()
 
 
-def _operator_recovery_workflow() -> WorkflowDefinition:
+def _operator_recovery_workflow(max_iterations: int = 1) -> WorkflowDefinition:
     return WorkflowDefinition(
         name="operator_gate_recovery",
         version="1.0",
@@ -6435,7 +7153,7 @@ def _operator_recovery_workflow() -> WorkflowDefinition:
             "repair_loop": SubWorkflowDefinition(
                 id="repair_loop",
                 type="loop",
-                max_iterations=1,
+                max_iterations=max_iterations,
                 stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
                 phases=[
                     {
@@ -6478,6 +7196,7 @@ def _operator_recovery_executor(
     session_mgr: MagicMock,
     framework_config: dict[str, object] | None = None,
     prompt_contexts: dict[str, dict[str, object]] | None = None,
+    max_iterations: int = 1,
 ) -> WorkflowExecutor:
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
@@ -6492,7 +7211,7 @@ def _operator_recovery_executor(
 
     prompt_loader.load_prompt.side_effect = load_prompt
     return WorkflowExecutor(
-        _operator_recovery_workflow(),
+        _operator_recovery_workflow(max_iterations=max_iterations),
         session_mgr,
         artifact_store,
         prompt_loader,
@@ -6531,7 +7250,10 @@ def test_operator_fix_no_response_recovers_from_current_valid_full_pass_gate(tmp
         operator_timeouts.append(timeout)
         operator_retries.append(retries)
         operator_recovery_waits.append(recovery_wait_timeout)
-        (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
+        gate_path = reports_dir / "custom_op_final_gate.json"
+        gate_path.write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
+        future = time.time() + 2.0
+        os.utime(gate_path, (future, future))
         return '{"ok": false, "error": "Session still running with no response"}'
 
     session_mgr.send_command.side_effect = send_command
@@ -6621,7 +7343,7 @@ def test_operator_fix_configured_poll_timeout_is_not_used_as_session_deadline(tm
     assert all(timeout is None for timeout in operator_timeouts)
     assert operator_retries
     assert all(retries == 0 for retries in operator_retries)
-    assert operator_recovery_waits == [120]
+    assert operator_recovery_waits == [120] * 3
 
 
 def test_custom_op_operator_incomplete_response_is_retryable_not_completed(tmp_path: Path) -> None:
@@ -6687,10 +7409,10 @@ def test_custom_op_operator_incomplete_response_is_retryable_not_completed(tmp_p
     assert all(timeout is None for timeout in operator_timeouts)
     assert operator_retries
     assert all(retries == 0 for retries in operator_retries)
-    assert operator_recovery_waits == [CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT]
+    assert operator_recovery_waits == [CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT] * 2
 
 
-def test_custom_op_operator_terminal_fail_closed_reports_fail_closed_without_default_continuation(tmp_path: Path) -> None:
+def test_custom_op_operator_terminal_fail_closed_reports_continue_same_session_by_default(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
     _write_native_custom_op_gate_artifacts(tmp_path)
@@ -6768,13 +7490,10 @@ def test_custom_op_operator_terminal_fail_closed_reports_fail_closed_without_def
         context={},
     )
 
-    assert result["status"] == "failure"
-    assert len(operator_prompts) == 1
-    fix_output = result["loop_state"]["fix_operator"]
-    assert fix_output["communication_error"] is True
-    assert fix_output["retryable"] is True
-    assert "strict OPP final gate FULL_PASS" in fix_output["error"]
-    assert "custom_op_final_gate_recovered" not in fix_output
+    assert result["status"] == "success"
+    assert len(operator_prompts) == 2
+    assert "Continue the same custom-op `fix_operator` repair" in operator_prompts[1]
+    assert result["loop_state"]["fix_operator"]["custom_op_final_gate_recovered"] is True
 
 
 def test_custom_op_operator_terminal_fail_closed_reports_continue_same_session_when_configured(tmp_path: Path) -> None:
@@ -6866,14 +7585,208 @@ def test_custom_op_operator_terminal_fail_closed_reports_continue_same_session_w
 
     assert result["status"] == "success"
     assert len(operator_prompts) == 2
-    assert "Current fail-closed report summary" in operator_prompts[1]
-    assert "route evidence has no positive custom call count" in operator_prompts[1]
-    assert "Phase 1 source discovery plus the Phase 3 entry-script contract" in operator_prompts[1]
-    assert "repair every source-discovered operator" in operator_prompts[1]
-    assert "operatorRepairContext" in operator_prompts[1]
+    assert operator_prompts[0] == "repair_operator_fixer"
+    assert "Continue the same custom-op `fix_operator` repair" not in operator_prompts[0]
+    continuation = operator_prompts[1]
+    assert "Custom-op operator repair progress" in continuation
+    assert "total_target_operator_variant_inventory: 2" in continuation
+    assert "all_target_operators_and_variants: op:forward, op:backward" in continuation
+    assert "completed_evidence_count: 0" in continuation
+    assert "remaining_operator_variant_gaps: op:forward, op:backward" in continuation
+    assert "Current fail-closed report summary" in continuation
+    assert "route evidence has no positive custom call count" in continuation
+    assert "Phase 1 source discovery plus the Phase 3 entry-script contract" in continuation
+    assert "repair every source-discovered operator" in continuation
+    assert "operatorRepairContext" in continuation
 
 
-def test_custom_op_operator_nested_failed_summary_fails_closed_without_default_continuation(tmp_path: Path) -> None:
+def test_custom_op_outer_loop_prompt_requires_prior_operator_attempt(tmp_path: Path) -> None:
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    executor = _operator_recovery_executor(tmp_path, session_mgr)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate.py",
+        }
+    }
+
+    assert executor._should_use_custom_op_operator_outer_loop_prompt(
+        phase_id="fix_operator",
+        state=state,
+        loop_history=[{"iteration": 1, "step_outputs_summary": {"fix_code": "dict"}}],
+        loop_state={"fix_code": {"summary": "previous code repair"}},
+    ) is False
+    assert executor._should_use_custom_op_operator_outer_loop_prompt(
+        phase_id="fix_operator",
+        state=state,
+        loop_history=[{"iteration": 1, "step_outputs_summary": {"fix_operator": "dict"}}],
+        loop_state={"fix_operator": {"summary": "previous operator repair"}},
+    ) is True
+
+
+def test_custom_op_operator_outer_loop_second_attempt_uses_compact_progress_prompt(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir()
+    _write_native_custom_op_gate_artifacts(tmp_path)
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    operator_prompts: list[str] = []
+
+    def write_partial_gate() -> None:
+        payload = _custom_op_gate_payload()
+        payload["status"] = "FAIL"
+        payload["full_migration_status"] = "INCOMPLETE"
+        payload["inventory_count"] = 2
+        payload["closed_pass_entries"] = 1
+        payload["remaining_entries"] = 1
+        payload["rows"] = [{"unit_identity": "op:forward", "status": "PASS"}]
+        payload["blocking_gaps"] = ["op:backward missing same-run runtime coverage"]
+        (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(payload), encoding="utf-8")
+        (reports_dir / "summary.json").write_text(
+            json.dumps({
+                "status": "INCOMPLETE",
+                "closed_pass_entries": 1,
+                "remaining_entries": 1,
+                "blocking_gaps": ["op:backward missing OPP artifact evidence"],
+            }),
+            encoding="utf-8",
+        )
+
+    def send_command(
+        session_id: str,
+        prompt: str,
+        timeout: int | None = None,
+        retries: int | None = None,
+        recovery_wait_timeout: int | None = None,
+    ) -> str:
+        _ = timeout, retries, recovery_wait_timeout
+        if session_id == "session:error_analyzer":
+            return json.dumps({
+                "repair_role": "operator_fixer",
+                "category": "operator",
+                "root_cause": "strict OPP final gate missing",
+                "suggested_fix": "finish custom-op gate",
+            })
+        operator_prompts.append(prompt)
+        if len(operator_prompts) == 1:
+            write_partial_gate()
+            return json.dumps({
+                "status": "FAILED",
+                "repair_status": "INCOMPLETE",
+                "fixed": False,
+                "summary": "one custom-op unit still lacks strict evidence",
+            })
+        (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
+        return json.dumps({"summary": "FULL_PASS after compact outer-loop repair"})
+
+    session_mgr.send_command.side_effect = send_command
+    executor = _operator_recovery_executor(
+        tmp_path,
+        session_mgr,
+        framework_config={"custom_op_operator_incomplete_max_continuations": 0},
+        max_iterations=2,
+    )
+    state = {
+        "phase_1_project_analysis": {"operator_unit_count": 2},
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate.py",
+            "reports_dir": str(reports_dir),
+            "operator_inventory_schema": {"fine_grained_operator_units": ["op:forward", "op:backward"]},
+        },
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "python validate.py", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] in {"failure", "success"}
+    assert len(operator_prompts) == 2
+    assert operator_prompts[0] == "repair_operator_fixer"
+    second_prompt = operator_prompts[1]
+    assert second_prompt != "repair_operator_fixer"
+    assert "later outer repair-loop iteration" in second_prompt
+    assert "Previous repair results/history" in second_prompt
+    assert "total_target_operator_variant_inventory: 2" in second_prompt
+    assert "completed_evidence_count: 1" in second_prompt
+    assert "completed_evidence_units: op:forward" in second_prompt
+    assert "remaining_operator_variant_gaps: op:backward" in second_prompt
+    assert "op:backward missing same-run runtime coverage" in second_prompt
+    assert "repair_operator_fixer prompt" in second_prompt
+
+
+def test_custom_op_operator_continuation_prompt_reports_expanded_variant_progress_from_partial_gate(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir()
+    partial_gate = {
+        "status": "FAIL",
+        "full_migration_status": "INCOMPLETE",
+        "inventory_count": 2,
+        "closed_pass_entries": 1,
+        "remaining_entries": 1,
+        "rows": [
+            {"unit_identity": "op:forward:dtype=float", "status": "PASS"},
+        ],
+        "blocking_gaps": ["op:forward:dtype=double missing runtime coverage"],
+    }
+    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(partial_gate), encoding="utf-8")
+    (reports_dir / "summary.json").write_text(
+        json.dumps({
+            "status": "INCOMPLETE",
+            "closed_pass_entries": 1,
+            "remaining_entries": 1,
+            "blocking_gaps": ["op:forward:dtype=double missing OPP artifact evidence"],
+        }),
+        encoding="utf-8",
+    )
+    executor = _workflow_executor_for_custom_op_gate(tmp_path)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate_custom_ops_full.py",
+            "reports_dir": str(reports_dir),
+            "expanded_variant_inventory": {
+                "variant_axes_detected": True,
+                "expanded_operator_instances_count": 2,
+                "unit_identities": ["op:forward:dtype=float", "op:forward:dtype=double"],
+            },
+        },
+    }
+
+    prompt = executor._custom_op_operator_continuation_prompt(
+        incomplete_error="strict final gate is not FULL_PASS",
+        raw_response=json.dumps({"status": "INCOMPLETE"}),
+        continuation_index=1,
+        max_continuations=1,
+        state=state,
+        context={},
+        loop_vars={"project_dir": str(tmp_path)},
+    )
+
+    assert "target_inventory_source: Phase 1/Phase 3 expanded_variant_inventory.operator+variant unit_identities" in prompt
+    assert "total_target_operator_variant_inventory: 2" in prompt
+    assert "all_target_operators_and_variants: op:forward:dtype=float, op:forward:dtype=double" in prompt
+    assert "completed_evidence_count: 1" in prompt
+    assert "completed_evidence_units: op:forward:dtype=float" in prompt
+    assert "remaining_or_unknown_count: 1" in prompt
+    assert "remaining_operator_variant_gaps: op:forward:dtype=double" in prompt
+    assert "custom_op_final_gate_report: status=FAIL, full_migration_status=INCOMPLETE" in prompt
+    assert "op:forward:dtype=double missing runtime coverage" in prompt
+    assert "op:forward:dtype=double missing OPP artifact evidence" in prompt
+
+
+def test_custom_op_operator_nested_failed_summary_continues_same_session_by_default(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
     _write_native_custom_op_gate_artifacts(tmp_path)
@@ -6940,13 +7853,11 @@ def test_custom_op_operator_nested_failed_summary_fails_closed_without_default_c
         context={},
     )
 
-    assert result["status"] == "failure"
-    assert len(operator_prompts) == 1
-    assert operator_timeouts == [None]
-    fix_output = result["loop_state"]["fix_operator"]
-    assert fix_output["communication_error"] is True
-    assert fix_output["retryable"] is True
-    assert "strict OPP final gate FULL_PASS" in fix_output["error"]
+    assert result["status"] == "success"
+    assert len(operator_prompts) == 2
+    assert "Continue the same custom-op `fix_operator` repair" in operator_prompts[1]
+    assert operator_timeouts == [None, None]
+    assert result["loop_state"]["fix_operator"]["custom_op_final_gate_recovered"] is True
     session_mgr.create_session.assert_not_called()
 
 
@@ -7118,6 +8029,10 @@ def test_custom_op_operator_prompt_context_includes_phase1_phase3_full_repair_sc
     assert "all variants close" in acceptance
     assert "validate_custom_op_final_gate" in acceptance
     assert "operatorRepairContext" in str(ctx["operator_custom_op_guidance"])
+    progress = str(ctx["operator_repair_progress_block"])
+    assert "total_target_operator_variant_inventory: 2" in progress
+    assert "all_target_operators_and_variants: op:forward:dtype=float, op:forward:dtype=double" in progress
+    assert "remaining_operator_variant_gaps: op:forward:dtype=float, op:forward:dtype=double" in progress
 
 
 def test_operator_fix_remote_closed_recovers_at_loop_boundary_from_valid_reports(tmp_path: Path) -> None:
@@ -7172,6 +8087,65 @@ def test_operator_fix_remote_closed_recovers_at_loop_boundary_from_valid_reports
     assert result["status"] == "success"
     assert result["loop_state"]["script_exit_code"] == 0
     assert result["loop_state"]["fix_operator"]["custom_op_final_gate_recovered"] is True
+
+
+def test_operator_fix_spoofed_final_gate_recovery_without_valid_gate_fails_closed(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir()
+    _write_native_custom_op_gate_artifacts(tmp_path)
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+
+    def send_command(
+        session_id: str,
+        _prompt: str,
+        timeout: int | None = None,
+        retries: int | None = None,
+        recovery_wait_timeout: int | None = None,
+    ) -> str:
+        _ = timeout, retries, recovery_wait_timeout
+        if session_id == "session:error_analyzer":
+            return json.dumps({
+                "repair_role": "operator_fixer",
+                "category": "operator",
+                "root_cause": "strict OPP final gate missing",
+                "suggested_fix": "finish custom-op gate",
+            })
+        return json.dumps({
+            "custom_op_final_gate_recovered": True,
+            "custom_op_final_gate": {"passed": True},
+            "summary": "claimed recovered final gate",
+        })
+
+    session_mgr.send_command.side_effect = send_command
+    executor = _operator_recovery_executor(tmp_path, session_mgr)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate.py",
+            "reports_dir": str(reports_dir),
+        }
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "python validate.py", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "failure"
+    assert result["loop_state"]["script_exit_code"] == 1
+    fix_output = result["loop_state"]["fix_operator"]
+    assert fix_output["communication_error"] is True
+    assert "did not produce current custom_op_final_gate.json" in fix_output["error"]
 
 
 def test_operator_fix_full_pass_claim_without_valid_reports_fails_closed(tmp_path: Path) -> None:
@@ -7230,7 +8204,8 @@ def test_operator_fix_full_pass_claim_without_valid_reports_fails_closed(tmp_pat
     assert result["status"] == "failure"
     assert result["loop_state"]["script_exit_code"] == 1
     fix_output = result["loop_state"]["fix_operator"]
-    assert fix_output["summary"] == "FULL_PASS after repair"
+    assert fix_output["communication_error"] is True
+    assert "did not produce current custom_op_final_gate.json" in fix_output["error"]
     assert "custom_op_final_gate_recovered" not in fix_output
 
 

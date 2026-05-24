@@ -19,6 +19,7 @@ from validators.validate_rule_migration import validate as validate_rule_migrati
 from validators.validate_validation_final import (
     validate as validate_validation_final,
     validate_custom_op_final_gate,
+    validate_serving_final_gate,
 )
 from validators.validate_venv import validate as validate_venv
 
@@ -532,6 +533,84 @@ def test_project_analysis_accepts_generic_multi_unit_custom_op_surface() -> None
     )
 
     assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def _valid_serving_surface(framework: str) -> dict[str, object]:
+    return {
+        "serving_framework": framework,
+        "detection_complete": True,
+        "launch_command": "python serve.py --model demo",
+        "launch_evidence": ["serve.py:12 launches project serving runtime"],
+        "project_demo_or_test_evidence": ["tests/test_api.py:8 validates serving endpoint"],
+        "project_test_files": ["tests/test_api.py"],
+        "readiness_probe": {"path": "/health", "expected_status": 200},
+        "request_validation": {"path": "/v1/completions", "fixture": "tests/fixtures/request.json"},
+        "expected_outputs": ["non-empty generated text"],
+        "required_runtime_env": ["ASCEND_VISIBLE_DEVICES"],
+        "unresolved_source_groups": [],
+    }
+
+
+@pytest.mark.parametrize(("route", "framework"), [("vllm_serving", "vllm"), ("sglang_serving", "sglang")])
+def test_project_analysis_accepts_complete_serving_route_surface(route: str, framework: str) -> None:
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "serve.py",
+            "migration_route": route,
+            "serving_runtime_surface": _valid_serving_surface(framework),
+        }
+    )
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_project_analysis_rejects_serving_route_missing_launch_or_demo_evidence() -> None:
+    surface = _valid_serving_surface("vllm")
+    surface["launch_evidence"] = []
+    surface["project_demo_or_test_evidence"] = []
+
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "serve.py",
+            "migration_route": "vllm_serving",
+            "serving_runtime_surface": surface,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("launch_evidence" in error for error in result["errors"])
+    assert any("project_demo_or_test_evidence" in error for error in result["errors"])
+
+
+def test_project_analysis_rejects_serving_route_missing_readiness_request_outputs_or_runtime_env() -> None:
+    surface = _valid_serving_surface("vllm")
+    surface["readiness_probe"] = {}
+    surface["request_validation"] = {}
+    surface["expected_outputs"] = []
+    surface["required_runtime_env"] = []
+
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "serve.py",
+            "migration_route": "vllm_serving",
+            "serving_runtime_surface": surface,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("readiness_probe" in error for error in result["errors"])
+    assert any("request_validation" in error for error in result["errors"])
+    assert any("expected_outputs" in error for error in result["errors"])
+    assert any("required_runtime_env" in error for error in result["errors"])
 
 
 def test_normalize_project_analysis_expanded_variants_synthesizes_complete_inventory() -> None:
@@ -2159,6 +2238,76 @@ def test_entry_script_validator_accepts_safe_single_process_commands(run_command
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
+def _valid_serving_contract(tmp_path: Path, route: str, framework: str, entry_kind: str) -> dict[str, object]:
+    script_path = tmp_path / "validate_serving.py"
+    _ = script_path.write_text("print('serving validation')\n", encoding="utf-8")
+    return {
+        "project_dir": str(tmp_path),
+        "entry_script_path": str(script_path),
+        "run_command": f"python {script_path}",
+        "entry_script_kind": entry_kind,
+        "migration_route": route,
+        "serving_framework": framework,
+        "launch_command": "python -m vllm.entrypoints.openai.api_server --model demo"
+        if framework == "vllm"
+        else "python -m sglang.launch_server --model-path demo",
+        "readiness_probe": {"url": "http://127.0.0.1:8000/health", "expected_status": 200},
+        "request_validation": {"url": "http://127.0.0.1:8000/v1/completions", "fixture": "tests/request.json"},
+        "project_test_files": ["tests/test_serving_api.py"],
+        "expected_outputs": ["response contains generated text"],
+        "required_runtime_env": ["ASCEND_VISIBLE_DEVICES"],
+        "required_checks": [
+            "project_demo_or_test_execution",
+            "serving_api_request_validation",
+            "readiness_probe_passed",
+            "npu_execution_evidence",
+            "no_cuda_fallback",
+            "no_cpu_fallback",
+            "fresh_serving_report",
+            "route_framework_match",
+        ],
+        "serving_reports_dir": "migration_reports/serving",
+        "required_report_paths": ["migration_reports/serving/serving_final_gate.json"],
+        "serving_validation_obligations": [
+            "actual_project_demo_test_or_api_validation",
+            "npu_execution_evidence",
+            "reject_import_only_or_smoke_only",
+            "reject_cuda_or_cpu_fallback",
+            "fresh_report_paths",
+            "route_framework_match",
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("route", "framework", "entry_kind"),
+    [("vllm_serving", "vllm", "vllm_serving_validation"), ("sglang_serving", "sglang", "sglang_serving_validation")],
+)
+def test_entry_script_validator_accepts_serving_contracts(tmp_path: Path, route: str, framework: str, entry_kind: str) -> None:
+    result = validate_entry_script(_valid_serving_contract(tmp_path, route, framework, entry_kind))
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_entry_script_validator_rejects_unsafe_serving_launch_command(tmp_path: Path) -> None:
+    contract = _valid_serving_contract(tmp_path, "vllm_serving", "vllm", "vllm_serving_validation")
+    contract["launch_command"] = "python serve.py; touch /tmp/pwned"
+
+    result = validate_entry_script(contract)
+
+    assert result["passed"] is False
+    assert any("launch_command" in error and "single non-interactive process" in error for error in result["errors"])
+
+
+@pytest.mark.parametrize("entry_kind", ["vllm_serving_validation", "sglang_serving_validation"])
+def test_entry_static_accepts_serving_entry_kinds(entry_kind: str) -> None:
+    result = validate_entry_static(
+        {"validation_passed": True, "issues": [], "fix_plan": "serving static checks pass", "entry_script_kind": entry_kind}
+    )
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
 @pytest.mark.parametrize(
     "run_command",
     [
@@ -2308,6 +2457,53 @@ def test_custom_op_final_gate_rejects_full_pass_without_project_root() -> None:
 
     assert result["passed"] is False
     assert any("project_root is required" in error for error in result["errors"])
+
+
+def _valid_serving_final_gate(route: str = "vllm_serving", framework: str = "vllm") -> dict[str, object]:
+    return {
+        "migration_route": route,
+        "serving_framework": framework,
+        "full_migration_status": "FULL_PASS",
+        "project_test_files": ["tests/test_serving_api.py"],
+        "expected_outputs": ["generated text returned"],
+        "required_checks": [
+            "project_demo_or_test_execution",
+            "serving_api_request_validation",
+            "readiness_probe_passed",
+            "npu_execution_evidence",
+            "no_cuda_fallback",
+            "no_cpu_fallback",
+            "fresh_serving_report",
+            "route_framework_match",
+        ],
+        "readiness_probe": {"passed": True, "status_code": 200},
+        "request_validation": {"passed": True, "project_fixture": "tests/request.json"},
+        "npu_execution_evidence": {"passed": True, "device": "npu:0", "torch_npu_observed": True},
+        "project_demo_or_test_executed": True,
+        "serving_api_validated": True,
+        "npu_execution_observed": True,
+        "cuda_fallback_detected": False,
+        "cpu_fallback_detected": False,
+        "import_only": False,
+        "smoke_only": False,
+    }
+
+
+@pytest.mark.parametrize(("route", "framework"), [("vllm_serving", "vllm"), ("sglang_serving", "sglang")])
+def test_serving_final_gate_accepts_strict_full_pass(route: str, framework: str) -> None:
+    result = validate_serving_final_gate(_valid_serving_final_gate(route, framework), expected_route=route)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_serving_final_gate_rejects_invalid_smoke_only_success() -> None:
+    payload = _valid_serving_final_gate()
+    payload["smoke_only"] = True
+
+    result = validate_serving_final_gate(payload, expected_route="vllm_serving")
+
+    assert result["passed"] is False
+    assert any("smoke_only" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root(tmp_path: Path) -> None:
