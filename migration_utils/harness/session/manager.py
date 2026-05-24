@@ -50,24 +50,51 @@ def extract_json_response(text: str) -> dict[str, Any]:
     if not text:
         return {}
 
-    match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    candidates = [match.group(1).strip()] if match else []
+    candidates = [match.group(1).strip() for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)]
+    candidates.reverse()
     candidates.append(text.strip())
 
     for candidate in candidates:
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
-
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(candidate[start : end + 1])
-            except json.JSONDecodeError:
-                continue
+        parsed = _parse_json_candidate(candidate)
+        if parsed:
+            return parsed
     return {}
+
+
+def _parse_json_candidate(candidate: str) -> dict[str, Any]:
+    candidate = candidate.strip()
+    if not candidate:
+        return {}
+
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    return _parse_last_json_object(candidate)
+
+
+def _parse_last_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    best: tuple[int, int, dict[str, Any]] | None = None
+
+    for match in re.finditer(r"{", text):
+        start = match.start()
+        try:
+            parsed, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(parsed, dict):
+            continue
+
+        absolute_end = start + end
+        if best is None or absolute_end > best[1] or (absolute_end == best[1] and start < best[0]):
+            best = (start, absolute_end, parsed)
+
+    return best[2] if best is not None else {}
 
 
 @dataclass
