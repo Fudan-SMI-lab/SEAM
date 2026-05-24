@@ -15,6 +15,13 @@
 {phase1_phase3_repair_scope}
 ```
 
+## Current Repair Progress
+下面是当前 reports 证明的完成情况。active custom-op contract 存在时，reports 只是 evidence，不是 scope authority；未被 current reports 证明的 operator / variant 必须继续修复。
+
+```text
+{operator_repair_progress_block}
+```
+
 ## Strict Acceptance Contract
 active custom-op contract 存在时，本轮修复只有在下面合同全部满足后才可以返回成功 JSON。agent 自己声称 `FULL_PASS` 不算通过；必须由当前 project-local reports 被框架 strict final gate 校验通过。
 

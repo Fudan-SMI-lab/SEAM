@@ -8,6 +8,13 @@ The failed phase is `{failed_phase}`.
 
 These constraints are binding. When diagnosing failures and suggesting fixes, always prefer solutions that keep computation on NPU. CPU fallback is not acceptable for custom-op contracts and must not be treated as final success.
 
+Route repair scope from Phase 1/Phase 3:
+```
+{phase1_phase3_repair_scope}
+```
+
+For `vllm_serving` and `sglang_serving`, classify serving failures without weakening custom-op routing: dependency failures cover missing/incompatible serving runtime packages or server dependencies; code failures cover project launch, request, model-loading, readiness, and report-generation code; operator failures cover unsupported NPU operators hit during real serving; runtime failures cover NPU environment, CANN/torch_npu/device visibility, stale/missing serving reports, CPU fallback, CUDA fallback, or route/framework mismatch. Do not accept import-only or smoke-only validation as repair success.
+
 Custom-op reference: only when the Phase 3 contract is an active custom-op contract with positive source inventory, diagnosing custom-op/operator failures 时查看 `{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md` 第2、3、5、6点要求；不要内联完整规则文本。For active custom-op contracts, missing per-row `public_api_route_evidence` or `framework_integration_route_evidence` is a custom-op contract failure. These fields may be a single object or a non-empty object list; every object must independently prove the same strict route requirements, and empty lists or any invalid list item must fail closed. If the contract says no custom ops or has zero inventory, ignore custom-op guidance and use ordinary dependency/code/generic-operator routing.
 
 ## Environment Context (from Phase 0)

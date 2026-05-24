@@ -7,8 +7,15 @@ You are executing `{phase_name}` for `{project_dir}`.
 
 *Note: A detailed, project-specific constraint summary will be generated in Phase 1.5.*
 
+## Serving Route Detection
+- Use `vllm_serving` only when project files show a vLLM serving runtime surface, and `sglang_serving` only when project files show an SGLang serving runtime surface. Do not infer these routes from package availability alone.
+- For vLLM/SGLang routes, include `serving_runtime_surface` with `serving_framework`, `detection_complete`, `launch_command`, `launch_evidence`, `project_demo_or_test_evidence`, `project_test_files`, `readiness_probe`, `request_validation`, `expected_outputs`, `required_runtime_env`, and `unresolved_source_groups`.
+- Serving route classification is fail-closed: framework must match the route, launch evidence must cite project launch/demo/API/test files, `project_demo_or_test_evidence` and `project_test_files` must be non-empty, and `unresolved_source_groups` must be empty when `detection_complete=true`.
+- Project-provided serving demos/tests may be any real project assets such as demo scripts, API examples, integration tests, README commands, request fixtures, or validation scripts. Do not hard-code known example projects.
+
 ## Goal
 - Understand the project structure and likely execution path.
+- Classify the migration route as exactly one of `ordinary_cuda`, `custom_op`, `custom_op_with_variants`, `vllm_serving`, or `sglang_serving`.
 - Extract dependency signals relevant to CUDA to NPU migration.
 - Identify the most likely entry script for training, inference, evaluation, or demo execution.
 - When the source surface indicates custom operators, also discover the custom-op surface itself: fine-grained operator units, family/variant/signature identity, native symbols, kernel launch sites, public entry mappings, candidate public API routes, candidate framework integration routes, searched source roots/paths, negative evidence, dynamic loading/build/load checks, unresolved source groups, and the source evidence for each unit.
