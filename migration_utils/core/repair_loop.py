@@ -201,6 +201,28 @@ _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
     r"operator evidence",
     r"custom[-_ ]op evidence",
 )
+_CUSTOM_OP_STRONG_OPERATOR_EVIDENCE_PATTERNS = (
+    r"custom[-_ ]op final evidence gate failed",
+    r"custom_op_final_gate",
+    r"full_migration_status",
+    r"closed_pass_entries",
+    r"remaining_entries",
+    r"opp_custom_op_artifact_evidence",
+    r"same_run_runtime_coverage",
+    r"custom_call_count",
+    r"custom_call_count_total",
+    r"zero_call_detected",
+    r"builtin_contamination_detected",
+    r"no_fallback_no_zero_call_no_builtin_contamination",
+    r"FULL_MIGRATION_INCOMPLETE",
+)
+_CUSTOM_OP_NEGATIVE_EVIDENCE_PATTERNS = (
+    r"no\s+custom[-_ ]?op(?:erator)?s?\b",
+    r"custom[-_ ]?op(?:erator)?s?\s*[:=]\s*(?:none|false|no)\b",
+    r"custom_op_detected\s*[:=]\s*false\b",
+    r"custom[-_ ]op evidence gate (?:is )?not activated",
+    r"without\s+custom[-_ ]?op(?:erator)?s?\b",
+)
 _CUSTOM_OP_SHARED_OBJECT_PATTERNS = (
     r"\.so\b",
     r"shared object file",
@@ -252,9 +274,6 @@ def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: li
     if not combined:
         return False
 
-    if any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS):
-        return True
-
     has_custom_contract = False
     if isinstance(phase3_contract, dict):
         has_custom_contract = _has_custom_op_contract_fields(phase3_contract)
@@ -264,6 +283,14 @@ def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: li
 
     if not has_custom_contract:
         return False
+
+    has_strong_evidence = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_STRONG_OPERATOR_EVIDENCE_PATTERNS)
+    has_negative_evidence = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_NEGATIVE_EVIDENCE_PATTERNS)
+    if has_negative_evidence and not has_strong_evidence:
+        return False
+
+    if any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS):
+        return True
 
     has_shared_object_failure = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_SHARED_OBJECT_PATTERNS)
     has_custom_context = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_CONTEXT_PATTERNS)
