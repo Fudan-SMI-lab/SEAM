@@ -13,9 +13,15 @@ from typing import Protocol, cast, runtime_checkable
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
+from core.assisted_verification import (
+    AssistedVerificationResult,
+    AssistedVerificationRunner,
+    attach_assisted_summary,
+)
 from core.custom_op_opp_preflight import has_custom_op_contract, has_explicit_no_custom_op_contract
 from core.custom_op_variants import (
     apply_expanded_variant_contract,
+    ensure_strict_expanded_variant_validation_script,
     expanded_variant_contract_from_outputs,
     normalize_project_analysis_expanded_variants,
 )
@@ -74,10 +80,16 @@ TOP_LEVEL_LLM_TIMEOUT_DEFAULT = 30000
 
 
 class SessionManagerLike(Protocol):
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         ...
 
     def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str:
+        ...
+
+
+@runtime_checkable
+class AgentSessionManagerLike(Protocol):
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         ...
 
 
@@ -191,6 +203,28 @@ class PhaseRunner:
             artifact_store=self.artifact_store,
         )
 
+    def _get_main_session(self, session_mgr: SessionManagerLike) -> str:
+        agent = self._configured_backend_agent("main_engineer")
+        if agent:
+            try:
+                return session_mgr.get_or_create(
+                    role="main_engineer",
+                    lifecycle="persistent",
+                    agent=agent,
+                )
+            except TypeError:
+                pass
+        return session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+
+    def _configured_backend_agent(self, agent_id: str) -> str:
+        if self.workflow is None or not isinstance(self.workflow.agents, dict):
+            return ""
+        config = self.workflow.agents.get(agent_id)
+        if not isinstance(config, dict):
+            return ""
+        value = config.get("agent") or config.get("backend_agent")
+        return value.strip() if isinstance(value, str) else ""
+
     def run_phase_0_to_3(
         self,
         project_dir: str,
@@ -199,7 +233,7 @@ class PhaseRunner:
     ) -> dict[str, JsonObject]:
         active_session_mgr = session_mgr or self.session_mgr
         active_artifact_store = artifact_store or self.artifact_store
-        session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+        session_id = self._get_main_session(active_session_mgr)
 
         outputs: dict[str, JsonObject] = {}
         for phase_id in self.PHASE_ORDER:
@@ -238,7 +272,7 @@ class PhaseRunner:
         """
         active_session_mgr = session_mgr or self.session_mgr
         active_artifact_store = artifact_store or self.artifact_store
-        session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+        session_id = self._get_main_session(active_session_mgr)
 
         outputs: dict[str, JsonObject] = {}
         for phase_id in ("phase_0", "phase_1"):
@@ -280,7 +314,7 @@ class PhaseRunner:
         """
         active_session_mgr = session_mgr or self.session_mgr
         active_artifact_store = artifact_store or self.artifact_store
-        session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+        session_id = self._get_main_session(active_session_mgr)
 
         outputs: dict[str, JsonObject] = dict(prior_outputs)
         phase_2_context: JsonObject = {
@@ -599,9 +633,7 @@ class PhaseRunner:
         """
         active_session_mgr = session_mgr or self.session_mgr
 
-        session_id = active_session_mgr.get_or_create(
-            role="main_engineer", lifecycle="persistent"
-        )
+        session_id = self._get_main_session(active_session_mgr)
 
         prior_artifacts: dict[str, object] = {}
         for candidate in (
@@ -692,6 +724,41 @@ class PhaseRunner:
             validation = self.validator.validate(phase.validator_name, normalized_output)
             last_validation = validation
             if validation.passed:
+                assisted_result = self._run_assisted_verification(
+                    phase=phase,
+                    output=normalized_output,
+                    context=normalized_context,
+                    session_mgr=session_mgr,
+                    artifact_store=artifact_store,
+                    attempt=attempt,
+                )
+                if assisted_result is not None:
+                    normalized_output = attach_assisted_summary(normalized_output, assisted_result)
+                    if not assisted_result.passed:
+                        last_validation = ValidationResult(
+                            passed=False,
+                            errors=assisted_result.errors or ["assisted verification failed"],
+                            warnings=assisted_result.warnings,
+                        )
+                        _ = artifact_store.write_journal(
+                            self._build_journal_entry(
+                                phase=phase,
+                                attempt=attempt,
+                                status="assisted_verification_failed",
+                                session_ref=session_ref,
+                                raw_path=raw_path,
+                                canonical_path="",
+                                validation=last_validation,
+                            )
+                        )
+                        if attempt < max_retry:
+                            active_prompt = assisted_result.correction_prompt or self._build_correction_prompt(
+                                phase=phase,
+                                validation=last_validation,
+                                previous_prompt=prompt,
+                            )
+                            continue
+                        break
                 validated_output = dict(normalized_output)
                 _ = validated_output.pop("_meta", None)
                 canonical_path = artifact_store.mark_validated(phase.artifact_id, validated_output)
@@ -729,6 +796,66 @@ class PhaseRunner:
 
         error_text = "; ".join(last_validation.errors) or "unknown validation failure"
         raise ValueError(f"{phase.prompt_id} failed validation after {max_retry} attempts: {error_text}")
+
+    def _run_assisted_verification(
+        self,
+        *,
+        phase: PhaseSpec,
+        output: JsonObject,
+        context: JsonObject,
+        session_mgr: SessionManagerLike,
+        artifact_store: ArtifactStore,
+        attempt: int,
+    ) -> AssistedVerificationResult | None:
+        if phase.prompt_id not in {"phase_1_project_analysis", "phase_3_entry_script"}:
+            return None
+        runner = AssistedVerificationRunner(
+            session_mgr=session_mgr,
+            artifact_store=artifact_store,
+            framework_config=self.framework_config,
+        )
+        if not runner.config.enabled:
+            return None
+        project_dir = self._assisted_project_dir(context)
+        phase_output = self._without_meta(output)
+        if phase.prompt_id == "phase_1_project_analysis":
+            return runner.verify_phase1(
+                phase_output=phase_output,
+                project_dir=project_dir,
+                attempt=attempt,
+            )
+
+        return runner.verify_phase3(
+            phase_output=phase_output,
+            phase1_output=self._phase1_output_from_context(context),
+            project_dir=project_dir,
+            attempt=attempt,
+        )
+
+    def _assisted_project_dir(self, context: JsonObject) -> str:
+        for key in ("project_dir", "PROJECT_DIR"):
+            value = context.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return "."
+
+    @classmethod
+    def _phase1_output_from_context(cls, context: JsonObject) -> dict[str, object] | None:
+        previous_outputs = context.get("previous_outputs")
+        if not isinstance(previous_outputs, dict):
+            return None
+        outputs = cast(dict[str, object], previous_outputs)
+        for key in ("phase_1_project_analysis", "phase_1"):
+            phase_output = outputs.get(key)
+            if isinstance(phase_output, dict):
+                return cls._without_meta(cast(dict[str, object], phase_output))
+        return None
+
+    @staticmethod
+    def _without_meta(output: dict[str, object]) -> dict[str, object]:
+        clean = dict(output)
+        _ = clean.pop("_meta", None)
+        return clean
 
     @staticmethod
     def _build_correction_prompt(
@@ -1029,40 +1156,11 @@ class PhaseRunner:
             raise ValueError("max_retry must be >= 1")
         return max_retry
 
-    def _resolve_timeout(self, phase: PhaseSpec, context: JsonObject) -> int:
-        raw_timeout = context.get("timeout", phase.timeout)
-        if raw_timeout is None:
-            return self._resolve_direct_llm_timeout(phase.prompt_id)
-        if isinstance(raw_timeout, bool):
-            return int(raw_timeout)
-        if isinstance(raw_timeout, int):
-            return raw_timeout
-        if isinstance(raw_timeout, str):
-            return int(raw_timeout)
-        raise ValueError("timeout must be an integer or null")
+    def _resolve_timeout(self, phase: PhaseSpec, context: JsonObject) -> int | None:
+        return None
 
-    def _resolve_direct_llm_timeout(self, phase_id: str) -> int:
-        for config_key in ("session_timeout_phase", "session_timeout_llm", "session_timeout"):
-            raw_timeout = self.framework_config.get(config_key)
-            if raw_timeout is None:
-                continue
-            try:
-                if not isinstance(raw_timeout, (str, int)) or isinstance(raw_timeout, bool):
-                    raise ValueError
-                timeout = int(raw_timeout)
-                if timeout < 1:
-                    raise ValueError
-                return timeout
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid %s=%r for LLM phase '%s'; using default %s",
-                    config_key,
-                    raw_timeout,
-                    phase_id,
-                    TOP_LEVEL_LLM_TIMEOUT_DEFAULT,
-                )
-                return TOP_LEVEL_LLM_TIMEOUT_DEFAULT
-        return TOP_LEVEL_LLM_TIMEOUT_DEFAULT
+    def _resolve_direct_llm_timeout(self, phase_id: str) -> int | None:
+        return None
 
     def _send_prompt(
         self,
@@ -1100,6 +1198,11 @@ class PhaseRunner:
             variant_overlay = expanded_variant_contract_from_outputs(previous_outputs)
             if variant_overlay:
                 apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
+                ensure_strict_expanded_variant_validation_script(
+                    normalized,
+                    variant_overlay,
+                    project_dir=str(prompt_context["project_dir"]),
+                )
         if phase.prompt_id == "phase_35_static_validate":
             previous_outputs = context.get("previous_outputs", {})
             entry_script_kind = self._lookup_previous_output(
@@ -1110,6 +1213,13 @@ class PhaseRunner:
             if entry_script_kind == "custom_op_full_validation":
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
+                entry_script_path = self._lookup_previous_output(
+                    previous_outputs,
+                    "phase_3_entry_script",
+                    "entry_script_path",
+                )
+                if isinstance(entry_script_path, str) and entry_script_path.strip():
+                    normalized.setdefault("entry_script_path", entry_script_path)
             if expanded_variant_contract_from_outputs(previous_outputs):
                 normalized["expanded_variant_static_required"] = True
         return normalized
