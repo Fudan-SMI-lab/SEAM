@@ -230,6 +230,113 @@ class TestValidateCustomOpFinalGate:
             result = validate_custom_op_final_gate(gate, project_root=root, platform_policy=ppu)
             assert result["passed"], f"Expected PASS for PPU valid evidence, got errors: {result.get('errors')}"
 
+    def test_musa_accepts_generic_library_path_with_platform_build_proof(self):
+        musa = BUILTIN_PRESETS["musa_muxi"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "migration_reports"
+            reports.mkdir()
+            (reports / "migration_manifest.json").write_text(json.dumps({"required_units": ["op_generic_musa"]}))
+
+            src_dir = root / "src" / "pkg"
+            src_dir.mkdir(parents=True)
+            source_path = src_dir / "kernel.cu"
+            source_path.write_text("// maca_runtime mxgpu\n__global__ void kernel(float* x) {}\n")
+
+            so_path = src_dir / "libcustom.so"
+            so_path.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 256)
+            build_log = reports / "build.log"
+            build_log.write_text("mxcc -shared kernel.cu -o libcustom.so # MACA MetaX build\n")
+
+            row = {
+                "name": "op_generic_musa",
+                "status": "FULL_PASS",
+                "unit_identity": "op_generic_musa",
+                "variant_or_signature": "op_generic_musa/v1",
+                "native_operator_symbols": ["op_generic_musa_impl"],
+                "kernel_functions": ["kernel"],
+                "kernel_launch_sites": ["src/pkg/kernel.cu:2"],
+                "public_entry_mapping": {"api": "op_generic_musa"},
+                "source_evidence": {"native_source_paths": ["src/pkg/kernel.cu"]},
+                "native_source_paths": ["src/pkg/kernel.cu"],
+                "inventory_granularity": "FINE_GRAINED",
+                "opp_custom_op_artifact_evidence": {
+                    "project_local": True,
+                    "built": True,
+                    "loaded": True,
+                    "project_relative_path": "src/pkg/libcustom.so",
+                    "runtime_loaded_module_file": "src/pkg/libcustom.so",
+                    "build_provenance": {
+                        "command": "mxcc -shared kernel.cu -o libcustom.so",
+                        "log_path": "migration_reports/build.log",
+                    },
+                },
+                "adapter_evidence": {"imported": True, "passed": True},
+                "parity_evidence": {"verified": True, "passed": True},
+                "integration_e2e_evidence": {
+                    "project_api_invoked": True,
+                    "custom_op_route_executed": True,
+                    "native_custom_op_route_executed": True,
+                },
+                "same_run_runtime_coverage": {
+                    "same_run": True,
+                    "project_api_route": True,
+                    "native_custom_op_route_executed": True,
+                    "custom_call_count": 1,
+                },
+                "performance_evidence": {
+                    "baseline_seconds": 1.0,
+                    "custom_seconds": 0.5,
+                    "speedup_vs_baseline": 2.0,
+                    "project_api_invoked": True,
+                    "baseline_device": "cuda",
+                    "custom_device": "musa",
+                },
+                "no_fallback_no_zero_call_no_builtin_contamination": {
+                    "fallback_detected": False,
+                    "zero_call_detected": False,
+                    "builtin_contamination_detected": False,
+                    "baseline_only_detected": False,
+                    "stub_detected": False,
+                },
+            }
+            gate = {
+                "inventory_count": 1,
+                "manifest_entries": 1,
+                "closed_pass_entries": 1,
+                "remaining_entries": 0,
+                "full_migration_status": "FULL_PASS",
+                "project_e2e_passed": True,
+                "report_parity_passed": True,
+                "source_inventory": {
+                    "discovery_complete": True,
+                    "discovery_sources_checked": [
+                        "source", "bindings", "wrappers", "autograd",
+                        "aliases", "launch", "setup", "tests",
+                    ],
+                    "out_of_scope_source_groups": [],
+                    "op_generic_musa": row,
+                },
+                "performance_report": {
+                    "complete": True,
+                    "path": "migration_reports/performance.json",
+                    "verified": True,
+                    "unit_count": 1,
+                    "entries": {"op_generic_musa": row["performance_evidence"] | {"unit_identity": "op_generic_musa"}},
+                    "overall_baseline_seconds": 1.0,
+                    "overall_custom_seconds": 0.5,
+                    "overall_speedup_vs_baseline": 2.0,
+                    "overall_project_api_invoked": True,
+                    "overall_all_units_replaced": True,
+                    "baseline_device": "cuda",
+                    "custom_device": "musa",
+                },
+                "rows": [row],
+            }
+
+            result = validate_custom_op_final_gate(gate, project_root=root, platform_policy=musa)
+            assert result["passed"], f"Expected PASS for generic .so path with MUSA proof, got: {result.get('errors')}"
+
     def test_generic_accelerator_does_not_accept_npu_fallback(self):
         """Explicit generic_accelerator must NOT pass merely from NPU legacy fallback.
 

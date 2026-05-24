@@ -1008,11 +1008,22 @@ def _native_compiled_artifact_paths(
     evidence: Mapping[object, object],
     platform_policy: PlatformPolicy | None = None,
 ) -> list[str]:
-    return [
+    candidates = _native_artifact_path_candidates(evidence)
+    platform_signaled = [
         value
-        for value in _native_artifact_path_candidates(evidence)
+        for value in candidates
         if _is_native_compiled_platform_artifact_path(value, platform_policy)
     ]
+    if platform_signaled:
+        return platform_signaled
+    return [value for value in candidates if _is_compiled_project_artifact_path(value)]
+
+
+def _is_compiled_project_artifact_path(value: str) -> bool:
+    if not _is_safe_project_relative_path(value):
+        return False
+    normalized = value.strip().lower().replace("\\", "/")
+    return normalized.endswith((".so", ".o", ".a", ".om", ".bin"))
 
 
 def _native_artifact_path_candidates(evidence: Mapping[object, object]) -> list[str]:
