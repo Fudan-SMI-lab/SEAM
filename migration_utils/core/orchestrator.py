@@ -21,8 +21,12 @@ from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessi
 from core.platform_policy import PlatformPolicy, resolve_policy
 from core.state_machine import StateMachine
 from core.validator_engine import ValidatorEngine
-from migrator.rule_based import RuleBasedMigrator
-from migrator.rule_based_ppu import PPURuleBasedMigrator
+from rule_strategies import create_migrator_resolved
+
+# Kept as module-level references for test monkeypatch compatibility.
+# The resolver uses importlib to instantiate migrators by strategy config.
+from migrator.rule_based import RuleBasedMigrator  # noqa: F401
+from migrator.rule_based_ppu import PPURuleBasedMigrator  # noqa: F401
 
 JsonDict = dict[str, object]
 
@@ -147,7 +151,7 @@ class Orchestrator:
             config=fw_config, exec_backend=exec_backend,
             platform_policy=platform_policy,
         )
-        migrator = Orchestrator._select_rule_based_migrator(platform_policy)
+        migrator = Orchestrator._select_rule_based_migrator(platform_policy, workflow)
         phase_results: dict[str, object] = {}
 
         result: dict[str, object] = {
@@ -322,7 +326,7 @@ class Orchestrator:
         runner: PhaseRunner,
         project_dir: str,
         artifact_store: ArtifactStore,
-        migrator: RuleBasedMigrator,
+        migrator: object,
     ) -> dict[str, object]:
         phase_4_runner = runner.run_phase_4
         phase_4_signature = inspect.signature(phase_4_runner)
@@ -331,16 +335,40 @@ class Orchestrator:
         return cast(_Phase4RunnerWithoutProjectDir, phase_4_runner)(artifact_store, migrator)
 
     @staticmethod
-    def _select_rule_based_migrator(platform_policy: PlatformPolicy) -> RuleBasedMigrator:
-        """Select the appropriate rule-based migrator for the given platform policy.
+    def _select_rule_based_migrator(platform_policy: PlatformPolicy, workflow: object | None = None) -> object:
+        """Select the appropriate rule-based migrator using configuration-driven resolution.
 
-        PPU (``ppu_cuda_compatible``) → :class:`PPURuleBasedMigrator`
-        (preserves torch.cuda behaviour)
-        NPU / generic / legacy → :class:`RuleBasedMigrator`.
+        Uses the strategy resolver with precedence:
+        1. Workflow YAML ``params.backend`` (legacy)
+        2. Workflow YAML ``rule_migration.strategy`` (new)
+        3. ``PlatformPolicy.default_rule_migration_strategy``
+        4. ``report_only`` safe fallback
+
+        This keeps the legacy Orchestrator path aligned with WorkflowExecutor.
         """
-        if platform_policy.id == "ppu_cuda_compatible":
-            return cast(RuleBasedMigrator, PPURuleBasedMigrator())
-        return RuleBasedMigrator()
+        backend = Orchestrator._phase_4_backend_from_workflow(workflow)
+        workflow_rule_migration = getattr(workflow, "rule_migration", None) if workflow is not None else None
+        return create_migrator_resolved(
+            workflow_params_backend=backend,
+            workflow_rule_migration=workflow_rule_migration if isinstance(workflow_rule_migration, dict) else None,
+            platform_policy_strategy=platform_policy.default_rule_migration_strategy,
+        )
+
+    @staticmethod
+    def _phase_4_backend_from_workflow(workflow: object | None) -> str | None:
+        phases = getattr(workflow, "phases", None)
+        if not isinstance(phases, list):
+            return None
+        for phase in phases:
+            operation = getattr(phase, "params", {}).get("operation") if isinstance(getattr(phase, "params", None), dict) else None
+            phase_operation = getattr(phase, "operation", None) or operation
+            is_rule_phase = getattr(phase, "id", "") == "phase_4_rule_migration" or phase_operation == "rule_based_migration"
+            params = getattr(phase, "params", None)
+            if is_rule_phase and isinstance(params, dict):
+                backend = params.get("backend")
+                if isinstance(backend, str) and backend.strip():
+                    return backend.strip()
+        return None
 
     @staticmethod
     def _phase_5_succeeded(phase_5_output: dict[str, object]) -> bool:

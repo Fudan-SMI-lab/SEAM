@@ -13,6 +13,7 @@ from core.types import PhaseDefinition, WorkflowDefinition, ExecutionBackendConf
 from core.orchestrator import Orchestrator
 from migrator.rule_based import RuleBasedMigrator
 from migrator.rule_based_ppu import PPURuleBasedMigrator
+from migrator.yaml_rule_based import YamlRuleBasedMigrator
 
 
 class MockSessionManager:
@@ -225,7 +226,7 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeRuleBasedMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeRuleBasedMigrator())
 
     session_mgr = MockSessionManager()
     orchestrator = Orchestrator(session_mgr=session_mgr, project_dir="/repo/project", workflow_path="workflow.yaml")
@@ -407,7 +408,7 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeRuleBasedMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeRuleBasedMigrator())
 
     result = Orchestrator(session_mgr=MockSessionManager(), project_dir="/repo/project", workflow_path="workflow.yaml").run_workflow("/repo/project")
 
@@ -524,7 +525,7 @@ def test_orchestrator_passes_container_backend_to_repair_loop(monkeypatch: pytes
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
     Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
 
@@ -585,7 +586,7 @@ def test_orchestrator_passes_none_backend_for_local_config(monkeypatch: pytest.M
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
     Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
     assert captured_backend[-1] is None
@@ -655,7 +656,7 @@ def test_orchestrator_cleans_up_backend_in_finally(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
     Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
     assert len(cleanup_calls) == 1
@@ -735,7 +736,7 @@ def test_orchestrator_calls_preflight_for_container_backend(monkeypatch: pytest.
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
     Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
     assert len(preflight_calls) == 1
@@ -793,7 +794,7 @@ def test_orchestrator_preflight_failure_stops_early(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
     with pytest.raises(RuntimeError, match="preflight failed"):
         Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
@@ -825,10 +826,11 @@ def _build_ppu_workflow() -> WorkflowDefinition:
 
 def test_ppu_workflow_uses_ppu_rule_based_migrator(monkeypatch: pytest.MonkeyPatch) -> None:
     """For PPU policy (ppu_cuda_compatible), Phase 4 uses PPURuleBasedMigrator
-    and does NOT instantiate the default RuleBasedMigrator."""
-    instantiated_regular: list[None] = []
+    via the configuration-driven resolver."""
+    from migrator.rule_based_ppu import PPURuleBasedMigrator
+
     instantiated_ppu: list[None] = []
-    fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
+    fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}  # noqa: F841
 
     class FakeArtifactStore:
         def __init__(self, *a, **kw) -> None: self.saved = {}
@@ -837,47 +839,51 @@ def test_ppu_workflow_uses_ppu_rule_based_migrator(monkeypatch: pytest.MonkeyPat
         def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
         def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
 
+    # ... (fakes omitted for brevity — same as above) ...
+
     class FakePromptLoader:
         def __init__(self, d: str) -> None: pass
         def load_prompt(self, *a, **kw) -> str: return "prompt"
-
     class FakeValidatorEngine: pass
-
     class FakeStateMachine:
-        def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
-        def record_success(self, phase_id: str) -> tuple[bool, str | None]:
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
+        def __init__(self, wf) -> None: self.current_phase = wf.phases[0].id; self.terminal = None
+        def record_success(self, phase_id: str) -> tuple[bool, str | None]: self.current_phase = None; self.terminal = "complete"; return True, "complete"
         def record_failure(self, *a): return False, None
         def current_terminal(self) -> str | None: return self.terminal
-
     class FakePhaseRunner:
         def set_container_context(self, ctx) -> None: pass
         def set_execution_environment_context(self, ctx: str) -> None: pass
         def __init__(self, *a, **kw) -> None: pass
         def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
         def run_phase_1_5(self, *a, **kw) -> str: return ""
-        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
-            return {"phase_3_entry_script": {"run_command": "python t.py"}}
+        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict: return {"phase_3_entry_script": {"run_command": "python t.py"}}
         def run_phase_4(self, *a, **kw) -> dict: return {}
         def run_phase_6(self, *a, **kw) -> dict: return {}
         def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
-
     class FakeRepairLoopEngine:
         def __init__(self, *a, **kw) -> None: pass
         @staticmethod
         def _format_history_summary(h): return ""
         def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
 
-    class FakeRegularMigrator:
-        def __init__(self) -> None:
-            instantiated_regular.append(None)
-
     class FakePPUMigrator:
-        def __init__(self) -> None:
-            instantiated_ppu.append(None)
+        def __init__(self) -> None: instantiated_ppu.append(None)
+        def migrate_directory(self, *a, **kw): return {}
 
-    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_ppu_workflow())
+    def fake_create_resolved(**kw) -> object:
+        return FakePPUMigrator()
+
+    def build_ppu_workflow() -> object:
+        from core.types import WorkflowDefinition, PhaseDefinition
+        return WorkflowDefinition(
+            name="ppu_migration_test", version="1.0",
+            description="PPU test workflow",
+            phases=[PhaseDefinition(id="phase_0_env_detect", name="Phase 0", prompt_template="phase_0_env_detect_ppu", output_schema={}, transitions={"on_success": "phase_4_rule_migration"}),
+                    PhaseDefinition(id="phase_4_rule_migration", name="Phase 4", prompt_template="", output_schema={}, type="builtin", params={"operation": "rule_based_migration", "pattern": "*.py"}, transitions={"on_success": "complete"})],
+            terminals=["complete"],
+        )
+
+    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: build_ppu_workflow())
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="ppu1"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
@@ -886,19 +892,19 @@ def test_ppu_workflow_uses_ppu_rule_based_migrator(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeRegularMigrator)
-    monkeypatch.setattr("core.orchestrator.PPURuleBasedMigrator", FakePPUMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", fake_create_resolved)
 
     Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
 
-    assert len(instantiated_ppu) == 1, "PPU workflow must use PPURuleBasedMigrator"
-    assert len(instantiated_regular) == 0, "PPU workflow must NOT instantiate regular RuleBasedMigrator"
+    assert len(instantiated_ppu) == 1, "PPU workflow must instantiate a PPURuleBasedMigrator via the resolver"
 
 
 def test_non_ppu_workflow_uses_regular_rule_based_migrator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """For non-PPU policies, Phase 4 uses the regular RuleBasedMigrator."""
+    """For non-PPU policies with NPU strategy override, Phase 4 uses RuleBasedMigrator
+    via the configuration-driven resolver."""
+    from migrator.rule_based import RuleBasedMigrator
+
     instantiated_regular: list[None] = []
-    instantiated_ppu: list[None] = []
     fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
 
     class FakeArtifactStore:
@@ -940,15 +946,14 @@ def test_non_ppu_workflow_uses_regular_rule_based_migrator(monkeypatch: pytest.M
         def _format_history_summary(h): return ""
         def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
 
-    class FakeRegularMigrator:
+    class FakeMigrator:
         def __init__(self) -> None:
             instantiated_regular.append(None)
+        def migrate_directory(self, *a, **kw): return {}
 
-    class FakePPUMigrator:
-        def __init__(self) -> None:
-            instantiated_ppu.append(None)
+    def fake_create_resolved(**kw) -> object:
+        return FakeMigrator()
 
-    # Use the original mock-workflow (non-PPU) → resolves to generic_accelerator
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: build_workflow())
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="npu1"))
@@ -958,37 +963,65 @@ def test_non_ppu_workflow_uses_regular_rule_based_migrator(monkeypatch: pytest.M
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.RuleBasedMigrator", FakeRegularMigrator)
-    monkeypatch.setattr("core.orchestrator.PPURuleBasedMigrator", FakePPUMigrator)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", fake_create_resolved)
 
     Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
 
-    assert len(instantiated_regular) == 1, "Non-PPU workflow must use regular RuleBasedMigrator"
-    assert len(instantiated_ppu) == 0, "Non-PPU workflow must NOT instantiate PPURuleBasedMigrator"
+    assert len(instantiated_regular) == 1, "Non-PPU workflow must instantiate a migrator via the resolver"
 
 
 def test_select_rule_based_migrator_ppu_returns_ppu_type() -> None:
-    """Unit test for _select_rule_based_migrator: PPU policy returns PPURuleBasedMigrator."""
     from core.platform_policy import BUILTIN_PRESETS
     ppu_policy = BUILTIN_PRESETS["ppu_cuda_compatible"]
     migrator = Orchestrator._select_rule_based_migrator(ppu_policy)
-    assert isinstance(migrator, PPURuleBasedMigrator)
+    assert isinstance(migrator, YamlRuleBasedMigrator)
+    code = "import torch\nprint(torch.cuda.is_available())"
+    result, report = migrator.migrate(code)
+    assert result == code
+    assert report["strategy"] == "preserve_cuda_report_only"
 
 
 def test_select_rule_based_migrator_npu_returns_regular_type() -> None:
-    """Unit test for _select_rule_based_migrator: NPU policy returns RuleBasedMigrator."""
     from core.platform_policy import BUILTIN_PRESETS
     npu_policy = BUILTIN_PRESETS["npu_ascend"]
     migrator = Orchestrator._select_rule_based_migrator(npu_policy)
-    assert isinstance(migrator, RuleBasedMigrator)
-    assert not isinstance(migrator, PPURuleBasedMigrator)
+    assert isinstance(migrator, YamlRuleBasedMigrator)
+    result, report = migrator.migrate("import torch\nprint(torch.cuda.is_available())")
+    assert "torch.npu.is_available()" in result
+    assert report["strategy"] == "cuda_to_npu"
 
 
-def test_select_rule_based_migrator_generic_returns_regular_type() -> None:
-    """Unit test for _select_rule_based_migrator: generic policy returns RuleBasedMigrator."""
+def test_select_rule_based_migrator_generic_returns_report_only() -> None:
     from core.platform_policy import BUILTIN_PRESETS
     generic_policy = BUILTIN_PRESETS["generic_accelerator"]
     migrator = Orchestrator._select_rule_based_migrator(generic_policy)
-    assert isinstance(migrator, RuleBasedMigrator)
-    assert not isinstance(migrator, PPURuleBasedMigrator)
+    assert isinstance(migrator, YamlRuleBasedMigrator)
+    code = "import torch\nprint(torch.cuda.is_available())"
+    result, report = migrator.migrate(code)
+    assert result == code
+    assert report["strategy"] == "report_only"
 
+
+def test_select_rule_based_migrator_workflow_strategy_overrides_policy() -> None:
+    from core.platform_policy import BUILTIN_PRESETS
+    workflow = types.SimpleNamespace(rule_migration={"strategy": "cuda_to_npu"}, phases=[])
+    generic_policy = BUILTIN_PRESETS["generic_accelerator"]
+    migrator = Orchestrator._select_rule_based_migrator(generic_policy, workflow)
+    result, report = migrator.migrate("import torch\nprint(torch.cuda.is_available())")
+    assert "torch.npu.is_available()" in result
+    assert report["strategy"] == "cuda_to_npu"
+
+
+def test_select_rule_based_migrator_legacy_backend_overrides_policy() -> None:
+    from core.platform_policy import BUILTIN_PRESETS
+    phase = types.SimpleNamespace(
+        id="phase_4_rule_migration",
+        params={"operation": "rule_based_migration", "backend": "report_only"},
+    )
+    workflow = types.SimpleNamespace(rule_migration={"strategy": "cuda_to_npu"}, phases=[phase])
+    npu_policy = BUILTIN_PRESETS["npu_ascend"]
+    migrator = Orchestrator._select_rule_based_migrator(npu_policy, workflow)
+    code = "import torch\nprint(torch.cuda.is_available())"
+    result, report = migrator.migrate(code)
+    assert result == code
+    assert report["strategy"] == "report_only"

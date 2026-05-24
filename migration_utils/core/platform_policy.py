@@ -83,6 +83,16 @@ class PlatformPolicy:
         default_factory=CustomOpEvidenceConfig
     )
 
+    # -- Rule migration strategy selection --
+    default_rule_migration_strategy: str = "report_only"
+    """Default Phase 4 rule migration strategy id for this platform.
+
+    Strategy YAML files live in ``migration_utils/rule_strategies/``.
+    The resolver checks (in order): workflow ``params.backend`` (legacy),
+    workflow ``rule_migration.strategy`` (new), this field, and finally
+    ``"report_only"`` as the absolute safe fallback.
+    """
+
     # -- Guidance strings consumed by repair / operator prompts --
     guidance_prefix: str = ""
     guidance_native_label: str = ""
@@ -219,6 +229,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="npu_ascend",
         display_name="Ascend NPU",
         custom_op_evidence=_NPU_ASCEND_EVIDENCE,
+        default_rule_migration_strategy="cuda_to_npu",
         guidance_prefix="Ascend NPU",
         guidance_native_label="Ascend NPU",
         guidance_native_framework="torch_npu / Ascend PyTorch primitives",
@@ -292,6 +303,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "require_real_ppu_custom_op_artifacts"
             ),
         ),
+        default_rule_migration_strategy="preserve_cuda_report_only",
         guidance_prefix="PPU (CUDA-Compatible)",
         guidance_native_label="PPU GPU",
         guidance_native_framework="torch.cuda / PPU-compatible PyTorch primitives",
@@ -695,10 +707,17 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> Platfor
             ),
         )
 
+    overridden_strategy = overrides.get("default_rule_migration_strategy")
+
     return PlatformPolicy(
         id=str(overridden_id) if isinstance(overridden_id, str) else base.id,
         display_name=str(overridden_display_name) if isinstance(overridden_display_name, str) else base.display_name,
         custom_op_evidence=ce,
+        default_rule_migration_strategy=(
+            str(overridden_strategy)
+            if isinstance(overridden_strategy, str) and overridden_strategy.strip()
+            else base.default_rule_migration_strategy
+        ),
         guidance_prefix=str(overrides.get("guidance_prefix", base.guidance_prefix)),
         guidance_native_label=str(overrides.get("guidance_native_label", base.guidance_native_label)),
         guidance_native_framework=str(overrides.get("guidance_native_framework", base.guidance_native_framework)),
