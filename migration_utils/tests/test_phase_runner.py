@@ -1636,6 +1636,58 @@ def test_phase_runner_disable_custom_op_injection_prevents_injection() -> None:
     assert validation.passed is True
 
 
+def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
+    wf = WorkflowDefinition(
+        name="normal-entry-route",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        globals={"custom_op_route_enabled": False},
+    )
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=wf,
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {
+            "entry_script_path": "train.py",
+            "run_command": "python train.py",
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": "/tmp/project/migration_reports",
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            "required_checks": ["same_run_runtime_coverage"],
+            "operator_discovery_sources": ["source"],
+            "operator_inventory_schema": {"semantic_rows": "one row per operator"},
+            "performance_report_schema": {"entries": "per unit"},
+            "validation_obligations": ["no_fallback"],
+            "phase5_entry_script_revision_allowed": True,
+        },
+        {"project_dir": "/tmp/project"},
+        {"previous_outputs": {"phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}}},
+    )
+
+    for field in (
+        "entry_script_kind",
+        "reports_dir",
+        "required_report_paths",
+        "required_checks",
+        "operator_discovery_sources",
+        "operator_inventory_schema",
+        "performance_report_schema",
+        "validation_obligations",
+        "phase5_entry_script_revision_allowed",
+    ):
+        assert field not in normalized
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is True
+
+
 def test_phase_runner_without_flag_injects_as_before() -> None:
     """Without any workflow globals (backward-compatible path), custom-op signals
     still trigger entry_script_kind: custom_op_full_validation injection."""

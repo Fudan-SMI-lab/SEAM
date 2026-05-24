@@ -52,6 +52,20 @@ CUSTOM_OP_NEGATIVE_PATTERNS = (
     re.compile(r"\bcustom_op_detected\s*[:=]\s*false\b", re.IGNORECASE),
 )
 
+CUSTOM_OP_CONTRACT_KEYS = frozenset(
+    {
+        "entry_script_kind",
+        "reports_dir",
+        "required_report_paths",
+        "required_checks",
+        "operator_discovery_sources",
+        "operator_inventory_schema",
+        "performance_report_schema",
+        "validation_obligations",
+        "phase5_entry_script_revision_allowed",
+    }
+)
+
 def _rewrite_container_to_host_path(
     path_str: str,
     project_dir: str,
@@ -76,19 +90,6 @@ def _rewrite_container_to_host_path(
     if not rel:
         return project_dir
     return str(Path(project_dir) / rel)
-
-
-CUSTOM_OP_CONTRACT_KEYS = frozenset(
-    {
-        "reports_dir",
-        "required_report_paths",
-        "required_checks",
-        "operator_discovery_sources",
-        "operator_inventory_schema",
-        "validation_obligations",
-        "phase5_entry_script_revision_allowed",
-    }
-)
 
 
 logger = logging.getLogger(__name__)
@@ -1152,7 +1153,9 @@ class PhaseRunner:
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
             workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
-            if not workflow_globals.get("disable_custom_op_contract_injection", False):
+            if self._custom_op_route_disabled(workflow_globals):
+                normalized = self._strip_custom_op_contract_fields(normalized)
+            else:
                 if self._custom_op_required_signal(previous_outputs, context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
             normalized = self._normalize_phase3_container_paths(
@@ -1165,10 +1168,24 @@ class PhaseRunner:
                 "phase_3_entry_script",
                 "entry_script_kind",
             )
-            if entry_script_kind == "custom_op_full_validation":
+            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            if not self._custom_op_route_disabled(workflow_globals) and entry_script_kind == "custom_op_full_validation":
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
         return normalized
+
+    @staticmethod
+    def _custom_op_route_disabled(workflow_globals: dict[str, object]) -> bool:
+        if workflow_globals.get("custom_op_route_enabled") is False:
+            return True
+        return workflow_globals.get("disable_custom_op_contract_injection") is True
+
+    @staticmethod
+    def _strip_custom_op_contract_fields(output: JsonObject) -> JsonObject:
+        stripped = dict(output)
+        for field in CUSTOM_OP_CONTRACT_KEYS:
+            stripped.pop(field, None)
+        return stripped
 
     @staticmethod
     def _normalize_phase3_container_paths(

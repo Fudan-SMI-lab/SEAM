@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import traceback
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -117,11 +117,13 @@ CUSTOM_OP_NEGATIVE_PATTERNS = (
 
 CUSTOM_OP_CONTRACT_KEYS = frozenset(
     {
+        "entry_script_kind",
         "reports_dir",
         "required_report_paths",
         "required_checks",
         "operator_discovery_sources",
         "operator_inventory_schema",
+        "performance_report_schema",
         "validation_obligations",
         "phase5_entry_script_revision_allowed",
     }
@@ -1928,7 +1930,9 @@ class WorkflowExecutor:
                 elif prompt_context.get("entry_script"):
                     normalized["entry_script_path"] = prompt_context["entry_script"]
             workflow_globals = getattr(self.workflow, "globals", None) or {}
-            if not workflow_globals.get("disable_custom_op_contract_injection", False):
+            if self._custom_op_route_disabled(workflow_globals):
+                normalized = self._strip_custom_op_contract_fields(normalized)
+            else:
                 if self._custom_op_required_signal(state, prompt_context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
             normalized = self._normalize_phase3_container_paths(
@@ -1937,12 +1941,17 @@ class WorkflowExecutor:
 
         if "phase_35" in phase_id or "static_validate" in phase_id:
             phase_3_output = state.get("phase_3_entry_script")
-            if isinstance(phase_3_output, dict) and phase_3_output.get("entry_script_kind") == "custom_op_full_validation":
+            workflow_globals = getattr(self.workflow, "globals", None) or {}
+            if (
+                not self._custom_op_route_disabled(workflow_globals)
+                and isinstance(phase_3_output, dict)
+                and phase_3_output.get("entry_script_kind") == "custom_op_full_validation"
+            ):
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
 
         if (
-            not (getattr(self.workflow, "globals", None) or {}).get("disable_custom_op_contract_injection", False)
+            not self._custom_op_route_disabled(getattr(self.workflow, "globals", None) or {})
             and (phase_id == "analyze_error" or normalized.get("repair_role") in {"dependency_fixer", "code_adapter", "operator_fixer"})
         ):
             history_text = str(prompt_context.get("previous_outputs", ""))
@@ -1954,6 +1963,19 @@ class WorkflowExecutor:
             )
 
         return normalized
+
+    @staticmethod
+    def _custom_op_route_disabled(workflow_globals: Mapping[str, object]) -> bool:
+        if workflow_globals.get("custom_op_route_enabled") is False:
+            return True
+        return workflow_globals.get("disable_custom_op_contract_injection") is True
+
+    @staticmethod
+    def _strip_custom_op_contract_fields(output: dict[str, Any]) -> dict[str, Any]:
+        stripped = dict(output)
+        for field in CUSTOM_OP_CONTRACT_KEYS:
+            stripped.pop(field, None)
+        return stripped
 
     @classmethod
     def _custom_op_required_signal(cls, *values: object) -> bool:
