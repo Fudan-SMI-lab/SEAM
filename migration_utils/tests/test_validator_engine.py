@@ -33,6 +33,10 @@ VALID_CASES: list[ValidatorCase] = [
         {"platform": "npu", "npu_detected": True, "python_version": "3.10", "cann_version": "8.0.RC", "ascendc_available": True, "driver_version": "driver-1"},
     ),
     (
+        validate_env_detect,
+        {"platform": "musa", "musa_detected": True, "python_version": "3.10", "torch_musa_available": True},
+    ),
+    (
         validate_project_analysis,
         {
             "project_dir": "/tmp/project",
@@ -81,6 +85,7 @@ VALID_CASES: list[ValidatorCase] = [
 
 INVALID_CASES: list[ValidatorCase] = [
     (validate_env_detect, {"platform": "cpu"}),
+    (validate_env_detect, {"platform": "cpu", "cpu_detected": True, "python_version": "3.10"}),
     (validate_project_analysis, {"project_dir": "", "dependencies": "torch"}),
     (validate_venv, {"venv_path": 1, "python_path": "", "installed_packages": "torch"}),
     (validate_entry_script, {"entry_script_path": "", "run_command": None}),
