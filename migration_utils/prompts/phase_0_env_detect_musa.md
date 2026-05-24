@@ -1,42 +1,66 @@
-# Phase 0 - Environment Detection (MUSA/MUXI)
+# Phase 0 - Environment Detection (MUXI Accelerator Family)
 
 You are executing `{phase_name}` for the target project at `{project_dir}`.
 
+{execution_environment_context}
+
+## Target Runtime Container Context
+- Execution backend mode: `{execution_backend_mode}`
+- Container name or ID: `{container_name_or_id}`
+- Container workdir: `{container_workdir}`
+- Host project directory: `{host_project_dir}`
+- Container project directory: `{container_project_dir}`
+- Read-only probe command prefix: `{container_probe_command_prefix}`
+
+When `execution_backend_mode` is `container`, the target runtime is the container above. Use `container_env_facts` and read-only probes inside that container as evidence. Host-side OpenCode command output is setup context only; it is not authoritative for Python, torch, accelerator availability, device count, SDK paths, or runtime libraries used by Phase 5. If a container probe is incomplete or failed, try safe read-only container probes with the command prefix above before reporting unknowns. Do not substitute host Python or host torch facts for missing container facts.
+
 ## Goal
-- Detect whether the target execution environment exposes MUSA/MUXI accelerator devices. If this MUXI deployment exposes MACA/MetaX or `torch_maca`/vendor-compatible APIs instead of `torch_musa`, report the observed stack accurately rather than inventing `torch_musa`.
-- Prefer `python3.10` and the target container/base environment described by the execution backend.
-- Report observable facts only; do not infer a working MUSA stack from CUDA source code alone.
+Detect facts about the target runtime that Phase 5 will use. The workflow targets the MUXI accelerator family, but the observed vendor stack may be native MUSA, MACA/MetaX, mcPyTorch, or another CUDA-compatible vendor PyTorch distribution.
+
+## Runtime Selection Rule
+- If the execution context says `execution_backend_mode: container`, probe inside the framework target container/base image when commands are available.
+- If the execution context says `execution_backend_mode: local`, probe the local host environment directly and do not mention container-only paths.
+- OpenCode file tools see the host filesystem; command probes must still target the runtime described above.
 
 ## Required Actions
-1. Read README/setup notes under `{project_dir}` before returning a result.
-2. Probe Python and package availability with commands such as `python3.10 --version` and `python3.10 -c "import torch; print(torch.__version__)"`.
-3. Probe MUSA runtime with `python3.10 -c "import torch, torch_musa; print(hasattr(torch, 'musa')); print(torch.musa.is_available() if hasattr(torch, 'musa') else False); print(torch.musa.device_count() if hasattr(torch, 'musa') else 0)"` when possible.
-4. Probe SDK/compiler/runtime facts without installing host packages: `command -v musacc`, `command -v mcc`, `command -v mxcc`, `ls /usr/local/musa*`, `ls /usr/local/maca*`, and candidate device nodes such as `/dev/musa*`, `/dev/mxcd`, `/dev/dri/renderD*`, or vendor-documented nodes.
-5. Record whether `torch_musa` or vendor-equivalent packages, MUSA/MACA SDK headers/libraries, compiler, and runtime libraries are present.
+1. Read README/setup notes under `{project_dir}` only for setup clues; do not infer device availability from source code.
+2. Probe available Python interpreters and identify the preferred interpreter that can import the vendor torch stack.
+3. Probe `torch`, `torch.cuda`, `torch_musa`, `torch.musa`, `torch_maca`, MACA/MetaX, MUSA SDK/compiler/runtime, and device nodes.
+4. Report observed facts only: package presence, API mode, device count/name, SDK/runtime/compiler paths, and driver/runtime strings when discoverable.
+5. Record whether CUDA APIs are vendor-compatible rather than assuming every `torch.cuda` use must become `torch.musa`.
 
 ## Hard Rules
-- Do not modify the project or install anything.
-- Do not claim MUSA is available unless a device/runtime/package signal is directly observed.
-- Do not report CPU as the target platform.
-- End with exactly one JSON object and no other JSON.
+- Do not modify files, install packages, start extra containers, or use stale pre-existing containers.
+- Do not claim `torch_musa`, `torch.musa`, MACA, or MetaX support unless directly observed.
+- Do not report CPU as the target platform; CPU can only be mentioned as non-target baseline context.
+- Final response must be exactly one JSON object. Start with `{` and end with `}`.
+- Do not include Markdown fences, analysis text, validation-error discussion, or extra JSON objects.
 
 ## Output Format
+Return one JSON object with this shape:
+
 ```json
 {
   "platform": "musa",
-  "musa_detected": true,
   "accelerator_detected": true,
-  "musa_api_available": true,
-  "torch_musa_available": true,
-  "torch_maca_available": false,
+  "observed_vendor": "maca_metax",
+  "api_mode": "cuda_compatible",
   "python_version": "3.10.12",
+  "preferred_python": "observed_container_or_local_python",
   "device_count": 1,
-  "device_name": "MUSA device name or not_found",
-  "musa_sdk_available": true,
-  "maca_sdk_available": false,
-  "musa_compiler_available": true,
-  "musa_runtime_libraries": ["libmusa.so"],
-  "device_nodes": ["/dev/musa0"],
+  "device_name": "MetaX C550",
+  "device_nodes": ["/dev/mxcd"],
+  "torch_available": true,
+  "torch_version": "observed_or_unknown",
+  "torch_cuda_available": true,
+  "torch_cuda_device_count": 1,
+  "torch_musa_available": false,
+  "torch_maca_available": false,
+  "musa_sdk_available": false,
+  "maca_sdk_available": true,
+  "musa_compiler_available": false,
+  "vendor_compiler_available": true,
+  "runtime_libraries": ["libmcruntime.so"],
   "driver_version": "observed_or_unknown"
 }
 ```
