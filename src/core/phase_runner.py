@@ -35,6 +35,7 @@ from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
 from validators.validate_project_analysis import validate as validate_project_analysis
+from validators.validate_reports import validate as validate_reports
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
 
@@ -77,6 +78,38 @@ CUSTOM_OP_CONTRACT_KEYS = frozenset(
 
 logger = logging.getLogger(__name__)
 TOP_LEVEL_LLM_TIMEOUT_DEFAULT = 30000
+STATUS_ONLY_RESPONSE_KEYS = frozenset(
+    {
+        "ok",
+        "status",
+        "state",
+        "phase",
+        "phase_id",
+        "message",
+        "note",
+        "notes",
+        "summary",
+        "progress",
+        "current_step",
+        "next_step",
+        "todo",
+        "todos",
+        "task",
+        "tasks",
+    }
+)
+PHASE_RESPONSE_REQUIRED_KEYS = {
+    "phase_2_venv_create": ("venv_path", "python_path", "installed_packages"),
+    "phase_3_entry_script": ("entry_script_path", "run_command"),
+    "phase_35_static_validate": ("validation_passed", "issues", "fix_plan"),
+}
+REVIEW_RESPONSE_REQUIRED_KEYS = (
+    "verdict",
+    "cpu_fallback_detected",
+    "cpu_fallback_necessary",
+    "alternative_suggestions",
+    "reasoning",
+)
 
 
 class SessionManagerLike(Protocol):
@@ -507,7 +540,22 @@ class PhaseRunner:
                     "session_error": session_error,
                     "raw_response": raw_response,
                 }
-            parsed = dict(extract_json_response(raw_response))
+            parsed_response = extract_json_response(raw_response)
+            parsed = dict(parsed_response) if isinstance(parsed_response, dict) else {}
+
+            response_shape_errors = self._review_response_shape_errors(parsed, raw_response)
+            if response_shape_errors:
+                if attempt < max_retry:
+                    active_prompt = self._build_review_correction_prompt(response_shape_errors)
+                    continue
+                parsed = {
+                    "verdict": "unknown",
+                    "cpu_fallback_detected": False,
+                    "cpu_fallback_necessary": False,
+                    "alternative_suggestions": "",
+                    "reasoning": "Review response failed validation: " + "; ".join(response_shape_errors),
+                }
+                break
 
             verdict = str(parsed.get("verdict", "")).lower()
             if verdict in ("accept", "reject"):
@@ -662,31 +710,52 @@ class PhaseRunner:
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_6_report")
 
         timeout = self._resolve_direct_llm_timeout("phase_6_report")
-        raw_response = active_session_mgr.send_command(session_id, prompt, timeout=timeout)
+        active_prompt = prompt
+        max_retry = 2
+        last_validation = ValidationResult(passed=False, errors=["phase_6_report did not execute"], warnings=[])
+        for attempt in range(1, max_retry + 1):
+            raw_response = active_session_mgr.send_command(session_id, active_prompt, timeout=timeout)
+            parsed_response = extract_json_response(raw_response)
+            parsed: dict[str, object] = dict(parsed_response) if isinstance(parsed_response, dict) else {}
+            validation = self._validate_phase6_report_shape(parsed, raw_response)
+            last_validation = validation
+            if validation.passed:
+                report = self._phase6_report_from_parsed(parsed, str(project_dir))
+                validation = self.validator.validate("reports", report)
+                last_validation = validation
+                if validation.passed:
+                    raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=attempt)
+                    canonical_path = artifact_store.mark_validated("phase_6_report", report)
+                    _ = artifact_store.write_journal({
+                        "phase_id": "phase_6_report",
+                        "attempt": attempt,
+                        "status": "succeeded",
+                        "session_ref": session_id,
+                        "raw_path": raw_path,
+                        "canonical_path": canonical_path,
+                        "errors": [],
+                        "warnings": [],
+                    })
 
-        parsed: dict[str, object] = dict(extract_json_response(raw_response))
+                    return report
 
-        report: dict[str, object] = {
-            "phase_id": "phase_6_report",
-            "report_paths": parsed.get("report_paths", []),
-            "migration_summary": parsed.get("migration_summary", {}),
-            "project_dir": str(project_dir),
-        }
+            invalid_report = self._invalid_phase6_report(parsed, raw_response, validation.errors, str(project_dir))
+            raw_path = artifact_store.save_phase_output("phase_6_report", invalid_report, attempt=attempt)
+            _ = artifact_store.write_journal({
+                "phase_id": "phase_6_report",
+                "attempt": attempt,
+                "status": "response_shape_failed",
+                "session_ref": session_id,
+                "raw_path": raw_path,
+                "canonical_path": "",
+                "errors": validation.errors,
+                "warnings": validation.warnings,
+            })
+            if attempt < max_retry:
+                active_prompt = self._build_phase6_correction_prompt(validation)
 
-        raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=1)
-        canonical_path = artifact_store.mark_validated("phase_6_report", report)
-        _ = artifact_store.write_journal({
-            "phase_id": "phase_6_report",
-            "attempt": 1,
-            "status": "succeeded",
-            "session_ref": session_id,
-            "raw_path": raw_path,
-            "canonical_path": canonical_path,
-            "errors": [],
-            "warnings": [],
-        })
-
-        return report
+        error_text = "; ".join(last_validation.errors) or "unknown validation failure"
+        raise ValueError(f"phase_6_report failed validation after {max_retry} attempts: {error_text}")
 
     def _run_single_phase(
         self,
@@ -709,7 +778,13 @@ class PhaseRunner:
         active_prompt = prompt
         for attempt in range(1, max_retry + 1):
             raw_response = self._send_prompt(session, active_prompt, timeout, session_mgr)
-            parsed_output: JsonObject = dict(extract_json_response(raw_response))
+            parsed_response = extract_json_response(raw_response)
+            parsed_output: JsonObject = dict(parsed_response) if isinstance(parsed_response, dict) else {}
+            response_shape_validation = self._validate_phase_response_shape(
+                phase,
+                parsed_output,
+                raw_response,
+            )
             normalized_output = self._normalize_output(phase, parsed_output, prompt_context, normalized_context)
 
             # Attach raw prompt and response for end-to-end verification.
@@ -720,6 +795,28 @@ class PhaseRunner:
             }
 
             raw_path = artifact_store.save_phase_output(phase.artifact_id, normalized_output, attempt=attempt)
+
+            if not response_shape_validation.passed:
+                last_validation = response_shape_validation
+                _ = artifact_store.write_journal(
+                    self._build_journal_entry(
+                        phase=phase,
+                        attempt=attempt,
+                        status="response_shape_failed",
+                        session_ref=session_ref,
+                        raw_path=raw_path,
+                        canonical_path="",
+                        validation=response_shape_validation,
+                    )
+                )
+                if attempt < max_retry:
+                    active_prompt = self._build_correction_prompt(
+                        phase=phase,
+                        validation=response_shape_validation,
+                        previous_prompt=prompt,
+                    )
+                    continue
+                break
 
             validation = self.validator.validate(phase.validator_name, normalized_output)
             last_validation = validation
@@ -796,6 +893,134 @@ class PhaseRunner:
 
         error_text = "; ".join(last_validation.errors) or "unknown validation failure"
         raise ValueError(f"{phase.prompt_id} failed validation after {max_retry} attempts: {error_text}")
+
+    @classmethod
+    def _validate_phase_response_shape(
+        cls,
+        phase: PhaseSpec,
+        output: JsonObject,
+        raw_response: str,
+    ) -> ValidationResult:
+        errors: list[str] = []
+        required_keys = PHASE_RESPONSE_REQUIRED_KEYS.get(phase.prompt_id, ())
+        if not required_keys:
+            return ValidationResult(passed=True, errors=[], warnings=[])
+        if not output:
+            if raw_response.strip():
+                errors.append("response contained no parseable JSON object")
+            else:
+                errors.append("response was empty")
+        elif cls._is_status_only_response(output):
+            errors.append(
+                f"{phase.prompt_id} returned status/progress-only JSON instead of the complete phase schema"
+            )
+
+        missing_keys = [key for key in required_keys if key not in output]
+        if missing_keys:
+            errors.append("Missing required phase JSON keys: " + ", ".join(missing_keys))
+        return ValidationResult(passed=not errors, errors=errors, warnings=[])
+
+    @staticmethod
+    def _is_status_only_response(output: JsonObject) -> bool:
+        keys = {str(key) for key in output if not str(key).startswith("_")}
+        return bool(keys) and keys.issubset(STATUS_ONLY_RESPONSE_KEYS)
+
+    @classmethod
+    def _validate_phase6_report_shape(
+        cls,
+        parsed: dict[str, object],
+        raw_response: str,
+    ) -> ValidationResult:
+        errors: list[str] = []
+        if not parsed:
+            if raw_response.strip():
+                errors.append("response contained no parseable JSON object")
+            else:
+                errors.append("response was empty")
+        elif cls._is_status_only_response(parsed):
+            errors.append("phase_6_report returned status/progress-only JSON instead of the complete report schema")
+
+        report_paths = parsed.get("report_paths")
+        if not isinstance(report_paths, list):
+            errors.append("report_paths must be a list")
+        elif not all(isinstance(path, str) for path in report_paths):
+            errors.append("report_paths must contain only strings")
+
+        if not isinstance(parsed.get("migration_summary"), dict):
+            errors.append("migration_summary must be an object")
+        return ValidationResult(passed=not errors, errors=errors, warnings=[])
+
+    @staticmethod
+    def _phase6_report_from_parsed(parsed: dict[str, object], project_dir: str) -> dict[str, object]:
+        report_paths_value = parsed.get("report_paths")
+        report_paths: list[str] = []
+        if isinstance(report_paths_value, list) and all(isinstance(path, str) for path in report_paths_value):
+            report_paths = [path for path in report_paths_value if isinstance(path, str)]
+
+        summary_value = parsed.get("migration_summary")
+        migration_summary: dict[str, object] = {}
+        if isinstance(summary_value, dict):
+            migration_summary = {str(key): value for key, value in summary_value.items()}
+
+        return {
+            "phase_id": "phase_6_report",
+            "report_paths": report_paths,
+            "migration_summary": migration_summary,
+            "project_dir": project_dir,
+        }
+
+    @classmethod
+    def _invalid_phase6_report(
+        cls,
+        parsed: dict[str, object],
+        raw_response: str,
+        errors: list[str],
+        project_dir: str,
+    ) -> dict[str, object]:
+        report = cls._phase6_report_from_parsed(parsed, project_dir)
+        report["raw_response"] = raw_response
+        report["validation_errors"] = list(errors)
+        return report
+
+    @staticmethod
+    def _build_phase6_correction_prompt(validation: ValidationResult) -> str:
+        error_lines = "\n".join(f"- {error}" for error in validation.errors)
+        return (
+            "Your previous response for phase_6_report failed validation:\n"
+            f"{error_lines}\n\n"
+            "Return one complete replacement JSON object for phase_6_report only. "
+            "It must include `report_paths` as a list of strings and `migration_summary` as an object. "
+            "Do not return a patch, commentary, acknowledgement, or status/progress-only JSON. "
+            "Return only the corrected JSON object."
+        )
+
+    @classmethod
+    def _review_response_shape_errors(cls, parsed: dict[str, object], raw_response: str) -> list[str]:
+        errors: list[str] = []
+        if not parsed:
+            if raw_response.strip():
+                errors.append("response contained no parseable JSON object")
+            else:
+                errors.append("response was empty")
+            return errors
+        if cls._is_status_only_response(parsed):
+            errors.append("review response returned status/progress-only JSON instead of the complete review schema")
+        missing_keys = [key for key in REVIEW_RESPONSE_REQUIRED_KEYS if key not in parsed]
+        if missing_keys:
+            errors.append("Missing required review JSON keys: " + ", ".join(missing_keys))
+        return errors
+
+    @staticmethod
+    def _build_review_correction_prompt(errors: list[str]) -> str:
+        error_lines = "\n".join(f"- {error}" for error in errors)
+        return (
+            "Your previous review response failed validation:\n"
+            f"{error_lines}\n\n"
+            "Return one complete replacement JSON object for phase_5_review only. "
+            "It must include verdict, cpu_fallback_detected, cpu_fallback_necessary, alternative_suggestions, and reasoning. "
+            "Do not return a patch, commentary, acknowledgement, or status/progress-only JSON. "
+            "Return only the corrected JSON object."
+        )
 
     def _run_assisted_verification(
         self,
@@ -889,9 +1114,10 @@ class PhaseRunner:
             f"{error_lines}"
             f"{field_hint}"
             f"{action_hint}"
-            "\n\nPlease provide ONLY the corrected JSON response with the required keys. "
-            "Refer to the original prompt context above.\n"
-            "You may reason freely, but end with a single JSON object."
+            f"\n\nReturn one complete replacement JSON object for {phase.prompt_id} only. "
+            "The replacement must include every required top-level key for this phase, not a patch, diff, acknowledgement, commentary-only JSON, or partial update. "
+            "Do not return meta/status-only fields such as `status`, `note`, `message`, or `progress` instead of the phase schema. "
+            "Return only the corrected JSON object."
         )
 
     def _register_default_validators(self) -> None:
@@ -901,6 +1127,7 @@ class PhaseRunner:
             "venv": validate_venv,
             "entry_script": validate_entry_script,
             "entry_static": validate_entry_static,
+            "reports": validate_reports,
         }
         for name, validator_fn in registrations.items():
             self.validator.register_validator(name, validator_fn)
@@ -1315,6 +1542,7 @@ class PhaseRunner:
             "attempt": attempt,
             "status": status,
             "session_id": session_ref,
+            "session_ref": session_ref,
             "raw_path": raw_path,
             "canonical_path": canonical_path,
             "errors": validation.errors,

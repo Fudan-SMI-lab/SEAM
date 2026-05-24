@@ -6,6 +6,7 @@ import shlex
 from pathlib import Path
 from typing import cast
 
+from core.routes import SERVING_ENTRY_KINDS, serving_framework_for_route, serving_route_from_contract
 from core.validator_engine import ValidationDict
 
 CUSTOM_OP_FIELDS = {
@@ -21,11 +22,51 @@ CUSTOM_OP_FIELDS = {
     "per_variant_performance_report",
 }
 
+SERVING_FIELDS = {
+    "entry_script_kind",
+    "migration_route",
+    "serving_framework",
+    "launch_command",
+    "readiness_probe",
+    "request_validation",
+    "project_test_files",
+    "expected_outputs",
+    "required_runtime_env",
+    "required_checks",
+    "serving_reports_dir",
+    "required_report_paths",
+    "serving_validation_obligations",
+}
+
+REQUIRED_SERVING_CHECKS = {
+    "project_demo_or_test_execution",
+    "serving_api_request_validation",
+    "readiness_probe_passed",
+    "npu_execution_evidence",
+    "no_cuda_fallback",
+    "no_cpu_fallback",
+    "fresh_serving_report",
+    "route_framework_match",
+}
+
+REQUIRED_SERVING_REPORT_TOKENS = ("serving", "final", "gate")
+
+REQUIRED_SERVING_OBLIGATIONS = {
+    "actual_project_demo_test_or_api_validation",
+    "npu_execution_evidence",
+    "reject_import_only_or_smoke_only",
+    "reject_cuda_or_cpu_fallback",
+    "fresh_report_paths",
+    "route_framework_match",
+}
+
 EXPANDED_VARIANT_FIELDS = {
     "expanded_variant_inventory",
     "variant_axis_coverage",
     "per_variant_performance_report",
 }
+
+CUSTOM_OP_SPECIFIC_FIELDS = CUSTOM_OP_FIELDS - {"entry_script_kind", "required_report_paths", "required_checks"}
 
 REQUIRED_VARIANT_CHECKS = {
     "expanded_variant_inventory",
@@ -184,12 +225,72 @@ def validate(data: dict[str, object]) -> ValidationDict:
 
     if _has_custom_op_contract(data):
         _validate_custom_op_contract(data, errors)
+    elif _has_serving_contract(data):
+        _validate_serving_contract(data, errors)
 
     return {"passed": not errors, "errors": errors, "warnings": []}
 
 
 def _has_custom_op_contract(data: dict[str, object]) -> bool:
-    return any(field in data for field in CUSTOM_OP_FIELDS)
+    if data.get("entry_script_kind") == "custom_op_full_validation":
+        return True
+    return any(field in data for field in CUSTOM_OP_SPECIFIC_FIELDS)
+
+
+def _has_serving_contract(data: dict[str, object]) -> bool:
+    if data.get("entry_script_kind") in SERVING_ENTRY_KINDS:
+        return True
+    return any(field in data for field in SERVING_FIELDS if field != "entry_script_kind")
+
+
+def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> None:
+    route = serving_route_from_contract(data)
+    entry_script_kind = data.get("entry_script_kind")
+    if route is None or entry_script_kind not in SERVING_ENTRY_KINDS:
+        errors.append("entry_script_kind must be a serving validation kind for serving contracts")
+        return
+
+    expected_framework = serving_framework_for_route(route)
+    if data.get("serving_framework") != expected_framework:
+        errors.append(f"serving_framework must be '{expected_framework}' for {entry_script_kind}")
+
+    launch_command = data.get("launch_command")
+    if not isinstance(launch_command, str) or not launch_command.strip():
+        errors.append("launch_command must be a non-empty serving launch command")
+    else:
+        _reject_unsafe_run_command(launch_command, errors, field_name="launch_command")
+
+    reports_dir = data.get("serving_reports_dir")
+    if not isinstance(reports_dir, str) or not reports_dir.strip():
+        errors.append("serving_reports_dir must be a non-empty string for serving contracts")
+    elif "migration_reports" not in reports_dir:
+        errors.append("serving_reports_dir must point under the target project's migration_reports directory")
+
+    required_reports = _string_list(data.get("required_report_paths"))
+    if required_reports is None or not required_reports:
+        errors.append("required_report_paths must list serving final-gate report obligations")
+    elif not any(all(token in path.lower() for token in REQUIRED_SERVING_REPORT_TOKENS) for path in required_reports):
+        errors.append("required_report_paths must include a serving_final_gate report path")
+
+    required_checks = set(_string_list(data.get("required_checks")) or [])
+    missing_checks = sorted(REQUIRED_SERVING_CHECKS - required_checks)
+    if missing_checks:
+        errors.append("required_checks missing serving checks: " + ", ".join(missing_checks))
+
+    obligations = set(_string_list(data.get("serving_validation_obligations")) or [])
+    missing_obligations = sorted(REQUIRED_SERVING_OBLIGATIONS - obligations)
+    if missing_obligations:
+        errors.append("serving_validation_obligations missing: " + ", ".join(missing_obligations))
+
+    for field in ("project_test_files", "expected_outputs", "required_runtime_env"):
+        values = _string_list(data.get(field))
+        if values is None or not values:
+            errors.append(f"{field} must be a non-empty list for serving contracts")
+
+    for field in ("readiness_probe", "request_validation"):
+        value = data.get(field)
+        if not isinstance(value, dict) or not value:
+            errors.append(f"{field} must be a non-empty object for serving contracts")
 
 
 def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> None:
@@ -513,24 +614,24 @@ def _reject_benchmark_only_target(entry_script_path: object, run_command: object
             return
 
 
-def _reject_unsafe_run_command(run_command: str, errors: list[str]) -> None:
+def _reject_unsafe_run_command(run_command: str, errors: list[str], *, field_name: str = "run_command") -> None:
     if any(control in run_command for control in UNSAFE_RUN_COMMAND_CONTROLS):
-        errors.append("run_command must be a single non-interactive process command; create a wrapper script instead of using shell control syntax")
+        errors.append(f"{field_name} must be a single non-interactive process command; create a wrapper script instead of using shell control syntax")
         return
     try:
         tokens = shlex.split(run_command)
     except ValueError:
-        errors.append("run_command must be shell-parseable as a single process command")
+        errors.append(f"{field_name} must be shell-parseable as a single process command")
         return
     if not tokens:
-        errors.append("run_command must be a non-empty string")
+        errors.append(f"{field_name} must be a non-empty string")
         return
     executable = tokens[0].rsplit("/", 1)[-1]
     if executable in UNSAFE_RUN_COMMAND_EXECUTORS:
-        errors.append("run_command must not invoke a shell or shell builtin; create a wrapper script instead")
+        errors.append(f"{field_name} must not invoke a shell or shell builtin; create a wrapper script instead")
         return
     if executable in ENV_EXECUTORS and _env_invokes_shell(tokens):
-        errors.append("run_command must not invoke a shell through env; create a wrapper script instead")
+        errors.append(f"{field_name} must not invoke a shell through env; create a wrapper script instead")
 
 
 def _env_invokes_shell(tokens: list[str]) -> bool:

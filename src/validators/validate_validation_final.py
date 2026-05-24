@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import cast
 
+from core.routes import is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 
 PASS_STATES = {"PASS", "FULL_PASS", "DONE", "CLOSED_PASS"}
@@ -178,6 +179,64 @@ def validate(data: dict[str, object]) -> ValidationDict:
 
     if not isinstance(data.get("errors"), list):
         errors.append("errors must be a list")
+
+    return {"passed": not errors, "errors": errors, "warnings": []}
+
+
+def validate_serving_final_gate(data: dict[str, object], expected_route: str | None = None) -> ValidationDict:
+    """Validate a strict vLLM/SGLang serving final-gate report."""
+    errors: list[str] = []
+
+    route = data.get("migration_route")
+    if expected_route is not None and route != expected_route:
+        errors.append(f"migration_route must match expected serving route {expected_route}")
+    if not is_serving_route(route):
+        errors.append("migration_route must be vllm_serving or sglang_serving")
+
+    expected_framework = serving_framework_for_route(route)
+    if data.get("serving_framework") != expected_framework:
+        errors.append(f"serving_framework must be '{expected_framework}' for migration_route={route}")
+
+    full_status = data.get("full_migration_status")
+    _reject_blocking_status(full_status, "full_migration_status", errors)
+    if full_status != "FULL_PASS":
+        errors.append("full_migration_status must be 'FULL_PASS'")
+
+    for field in ("project_test_files", "expected_outputs", "required_checks"):
+        if not _non_empty_string_list(data.get(field)):
+            errors.append(f"{field} must be a non-empty list of project validation evidence")
+
+    required_checks = set(_string_values(data.get("required_checks")))
+    for check in (
+        "project_demo_or_test_execution",
+        "serving_api_request_validation",
+        "readiness_probe_passed",
+        "npu_execution_evidence",
+        "no_cuda_fallback",
+        "no_cpu_fallback",
+        "fresh_serving_report",
+        "route_framework_match",
+    ):
+        if check not in required_checks:
+            errors.append(f"required_checks must include {check}")
+
+    if not _truthy_evidence(data.get("readiness_probe")):
+        errors.append("readiness_probe must prove the serving endpoint became ready")
+    if not _truthy_evidence(data.get("request_validation")):
+        errors.append("request_validation must prove actual project API/demo requests succeeded")
+    if not _truthy_evidence(data.get("npu_execution_evidence")):
+        errors.append("npu_execution_evidence must prove real NPU execution")
+
+    if data.get("project_demo_or_test_executed") is not True:
+        errors.append("project_demo_or_test_executed must be true")
+    if data.get("serving_api_validated") is not True:
+        errors.append("serving_api_validated must be true")
+    if data.get("npu_execution_observed") is not True:
+        errors.append("npu_execution_observed must be true")
+
+    for field in ("cuda_fallback_detected", "cpu_fallback_detected", "import_only", "smoke_only"):
+        if data.get(field) is not False:
+            errors.append(f"{field} must be false")
 
     return {"passed": not errors, "errors": errors, "warnings": []}
 
@@ -404,7 +463,7 @@ def _extract_runtime_coverage_entries(report: Mapping[object, object]) -> dict[s
         for key, value in cast(Mapping[object, object], raw_entries).items():
             if isinstance(value, Mapping):
                 entry = dict(cast(Mapping[object, object], value))
-                entry.setdefault("unit_identity", key)
+                _ = entry.setdefault("unit_identity", key)
                 entries.append(entry)
     for item in entries:
         if not isinstance(item, Mapping):
@@ -459,6 +518,33 @@ def _int_field(data: dict[str, object], field_name: str, errors: list[str]) -> i
         errors.append(f"{field_name} must be an integer")
         return None
     return value
+
+
+def _string_values(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in cast(list[object], value) if isinstance(item, str) and item.strip()]
+
+
+def _non_empty_string_list(value: object) -> bool:
+    return bool(_string_values(value))
+
+
+def _truthy_evidence(value: object) -> bool:
+    if isinstance(value, Mapping):
+        evidence = cast(Mapping[object, object], value)
+        if evidence.get("passed") is False or evidence.get("success") is False:
+            return False
+        return any(
+            item not in (None, False, "", [], {})
+            for item in evidence.values()
+        )
+    if isinstance(value, list):
+        evidence_items = cast(list[object], value)
+        return bool(evidence_items) and all(_truthy_evidence(item) for item in evidence_items)
+    if isinstance(value, str):
+        return bool(value.strip())
+    return value is True
 
 
 def _validate_gate_row(

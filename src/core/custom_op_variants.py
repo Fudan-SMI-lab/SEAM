@@ -128,14 +128,15 @@ def _source_template_expanded_variants(surface: Mapping[str, object], *, project
             base_axes,
             global_template_axis_names,
         )
-        if not source_axis_names and project_dir:
+        if project_dir:
             descriptor_with_source = _descriptor_text_with_source_files(base_unit, descriptor_text, project_dir, source_file_cache)
-            source_axis_names = _source_template_axis_names_for_unit(
+            source_axis_names_from_source = _source_template_axis_names_for_unit(
                 base_unit,
                 descriptor_with_source,
                 base_axes,
                 global_template_axis_names,
             )
+            source_axis_names = _ordered_unique([*source_axis_names, *source_axis_names_from_source])
         if sample_axis_names:
             if project_dir and source_axis_names:
                 effective_sample_axis_names = sample_axis_names & set(source_axis_names)
@@ -976,6 +977,9 @@ def _source_relevant_snippet(base_unit: str, lines: Sequence[str]) -> str:
         return "\n".join(lines[:400])
     selected: list[str] = []
     seen: set[int] = set()
+    for line_number in range(0, min(len(lines), 80)):
+        seen.add(line_number)
+        selected.append(lines[line_number])
     for index in matched_indices[:20]:
         start = max(0, index - 25)
         end = min(len(lines), index + 80)

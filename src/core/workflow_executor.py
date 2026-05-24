@@ -49,6 +49,14 @@ from core.custom_op_variants import (
     expanded_variant_contract_from_outputs,
     normalize_project_analysis_expanded_variants,
 )
+from core.routes import (
+    CUSTOM_OP,
+    CUSTOM_OP_WITH_VARIANTS,
+    ORDINARY_CUDA,
+    SERVING_ROUTES,
+    serving_framework_for_route,
+    serving_route_from_contract,
+)
 from core.assisted_verification import (
     AssistedVerificationResult,
     AssistedVerificationRunner,
@@ -64,7 +72,7 @@ from core.repair_loop import (
     force_custom_op_operator_routing_if_needed,
 )
 from validators.validate_entry_script import validate as validate_entry_script
-from validators.validate_validation_final import validate_custom_op_final_gate
+from validators.validate_validation_final import validate_custom_op_final_gate, validate_serving_final_gate
 
 logger = logging.getLogger(__name__)
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
@@ -81,9 +89,9 @@ SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
 SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 30000
 TOP_LEVEL_LLM_TIMEOUT_DEFAULT = 30000
 TOP_LEVEL_LLM_FRESH_RETRIES_DEFAULT = 2
-CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT = SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT
-CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT = 1
-CUSTOM_OP_OPERATOR_INCOMPLETE_MAX_CONTINUATIONS_DEFAULT = 0
+CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT = 6 * 60 * 60
+CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT = 3
+CUSTOM_OP_OPERATOR_INCOMPLETE_MAX_CONTINUATIONS_DEFAULT = 1
 CUSTOM_OP_FAIL_CLOSED_STATUS = "fail_closed_missing_strict_opp_evidence"
 CUSTOM_OP_STAGNATION_FAIL_CLOSED_STATUS = "stagnation_fail_closed_missing_strict_opp_evidence"
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
@@ -103,6 +111,39 @@ RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "connection closed without response",
     "partial/progress response",
 }
+STATUS_ONLY_LLM_RESPONSE_KEYS = frozenset(
+    {
+        "ok",
+        "status",
+        "state",
+        "phase",
+        "phase_id",
+        "message",
+        "note",
+        "notes",
+        "summary",
+        "progress",
+        "current_step",
+        "next_step",
+        "todo",
+        "todos",
+        "task",
+        "tasks",
+    }
+)
+TOP_LEVEL_LLM_REQUIRED_KEYS = {
+    "phase_2_venv_create": ("venv_path", "python_path", "installed_packages"),
+    "phase_3_entry_script": ("entry_script_path", "run_command"),
+    "phase_35_static_validate": ("validation_passed", "issues", "fix_plan"),
+    "phase_6_report": ("report_paths", "migration_summary"),
+}
+REVIEW_PHASE_REQUIRED_KEYS = (
+    "verdict",
+    "cpu_fallback_detected",
+    "cpu_fallback_necessary",
+    "alternative_suggestions",
+    "reasoning",
+)
 TOP_LEVEL_FRESH_RETRY_BLOCKING_SESSION_ERRORS = {
     "empty session response",
     "unknownerror",
@@ -1218,21 +1259,55 @@ class WorkflowExecutor:
             )
 
             # 5. Parse JSON
-            output = extract_json_response(raw_response)
-            self._raise_for_session_error_output(output, phase.id)
-            if not output:
-                output = {"raw_response": raw_response}
+            parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
         except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
             return self._record_llm_phase_failure(phase, sid, timeout, exc)
 
         # 6. Normalize, validate, and run assisted verification with retries.
-        output = self._normalize_llm_output(phase, output, input_ctx, state)
+        current_raw_response = raw_response
+        response_shape_output = dict(parsed_output)
+        output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
         max_retries = 3
-        needs_retry_gate = bool(phase.validator or phase.validate_only or self._is_assisted_verification_phase(phase))
+        needs_retry_gate = bool(
+            phase.validator
+            or phase.validate_only
+            or self._is_assisted_verification_phase(phase)
+            or self._top_level_llm_required_keys(phase)
+        )
         if needs_retry_gate:
             validation_passed = False
             validation_errors: list[str] = []
             for attempt in range(1, max_retries + 1):
+                response_shape_errors = self._top_level_llm_response_shape_errors(
+                    phase,
+                    response_shape_output,
+                    current_raw_response,
+                )
+                if response_shape_errors:
+                    validation_errors = response_shape_errors
+                    if attempt >= max_retries:
+                        break
+                    correction_prompt = self._build_validation_correction_prompt(
+                        "; ".join(response_shape_errors),
+                        phase_id=phase.id,
+                        validator_name=str(phase.validator or phase.id),
+                    )
+                    try:
+                        raw_response, sid = self._send_top_level_llm_command_with_empty_retry(
+                            phase_id=phase.id,
+                            agent_id=agent_id,
+                            session_id=sid,
+                            prompt_text=correction_prompt,
+                            timeout=timeout,
+                        )
+                        current_raw_response = raw_response
+                        parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
+                    except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
+                        return self._record_llm_phase_failure(phase, sid, timeout, exc)
+                    response_shape_output = dict(parsed_output)
+                    output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
+                    continue
+
                 if phase.validator or phase.validate_only:
                     validation_result = self.validator_engine.validate(
                         phase.validator or phase.id, output
@@ -1255,13 +1330,12 @@ class WorkflowExecutor:
                                 prompt_text=correction_prompt,
                                 timeout=timeout,
                             )
-                            output = extract_json_response(raw_response)
-                            self._raise_for_session_error_output(output, phase.id)
-                            if not output:
-                                output = {"raw_response": raw_response}
+                            current_raw_response = raw_response
+                            parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
                         except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
                             return self._record_llm_phase_failure(phase, sid, timeout, exc)
-                        output = self._normalize_llm_output(phase, output, input_ctx, state)
+                        response_shape_output = dict(parsed_output)
+                        output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
                         continue
 
                 assisted_result = self._run_assisted_verification_for_llm_phase(
@@ -1272,6 +1346,11 @@ class WorkflowExecutor:
                     attempt=attempt,
                 )
                 if assisted_result is not None:
+                    assisted_result = self._maybe_accept_assisted_session_failure(
+                        phase=phase,
+                        output=output,
+                        result=assisted_result,
+                    )
                     output = attach_assisted_summary(output, assisted_result)
                     if not assisted_result.passed:
                         validation_errors = assisted_result.errors or ["assisted verification failed"]
@@ -1290,13 +1369,12 @@ class WorkflowExecutor:
                                 prompt_text=correction_prompt,
                                 timeout=timeout,
                             )
-                            output = extract_json_response(raw_response)
-                            self._raise_for_session_error_output(output, phase.id)
-                            if not output:
-                                output = {"raw_response": raw_response}
+                            current_raw_response = raw_response
+                            parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
                         except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
                             return self._record_llm_phase_failure(phase, sid, timeout, exc)
-                        output = self._normalize_llm_output(phase, output, input_ctx, state)
+                        response_shape_output = dict(parsed_output)
+                        output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
                         continue
 
                 validation_passed = True
@@ -1354,8 +1432,172 @@ class WorkflowExecutor:
                 phase1_output=self._assisted_phase1_output(state),
                 project_dir=project_dir,
                 attempt=attempt,
-            )
+        )
         return None
+
+    def _maybe_accept_assisted_session_failure(
+        self,
+        *,
+        phase: PhaseDefinition,
+        output: dict[str, Any],
+        result: AssistedVerificationResult,
+    ) -> AssistedVerificationResult:
+        if result.passed or result.skipped:
+            return result
+        if not self._assisted_result_is_session_failure(result):
+            return result
+        validation = self.validator_engine.validate(phase.validator or phase.id, output)
+        if not getattr(validation, "passed", True):
+            return result
+        if self._is_assisted_phase1(phase):
+            if not self._phase1_has_deterministic_custom_op_inventory(output):
+                return result
+            warning = "assisted verifier session failed; accepted deterministic Phase 1 custom-op inventory after local validation"
+        elif self._is_assisted_phase3(phase):
+            if not self._phase3_has_deterministic_contract(output):
+                return result
+            warning = "assisted verifier session failed; accepted deterministic Phase 3 validation contract after local validation"
+        else:
+            return result
+
+        accepted = AssistedVerificationResult(
+            phase_id=result.phase_id,
+            skipped=False,
+            passed=True,
+            errors=[],
+            warnings=[warning],
+            report=dict(result.report),
+            raw_path=result.raw_path,
+            canonical_path=result.canonical_path,
+            correction_prompt=result.correction_prompt,
+        )
+        if self._is_assisted_phase1(phase):
+            accepted.report.setdefault("track", "custom_op_variant")
+        logger.warning(
+            "Assisted verifier session failed for %s but local deterministic phase contract passed; continuing fail-open for verifier availability only",
+            phase.id,
+        )
+        return accepted
+
+    @staticmethod
+    def _assisted_result_is_session_failure(result: AssistedVerificationResult) -> bool:
+        values = [*result.errors]
+        for key in ("error", "session_error"):
+            value = result.report.get(key)
+            if isinstance(value, str):
+                values.append(value)
+        return any("assisted verifier session failed" in value or "上游" in value for value in values)
+
+    @staticmethod
+    def _phase1_has_deterministic_custom_op_inventory(output: dict[str, Any]) -> bool:
+        surface = output.get("custom_op_surface")
+        if not isinstance(surface, dict):
+            return False
+        if surface.get("custom_op_detected") is not True:
+            return False
+        units = surface.get("fine_grained_operator_units")
+        if not isinstance(units, list) or not units:
+            return False
+        if surface.get("variant_axes_detected") is True:
+            variants = surface.get("expanded_operator_variants")
+            count = surface.get("expanded_operator_instances_count")
+            if not isinstance(variants, list) or not variants:
+                return False
+            if not isinstance(count, int) or count != len(variants):
+                return False
+        return True
+
+    @staticmethod
+    def _phase3_has_deterministic_contract(output: dict[str, Any]) -> bool:
+        entry_kind = output.get("entry_script_kind")
+        if entry_kind == "custom_op_full_validation":
+            inventory = output.get("expanded_variant_inventory")
+            if isinstance(inventory, dict):
+                units = inventory.get("unit_identities")
+                count = inventory.get("expanded_operator_instances_count")
+                if inventory.get("variant_axes_detected") is True:
+                    if not isinstance(units, list) or not units:
+                        return False
+                    if not isinstance(count, int) or count != len(units):
+                        return False
+            return True
+        if entry_kind in {"vllm_serving_validation", "sglang_serving_validation"}:
+            return True
+        return "entry_script_path" in output and "run_command" in output
+
+    @classmethod
+    def _parse_llm_phase_response(cls, raw_response: str, phase_id: str) -> dict[str, Any]:
+        output = extract_json_response(raw_response)
+        cls._raise_for_session_error_output(output, phase_id)
+        if isinstance(output, dict) and output:
+            return dict(output)
+        return {"raw_response": raw_response}
+
+    @staticmethod
+    def _top_level_llm_required_keys(phase: PhaseDefinition) -> tuple[str, ...]:
+        phase_keys = {
+            str(phase.id or ""),
+            str(phase.prompt_template or ""),
+            str(phase.validator or ""),
+        }
+        for key in phase_keys:
+            required = TOP_LEVEL_LLM_REQUIRED_KEYS.get(key)
+            if required:
+                return required
+        return ()
+
+    @classmethod
+    def _top_level_llm_response_shape_errors(
+        cls,
+        phase: PhaseDefinition,
+        output: dict[str, Any],
+        raw_response: str,
+    ) -> list[str]:
+        errors: list[str] = []
+        if "raw_response" in output and len(output) == 1:
+            if str(raw_response or "").strip():
+                errors.append("response contained no parseable JSON object")
+            else:
+                errors.append("response was empty")
+        elif cls._is_status_only_llm_response(output):
+            errors.append(
+                f"{phase.id} returned status/progress-only JSON instead of the complete phase schema"
+            )
+        required_keys = cls._top_level_llm_required_keys(phase)
+        missing_keys = [key for key in required_keys if key not in output]
+        if missing_keys:
+            errors.append("Missing required phase JSON keys: " + ", ".join(missing_keys))
+        if cls._is_phase6_report_phase(phase):
+            errors.extend(cls._phase6_report_response_shape_errors(output))
+        return errors
+
+    @staticmethod
+    def _is_phase6_report_phase(phase: PhaseDefinition) -> bool:
+        identifiers = {
+            str(phase.id or ""),
+            str(phase.prompt_template or ""),
+            str(phase.validator or ""),
+        }
+        return "phase_6_report" in identifiers
+
+    @staticmethod
+    def _phase6_report_response_shape_errors(output: dict[str, Any]) -> list[str]:
+        errors: list[str] = []
+        report_paths = output.get("report_paths")
+        if "report_paths" in output:
+            if not isinstance(report_paths, list):
+                errors.append("report_paths must be a list")
+            elif not all(isinstance(path, str) for path in report_paths):
+                errors.append("report_paths must contain only strings")
+        migration_summary = output.get("migration_summary")
+        if "migration_summary" in output and not isinstance(migration_summary, dict):
+            errors.append("migration_summary must be an object")
+        return errors
+
+    @staticmethod
+    def _is_status_only_llm_response(output: dict[str, Any]) -> bool:
+        keys = {str(key) for key in output if not str(key).startswith("_")}
+        return bool(keys) and keys.issubset(STATUS_ONLY_LLM_RESPONSE_KEYS)
 
     def _is_assisted_verification_phase(self, phase: PhaseDefinition) -> bool:
         return self._is_assisted_phase1(phase) or self._is_assisted_phase3(phase)
@@ -1517,7 +1759,29 @@ class WorkflowExecutor:
         return TOP_LEVEL_LLM_FRESH_RETRIES_DEFAULT
 
     def _resolve_top_level_llm_timeout(self, phase: PhaseDefinition) -> int | None:
-        return None
+        phase_timeout = getattr(phase, "timeout", None)
+        if phase_timeout is not None:
+            try:
+                if not isinstance(phase_timeout, (str, int)) or isinstance(phase_timeout, bool):
+                    raise ValueError
+                timeout = int(phase_timeout)
+                if timeout < 1:
+                    raise ValueError
+                return timeout
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid timeout=%r for top-level LLM phase '%s'; using default %s",
+                    phase_timeout,
+                    phase.id,
+                    TOP_LEVEL_LLM_TIMEOUT_DEFAULT,
+                )
+                return TOP_LEVEL_LLM_TIMEOUT_DEFAULT
+
+        return self._resolve_configured_phase_timeout(
+            phase,
+            ("session_timeout_phase", "top_level_llm_timeout", "llm_timeout"),
+            TOP_LEVEL_LLM_TIMEOUT_DEFAULT,
+        )
 
     def _resolve_configured_phase_timeout(
         self,
@@ -1808,9 +2072,6 @@ class WorkflowExecutor:
         output = extract_json_response(raw_response)
         if not isinstance(output, dict) or WorkflowExecutor._is_session_error_response(output):
             return ""
-        if output.get("custom_op_final_gate_recovered") is True:
-            return ""
-
         status_values: list[str] = []
         error_signal = False
 
@@ -1992,6 +2253,9 @@ class WorkflowExecutor:
                             max_continuations=max_incomplete_continuations,
                             report_summary=report_summary,
                             operator_context_path=self._current_operator_repair_context_path(state=state, loop_vars=loop_vars),
+                            state=state,
+                            context=context,
+                            loop_vars=loop_vars,
                         )
                         continue
                     report_incomplete_error = self._custom_op_operator_current_reports_incomplete_error(
@@ -2018,6 +2282,9 @@ class WorkflowExecutor:
                             max_continuations=max_incomplete_continuations,
                             report_summary=report_summary,
                             operator_context_path=self._current_operator_repair_context_path(state=state, loop_vars=loop_vars),
+                            state=state,
+                            context=context,
+                            loop_vars=loop_vars,
                         )
                         continue
                     return raw_response
@@ -2038,6 +2305,82 @@ class WorkflowExecutor:
             return last_raw
         return json.dumps({"ok": False, "error": last_error})
 
+    def _should_use_custom_op_operator_outer_loop_prompt(
+        self,
+        *,
+        phase_id: str,
+        state: dict[str, Any],
+        loop_history: list[Any] | None,
+        loop_state: dict[str, Any] | None,
+    ) -> bool:
+        if not self._should_use_custom_op_operator_gate_polling(phase_id, state):
+            return False
+        if isinstance(loop_state, dict) and isinstance(loop_state.get(phase_id), dict):
+            return True
+        if not loop_history:
+            return False
+        for entry in loop_history:
+            if not isinstance(entry, dict):
+                continue
+            summary = entry.get("step_outputs_summary")
+            if isinstance(summary, dict) and phase_id in summary:
+                return True
+            if entry.get("operator_repair_phase_id") == phase_id:
+                return True
+        return False
+
+    def _custom_op_operator_outer_loop_prompt(
+        self,
+        *,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+        loop_history: list[Any] | None,
+        loop_state: dict[str, Any] | None,
+    ) -> str:
+        progress_block = self._custom_op_operator_repair_progress_block(
+            state=state,
+            context=context,
+            loop_vars=loop_vars,
+        )
+        history_block = self._custom_op_operator_previous_repair_history(
+            loop_history=loop_history,
+            loop_state=loop_state,
+        )
+        operator_context_path = self._current_operator_repair_context_path(state=state, loop_vars=loop_vars)
+        context_line = f"Re-read operator repair context before editing: {operator_context_path}.\n" if operator_context_path else ""
+        return (
+            "Continue Phase 5 custom-op `fix_operator` repair in a later outer repair-loop iteration.\n"
+            "This is not the first operator repair attempt, so do not restart from the full repair_operator_fixer prompt; use this compact progress-aware prompt and keep working from previous results.\n"
+            f"{context_line}\n"
+            "Previous repair results/history:\n"
+            f"{history_block}\n\n"
+            "Custom-op operator repair progress:\n"
+            f"{progress_block}\n\n"
+            "Phase 1 source discovery plus the Phase 3 entry-script contract remain the repair scope authority. "
+            "Current migration reports are evidence only. Repair every remaining operator or operator+variant unit listed above, rerun the full custom-op validation command, and only return final JSON after a current strict `custom_op_final_gate.json` is FULL_PASS. "
+            "Do not accept partial reports, CPU fallback, ATen-only, NpuExtension-only, smoke-test-only, or summary-only evidence."
+        )
+
+    def _custom_op_operator_previous_repair_history(
+        self,
+        *,
+        loop_history: list[Any] | None,
+        loop_state: dict[str, Any] | None,
+    ) -> str:
+        lines = [self._format_history_summary(loop_history or [])]
+        if isinstance(loop_state, dict):
+            for key in ("error_analysis", "fix_operator", "custom_op_final_gate", "custom_op_fail_closed"):
+                value = loop_state.get(key)
+                if isinstance(value, dict):
+                    excerpt = json.dumps(value, ensure_ascii=False, sort_keys=True)
+                    if len(excerpt) > 1200:
+                        excerpt = excerpt[:1200] + "...[truncated]"
+                    lines.append(f"- previous {key}: {excerpt}")
+                elif value is not None:
+                    lines.append(f"- previous {key}: {value}")
+        return "\n".join(lines)[:5000]
+
     def _custom_op_operator_continuation_prompt(
         self,
         *,
@@ -2047,11 +2390,19 @@ class WorkflowExecutor:
         max_continuations: int,
         report_summary: str = "",
         operator_context_path: str = "",
+        state: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        loop_vars: dict[str, Any] | None = None,
     ) -> str:
         response_excerpt = (raw_response or "").strip()
         if len(response_excerpt) > 4000:
             response_excerpt = response_excerpt[:4000] + "\n...[truncated]"
         report_block = report_summary.strip() or "(No current fail-closed migration report summary available.)"
+        progress_block = self._custom_op_operator_repair_progress_block(
+            state=state or {},
+            context=context or {},
+            loop_vars=loop_vars,
+        )
         context_line = f"Re-read operator repair context before editing: {operator_context_path}.\n" if operator_context_path else ""
         return (
             "Continue the same custom-op `fix_operator` repair in this session.\n"
@@ -2062,6 +2413,8 @@ class WorkflowExecutor:
             "For ordinary CUDA projects, keep using the selected full validation command and repair NPU-incompatible code/operators. "
             "For custom-op projects, repair every source-discovered operator from the Phase 1/Phase 3 operator inventory and rerun the full custom-op validation script. "
             "For custom-op projects with expanded variants, repair every operator+variant identity from the expanded variant inventory and rerun the full variant-aware validation script.\n\n"
+            "Custom-op operator repair progress:\n"
+            f"{progress_block}\n\n"
             "Do not stop at FAILED, INCOMPLETE, partial, report-only, ATen-only, NpuExtension-only, CppExtension-only, smoke-test-only, or CPU fallback evidence. "
             "Keep repairing until the project has real project-local Ascend C/CANN OPP op_host and op_kernel/AscendC sources, generated/build-installed OPP artifacts, route evidence, same-run runtime coverage, parity, performance, no-fallback proof, and a current `custom_op_final_gate.json` whose strict final-gate status is FULL_PASS. "
             "Only return final JSON after that strict gate is produced and verified. If you need more work, perform it now rather than summarizing.\n\n"
@@ -2070,6 +2423,196 @@ class WorkflowExecutor:
             "Previous incomplete response excerpt:\n"
             f"{response_excerpt}"
         )
+
+    def _custom_op_operator_repair_progress_block(
+        self,
+        *,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+    ) -> str:
+        target_units, source_label = self._custom_op_operator_target_units(state)
+        contract = state.get("phase_3_entry_script")
+        final_gate, final_gate_status = self._read_custom_op_progress_report(
+            contract=contract,
+            context=context,
+            loop_vars=loop_vars,
+            name="custom_op_final_gate.json",
+        )
+        summary, summary_status = self._read_custom_op_progress_report(
+            contract=contract,
+            context=context,
+            loop_vars=loop_vars,
+            name="summary.json",
+        )
+        completed = self._custom_op_completed_units_from_reports(target_units, final_gate, summary)
+        remaining = [unit for unit in target_units if unit not in completed]
+        lines = [
+            f"- target_inventory_source: {source_label}",
+            f"- total_target_operator_variant_inventory: {len(target_units) if target_units else 'unknown'}",
+        ]
+        if target_units:
+            lines.append("- all_target_operators_and_variants: " + ", ".join(target_units))
+        else:
+            lines.append("- all_target_operators_and_variants: unavailable from Phase 1/Phase 3 scope; re-read those artifacts before claiming completion")
+        lines.append(f"- completed_evidence_count: {len(completed)}")
+        if completed:
+            lines.append("- completed_evidence_units: " + ", ".join(completed))
+        else:
+            lines.append("- completed_evidence_units: none proven by current reports")
+        lines.append(f"- remaining_or_unknown_count: {len(remaining) if target_units else 'unknown'}")
+        if remaining:
+            lines.append("- remaining_operator_variant_gaps: " + ", ".join(remaining))
+        elif target_units:
+            lines.append("- remaining_operator_variant_gaps: none listed by current report evidence, but only a current strict final gate FULL_PASS can be accepted")
+        else:
+            lines.append("- remaining_operator_variant_gaps: all Phase 1/Phase 3 target units are unknown until inventory is re-read")
+        lines.append(f"- custom_op_final_gate_report: {final_gate_status}")
+        lines.append(f"- summary_report: {summary_status}")
+        blocking_gaps = self._custom_op_report_blocking_gaps(final_gate, summary)
+        if blocking_gaps:
+            lines.append("- report_blocking_gaps: " + "; ".join(blocking_gaps[:8]))
+        elif final_gate is None or summary is None:
+            lines.append("- report_blocking_gaps: report evidence absent/partial; treat unproven target units as remaining")
+        else:
+            lines.append("- report_blocking_gaps: none reported, but report evidence is not scope authority")
+        return "\n".join(lines)[:8000]
+
+    def _custom_op_operator_target_units(self, state: dict[str, Any]) -> tuple[list[str], str]:
+        variant_overlay = expanded_variant_contract_from_outputs(state)
+        inventory = variant_overlay.get("expanded_variant_inventory")
+        if isinstance(inventory, dict):
+            units = self._string_list_from_inventory_values(inventory.get("unit_identities"))
+            if units:
+                return units, "Phase 1/Phase 3 expanded_variant_inventory.operator+variant unit_identities"
+        contract = state.get("phase_3_entry_script")
+        if isinstance(contract, dict):
+            schema = contract.get("operator_inventory_schema")
+            if isinstance(schema, dict):
+                for key in ("fine_grained_operator_units", "operator_units", "operators", "rows"):
+                    units = self._string_list_from_inventory_values(schema.get(key))
+                    if units:
+                        return units, f"Phase 3 operator_inventory_schema.{key}"
+        phase1 = state.get("phase_1_project_analysis")
+        if isinstance(phase1, dict):
+            surface = phase1.get("custom_op_surface")
+            if isinstance(surface, dict):
+                for key in ("expanded_operator_variants", "fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols"):
+                    units = self._string_list_from_inventory_values(surface.get(key))
+                    if units:
+                        return units, f"Phase 1 custom_op_surface.{key}"
+            for key in ("expanded_operator_variants", "fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols"):
+                units = self._string_list_from_inventory_values(phase1.get(key))
+                if units:
+                    return units, f"Phase 1 {key}"
+        return [], "Phase 1/Phase 3 inventory unavailable"
+
+    @staticmethod
+    def _string_list_from_inventory_values(value: object) -> list[str]:
+        units: list[str] = []
+        if not isinstance(value, list):
+            return units
+        for item in value:
+            unit = ""
+            if isinstance(item, str):
+                unit = item.strip()
+            elif isinstance(item, dict):
+                for key in ("unit_identity", "row_id", "name", "operator", "op_name", "id"):
+                    raw = item.get(key)
+                    if isinstance(raw, str) and raw.strip():
+                        unit = raw.strip()
+                        break
+            if unit and unit not in units:
+                units.append(unit)
+        return units
+
+    def _read_custom_op_progress_report(
+        self,
+        *,
+        contract: object,
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+        name: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
+            return None, "not applicable: no active custom-op contract"
+        path = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars) / name
+        if not path.exists():
+            return None, f"missing at {path}"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return None, f"malformed at {path}: {exc}"
+        if not isinstance(data, dict):
+            return None, f"non-object at {path}"
+        status_parts = []
+        for key in ("status", "full_migration_status", "inventory_count", "closed_pass_entries", "remaining_entries"):
+            if key in data:
+                status_parts.append(f"{key}={data[key]}")
+        return cast(dict[str, Any], data), (", ".join(status_parts) or f"present at {path}")
+
+    def _custom_op_completed_units_from_reports(
+        self,
+        target_units: list[str],
+        final_gate: dict[str, Any] | None,
+        summary: dict[str, Any] | None,
+    ) -> list[str]:
+        completed: list[str] = []
+        target_set = set(target_units)
+        for report in (final_gate, summary):
+            if not isinstance(report, dict):
+                continue
+            rows = report.get("rows")
+            if not isinstance(rows, list):
+                rows = report.get("entries")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or not self._custom_op_report_row_has_pass_evidence(row):
+                    continue
+                identity = self._custom_op_report_row_identity(row)
+                if identity and identity in target_set and identity not in completed:
+                    completed.append(identity)
+        if not completed and target_units and final_gate:
+            status = str(final_gate.get("full_migration_status") or final_gate.get("status") or "").upper()
+            closed_pass_entries = final_gate.get("closed_pass_entries")
+            if status == "FULL_PASS" and closed_pass_entries == len(target_units):
+                completed.extend(target_units)
+        return completed
+
+    @staticmethod
+    def _custom_op_report_row_identity(row: dict[str, Any]) -> str:
+        for key in ("unit_identity", "row_id", "manifest_row_id", "name", "operator", "op_name", "id"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    @staticmethod
+    def _custom_op_report_row_has_pass_evidence(row: dict[str, Any]) -> bool:
+        for key in ("status", "full_migration_status", "repair_status", "result"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip().upper() in {"PASS", "PASSED", "FULL_PASS", "CLOSED_PASS", "SUCCESS"}:
+                return True
+        for key in ("passed", "closed", "full_pass", "strict_pass"):
+            if row.get(key) is True:
+                return True
+        return False
+
+    @staticmethod
+    def _custom_op_report_blocking_gaps(*reports: dict[str, Any] | None) -> list[str]:
+        gaps: list[str] = []
+        for report in reports:
+            if not isinstance(report, dict):
+                continue
+            for key in ("blocking_gaps", "remaining_gaps", "gaps", "errors"):
+                value = report.get(key)
+                if isinstance(value, list):
+                    for item in value:
+                        text = str(item)
+                        if text and text not in gaps:
+                            gaps.append(text)
+        return gaps
 
     def _current_operator_repair_context_path(
         self,
@@ -2113,9 +2656,9 @@ class WorkflowExecutor:
         try:
             stat_result = gate_path.stat()
         except OSError:
-            return ""
+            return "custom-op operator repair did not produce current custom_op_final_gate.json before strict OPP final gate FULL_PASS"
         if command_started_at is not None and stat_result.st_mtime + 1.0 < command_started_at:
-            return ""
+            return "custom-op operator repair custom_op_final_gate.json is stale before strict OPP final gate FULL_PASS"
         try:
             gate_data = json.loads(gate_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -2396,7 +2939,6 @@ class WorkflowExecutor:
             "validation",
             "agent_diagnostics",
             "custom_op_final_gate",
-            "custom_op_final_gate_recovered",
             "status",
             "repair_status",
             "errors",
@@ -2561,13 +3103,20 @@ class WorkflowExecutor:
 
     def _phase5_workflow_route(self, state: dict[str, Any]) -> str:
         contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return "ordinary_cuda"
-        variant_overlay = expanded_variant_contract_from_outputs(state)
-        inventory = variant_overlay.get("expanded_variant_inventory")
-        if isinstance(inventory, dict) and inventory.get("variant_axes_detected") is True:
-            return "custom_op_with_variants"
-        return "custom_op"
+        if isinstance(contract, dict) and has_custom_op_contract(contract):
+            variant_overlay = expanded_variant_contract_from_outputs(state)
+            inventory = variant_overlay.get("expanded_variant_inventory")
+            if isinstance(inventory, dict) and inventory.get("variant_axes_detected") is True:
+                return CUSTOM_OP_WITH_VARIANTS
+            return CUSTOM_OP
+        if isinstance(contract, dict):
+            serving_route = serving_route_from_contract(contract)
+            if serving_route is not None:
+                return serving_route
+        phase1 = state.get("phase_1_project_analysis")
+        if isinstance(phase1, dict) and phase1.get("migration_route") in SERVING_ROUTES:
+            return str(phase1["migration_route"])
+        return ORDINARY_CUDA
 
     def _phase1_phase3_repair_scope_summary(self, state: dict[str, Any]) -> str:
         route = self._phase5_workflow_route(state)
@@ -2579,6 +3128,12 @@ class WorkflowExecutor:
                 value = contract.get(key)
                 if value:
                     parts.append(f"phase3.{key}={value}")
+            if route in SERVING_ROUTES:
+                for key in ("serving_framework", "launch_command", "serving_reports_dir"):
+                    value = contract.get(key)
+                    if value:
+                        parts.append(f"phase3.{key}={value}")
+                parts.append(f"serving_expected_framework={serving_framework_for_route(route)}")
             for key in ("required_report_paths", "required_checks"):
                 value = contract.get(key)
                 if isinstance(value, list) and value:
@@ -2625,6 +3180,14 @@ class WorkflowExecutor:
                 axes = surface.get("variant_axes")
                 if isinstance(axes, dict) and axes:
                     parts.append("phase1.custom_op_surface.variant_axes=" + json.dumps(axes, ensure_ascii=False, default=str))
+            serving_surface = phase1.get("serving_runtime_surface")
+            if isinstance(serving_surface, dict):
+                for key in ("serving_framework", "launch_command", "project_test_files", "launch_evidence"):
+                    value = serving_surface.get(key)
+                    if isinstance(value, list) and value:
+                        parts.append(f"phase1.serving_runtime_surface.{key}=" + ", ".join(str(item) for item in value[:20]))
+                    elif value:
+                        parts.append(f"phase1.serving_runtime_surface.{key}={value}")
         return "\n".join(parts)[:6000]
 
     def _active_custom_op_full_repair_requirements(self, state: dict[str, Any]) -> str:
@@ -2780,6 +3343,11 @@ class WorkflowExecutor:
                 ) or "(No analyzer-selected experience cards)",
                 "experience_usage_report_schema": self._experience_usage_report_schema_text(),
                 "phase1_phase3_repair_scope": self._phase1_phase3_repair_scope_summary(state),
+                "operator_repair_progress_block": self._custom_op_operator_repair_progress_block(
+                    state=state,
+                    context={},
+                    loop_vars={"project_dir": self.project_dir},
+                ),
                 "strict_custom_op_acceptance_contract": self._strict_custom_op_acceptance_contract(state),
                 "active_custom_op_full_repair_requirements": self._active_custom_op_full_repair_requirements(state),
             })
@@ -2839,6 +3407,11 @@ class WorkflowExecutor:
                 "raw_attempt_files": raw_files,
                 "experience_usage_report_schema": self._experience_usage_report_schema_text(),
                 "phase1_phase3_repair_scope": self._phase1_phase3_repair_scope_summary(state),
+                "operator_repair_progress_block": self._custom_op_operator_repair_progress_block(
+                    state=state,
+                    context={},
+                    loop_vars={"project_dir": self.project_dir},
+                ),
                 "strict_custom_op_acceptance_contract": self._strict_custom_op_acceptance_contract(state),
                 "active_custom_op_full_repair_requirements": self._active_custom_op_full_repair_requirements(state),
             })
@@ -3324,6 +3897,9 @@ class WorkflowExecutor:
         if operation == "custom_op_final_gate":
             return self._execute_custom_op_final_gate(state, context, loop_vars, loop_state)
 
+        if operation == "serving_final_gate":
+            return self._execute_serving_final_gate(state, context, loop_vars, loop_state)
+
         # Generic: just return
         if not operation:
             return (
@@ -3448,6 +4024,108 @@ class WorkflowExecutor:
         loop_state["script_stderr"] = f"{existing_stderr}\n{gate_message}".strip()
         loop_state["custom_op_final_gate"] = result
 
+    def _execute_serving_final_gate(
+        self,
+        state: dict,
+        context: dict,
+        loop_vars: dict | None,
+        loop_state: dict | None,
+    ) -> tuple[str, dict]:
+        route = self._phase5_workflow_route(state)
+        if route not in SERVING_ROUTES:
+            result = {"operation": "serving_final_gate", "skipped": True, "passed": True, "route": route}
+            if loop_state is not None:
+                loop_state["serving_final_gate"] = result
+            return "success", result
+
+        gate_path = self._resolve_serving_final_gate_path(state, context, loop_vars)
+        result: dict[str, Any] = {
+            "operation": "serving_final_gate",
+            "skipped": False,
+            "path": str(gate_path),
+            "passed": False,
+            "route": route,
+            "errors": [],
+        }
+
+        if not gate_path.exists():
+            result["errors"] = [f"serving final gate report missing: {gate_path}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        try:
+            gate_stat = gate_path.stat()
+        except OSError as exc:
+            result["errors"] = [f"serving final gate report could not be stat'ed: {exc}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        if gate_stat.st_size > _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
+            result["errors"] = [f"serving final gate report too large: {gate_path}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        run_started_at = loop_state.get("run_entry_script_started_at") if loop_state is not None else None
+        if isinstance(run_started_at, (int, float)) and gate_stat.st_mtime < float(run_started_at):
+            result["errors"] = [f"serving final gate report is stale: {gate_path} predates current run_entry_script execution"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        try:
+            with gate_path.open("r", encoding="utf-8") as handle:
+                gate_data = cast(object, json.load(handle))
+        except (OSError, json.JSONDecodeError) as exc:
+            result["errors"] = [f"serving final gate report could not be read: {exc}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        if not isinstance(gate_data, dict):
+            result["errors"] = ["serving final gate report must be a JSON object"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        gate_map = cast(dict[str, object], gate_data)
+        validation = validate_serving_final_gate(gate_map, expected_route=route)
+        result["passed"] = validation["passed"]
+        result["errors"] = validation["errors"]
+        result["summary"] = {
+            "migration_route": gate_map.get("migration_route"),
+            "serving_framework": gate_map.get("serving_framework"),
+            "full_migration_status": gate_map.get("full_migration_status"),
+        }
+        if loop_state is not None:
+            loop_state["serving_final_gate"] = result
+        if not validation["passed"]:
+            self._record_serving_gate_failure(loop_state, result)
+        return "success", result
+
+    def _resolve_serving_final_gate_path(self, state: dict[str, Any], context: dict, loop_vars: dict | None) -> Path:
+        contract = state.get("phase_3_entry_script")
+        project_dir = self.project_dir
+        if loop_vars and isinstance(loop_vars.get("project_dir"), str):
+            project_dir = loop_vars["project_dir"]
+        elif isinstance(context.get("PROJECT_DIR"), str):
+            project_dir = context["PROJECT_DIR"]
+        if isinstance(contract, dict):
+            paths = contract.get("required_report_paths")
+            if isinstance(paths, list):
+                for item in cast(list[object], paths):
+                    if isinstance(item, str) and "serving_final_gate" in item:
+                        candidate = Path(item).expanduser()
+                        return candidate if candidate.is_absolute() else Path(project_dir).resolve() / candidate
+            reports_dir = contract.get("serving_reports_dir")
+            if isinstance(reports_dir, str) and reports_dir.strip():
+                candidate = Path(reports_dir).expanduser()
+                base = candidate if candidate.is_absolute() else Path(project_dir).resolve() / candidate
+                return base / "serving_final_gate.json"
+        return Path(project_dir).resolve() / "migration_reports" / "serving_final_gate.json"
+
+    @staticmethod
+    def _record_serving_gate_failure(loop_state: dict | None, result: dict[str, Any]) -> None:
+        if loop_state is None:
+            return
+        loop_state["script_exit_code"] = 1
+        errors = result.get("errors")
+        concise = "; ".join(str(error) for error in errors[:5]) if isinstance(errors, list) and errors else "serving final gate failed"
+        gate_message = f"Serving final evidence gate failed: {concise}"
+        existing_stderr = str(loop_state.get("script_stderr") or "")
+        loop_state["script_stderr"] = f"{existing_stderr}\n{gate_message}".strip()
+        loop_state["serving_final_gate"] = result
+
     # ── Python phase ────────────────────────────────────────────────────
 
     _WHITELISTED_PYTHON_OPS = frozenset(
@@ -3531,15 +4209,24 @@ class WorkflowExecutor:
             raw_response = self.session_mgr.send_command(sid, active_prompt, timeout=self._resolve_top_level_llm_timeout(phase))
             parsed = extract_json_response(raw_response)
             self._raise_for_session_error_output(parsed, phase.id)
+            response_shape_errors = self._review_phase_response_shape_errors(parsed, raw_response)
+            if response_shape_errors:
+                if attempt < max_retry:
+                    active_prompt = self._build_review_phase_correction_prompt(response_shape_errors)
+                    continue
+                parsed = {
+                    "verdict": "unknown",
+                    "cpu_fallback_detected": False,
+                    "cpu_fallback_necessary": False,
+                    "alternative_suggestions": "",
+                    "reasoning": "Review response failed validation: " + "; ".join(response_shape_errors),
+                }
+                break
             verdict = str(parsed.get("verdict", "")).lower()
             if verdict in ("accept", "reject"):
                 break
             if attempt < max_retry:
-                active_prompt = (
-                    "Your previous response could not be parsed as valid JSON "
-                    "or was missing a valid verdict.\n"
-                    "Please return valid JSON with verdict field."
-                )
+                active_prompt = self._build_review_phase_correction_prompt(["verdict must be accept or reject"])
 
         # 5. Parse verdict
         if not parsed:
@@ -3584,6 +4271,35 @@ class WorkflowExecutor:
         }
 
         return {"verdict": verdict, "reasoning": reasoning, "status": status}
+
+    @classmethod
+    def _review_phase_response_shape_errors(cls, parsed: dict[str, Any], raw_response: str) -> list[str]:
+        errors: list[str] = []
+        if not parsed:
+            if raw_response.strip():
+                errors.append("response contained no parseable JSON object")
+            else:
+                errors.append("response was empty")
+            return errors
+        if cls._is_status_only_llm_response(parsed):
+            errors.append("review response returned status/progress-only JSON instead of the complete review schema")
+        missing_keys = [key for key in REVIEW_PHASE_REQUIRED_KEYS if key not in parsed]
+        if missing_keys:
+            errors.append("Missing required review JSON keys: " + ", ".join(missing_keys))
+        return errors
+
+    @staticmethod
+    def _build_review_phase_correction_prompt(errors: list[str]) -> str:
+        error_lines = "\n".join(f"- {error}" for error in errors)
+        return (
+            "Your previous review response failed validation:\n"
+            f"{error_lines}\n\n"
+            "Return one complete replacement JSON object for this review phase only. "
+            "It must include verdict, cpu_fallback_detected, cpu_fallback_necessary, "
+            "alternative_suggestions, and reasoning. "
+            "Do not return a patch, commentary, acknowledgement, or status/progress-only JSON. "
+            "Return only the corrected JSON object."
+        )
 
     def _format_loop_history(self, loop_history: list) -> str:
         """Format loop history into a markdown-style summary."""
@@ -4070,10 +4786,25 @@ class WorkflowExecutor:
                     if not output:
                         output = {"raw_response": raw_response}
                     if isinstance(output, dict):
-                        if output.get("custom_op_final_gate_recovered") is True:
+                        claimed_recovery = output.get("custom_op_final_gate_recovered") is True
+                        recovered_output = self._recover_operator_repair_from_current_final_gate(
+                            phase_id=str(pid),
+                            state=state,
+                            context=context,
+                            loop_vars={},
+                            command_started_at=command_started_at if 'command_started_at' in locals() else None,
+                        ) if claimed_recovery else None
+                        if recovered_output is not None:
+                            output = {**output, **recovered_output}
                             step_outputs["script_exit_code"] = 0
                             step_outputs["script_stderr"] = ""
-                            step_outputs["custom_op_final_gate"] = output.get("custom_op_final_gate")
+                            step_outputs["custom_op_final_gate"] = recovered_output.get("custom_op_final_gate")
+                        elif claimed_recovery:
+                            output = self._communication_failure_output({
+                                **output,
+                                "ok": False,
+                                "error": "custom-op operator repair claimed final-gate recovery without current strict OPP final gate FULL_PASS",
+                            })
                         elif self._operator_repair_partial_response(str(pid), output):
                             output = self._communication_failure_output({
                                 **output,
@@ -4148,10 +4879,25 @@ class WorkflowExecutor:
                                     if not out:
                                         out = {"raw_response": raw}
                                     if isinstance(out, dict):
-                                        if out.get("custom_op_final_gate_recovered") is True:
+                                        claimed_recovery = out.get("custom_op_final_gate_recovered") is True
+                                        recovered_out = self._recover_operator_repair_from_current_final_gate(
+                                            phase_id=str(next_id),
+                                            state=state,
+                                            context=context,
+                                            loop_vars={},
+                                            command_started_at=command_started_at,
+                                        ) if claimed_recovery else None
+                                        if recovered_out is not None:
+                                            out = {**out, **recovered_out}
                                             step_outputs["script_exit_code"] = 0
                                             step_outputs["script_stderr"] = ""
-                                            step_outputs["custom_op_final_gate"] = out.get("custom_op_final_gate")
+                                            step_outputs["custom_op_final_gate"] = recovered_out.get("custom_op_final_gate")
+                                        elif claimed_recovery:
+                                            out = self._communication_failure_output({
+                                                **out,
+                                                "ok": False,
+                                                "error": "custom-op operator repair claimed final-gate recovery without current strict OPP final gate FULL_PASS",
+                                            })
                                         elif self._operator_repair_partial_response(active_phase_id, out):
                                             out = self._communication_failure_output({
                                                 **out,
@@ -4289,13 +5035,27 @@ class WorkflowExecutor:
                     self._inject_llm_baseline_context(input_ctx, mini, state)
                     self._inject_sub_workflow_context(input_ctx, phase_id, step_outputs, loop_vars, state, loop_history)
 
-                    prompt_text = self.prompt_loader.load_prompt(
-                        mini.prompt_template, input_ctx
-                    )
-                    if not self._is_slim_repair_prompt_phase(phase_id):
-                        prompt_text = self._append_inherited_experience_markdown(
-                            prompt_text, phase_id, step_outputs
+                    if self._should_use_custom_op_operator_outer_loop_prompt(
+                        phase_id=str(phase_id),
+                        state=state,
+                        loop_history=loop_history,
+                        loop_state=loop_state,
+                    ):
+                        prompt_text = self._custom_op_operator_outer_loop_prompt(
+                            state=state,
+                            context=context,
+                            loop_vars=loop_vars,
+                            loop_history=loop_history,
+                            loop_state=loop_state,
                         )
+                    else:
+                        prompt_text = self.prompt_loader.load_prompt(
+                            mini.prompt_template, input_ctx
+                        )
+                        if not self._is_slim_repair_prompt_phase(phase_id):
+                            prompt_text = self._append_inherited_experience_markdown(
+                                prompt_text, phase_id, step_outputs
+                            )
 
                     timeout = self._resolve_sub_workflow_llm_timeout(mini)
 
@@ -4356,9 +5116,18 @@ class WorkflowExecutor:
                         if recovered_output is not None:
                             phase_output = {**phase_output, **recovered_output}
                     if isinstance(phase_output, dict) and phase_output.get("custom_op_final_gate_recovered") is True:
-                        step_outputs["script_exit_code"] = 0
-                        step_outputs["script_stderr"] = ""
-                        step_outputs["custom_op_final_gate"] = phase_output.get("custom_op_final_gate")
+                        recovered_gate = phase_output.get("custom_op_final_gate") if recovered_output is not None else None
+                        if isinstance(recovered_gate, dict):
+                            step_outputs["script_exit_code"] = 0
+                            step_outputs["script_stderr"] = ""
+                            step_outputs["custom_op_final_gate"] = recovered_gate
+                        else:
+                            phase_status = "communication_error"
+                            phase_output = self._communication_failure_output({
+                                **phase_output,
+                                "ok": False,
+                                "error": "custom-op operator repair claimed final-gate recovery without current strict OPP final gate FULL_PASS",
+                            })
                     elif self._operator_repair_partial_response(str(phase_id), phase_output):
                         phase_status = "communication_error"
                         phase_output = self._communication_failure_output({
@@ -5209,6 +5978,21 @@ class WorkflowExecutor:
 
     # ── Next phase resolution ───────────────────────────────────────────
 
+    @staticmethod
+    def _is_failure_transition_status(status: str) -> bool:
+        return status not in {"success", "skipped"}
+
+    @classmethod
+    def _transition_keys_for_status(cls, status: str) -> tuple[str, ...]:
+        if status == "success":
+            return ("success", "on_success")
+        if status == "skipped":
+            return ("skipped", "on_skip")
+        if cls._is_failure_transition_status(status):
+            keys = [status, "failure", "on_failure"]
+            return tuple(dict.fromkeys(keys))
+        return (status,)
+
     def _get_next_phase_id(
         self,
         current_phase: PhaseDefinition,
@@ -5221,34 +6005,32 @@ class WorkflowExecutor:
         Priority:
           1. phase.transition (TransitionDefinition)
           2. phase.transitions dict
-          3. Unhandled failure terminates
+          3. Unhandled failure-like status terminates
           4. Default: next phase in workflow.phases list
           5. None (terminate)
         """
+        failure_status = self._is_failure_transition_status(status)
+
         # 1. Check TransitionDefinition
         transition = current_phase.transition
         if transition is not None:
             if status == "success" and transition.on_success:
                 return transition.on_success
-            if status == "failure" and transition.on_failure:
+            if failure_status and transition.on_failure:
                 return transition.on_failure
             if status == "skipped" and transition.on_skip:
                 return transition.on_skip
 
-        # 2. Check transitions dict
+        # 2. Check transitions dict. Exact status-specific routes win before
+        # generic failure/on_failure routes.
         if current_phase.transitions:
-            status_keys = {
-                "success": ("success", "on_success"),
-                "failure": ("failure", "on_failure"),
-                "skipped": ("skipped", "on_skip"),
-            }
-            for key in status_keys.get(status, (status,)):
+            for key in self._transition_keys_for_status(status):
                 target = current_phase.transitions.get(key)
                 if target:
                     return target
 
         # 3. Fail closed when a phase fails without an explicit recovery route.
-        if status == "failure":
+        if failure_status:
             return None
 
         # 4. Default: next phase in list
@@ -5257,7 +6039,7 @@ class WorkflowExecutor:
         if idx >= 0 and idx + 1 < len(phases):
             return phases[idx + 1].id
 
-        # 5. Last phase → terminate
+        # 5. Last phase -> terminate
         return None
 
     def _build_experience_query_context(

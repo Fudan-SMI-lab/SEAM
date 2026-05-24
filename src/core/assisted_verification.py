@@ -114,7 +114,7 @@ class AssistedVerificationResult:
         if self.skipped:
             return {"status": "skipped", "phase_id": self.phase_id}
         track = self.report.get("track")
-        return {
+        summary: dict[str, object] = {
             "status": "complete" if self.passed else "failed",
             "phase_id": self.phase_id,
             "track": str(track or "unknown"),
@@ -122,6 +122,9 @@ class AssistedVerificationResult:
             "canonical_artifact": self.canonical_path,
             "errors": self.errors,
         }
+        if self.warnings:
+            summary["warnings"] = list(self.warnings)
+        return summary
 
 
 class AssistedVerificationRunner:
@@ -167,6 +170,20 @@ class AssistedVerificationRunner:
             if repaired_report is not None:
                 report_result = repaired_report
                 errors = validate_phase1_assisted_report(report_result.report, phase_output)
+        if errors:
+            deterministic_report = _deterministic_phase1_completion_report_if_safe(
+                report=report_result.report,
+                phase_output=phase_output,
+                errors=errors,
+            )
+            if deterministic_report is not None:
+                report_result.report = deterministic_report
+                report_result.errors = []
+                report_result.warnings = [
+                    *report_result.warnings,
+                    "assisted verifier report replaced by deterministic source-template Phase 1 completion",
+                ]
+                errors = []
         if errors:
             report_result.passed = False
             report_result.errors = errors
@@ -403,7 +420,7 @@ def validate_phase1_assisted_report(report: Mapping[str, object], phase_output: 
 
     if expected.requires_variant_coverage:
         surface_obj = phase_output.get("custom_op_surface")
-        surface = cast(Mapping[str, object], surface_obj) if isinstance(surface_obj, Mapping) else {}
+        surface: Mapping[str, object] = cast(Mapping[str, object], surface_obj) if isinstance(surface_obj, Mapping) else {}
         concrete_variants = set(_variant_unit_ids(surface.get("expanded_operator_variants")))
         if concrete_variants and set(expected.expanded_unit_identities) != concrete_variants:
             missing = sorted(set(expected.expanded_unit_identities) - concrete_variants)
@@ -443,6 +460,68 @@ def validate_phase1_assisted_report(report: Mapping[str, object], phase_output: 
         if isinstance(count, int) and not isinstance(count, bool) and count != expected.expanded_operator_instances_count:
             errors.append("assisted Phase 1 report expanded_operator_instances_count does not match normalized Phase 1 output")
     return errors
+
+
+def _deterministic_phase1_completion_report_if_safe(
+    *,
+    report: Mapping[str, object],
+    phase_output: Mapping[str, object],
+    errors: Sequence[str],
+) -> dict[str, object] | None:
+    if not _phase1_verifier_failure_is_report_only(report, errors):
+        return None
+    surface_obj = phase_output.get("custom_op_surface")
+    if not isinstance(surface_obj, Mapping):
+        return None
+    surface = cast(dict[str, object], surface_obj)
+    expected = phase1_inventory(phase_output)
+    if not expected.requires_variant_coverage:
+        return None
+    concrete_variants = set(_variant_unit_ids(surface.get("expanded_operator_variants")))
+    expected_variants = set(expected.expanded_unit_identities)
+    generated_variants = set(_source_template_variant_ids(phase_output, surface))
+    declared_count = surface.get("expanded_operator_instances_count")
+    if not isinstance(declared_count, int) or isinstance(declared_count, bool):
+        return None
+    if not expected_variants or concrete_variants != expected_variants:
+        return None
+    if not generated_variants or generated_variants != expected_variants:
+        return None
+    if declared_count != expected.expanded_operator_instances_count:
+        return None
+    if declared_count != len(expected_variants):
+        return None
+
+    evidence = _as_list(surface.get("source_evidence"))
+    if not evidence:
+        evidence = ["deterministic source-template expanded variant inventory matched Phase 1 concrete rows"]
+    source_inventory = {
+        "fine_grained_operator_units": list(expected.fine_grained_operator_units),
+        "variant_axes": surface.get("variant_axes", {}),
+        "expanded_operator_instances_count": expected.expanded_operator_instances_count,
+        "expanded_unit_identities": list(expected.expanded_unit_identities),
+    }
+    phase_inventory = {
+        "fine_grained_operator_units": list(expected.fine_grained_operator_units),
+        "variant_axes_detected": expected.variant_axes_detected,
+        "expanded_operator_instances_count": expected.expanded_operator_instances_count,
+        "expanded_unit_identities": list(expected.expanded_unit_identities),
+    }
+    return {
+        "phase_id": PHASE1_CHECK_ID,
+        "track": expected.track,
+        "verdict": "complete",
+        "phase1_inventory": phase_inventory,
+        "source_evidence_inventory": source_inventory,
+        "missing_units": [],
+        "extra_units": [],
+        "missing_variants": [],
+        "extra_variants": [],
+        "collapsed_or_representative_rows": [],
+        "unresolved_source_groups": [],
+        "evidence": evidence,
+        "deterministic_completion": True,
+    }
 
 
 def validate_phase3_assisted_report(
@@ -723,6 +802,31 @@ def _ordered_unique(values: Iterable[str]) -> list[str]:
             ordered.append(value)
             seen.add(value)
     return ordered
+
+
+def _phase1_verifier_failure_is_report_only(report: Mapping[str, object], errors: Sequence[str]) -> bool:
+    if str(report.get("verdict", "")).strip().lower() != "complete":
+        return False
+    blocking_fields = (
+        "missing_units",
+        "extra_units",
+        "missing_variants",
+        "extra_variants",
+        "collapsed_or_representative_rows",
+        "unresolved_source_groups",
+    )
+    if any(not _list_empty(report.get(field)) for field in blocking_fields):
+        return False
+    allowed_fragments = (
+        "expanded_unit_identities does not cover normalized Phase 1 output",
+        "expanded_operator_instances_count does not match normalized Phase 1 output",
+        "must list phase1_inventory expanded_unit_identities",
+        "must list source_evidence_inventory expanded_unit_identities",
+    )
+    return bool(errors) and all(
+        any(fragment in error for fragment in allowed_fragments)
+        for error in errors
+    )
 
 
 def _reported_variants_cover_expected(reported_variants: set[str], expected: PhaseInventory) -> bool:

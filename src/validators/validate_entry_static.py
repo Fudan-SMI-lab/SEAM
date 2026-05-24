@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import cast
 
+from core.routes import SERVING_ENTRY_KINDS
 from core.validator_engine import ValidationDict
 
 CUSTOM_OP_BOOLEAN_FIELDS = (
@@ -86,8 +87,9 @@ def validate(data: dict[str, object]) -> ValidationDict:
             errors.append("validation_passed=false requires at least one issue")
 
         entry_script_kind = data.get("entry_script_kind")
-        if entry_script_kind is not None and entry_script_kind != "custom_op_full_validation":
-            errors.append("entry_script_kind must be 'custom_op_full_validation' when present")
+        allowed_entry_kinds = {"custom_op_full_validation", *SERVING_ENTRY_KINDS}
+        if entry_script_kind is not None and entry_script_kind not in allowed_entry_kinds:
+            errors.append("entry_script_kind must be a supported validation kind when present")
 
         if _custom_static_required(data):
             missing_fields = [field for field in CUSTOM_OP_BOOLEAN_FIELDS if field not in data]
@@ -171,7 +173,7 @@ def _ast_short_timeout_errors(source: str, script_path: Path) -> list[str]:
         if not _call_targets_project_validation(node):
             continue
         errors.append(
-            f"{script_path}:{node.lineno}: custom-op validation script uses short internal subprocess timeout={timeout:g}; "
+            f"{script_path}:{node.lineno}: custom-op validation script uses short internal subprocess timeout={timeout:g}; " +
             "real project/API validation must not be bounded by a short generated-script timeout"
         )
     return errors
@@ -188,7 +190,7 @@ def _regex_short_timeout_errors(source: str, script_path: Path) -> list[str]:
             continue
         line_no = source.count("\n", 0, match.start()) + 1
         errors.append(
-            f"{script_path}:{line_no}: custom-op validation script uses short internal subprocess timeout={timeout:g}; "
+            f"{script_path}:{line_no}: custom-op validation script uses short internal subprocess timeout={timeout:g}; " +
             "real project/API validation must not be bounded by a short generated-script timeout"
         )
     return errors
