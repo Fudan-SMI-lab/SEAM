@@ -116,6 +116,7 @@ class LocalBackend:
         return {
             "execution_backend_mode": "local",
             "actual_execution_command": "(local execution; run entry_script directly)",
+            "container_probe_command_prefix": "(local execution; no container probe command)",
             "container_name_or_id": "(local execution; no container)",
             "container_workdir": "(local execution; uses project cwd)",
             "host_project_dir": "(local execution; run entry_script directly)",
@@ -504,31 +505,54 @@ class ContainerBackend:
             result["error"] = "Container not created — call preflight() first"
             return result
 
+        probe_script = """
+import json
+import os
+import platform
+import sys
+
+facts = {
+    "status": "ok",
+    "interpreter_path": sys.executable,
+    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+    "platform": platform.system(),
+    "platform_machine": platform.machine(),
+    "cwd": os.getcwd(),
+    "env_keys": sorted(os.environ.keys()),
+}
+try:
+    import torch
+    facts["torch_version"] = torch.__version__
+    facts["torch_cuda_available"] = getattr(torch.cuda, "is_available", lambda: False)()
+    facts["torch_device_count"] = getattr(torch.cuda, "device_count", lambda: 0)()
+except Exception:
+    facts["torch_version"] = "not_installed"
+    facts["torch_cuda_available"] = False
+    facts["torch_device_count"] = 0
+print(json.dumps(facts))
+""".strip()
+
+        shell_probe = """
+set -eu
+probe_python=""
+for candidate in python3 python python3.12 python3.11 python3.10 python3.9 python3.8; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        probe_python="$(command -v "$candidate")"
+        break
+    fi
+done
+if [ -z "$probe_python" ]; then
+    printf '%s\n' '{"status":"probe_failed","error":"No Python interpreter found on container PATH"}'
+    exit 0
+fi
+exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"
+""".strip()
+
         probe_cmd: list[str] = [
             self._runtime_cmd, "exec", "-i", "--workdir",
-            self.config.container_workdir, cid,
-            "python3", "-c",
-            "; ".join([
-                "import json, sys, os, platform",
-                "facts = {",
-                "  'status': 'ok',",
-                "  'python_version': f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',",
-                "  'platform': platform.system(),",
-                "  'platform_machine': platform.machine(),",
-                "  'cwd': os.getcwd(),",
-                "  'env_keys': sorted(os.environ.keys()),",
-                "}",
-                "try:",
-                "    import torch",
-                "    facts['torch_version'] = torch.__version__",
-                "    facts['torch_cuda_available'] = getattr(torch.cuda, 'is_available', lambda: False)()",
-                "    facts['torch_device_count'] = getattr(torch.cuda, 'device_count', lambda: 0)()",
-                "except Exception:",
-                "    facts['torch_version'] = 'not_installed'",
-                "    facts['torch_cuda_available'] = False",
-                "    facts['torch_device_count'] = 0",
-                "print(json.dumps(facts))",
-            ]),
+            self.config.container_workdir,
+            "-e", f"SEAM_CONTAINER_PROBE_SCRIPT={probe_script}",
+            cid, "sh", "-lc", shell_probe,
         ]
 
         try:
@@ -588,9 +612,15 @@ class ContainerBackend:
         if command is not None:
             description = self.describe_command(command, cwd=cwd, env=env)
 
+        probe_parts = [self._runtime_cmd, "exec", "-i"]
+        if container_proj:
+            probe_parts.extend(["-w", container_proj])
+        probe_parts.append(cid)
+
         return {
             "execution_backend_mode": "container",
             "actual_execution_command": description,
+            "container_probe_command_prefix": " ".join(probe_parts),
             "container_name_or_id": cid,
             "container_workdir": self.config.container_workdir,
             "host_project_dir": host_proj,
@@ -601,6 +631,7 @@ class ContainerBackend:
 _LOCAL_CTX: dict[str, str] = {
     "execution_backend_mode": "local",
     "actual_execution_command": "(local execution; run entry_script directly)",
+    "container_probe_command_prefix": "(local execution; no container probe command)",
     "container_name_or_id": "(local execution; no container)",
     "container_workdir": "(local execution; uses project cwd)",
     "host_project_dir": "(local execution; run entry_script directly)",
@@ -681,12 +712,13 @@ def get_execution_environment_context(
         parts.append(f"- **Container project dir**: {container_proj}")
         if probe_facts and probe_facts.get("status") == "ok":
             probe_summary = []
-            for key in ("python_version", "torch_version", "platform", "cwd"):
+            for key in ("interpreter_path", "python_version", "torch_version", "platform", "cwd"):
                 if key in probe_facts:
                     probe_summary.append(f"{key}: {probe_facts[key]}")
             if probe_summary:
                 parts.append(f"- **Container probe facts**: {', '.join(probe_summary)}")
-            parts.append("- **Probe interpreter**: the probe ran `python3` inside the container; this command is confirmed callable on the container PATH.")
+            interp = probe_facts.get("interpreter_path", "a Python interpreter discovered on the container PATH")
+            parts.append(f"- **Probe interpreter**: the probe ran `{interp}` inside the container; this command is confirmed callable in the target runtime.")
         elif probe_facts:
             status = probe_facts.get("status", "unknown")
             error = probe_facts.get("error", "")
@@ -724,7 +756,7 @@ def get_container_prompt_context(
         ctx[k] = str(v)
     if probe_facts:
         ctx["container_env_facts"] = json.dumps(probe_facts, ensure_ascii=False, default=str)
-        for key in ("python_version", "platform", "platform_machine", "cwd", "torch_version"):
+        for key in ("interpreter_path", "python_version", "platform", "platform_machine", "cwd", "torch_version"):
             if key in probe_facts:
                 ctx[f"container_{key}"] = str(probe_facts[key])
     return ctx
