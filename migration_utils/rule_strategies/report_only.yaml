@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# report_only — safe default rule migration strategy
+#
+# Scans source code for CUDA/NVIDIA/NCCL patterns but NEVER modifies files.
+# Returns match counts only.
+# ---------------------------------------------------------------------------
+
+id: report_only
+display_name: "Report Only (Safe Default)"
+mode: report_only
+description: >
+  Read-only scan that detects CUDA/NVIDIA-specific patterns in source code.
+  No files are modified.  This is the safe default for unknown platforms.
+migrator_class: YamlRuleBasedMigrator
+migrator_module: migrator.yaml_rule_based
+destructive: false
+rewrite:
+  enabled: false
+scan_patterns:
+  - id: torch_cuda_references
+    regex: "torch\\.cuda"
+  - id: cuda_method_calls
+    regex: "\\.cuda\\("
+  - id: cuda_device_literals
+    regex: "[\"']cuda(?::\\d+)?[\"']"
+  - id: nccl_backend_literals
+    regex: "[\"']nccl[\"']"
+  - id: nvidia_smi_references
+    regex: "nvidia-smi"
+  - id: nvml_references
+    regex: "pynvml|py3nvml|nvml"
+  - id: cuda_extension_references
+    regex: "CUDAExtension|cpp_extension|torch\\.utils\\.cpp_extension"
