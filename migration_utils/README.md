@@ -1,10 +1,11 @@
-# migration_utils: CUDA 到 Ascend NPU 自动化迁移框架
+# migration_utils: CUDA 多平台自动化迁移框架
 
-`migration_utils` 是 SEAM 的核心运行时：它用 YAML state machine、OpenCode persistent agents、deterministic CUDA->NPU rule migration、Phase 5 validation/repair loop 和 experience memory，把 CUDA/PyTorch 项目迁移到 Ascend NPU。
+`migration_utils` 是 SEAM 的核心运行时：它用 YAML state machine、OpenCode persistent agents、deterministic rule migration、Phase 5 validation/repair loop 和 experience memory，把 CUDA/PyTorch 项目迁移到 PPU、Ascend NPU、MUSA、ROCm、MLU 等加速器平台。
 
 ## 核心能力
 
-- YAML 驱动工作流：阶段、agent、validator、transition、sub-workflow 和 runtime skill 都由 `workflows/npu_migration_v2.yaml` 描述。
+- YAML 驱动工作流：阶段、agent、validator、transition、sub-workflow 和 runtime skill 都由 `workflows/` 下的 YAML 文件描述。V3 入口支持 `--workflow-path` 选择任意平台工作流。
+- 平台策略系统：`target_platform` preset（PPU、NPU、MUSA、ROCm、MLU 等）自动驱动平台专用验证 token、迁移规则和证据要求。
 - 智能修复循环：Phase 5 会运行入口命令、分类错误、路由到 `dependency_fixer` / `code_adapter` / `operator_fixer`，并在有限迭代内重试。
 - custom-op final gate：CUDA 自定义算子项目必须闭环 inventory、manifest、parity、runtime coverage、performance 和 no-fallback evidence。
 - 经验记忆系统：Phase 7a/7b 从迁移产物中抽取可复用经验，并沉淀为 skill。
@@ -39,26 +40,36 @@ cuda_projects/my_project/
     └── run_e2e.py
 ```
 
-### 3. 推荐运行方式
+### 3. 推荐运行方式（V3 Shell Launcher）
 
 ```bash
-bash migration_utils/scripts/run_e2e_v2.sh my_project \
+bash migration_utils/scripts/run_e2e_v3.sh my_project \
   --server-url http://127.0.0.1:4098 \
   --max-iter 8 \
   --review \
   --verbose
 ```
 
-### 4. Direct Python entrypoint
+指定平台工作流：
 
 ```bash
-python -m tests.e2e.e2e_test_v2 \
+bash migration_utils/scripts/run_e2e_v3.sh my_project \
+  --workflow migration_utils/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
+  --server-url http://127.0.0.1:4098 \
+  --max-iter 8 \
+  --verbose
+```
+
+### 4. Direct Python entrypoint（V3）
+
+```bash
+python3.10 -m tests.e2e.e2e_test_v3 \
   --project-dir /path/to/your/cuda/project \
   --output-dir ./output_projects \
+  --workflow-path migration_utils/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
   --server-url http://127.0.0.1:4098 \
   --max-phase5-iter 8 \
-  --keep-temp-dir \
-  --review-gate
+  --keep-temp-dir
 ```
 
 常用参数：
@@ -67,13 +78,14 @@ python -m tests.e2e.e2e_test_v2 \
 | --- | --- |
 | `--project-dir` | 待迁移项目根目录。 |
 | `--output-dir` | 迁移产物输出根目录，通常是 `./output_projects`。 |
+| `--workflow-path` / `--workflow` | 平台工作流 YAML 文件路径。V3 入口的核心参数，用于选择目标平台。 |
 | `--max-phase5-iter` / `--max-iter` | Phase 5 修复循环最大迭代次数。 |
 | `--review-gate` / `--review` | 开启可选 review gate。 |
-| `--server-url` | OpenCode server 地址；launcher 推荐显式使用 `http://127.0.0.1:4098`。 |
+| `--server-url` | OpenCode server 地址；推荐使用 `http://127.0.0.1:4098`。 |
 
 ## YAML runtime skills
 
-在 `workflows/npu_migration_v2.yaml` 的 agent、phase 或 sub-workflow phase 上添加：
+在 `workflows/` 下的 YAML 文件的 agent、phase 或 sub-workflow phase 上添加：
 
 ```yaml
 runtime_skills:
@@ -103,7 +115,7 @@ Phase 1.5 用户约束摘要
 Phase 2   venv 和依赖准备
 Phase 3   entry script / run command contract
 Phase 3.5 静态入口验证
-Phase 4   rule-based CUDA -> NPU 迁移
+Phase 4   rule-based platform migration
 Phase 5   validation + repair loop + custom-op final gate
 Phase 6   报告生成
 Phase 7a  experience evaluation
