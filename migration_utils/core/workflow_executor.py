@@ -42,6 +42,7 @@ from core.execution_backend import ContainerBackend, get_execution_context as _g
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
 from migrator.rule_based_ppu import PPURuleBasedMigrator
+from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.repair_loop import (
     _operator_custom_op_guidance,
@@ -2257,6 +2258,10 @@ class WorkflowExecutor:
                 migrator = PPURuleBasedMigrator()
                 result = migrator.migrate_directory(self.project_dir, pattern=str(_params.get("pattern", "*.py")))
                 return ("success", {"operation": operation, "result": result, "backend": "ppu"})
+            if backend in {"report_only", "scan_only", "conservative"}:
+                migrator = ReportOnlyRuleBasedMigrator()
+                result = migrator.migrate_directory(self.project_dir, pattern=str(_params.get("pattern", "*.py")))
+                return ("success", {"operation": operation, "result": result, "backend": "report_only"})
             pattern = _params.get("pattern", "*.py")
             migrator = RuleBasedMigrator()
             result = migrator.migrate_directory(self.project_dir, pattern=str(pattern))
