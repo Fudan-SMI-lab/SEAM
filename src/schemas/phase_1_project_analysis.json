@@ -18,6 +18,42 @@
     "entry_script": {
       "type": "string"
     },
+    "migration_route": {
+      "type": "string",
+      "enum": [
+        "ordinary_cuda",
+        "custom_op",
+        "custom_op_with_variants",
+        "vllm_serving",
+        "sglang_serving"
+      ]
+    },
+    "serving_runtime_surface": {
+      "type": "object",
+      "properties": {
+        "serving_framework": {"type": "string", "enum": ["vllm", "sglang"]},
+        "detection_complete": {"type": "boolean"},
+        "launch_command": {"type": "string"},
+        "launch_evidence": {"type": "array", "items": {"type": "string"}},
+        "project_demo_or_test_evidence": {"type": "array", "items": {"type": "string"}},
+        "project_test_files": {"type": "array", "items": {"type": "string"}},
+        "readiness_probe": {"type": "object"},
+        "request_validation": {"type": "object"},
+        "expected_outputs": {"type": "array", "items": {"type": "string"}},
+        "required_runtime_env": {"type": "array", "items": {"type": "string"}},
+        "unresolved_source_groups": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": [
+        "serving_framework",
+        "detection_complete",
+        "launch_command",
+        "launch_evidence",
+        "project_demo_or_test_evidence",
+        "project_test_files",
+        "unresolved_source_groups"
+      ],
+      "additionalProperties": true
+    },
     "custom_op_surface": {
       "type": "object",
       "properties": {

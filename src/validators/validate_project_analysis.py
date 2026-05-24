@@ -7,6 +7,7 @@ import re
 from typing import cast
 
 from core.custom_op_variants import source_template_expanded_variants
+from core.routes import MIGRATION_ROUTES, is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 
 
@@ -210,6 +211,13 @@ def validate(data: dict[str, object]) -> ValidationDict:
     if not isinstance(entry_script, str) or not entry_script.strip():
         errors.append("entry_script must be a non-empty string")
 
+    migration_route = data.get("migration_route")
+    if migration_route is not None:
+        if not isinstance(migration_route, str) or migration_route not in MIGRATION_ROUTES:
+            errors.append("migration_route must be one of: " + ", ".join(MIGRATION_ROUTES))
+
+    _validate_serving_runtime_surface(data, errors)
+
     source_discovered_units = _discover_required_cuda_native_units_from_project(project_dir)
     source_custom_op_indicators = _discover_custom_op_source_indicators_from_project(project_dir)
     custom_op_surface = data.get("custom_op_surface")
@@ -346,6 +354,83 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 _validate_source_discovered_cuda_units(source_discovered_units, surface, errors)
 
     return {"passed": not errors, "errors": errors, "warnings": []}
+
+
+def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]) -> None:
+    migration_route = data.get("migration_route")
+    surface_value = data.get("serving_runtime_surface")
+    if not is_serving_route(migration_route):
+        if surface_value is not None and not isinstance(surface_value, dict):
+            errors.append("serving_runtime_surface must be an object when present")
+        return
+
+    if not isinstance(surface_value, dict):
+        errors.append("serving_runtime_surface must be present for vLLM/SGLang serving routes")
+        return
+
+    surface = cast(dict[str, object], surface_value)
+    expected_framework = serving_framework_for_route(migration_route)
+    framework = surface.get("serving_framework")
+    if framework != expected_framework:
+        errors.append(
+            f"serving_runtime_surface.serving_framework must be '{expected_framework}' for migration_route={migration_route}"
+        )
+
+    detection_complete = surface.get("detection_complete")
+    if not isinstance(detection_complete, bool):
+        errors.append("serving_runtime_surface.detection_complete must be a boolean")
+
+    launch_command = surface.get("launch_command")
+    if not isinstance(launch_command, str) or not launch_command.strip():
+        errors.append("serving_runtime_surface.launch_command must be a non-empty project launch command")
+
+    _validate_string_list(
+        surface,
+        "launch_evidence",
+        errors,
+        non_empty_message="serving_runtime_surface.launch_evidence must contain project-local serving launch evidence",
+        require_non_empty=True,
+    )
+    _validate_string_list(
+        surface,
+        "project_demo_or_test_evidence",
+        errors,
+        non_empty_message="serving_runtime_surface.project_demo_or_test_evidence must contain project demo/test/API evidence",
+        require_non_empty=True,
+    )
+    _validate_string_list(
+        surface,
+        "project_test_files",
+        errors,
+        non_empty_message="serving_runtime_surface.project_test_files must list project-provided demo/test/API files",
+        require_non_empty=True,
+    )
+    _validate_string_list(
+        surface,
+        "expected_outputs",
+        errors,
+        non_empty_message="serving_runtime_surface.expected_outputs must list project output evidence expected from the serving demo/API request",
+        require_non_empty=True,
+    )
+    _validate_string_list(
+        surface,
+        "required_runtime_env",
+        errors,
+        non_empty_message="serving_runtime_surface.required_runtime_env must list required NPU/serving runtime environment evidence",
+        require_non_empty=True,
+    )
+    for field_name in ("readiness_probe", "request_validation"):
+        value = surface.get(field_name)
+        if not isinstance(value, dict) or not value:
+            errors.append(f"serving_runtime_surface.{field_name} must be a non-empty object")
+    _validate_string_list(surface, "unresolved_source_groups", errors, require_non_empty=False)
+
+    if detection_complete is True:
+        unresolved = _string_list_values(surface, "unresolved_source_groups")
+        if unresolved:
+            errors.append(
+                "serving_runtime_surface.unresolved_source_groups must be empty when detection_complete=true"
+            )
 
 
 def _validate_string_list(
@@ -672,6 +757,7 @@ def _semantic_evidence_text_parts(surface: dict[str, object]) -> list[str]:
 
 
 def _project_semantic_source_text_parts(surface: dict[str, object], project_dir: object) -> list[str]:
+    _ = surface
     if not isinstance(project_dir, str) or not project_dir.strip():
         return []
     root = Path(project_dir)
