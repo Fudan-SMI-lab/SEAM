@@ -23,6 +23,7 @@ This is a CUDA-to-MUSA/MUXI workflow. The selected command becomes the Phase 5 v
 - Do not include `docker exec`, `podman exec`, `docker run`, container IDs, or container lifecycle commands in `run_command`; the framework backend handles execution.
 - `entry_script_path` and `reports_dir` must be host-visible absolute paths under `{project_dir}`.
 - `run_command` must be directly executable inside the target execution environment and may use `/workspace` paths.
+- If Phase 2 or the execution context identifies a vendor/base interpreter such as `/opt/conda/bin/python3.10`, use that absolute interpreter in `run_command`; do not use bare `python` or `python3.10` when they may resolve to system Python without vendor torch.
 - Do not weaken validation to import-only, smoke-only, report-only, direct-only, or CPU fallback success.
 - Do not say there are no custom operators unless Phase 1 source evidence supports it.
 - If custom/native ops exist, the entry must compile/load/run the native MUSA path and produce evidence.
@@ -31,10 +32,15 @@ This is a CUDA-to-MUSA/MUXI workflow. The selected command becomes the Phase 5 v
 ```json
 {
   "entry_script_path": "{project_dir}/run_e2e.py",
-  "run_command": "python3.10 /workspace/run_e2e.py",
+  "run_command": "/opt/conda/bin/python3.10 /workspace/run_e2e.py",
   "phase5_entry_script_revision_allowed": true
 }
 ```
+
+## Custom-Op Rules
+- Do not say there are no custom operators unless Phase 1 source evidence supports it.
+- If custom/native ops exist, the entry must compile, load, run, and produce real project-local evidence for the observed MUXI-family accelerator path.
+- CPU fallback, marker-only artifacts, and report-only success are invalid.
 
 ## Custom-Op Output Format
 Keep the evidence schema names unchanged:
@@ -42,7 +48,7 @@ Keep the evidence schema names unchanged:
 ```json
 {
   "entry_script_path": "{project_dir}/validate_custom_ops_full.py",
-  "run_command": "python3.10 /workspace/validate_custom_ops_full.py",
+  "run_command": "/opt/conda/bin/python3.10 /workspace/validate_custom_ops_full.py",
   "entry_script_kind": "custom_op_full_validation",
   "reports_dir": "{project_dir}/migration_reports",
   "operator_discovery_sources": ["source", "bindings", "wrappers", "autograd", "aliases", "launch", "setup", "tests"],
@@ -56,7 +62,8 @@ Keep the evidence schema names unchanged:
     "kernel_launch_sites": "source locations or wrappers that call kernels",
     "public_entry_mapping": "public Python/API/autograd entries routing to this unit",
     "source_evidence": "source file/function evidence per row",
-    "inventory_granularity": "fine_grained"
+    "inventory_granularity": "fine_grained",
+    "out_of_scope_source_groups": "excluded families with reason"
   },
   "performance_report_schema": {
     "per_unit_entries": "one timing/parity entry for every manifest/source-inventory unit",
