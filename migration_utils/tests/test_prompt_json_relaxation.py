@@ -164,3 +164,39 @@ def test_extract_json_response_handles_natural_language_plus_json():
     assert result["platform"] == "npu"
     assert result["npu_detected"] is True
     assert result["python_version"] == "3.10.12"
+
+
+def test_extract_json_response_uses_last_valid_fenced_json():
+    from harness.session.manager import extract_json_response
+
+    response = """
+    I first considered this shape:
+    ```json
+    {
+      "env_type": "base_env",
+      "installed_packages": [
+        ...
+      ],
+      ...
+    }
+    ```
+
+    The final answer is:
+    ```json
+    {
+      "env_type": "base_env",
+      "venv_path": "/opt/conda",
+      "python_path": "/opt/conda/bin/python3.10",
+      "installed_packages": ["torch==2.8.0+metax3.5.3.9"],
+      "vendor_stack": {"api_mode": "cuda_compatible"}
+    }
+    ```
+    """
+
+    result = extract_json_response(response)
+
+    assert result["env_type"] == "base_env"
+    assert result["venv_path"] == "/opt/conda"
+    assert result["python_path"] == "/opt/conda/bin/python3.10"
+    assert result["installed_packages"] == ["torch==2.8.0+metax3.5.3.9"]
+    assert result["vendor_stack"]["api_mode"] == "cuda_compatible"

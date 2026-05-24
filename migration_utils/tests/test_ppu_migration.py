@@ -420,10 +420,9 @@ class TestWorkflowExecutorPPUSelection:
         content = (Path(temp_dir) / "sample.py").read_text()
         assert content == code
 
-    def test_rule_based_migration_without_backend_uses_npu(self, executor, temp_dir):
-        (Path(temp_dir) / "sample.py").write_text(
-            "import torch\nx = torch.cuda.is_available()\n"
-        )
+    def test_rule_based_migration_without_backend_uses_report_only_safe_default(self, executor, temp_dir):
+        original = "import torch\nx = torch.cuda.is_available()\n"
+        (Path(temp_dir) / "sample.py").write_text(original)
         phase = PhaseDefinition(
             id="test", name="test", prompt_template="", output_schema={},
             type="builtin", params={
@@ -435,7 +434,8 @@ class TestWorkflowExecutorPPUSelection:
         assert status == "success"
         assert result["operation"] == "rule_based_migration"
         content = (Path(temp_dir) / "sample.py").read_text()
-        assert "torch.npu" in content
+        assert content == original, "Without explicit backend, report_only safe default must not modify files"
+        assert result.get("strategy") == "report_only"
 
 
 VLLM018_IMAGE = "egslingjun-registry.cn-wulanchabu.cr.aliyuncs.com/egslingjun/inference-xpu-pytorch:26.04-v2.1.0-vllm0.18.0-torch2.9-cu130-20260508"
