@@ -35,6 +35,9 @@ target_platform:
         - cpu_baseline_invoked
         - baseline_cpu_invoked
 
+rule_migration:
+  strategy_file: rule_strategies/report_only.yaml
+
 execution_backend:
   mode: container
   source: image
@@ -172,7 +175,6 @@ phases:
     validator: rule_migration
     params:
       pattern: "*.py"
-      backend: "report_only"
     transitions:
       on_success: phase_5_validation
 

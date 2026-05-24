@@ -2,20 +2,18 @@
 
 Project: deepwave_upstream_fwi_original
 Experiment: Normal-entry E2E with 057_example_fwi.py
-Purpose: Validate normal application demo behavior (no custom-op gate)
+Purpose: Validate normal application demo behavior
 
 ## Binding Rules
 
-1. **Entry script**: MUST use `057_example_fwi.py` as the sole entry point. Do not substitute with any other script. Do not create a custom-op validation wrapper.
+1. **Entry script**: MUST use `057_example_fwi.py` as the sole entry point. Do not substitute with any other script.
 
-2. **Normal application demo**: This is a normal FWI (Full Waveform Inversion) demo using the deepwave library. The custom-op contract injection and final-gate route are disabled by workflow configuration (`disable_custom_op_contract_injection: true`). Phase 3 omits custom-op contract fields by route policy. Do not inject or validate any custom-op contract. If the project contains custom or native operators (e.g., compiled deepwave CUDA extensions), they should be properly built and loaded — but the custom-op validation/final-gate path does not apply in this route.
-
-3. **Headless-safe plotting**: `plt.show()` calls in `057_example_fwi.py` are headless blockers. Before running, patch or wrap the script to:
+2. **Headless-safe plotting**: `plt.show()` calls in `057_example_fwi.py` are headless blockers. Before running, patch or wrap the script to:
    - Set `matplotlib.use('Agg')` before any matplotlib import, OR
    - Comment out `plt.show()` and add `plt.savefig('loss_plot.png')` for the loss curve plot
    - Do NOT remove or modify the `plt.savefig('example_simple_fwi.jpg')` and `plt.savefig('example_increasing_freq_fwi.jpg')` calls -- those are already headless-safe
 
-4. **Dependencies**: The following packages must be available. If missing, install via pip during repair:
+3. **Dependencies**: The following packages must be available. If missing, install via pip during repair:
    - `matplotlib` (with Agg backend for headless)
    - `scikit-image` (provides `skimage.metrics`)
    - `lpips` (perceptual similarity; AlexNet model download to cache is ACCEPTABLE on first run)
@@ -23,7 +21,7 @@ Purpose: Validate normal application demo behavior (no custom-op gate)
    - `torchaudio` (provides `torchaudio.functional.biquad`)
    - `deepwave` (vendor wave propagation library)
 
-5. **Data files -- REAL FILES, NOT SYMLINKS (CRITICAL)**: The following files MUST be present as REAL files (not symlinks) at `/workspace` (container workdir):
+4. **Data files -- REAL FILES, NOT SYMLINKS (CRITICAL)**: The following files MUST be present as REAL files (not symlinks) at `/workspace` (container workdir):
    - `marmousi_vp.bin` -- true velocity model (2301 x 751 float32 binary)
    - `marmousi_data.bin` -- observed seismic shot data
 
@@ -37,15 +35,15 @@ Purpose: Validate normal application demo behavior (no custom-op gate)
 
    If the files are missing entirely (not even as symlinks), copy them from the project source tree under `deepwave_upstream_fwi_original/` or from the user-provided source location.
 
-6. **Container workdir**: Set to `/workspace`. All data files and the entry script must be accessible there. The container mount maps `{project_dir}` to `/workspace`, so any real file at `{project_dir}/marmousi_vp.bin` becomes `/workspace/marmousi_vp.bin` inside the container.
+5. **Container workdir**: Set to `/workspace`. All data files and the entry script must be accessible there. The container mount maps `{project_dir}` to `/workspace`, so any real file at `{project_dir}/marmousi_vp.bin` becomes `/workspace/marmousi_vp.bin` inside the container.
 
-7. **Normal exit expected**: The script runs bounded optimization loops (`for epoch in range(n_epochs)`). It should exit with code 0 after completing all epochs and metrics computation. Exit code 0 is success.
+6. **Normal exit expected**: The script runs bounded optimization loops (`for epoch in range(n_epochs)`). It should exit with code 0 after completing all epochs and metrics computation. Exit code 0 is success.
 
-8. **PPU-compatible APIs only**: `torch.cuda` calls are expected and correct in PPU environments. Do NOT convert `torch.cuda` to `torch.npu`. Do NOT install `torch_npu` or Ascend toolchains.
+7. **PPU-compatible APIs only**: `torch.cuda` calls are expected and correct in PPU environments. Do NOT convert `torch.cuda` to `torch.npu`. Do NOT install `torch_npu` or Ascend toolchains.
 
-9. **Repair allowed**: If dependency installation fails, missing packages, or data file issues occur, dependency repair is explicitly allowed. Do NOT give up on first failure. LPIPS first-run model download time is acceptable.
+8. **Repair allowed**: If dependency installation fails, missing packages, or data file issues occur, dependency repair is explicitly allowed. Do NOT give up on first failure. LPIPS first-run model download time is acceptable.
 
-10. **NO CPU FALLBACK (CRITICAL)**: This experiment MUST run on PPU CUDA-compatible hardware. The following actions are FORBIDDEN during any phase including repair:
+9. **NO CPU FALLBACK (CRITICAL)**: This experiment MUST run on PPU CUDA-compatible hardware. The following actions are FORBIDDEN during any phase including repair:
    - Setting `CUDA_VISIBLE_DEVICES=''` or any empty value -- this forces PyTorch/DeepWave to CPU-only execution
    - Setting `CUDA_VISIBLE_DEVICES=-1` or any negative value
    - Forcing `CUDAToolkit_FOUND FALSE` in CMake or build configuration
@@ -57,5 +55,3 @@ Purpose: Validate normal application demo behavior (no custom-op gate)
    **If the entry script fails with CUDA symbol errors**, the fix MUST be to install/build the CUDA/accelerator variant of the missing package, NOT to fall back to CPU. Undefined accelerator symbols in compiled shared libraries indicate a CPU-only build -- the correct fix is to rebuild the package with the appropriate accelerator SDK, not to switch to CPU mode.
 
    **The setup phase already handles deterministic dependency installation** -- repair agents should NOT undo or override the accelerator build performed there. If accelerator symbols are missing after setup, re-run the build with the appropriate SDK environment variables, do NOT delete the accelerator build artifacts.
-
-11. **No custom-op fields**: Phase 3 output must NOT include `entry_script_kind`, `reports_dir`, `required_report_paths`, `required_checks`, or any custom-op contract fields. Phase 3.5 must ONLY validate headless compliance, not custom-op contracts.
