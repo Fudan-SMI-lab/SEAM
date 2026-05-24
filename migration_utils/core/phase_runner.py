@@ -13,8 +13,9 @@ from typing import Protocol, cast, runtime_checkable
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
-from core.execution_backend import get_execution_environment_context as _get_env_ctx
+from core.execution_backend import get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_env_ctx
 from core.paths import resolve_relative_path, workspace_root
+from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, resolve_phase6_timeout
 from core.prompt_loader import PromptLoader
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition
@@ -630,18 +631,7 @@ class PhaseRunner:
             role="main_engineer", lifecycle="persistent"
         )
 
-        prior_artifacts: dict[str, object] = {}
-        for candidate in (
-            "phase_0_env_detect",
-            "phase_1_project_analysis",
-            "phase_2_venv_create",
-            "phase_3_entry_script",
-            "phase_4_rule_migration",
-            "phase_5_validation",
-        ):
-            output = artifact_store.load_phase_output(candidate)
-            if output is not None:
-                prior_artifacts[candidate] = output
+        prior_artifacts = collect_phase6_prior_artifacts(artifact_store)
 
         report_dir = os.path.join(artifact_store.artifact_dir, "reports")
         os.makedirs(report_dir, exist_ok=True)
@@ -652,27 +642,55 @@ class PhaseRunner:
             "previous_outputs": self._serialize_context(prior_artifacts),
             "report_dir": report_dir,
         }
+        for k, v in self._container_context.items():
+            prompt_context.setdefault(k, v)
+        for k, v in _get_exec_ctx(None).items():
+            prompt_context.setdefault(k, v)
+        prompt_context.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
 
         prompt = self.prompt_loader.load_prompt("phase_6_report", prompt_context)
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_6_report")
 
-        raw_response = active_session_mgr.send_command(session_id, prompt, timeout=None)
+        fallback_reason = ""
+        try:
+            raw_response = active_session_mgr.send_command(
+                session_id, prompt, timeout=self._phase_6_timeout(), retries=0
+            )
+            fallback_reason = self._session_error_from_response(raw_response) or ""
+        except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
+            raw_response = ""
+            fallback_reason = str(exc)
 
-        parsed: dict[str, object] = dict(extract_json_response(raw_response))
-
-        report: dict[str, object] = {
-            "phase_id": "phase_6_report",
-            "report_paths": parsed.get("report_paths", []),
-            "migration_summary": parsed.get("migration_summary", {}),
-            "project_dir": str(project_dir),
-        }
+        if fallback_reason:
+            report = build_phase6_fallback_report(
+                project_dir=str(project_dir),
+                report_dir=report_dir,
+                prior_outputs=prior_artifacts,
+                reason=fallback_reason,
+            )
+        else:
+            parsed: dict[str, object] = dict(extract_json_response(raw_response))
+            if not self._phase_6_output_complete(parsed):
+                report = build_phase6_fallback_report(
+                    project_dir=str(project_dir),
+                    report_dir=report_dir,
+                    prior_outputs=prior_artifacts,
+                    reason="Phase 6 LLM response omitted required report fields",
+                )
+            else:
+                report = {
+                    "phase_id": "phase_6_report",
+                    "report_paths": parsed.get("report_paths", []),
+                    "migration_summary": parsed.get("migration_summary", {}),
+                    "project_dir": str(project_dir),
+                }
 
         raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=1)
         canonical_path = artifact_store.mark_validated("phase_6_report", report)
         _ = artifact_store.write_journal({
             "phase_id": "phase_6_report",
             "attempt": 1,
-            "status": "succeeded",
+            "status": "fallback" if report.get("fallback") else "succeeded",
             "session_ref": session_id,
             "raw_path": raw_path,
             "canonical_path": canonical_path,
@@ -681,6 +699,17 @@ class PhaseRunner:
         })
 
         return report
+
+    def _phase_6_timeout(self) -> int:
+        runtime_phase = self._runtime_phase_index.get("phase_6_report")
+        phase_timeout = runtime_phase.timeout if runtime_phase else None
+        return resolve_phase6_timeout(self.framework_config, phase_timeout, logger)
+
+    @staticmethod
+    def _phase_6_output_complete(output: dict[str, object]) -> bool:
+        report_paths = output.get("report_paths")
+        migration_summary = output.get("migration_summary")
+        return isinstance(report_paths, list) and isinstance(migration_summary, dict)
 
     def _run_single_phase(
         self,
@@ -1054,6 +1083,8 @@ class PhaseRunner:
             entry_script = self._lookup_previous_output(filtered, "phase_3_entry_script", "entry_script_path")
             prompt_ctx["entry_script_path"] = str(entry_script) if entry_script else "(not available)"
         for k, v in self._container_context.items():
+            prompt_ctx.setdefault(k, v)
+        for k, v in _get_exec_ctx(None).items():
             prompt_ctx.setdefault(k, v)
         prompt_ctx.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
         return prompt_ctx

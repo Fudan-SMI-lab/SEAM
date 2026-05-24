@@ -47,14 +47,14 @@ class RecordingSessionManager:
     def __init__(self, response: str) -> None:
         self.response: str = response
         self.get_or_create_calls: list[dict[str, str]] = []
-        self.send_calls: list[tuple[str, str, int | None]] = []
+        self.send_calls: list[tuple[str, str, int | None, int | None]] = []
 
     def get_or_create(self, role: str, lifecycle: str) -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-        self.send_calls.append((session_id, command, timeout))
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+        self.send_calls.append((session_id, command, timeout, retries))
         return self.response
 
 
@@ -546,20 +546,26 @@ class Phase6SessionManager:
         self.responses = {k: list(v) for k, v in (phase_responses or {}).items()}
         self.phase_6_response = phase_6_response
         self.get_or_create_calls: list[dict[str, str]] = []
-        self.send_calls: list[tuple[str, str, int | None]] = []
+        self.send_calls: list[tuple[str, str, int | None, int | None]] = []
 
     def get_or_create(self, role: str, lifecycle: str) -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-        self.send_calls.append((session_id, command, timeout))
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+        self.send_calls.append((session_id, command, timeout, retries))
         if "Phase 6" in command or "phase_6" in command:
             return self.phase_6_response
         for phase_key in ("phase_3", "phase_2", "phase_1", "phase_0"):
             if f"Phase {phase_key[-1]}" in command:
                 return self.responses[phase_key].pop(0)
         raise AssertionError(f"Unexpected prompt: {command}")
+
+
+class Phase6TimeoutSessionManager(Phase6SessionManager):
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+        self.send_calls.append((session_id, command, timeout, retries))
+        raise TimeoutError("phase 6 timed out")
 
 
 def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
@@ -622,6 +628,83 @@ def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
     journal = artifact_store.get_journal()
     phase_6_entries = [e for e in journal if e["phase_id"] == "phase_6_report"]
     assert len(phase_6_entries) == 1
+
+
+def test_run_phase_6_fallback_on_session_error(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    artifact_store.save_phase_output(
+        "phase_5_validation",
+        {"status": "success", "script_exit_code": 0},
+        attempt=1,
+    )
+    artifact_store.mark_validated(
+        "phase_5_validation",
+        {"status": "success", "script_exit_code": 0},
+    )
+
+    session_mgr = Phase6SessionManager(
+        phase_6_response=json.dumps({"ok": False, "error": "Session still running"})
+    )
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+
+    assert result["fallback"] is True
+    assert result["migration_summary"]["overall_status"] == "partial"
+    assert result["migration_summary"]["files_migrated"] == 0
+    assert result["migration_summary"]["files_skipped"] == 0
+    assert result["migration_summary"]["phase5_status"] == "success"
+    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][3] == 0
+    assert all(Path(path).exists() for path in result["report_paths"])
+
+    saved = artifact_store.load_phase_output("phase_6_report")
+    assert saved is not None
+    assert saved["fallback"] is True
+
+    phase_6_entries = [e for e in artifact_store.get_journal() if e["phase_id"] == "phase_6_report"]
+    assert phase_6_entries[-1]["status"] == "fallback"
+
+
+def test_run_phase_6_fallback_on_timeout_exception(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    session_mgr = Phase6TimeoutSessionManager()
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+
+    assert result["fallback"] is True
+    assert result["fallback_reason"] == "phase 6 timed out"
+    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][3] == 0
+    assert all(Path(path).exists() for path in result["report_paths"])
+
+
+def test_run_phase_6_fallback_on_incomplete_response(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    session_mgr = Phase6SessionManager(phase_6_response=json.dumps({"raw_response": "no reports"}))
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+
+    assert result["fallback"] is True
+    assert result["migration_summary"]["overall_status"] == "partial"
+    assert all(Path(path).exists() for path in result["report_paths"])
 
 
 def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
@@ -1392,7 +1475,7 @@ class TestPhaseRunnerContainerContext:
         result = runner._build_prompt_context(phase_spec, context)
         assert result["project_dir"] == "/host/proj"
 
-    def test_empty_container_context_adds_nothing(self):
+    def test_empty_container_context_adds_local_execution_defaults(self):
         runner = PhaseRunner(
             _make_session_mgr(),
             _make_artifact_store(),
@@ -1402,8 +1485,8 @@ class TestPhaseRunnerContainerContext:
         assert runner._container_context == {}
         phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
         result = runner._build_prompt_context(phase_spec, {"project_dir": "/tmp"})
-        assert "execution_backend_mode" not in result
-        assert "container_name_or_id" not in result
+        assert result["execution_backend_mode"] == "local"
+        assert "local" in result["execution_environment_context"]
 
 
 def _make_session_mgr() -> SessionManagerLike:
@@ -1612,4 +1695,3 @@ def test_phase_runner_no_workflow_still_injects() -> None:
     assert normalized["entry_script_kind"] == "custom_op_full_validation"
     validation = runner.validator.validate("entry_script", normalized)
     assert validation.passed is False
-
