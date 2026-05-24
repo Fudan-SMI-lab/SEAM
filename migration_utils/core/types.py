@@ -223,6 +223,7 @@ class WorkflowDefinition:
     execution_backend: ExecutionBackendConfig | None = None
     experience: ExperienceConfig = field(default_factory=ExperienceConfig)
     target_platform: Any = None  # TargetPlatformConfig | None after platform_policy imported
+    rule_migration: dict[str, Any] | None = None  # workflow-level rule_migration strategy override
 
 
 class PhaseType(str, Enum):

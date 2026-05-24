@@ -57,6 +57,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
     execution_backend = _parse_execution_backend(raw.get("execution_backend"))
     experience = _parse_experience(raw.get("experience"))
     target_platform = parse_target_platform(raw.get("target_platform"))
+    rule_migration = _parse_rule_migration(raw.get("rule_migration"))
 
     return WorkflowDefinition(
         name=raw["name"],
@@ -71,6 +72,7 @@ def load_workflow(path: str) -> WorkflowDefinition:
         execution_backend=execution_backend,
         experience=experience,
         target_platform=target_platform,
+        rule_migration=rule_migration,
     )
 
 
@@ -517,3 +519,21 @@ def _validate_transitions(phases: list[PhaseDefinition], terminals: list[str]) -
                     raise ValueError(
                         f"Phase '{phase.id}': transition.{field_name} references unknown target '{target}'. "
                         f"Valid targets: {sorted(valid_targets)}")
+
+
+def _parse_rule_migration(raw: Any) -> dict[str, Any] | None:
+    """Parse an optional top-level ``rule_migration`` YAML key.
+
+    Expected YAML shape:
+        rule_migration:
+          strategy: cuda_to_npu
+
+    Returns ``None`` when absent or not a dict.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return dict(raw)
+    raise ValueError(
+        f"rule_migration must be a mapping or absent, got {type(raw).__name__}"
+    )
