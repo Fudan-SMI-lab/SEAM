@@ -1201,7 +1201,7 @@ class TestContainerBackendProbeEnvironment:
     @patch("subprocess.run")
     def test_probe_returns_facts_on_success(self, mock_run: MagicMock):
         probe_output = (
-            '{"status": "ok", "python_version": "3.10.0", '
+            '{"status": "ok", "interpreter_path": "/usr/local/bin/python3", "python_version": "3.10.0", '
             '"platform": "Linux", "platform_machine": "x86_64", '
             '"cwd": "/workspace", "env_keys": ["PATH"], '
             '"torch_version": "2.1.0", "torch_cuda_available": true, '
@@ -1219,12 +1219,16 @@ class TestContainerBackendProbeEnvironment:
         result = backend.probe_environment()
         assert result["status"] == "ok"
         assert result["python_version"] == "3.10.0"
+        assert result["interpreter_path"] == "/usr/local/bin/python3"
         assert result["container_id"] == "probe-cid"
+        cmd = mock_run.call_args.args[0]
+        assert cmd[-4:-1] == ["probe-cid", "sh", "-lc"]
+        assert "SEAM_CONTAINER_PROBE_SCRIPT=" in " ".join(cmd)
 
     @patch("subprocess.run")
     def test_probe_returns_error_on_failure(self, mock_run: MagicMock):
         mock_run.return_value = MagicMock(
-            returncode=1, stdout="", stderr="python3: command not found"
+            returncode=1, stdout="", stderr="sh: command not found"
         )
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
@@ -1233,7 +1237,25 @@ class TestContainerBackendProbeEnvironment:
         backend._container_id = "probe-cid"
         result = backend.probe_environment()
         assert result["status"] == "probe_failed"
-        assert "python3" in result["error"]
+        assert "sh" in result["error"]
+
+    @patch("subprocess.run")
+    def test_probe_reports_missing_python_from_container_path(self, mock_run: MagicMock):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{"status":"probe_failed","error":"No Python interpreter found on container PATH"}\n',
+            stderr="",
+        )
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "probe-cid"
+
+        result = backend.probe_environment()
+
+        assert result["status"] == "probe_failed"
+        assert "No Python interpreter" in result["error"]
 
     @patch("subprocess.run")
     def test_probe_graceful_without_container(self, mock_run: MagicMock):
@@ -1816,4 +1838,3 @@ class TestAutoImageSelection:
         assert "None" not in call_ctx["candidate_images"]
         assert "good:1" in call_ctx["candidate_images"]
         assert "also-good:2" in call_ctx["candidate_images"]
-

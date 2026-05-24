@@ -300,13 +300,8 @@ class TestPhaseRunnerAlwaysProvidesContext:
         assert "local" in prompt_ctx["execution_environment_context"]
 
 
-# ── Container context includes python3 callable ─────────────────────────
-
-
 class TestContainerContextHasPython3Command:
     def test_container_context_reports_probe_interpreter(self):
-        """When probe succeeds, context should state that python3 was
-        confirmed callable on the container PATH."""
         cfg = ExecutionBackendConfig(
             mode="container", source="image", image="test:latest",
             container_workdir="/workspace",
@@ -318,12 +313,13 @@ class TestContainerContextHasPython3Command:
         probe = {
             "status": "ok",
             "python_version": "3.10.12",
+            "interpreter_path": "/usr/local/bin/python",
             "torch_version": "2.9.0",
             "platform": "Linux",
             "cwd": "/workspace",
         }
         result = get_execution_environment_context(backend, probe_facts=probe)
-        assert "python3" in result
+        assert "/usr/local/bin/python" in result
         assert "callable" in result or "PATH" in result or "probe interpreter" in result.lower()
 
 
@@ -652,4 +648,3 @@ class TestWorkflowExecutorBuildEnvContext:
         assert orch_result["torch_npu_version"] == wf_result["torch_npu_version"]
         assert set(orch_result["accelerator_packages"]) == set(wf_result["accelerator_packages"])
         assert orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]
-
