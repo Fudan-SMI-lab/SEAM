@@ -1,5 +1,8 @@
 """Validation for Phase 3.5 static entry script compliance check."""
 
+import ast
+import re
+from pathlib import Path
 from typing import cast
 
 from core.validator_engine import ValidationDict
@@ -30,6 +33,8 @@ EXPANDED_VARIANT_BOOLEAN_FIELDS = (
     "script_checks_variant_axis_coverage",
     "script_requires_per_variant_performance",
 )
+
+SHORT_INTERNAL_TIMEOUT_SECONDS = 3600
 
 def validate(data: dict[str, object]) -> ValidationDict:
     """Validate Phase 3.5 static analysis output.
@@ -100,6 +105,9 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 if field in data and data.get(field) is not True:
                     errors.append(f"{field} must be true for expanded-variant static validation")
 
+        if _custom_static_required(data):
+            errors.extend(_entry_script_timeout_errors(data))
+
     if not errors:
         if not validation_passed:
             # Map issues to validation errors
@@ -124,3 +132,98 @@ def _expanded_variant_static_required(data: dict[str, object]) -> bool:
     if data.get("expanded_variant_static_required") is True:
         return True
     return any(field in data for field in EXPANDED_VARIANT_BOOLEAN_FIELDS if field != "expanded_variant_static_required")
+
+
+def _entry_script_timeout_errors(data: dict[str, object]) -> list[str]:
+    raw_path = data.get("entry_script_path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return []
+
+    script_path = Path(raw_path)
+    if not script_path.is_file():
+        return []
+    try:
+        source = script_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    errors: list[str] = []
+    errors.extend(_ast_short_timeout_errors(source, script_path))
+    if errors:
+        return errors
+    return _regex_short_timeout_errors(source, script_path)
+
+
+def _ast_short_timeout_errors(source: str, script_path: Path) -> list[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    errors: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not _is_subprocess_call(node):
+            continue
+        timeout = _literal_timeout_value(node)
+        if timeout is None or timeout >= SHORT_INTERNAL_TIMEOUT_SECONDS:
+            continue
+        if not _call_targets_project_validation(node):
+            continue
+        errors.append(
+            f"{script_path}:{node.lineno}: custom-op validation script uses short internal subprocess timeout={timeout:g}; "
+            "real project/API validation must not be bounded by a short generated-script timeout"
+        )
+    return errors
+
+
+def _regex_short_timeout_errors(source: str, script_path: Path) -> list[str]:
+    errors: list[str] = []
+    for match in re.finditer(r"timeout\s*=\s*(\d+(?:\.\d+)?)", source):
+        timeout = float(match.group(1))
+        if timeout >= SHORT_INTERNAL_TIMEOUT_SECONDS:
+            continue
+        window = source[max(0, match.start() - 500): match.end() + 500].lower()
+        if not _text_targets_project_validation(window):
+            continue
+        line_no = source.count("\n", 0, match.start()) + 1
+        errors.append(
+            f"{script_path}:{line_no}: custom-op validation script uses short internal subprocess timeout={timeout:g}; "
+            "real project/API validation must not be bounded by a short generated-script timeout"
+        )
+    return errors
+
+
+def _is_subprocess_call(node: ast.Call) -> bool:
+    func = node.func
+    if isinstance(func, ast.Attribute) and func.attr in {"run", "Popen", "communicate"}:
+        value = func.value
+        if isinstance(value, ast.Name) and value.id in {"subprocess", "process"}:
+            return True
+    return False
+
+
+def _literal_timeout_value(node: ast.Call) -> float | None:
+    for keyword in node.keywords:
+        if keyword.arg != "timeout":
+            continue
+        value = keyword.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, (int, float)) and not isinstance(value.value, bool):
+            return float(value.value)
+    return None
+
+
+def _call_targets_project_validation(node: ast.Call) -> bool:
+    return _text_targets_project_validation(ast.unparse(node).lower())
+
+
+def _text_targets_project_validation(text: str) -> bool:
+    project_tokens = (
+        "test_e2e",
+        "e2e",
+        "project api",
+        "public api",
+        "integration",
+        "validation",
+    )
+    return any(token in text for token in project_tokens)

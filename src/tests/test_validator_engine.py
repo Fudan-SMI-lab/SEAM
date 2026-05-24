@@ -427,6 +427,54 @@ def _valid_project_analysis_custom_op_surface() -> dict[str, object]:
     }
 
 
+def _source_backed_variant_inventory_surface() -> dict[str, object]:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["alpha", "beta"]
+    surface["fine_grained_operator_units"] = ["alpha:forward_cuda", "beta:forward_cuda"]
+    surface["discovered_operator_names"] = ["alpha_forward_cuda", "beta_forward_cuda"]
+    surface["native_operator_symbols"] = ["alpha_${ndim}_${dtype}_forward_cuda", "beta_${ndim}_${dtype}_forward_cuda"]
+    surface["kernel_launch_sites"] = ["src/alpha.cu:forward_kernel<<<...>>>", "src/beta.cu:forward_kernel<<<...>>>"]
+    surface["source_evidence"] = [
+        "src/backend.py:enumerates ndim 1, 2",
+        "src/backend.py:enumerates dtype float and double",
+        "src/backend.py:builds alpha and beta symbols with ${ndim} and ${dtype}",
+    ]
+    surface["dynamic_loading_checks"] = ["import torch.ops.alpha and torch.ops.beta succeed"]
+    surface["build_load_checks"] = ["python setup.py build_ext --inplace completed"]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1d", "2d"], "dtype": ["float", "double"], "device": ["cuda"]}
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "alpha:forward_cuda:ndim=1d:dtype=float:device=cuda",
+            "base_unit_identity": "alpha:forward_cuda",
+            "axis_values": {"ndim": "1d", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/backend.py:alpha template"],
+            "candidate_public_api_routes": ["pkg.alpha.forward"],
+        },
+        {
+            "unit_identity": "beta:forward_cuda:ndim=1d:dtype=float:device=cuda",
+            "base_unit_identity": "beta:forward_cuda",
+            "axis_values": {"ndim": "1d", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/backend.py:beta template"],
+            "candidate_public_api_routes": ["pkg.beta.forward"],
+        },
+    ]
+    surface["expanded_operator_instances_count"] = 2
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "alpha:forward_cuda",
+            "source_evidence": ["src/backend.py:alpha template"],
+            "candidate_public_api_routes": ["pkg.alpha.forward"],
+        },
+        {
+            "unit_identity": "beta:forward_cuda",
+            "source_evidence": ["src/backend.py:beta template"],
+            "candidate_public_api_routes": ["pkg.beta.forward"],
+        },
+    ]
+    return surface
+
+
 def _axis_coverage_regression_surface() -> dict[str, object]:
     surface = _valid_project_analysis_custom_op_surface()
     units = [
@@ -484,6 +532,1117 @@ def test_project_analysis_accepts_generic_multi_unit_custom_op_surface() -> None
     )
 
     assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_normalize_project_analysis_expanded_variants_synthesizes_complete_inventory() -> None:
+    output: dict[str, object] = {"custom_op_surface": _source_backed_variant_inventory_surface()}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    surface = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], surface["expanded_operator_variants"])
+    unit_identities = {cast(str, variant["unit_identity"]) for variant in variants}
+
+    assert len(variants) == 8
+    assert surface["expanded_operator_instances_count"] == 8
+    assert "alpha:forward_cuda:ndim=2d:dtype=double:device=cuda" in unit_identities
+    assert "beta:forward_cuda:ndim=2d:dtype=double:device=cuda" in unit_identities
+
+
+def test_normalize_project_analysis_augments_axis_values_from_source_template_rows() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["solver"]
+    surface["fine_grained_operator_units"] = ["solver:forward_cuda"]
+    surface["discovered_operator_names"] = ["solver_forward_cuda"]
+    surface["native_operator_symbols"] = ["solver_forward_cuda template accuracy={2,4,6,8}"]
+    surface["kernel_launch_sites"] = ["src/solver.cu:SOLVER_FUNC(forward_cuda)"]
+    surface["source_evidence"] = ["src/solver_codegen.py:builds solver forward_cuda with accuracy={2,4,6,8}"]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"accuracy": ["2"], "device": ["cuda"]}
+    surface["expanded_operator_instances_count"] = 1
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "solver:forward_cuda:accuracy=2:device=cuda",
+            "base_unit_identity": "solver:forward_cuda",
+            "axis_values": {"accuracy": "2", "device": "cuda"},
+            "source_evidence": ["src/solver.cu:SOLVER_FUNC(forward_cuda)"],
+            "candidate_public_api_routes": ["pkg.solver.forward"],
+        }
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "solver:forward_cuda",
+            "source_evidence": ["src/solver_codegen.py:forward_cuda accuracy={2,4,6,8}"],
+            "candidate_public_api_routes": ["pkg.solver.forward"],
+        }
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    identities = {cast(str, variant["unit_identity"]) for variant in variants}
+    normalized_axes = cast(dict[str, list[str]], normalized["variant_axes"])
+
+    assert normalized_axes["accuracy"] == ["2", "4", "6", "8"]
+    assert normalized["expanded_operator_instances_count"] == len(variants) == 4
+    assert "solver:forward_cuda:accuracy=4:device=cuda" in identities
+    assert "solver:forward_cuda:accuracy=6:device=cuda" in identities
+    assert "solver:forward_cuda:accuracy=8:device=cuda" in identities
+
+
+def test_normalize_project_analysis_augments_unbracketed_axis_lists_for_suffixed_operations() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["adjoint"]
+    surface["fine_grained_operator_units"] = ["adjoint:backward_extra_cuda"]
+    surface["discovered_operator_names"] = ["adjoint_backward_extra_cuda"]
+    surface["native_operator_symbols"] = ["adjoint_iso_<ndim>_<accuracy>_<dtype>_backward_extra_cuda"]
+    surface["kernel_launch_sites"] = ["src/adjoint.cu:BACKWARD_EXTRA_FUNC(backward_extra)"]
+    surface["source_evidence"] = [
+        "src/backend.py:enumerates ndim 1,2,3; accuracy 2,4,6,8; dtype float,double for adjoint backward_extra functions",
+        "src/backend.py:builds adjoint_iso_<ndim>_<accuracy>_<dtype>_backward_extra_cuda",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1d", "2d", "3d"], "accuracy": ["2"], "dtype": ["float"], "device": ["cuda"]}
+    surface["expanded_operator_instances_count"] = 1
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "adjoint:backward_extra_cuda:ndim=1d:accuracy=2:dtype=float:device=cuda",
+            "base_unit_identity": "adjoint:backward_extra_cuda",
+            "axis_values": {"ndim": "1d", "accuracy": "2", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/backend.py:adjoint backward_extra sample"],
+            "candidate_public_api_routes": ["pkg.adjoint.backward_extra"],
+        }
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "adjoint:backward_extra_cuda",
+            "source_evidence": [
+                "src/backend.py:enumerates ndim 1,2,3; accuracy 2,4,6,8; dtype float,double for adjoint backward_extra functions",
+            ],
+            "candidate_public_api_routes": ["pkg.adjoint.backward_extra"],
+        }
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    identities = {cast(str, variant["unit_identity"]) for variant in variants}
+
+    assert normalized["expanded_operator_instances_count"] == len(variants) == 24
+    assert "adjoint:backward_extra_cuda:ndim=3d:accuracy=8:dtype=double:device=cuda" in identities
+
+
+def test_project_analysis_accepts_complete_synthetic_expanded_variant_inventory() -> None:
+    output: dict[str, object] = {"custom_op_surface": _source_backed_variant_inventory_surface()}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "validate_custom_ops_full.py",
+            "custom_op_surface": output["custom_op_surface"],
+        }
+    )
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_normalize_project_analysis_canonicalizes_compact_cuda_func_units() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["scalar"]
+    surface["fine_grained_operator_units"] = ["scalar:forward", "scalar:backward"]
+    surface["discovered_operator_names"] = ["scalar_forward", "scalar_backward"]
+    surface["native_operator_symbols"] = ["scalar_${ndim}_${accuracy}_${dtype}_forward_cuda", "scalar_${ndim}_${accuracy}_${dtype}_backward_cuda"]
+    surface["kernel_launch_sites"] = ["src/scalar.cu:FUNC(forward)", "src/scalar.cu:FUNC(backward)"]
+    surface["source_evidence"] = [
+        "src/backend.py:builds scalar symbols with ${ndim}, ${accuracy}, ${dtype}, forward_cuda/backward_cuda",
+        "src/scalar.cu:FUNC(forward)",
+        "src/scalar.cu:FUNC(backward)",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1d", "2d"], "accuracy": [2, 4], "dtype": ["float", "double"], "device": ["cuda"]}
+    surface["expanded_operator_instances_count"] = 16
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "scalar:forward:ndim=1d:accuracy=2:dtype=float:device=cuda",
+            "base_unit_identity": "scalar:forward",
+            "axis_values": {"ndim": "1d", "accuracy": "2", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/scalar.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.scalar.forward"],
+        },
+        {
+            "unit_identity": "scalar:backward:ndim=1d:accuracy=2:dtype=float:device=cuda",
+            "base_unit_identity": "scalar:backward",
+            "axis_values": {"ndim": "1d", "accuracy": "2", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/scalar.cu:FUNC(backward)"],
+            "candidate_framework_integration_routes": ["ScalarForward.backward"],
+        },
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "scalar:forward", "source_evidence": ["src/scalar.cu:FUNC(forward)"], "candidate_public_api_routes": ["pkg.scalar.forward"]},
+        {"unit_identity": "scalar:backward", "source_evidence": ["src/scalar.cu:FUNC(backward)"], "candidate_framework_integration_routes": ["ScalarForward.backward"]},
+    ]
+    surface["discovery_complete"] = False
+    surface["unresolved_source_groups"] = ["Full concrete generated-symbol inventory is source-required, but no build manifest proves which generated combinations are built"]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    identities = {cast(str, variant["unit_identity"]) for variant in variants}
+
+    assert normalized["fine_grained_operator_units"] == ["scalar:forward_cuda", "scalar:backward_cuda"]
+    assert normalized["discovery_complete"] is True
+    assert normalized["unresolved_source_groups"] == []
+    assert cast(dict[str, object], normalized["variant_axes"])["device"] == ["cuda"]
+    assert normalized["expanded_operator_instances_count"] == 16
+    assert len(variants) == 16
+    assert "scalar:forward_cuda:ndim=2d:accuracy=4:dtype=double:device=cuda" in identities
+    assert "scalar:backward_cuda:ndim=2d:accuracy=4:dtype=double:device=cuda" in identities
+
+
+def test_normalize_project_analysis_dedupes_compact_and_cuda_sibling_units() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["wave"]
+    surface["fine_grained_operator_units"] = ["wave:forward", "wave:forward_cuda", "wave:forward_cuda"]
+    surface["discovered_operator_names"] = ["wave_forward", "wave_forward_cuda", "wave_forward_cuda_cuda"]
+    surface["native_operator_symbols"] = ["wave_${ndim}_${dtype}_forward_cuda"]
+    surface["kernel_launch_sites"] = ["src/wave.cu:FUNC(forward)"]
+    surface["source_evidence"] = [
+        "src/backend.py:builds wave forward symbols with ${ndim}, ${dtype}, and device cuda",
+        "src/wave.cu:FUNC(forward)",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2"], "dtype": ["float", "double"], "device": ["cuda"]}
+    surface["expanded_operator_instances_count"] = 8
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "wave:forward_cuda:ndim=1:dtype=float:device=cuda",
+            "base_unit_identity": "wave:forward_cuda",
+            "axis_values": {"ndim": "1", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+        {
+            "unit_identity": "wave:forward:ndim=1:dtype=float:device=cuda",
+            "base_unit_identity": "wave:forward",
+            "axis_values": {"ndim": "1", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/backend.py:get_backend_function wave forward"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "wave:forward",
+            "source_evidence": ["src/backend.py:get_backend_function('wave', ndim, 'forward', dtype, device)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+        {
+            "unit_identity": "wave:forward_cuda",
+            "source_evidence": ["src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    identities = [cast(str, variant["unit_identity"]) for variant in variants]
+
+    assert normalized["fine_grained_operator_units"] == ["wave:forward_cuda"]
+    assert normalized["expanded_operator_instances_count"] == 4
+    assert len(identities) == len(set(identities)) == 4
+    assert all("forward_cuda_cuda" not in value for value in cast(list[str], normalized["discovered_operator_names"]))
+    assert "wave:forward_cuda:ndim=2:dtype=double:device=cuda" in identities
+
+
+def test_normalize_project_analysis_drops_cpu_helpers_when_target_sibling_exists() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["storage", "simple_compress"]
+    surface["fine_grained_operator_units"] = [
+        "storage:save_snapshot_cpu",
+        "storage:save_snapshot_gpu",
+        "simple_compress:compress_cpu",
+        "simple_compress:compress_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "storage_save_snapshot_cpu",
+        "storage_save_snapshot_gpu",
+        "simple_compress_compress_cpu",
+        "simple_compress_compress_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "storage_${ndim}_${dtype}_save_snapshot_gpu",
+        "simple_compress_${ndim}_${dtype}_compress_cuda",
+    ]
+    surface["kernel_launch_sites"] = ["src/storage_utils.h:STORAGE_FUNC(save_snapshot_gpu)", "src/simple_compress.h:SC_FUNC(compress_cuda)"]
+    surface["source_evidence"] = [
+        "src/storage_utils.h:declares save_snapshot_cpu and save_snapshot_gpu",
+        "src/simple_compress.h:declares compress_cpu and compress_cuda",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "dtype": ["float", "double"], "device": ["cpu", "cuda", "gpu"]}
+    surface["expanded_operator_instances_count"] = 36
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": f"storage:save_snapshot_cpu:ndim={ndim}:dtype={dtype}:device=cpu",
+            "base_unit_identity": "storage:save_snapshot_cpu",
+            "axis_values": {"ndim": ndim, "dtype": dtype, "device": "cpu"},
+            "source_evidence": ["src/storage_utils.h:save_snapshot_cpu"],
+            "candidate_framework_integration_routes": ["storage path"],
+        }
+        for ndim in ["1", "2", "3"]
+        for dtype in ["float", "double"]
+    ] + [
+        {
+            "unit_identity": f"storage:save_snapshot_gpu:ndim={ndim}:dtype={dtype}:device=gpu",
+            "base_unit_identity": "storage:save_snapshot_gpu",
+            "axis_values": {"ndim": ndim, "dtype": dtype, "device": "gpu"},
+            "source_evidence": ["src/storage_utils.h:save_snapshot_gpu"],
+            "candidate_framework_integration_routes": ["storage path"],
+        }
+        for ndim in ["1", "2", "3"]
+        for dtype in ["float", "double"]
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": unit, "source_evidence": [f"src/helpers.h:{unit}"], "candidate_framework_integration_routes": ["helper path"]}
+        for unit in surface["fine_grained_operator_units"]
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    base_units = set(cast(list[str], normalized["fine_grained_operator_units"]))
+
+    assert "storage:save_snapshot_cpu" not in base_units
+    assert "simple_compress:compress_cpu" not in base_units
+    assert "storage:save_snapshot_gpu" in base_units
+    assert "simple_compress:compress_cuda" in base_units
+    assert all("device=cpu" not in cast(str, variant["unit_identity"]) for variant in variants)
+
+
+def test_normalize_project_analysis_canonicalizes_storage_utils_helper_family() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["storage", "simple_compress"]
+    surface["fine_grained_operator_units"] = [
+        "storage_utils:save_snapshot_gpu",
+        "storage_utils:load_snapshot_gpu",
+        "simple_compress:compress_cuda",
+        "simple_compress:decompress_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "storage_utils_save_snapshot_gpu",
+        "storage_utils_load_snapshot_gpu",
+        "simple_compress_compress_cuda",
+        "simple_compress_decompress_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "storage_${ndim}_${dtype}_save_snapshot_gpu",
+        "storage_${ndim}_${dtype}_load_snapshot_gpu",
+        "simple_compress_${ndim}_${dtype}_compress_cuda",
+        "simple_compress_${ndim}_${dtype}_decompress_cuda",
+    ]
+    surface["kernel_launch_sites"] = [
+        "src/storage_utils.cu:STORAGE_FUNC(save_snapshot_gpu) calls simple_compress:compress_cuda",
+        "src/storage_utils.cu:STORAGE_FUNC(load_snapshot_gpu) calls simple_compress:decompress_cuda",
+        "src/simple_compress.cu:SC_FUNC(compress_cuda)",
+        "src/simple_compress.cu:SC_FUNC(decompress_cuda)",
+    ]
+    surface["source_evidence"] = [
+        "src/backend.py:builds storage/simple_compress symbols with ${ndim} and ${dtype}",
+        "src/backend.py:enumerates ndim 1, 2, 3",
+        "src/backend.py:enumerates dtype float and double",
+        "src/storage_utils.cu:STORAGE_FUNC(save_snapshot_gpu)",
+        "src/storage_utils.cu:STORAGE_FUNC(load_snapshot_gpu)",
+        "src/simple_compress.cu:SC_FUNC(compress_cuda)",
+        "src/simple_compress.cu:SC_FUNC(decompress_cuda)",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "dtype": ["float", "double"]}
+    surface["expanded_operator_instances_count"] = 12
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "storage_utils:save_snapshot_gpu:ndim=1:dtype=float",
+            "base_unit_identity": "storage_utils:save_snapshot_gpu",
+            "axis_values": {"ndim": "1", "dtype": "float"},
+            "source_evidence": ["src/storage_utils.cu:STORAGE_FUNC(save_snapshot_gpu)"],
+            "candidate_framework_integration_routes": ["src/wrapper.py:snapshot save path"],
+        },
+        {
+            "unit_identity": "simple_compress:compress_cuda:ndim=1:dtype=float",
+            "base_unit_identity": "simple_compress:compress_cuda",
+            "axis_values": {"ndim": "1", "dtype": "float"},
+            "source_evidence": ["src/simple_compress.cu:SC_FUNC(compress_cuda)"],
+            "candidate_framework_integration_routes": ["compression path"],
+        },
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "storage_utils:save_snapshot_gpu",
+            "source_evidence": ["src/storage_utils.cu:STORAGE_FUNC(save_snapshot_gpu)"],
+            "candidate_framework_integration_routes": ["snapshot save path"],
+        },
+        {
+            "unit_identity": "storage_utils:load_snapshot_gpu",
+            "source_evidence": ["src/storage_utils.cu:STORAGE_FUNC(load_snapshot_gpu)"],
+            "candidate_framework_integration_routes": ["src/wrapper.py:snapshot load path"],
+        },
+        {
+            "unit_identity": "simple_compress:compress_cuda",
+            "source_evidence": ["src/simple_compress.cu:SC_FUNC(compress_cuda)"],
+            "candidate_framework_integration_routes": ["compression path"],
+        },
+        {
+            "unit_identity": "simple_compress:decompress_cuda",
+            "source_evidence": ["src/simple_compress.cu:SC_FUNC(decompress_cuda)"],
+            "candidate_framework_integration_routes": ["decompression path"],
+        },
+    ]
+    surface["discovery_complete"] = False
+    surface["unresolved_source_groups"] = ["Generated symbol inventory has no build manifest proof"]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    identities = {cast(str, variant["unit_identity"]) for variant in variants}
+
+    assert normalized["fine_grained_operator_units"] == [
+        "storage:save_snapshot_gpu",
+        "storage:load_snapshot_gpu",
+        "simple_compress:compress_cuda",
+        "simple_compress:decompress_cuda",
+    ]
+    assert normalized["discovery_complete"] is True
+    assert normalized["unresolved_source_groups"] == []
+    assert normalized["expanded_operator_instances_count"] == 24
+    assert len(variants) == 24
+    assert "storage:load_snapshot_gpu:ndim=3:dtype=double" in identities
+    assert "simple_compress:decompress_cuda:ndim=3:dtype=double" in identities
+
+
+def test_normalize_project_analysis_expands_storage_helpers_from_path_only_unit_evidence(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    _ = (source_root / "storage_utils.h").write_text(
+        (
+            "#if defined(DW_NDIM) && defined(DW_DTYPE)\n"
+            "#define STORAGE_FUNC(name) storage_##name##_##DW_NDIM##d_##DW_DTYPE\n"
+            "int STORAGE_FUNC(save_snapshot_gpu)(void);\n"
+            "int STORAGE_FUNC(load_snapshot_gpu)(void);\n"
+            "#endif\n"
+        ),
+        encoding="utf-8",
+    )
+    _ = (source_root / "storage_utils.cu").write_text(
+        (
+            "#include \"storage_utils.h\"\n"
+            "#if defined(DW_NDIM) && defined(DW_DTYPE)\n"
+            "int STORAGE_FUNC(save_snapshot_gpu)(void) { return 0; }\n"
+            "int STORAGE_FUNC(load_snapshot_gpu)(void) { return 0; }\n"
+            "#endif\n"
+        ),
+        encoding="utf-8",
+    )
+    _ = (source_root / "wrapper.py").write_text("accuracy = [2, 4]\n", encoding="utf-8")
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["storage"]
+    surface["fine_grained_operator_units"] = ["storage:save_snapshot_gpu", "storage:load_snapshot_gpu"]
+    surface["discovered_operator_names"] = ["save_snapshot_gpu", "load_snapshot_gpu"]
+    surface["native_operator_symbols"] = ["save_snapshot_gpu", "load_snapshot_gpu"]
+    surface["kernel_launch_sites"] = ["src/storage_utils.cu:13", "src/storage_utils.cu:65"]
+    surface["source_evidence"] = ["src/storage_utils.cu", "src/storage_utils.h"]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "accuracy": ["2", "4"], "dtype": ["float", "double"], "device": ["cuda"]}
+    surface["expanded_operator_instances_count"] = 0
+    surface["expanded_operator_variants"] = []
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "storage:save_snapshot_gpu",
+            "source_evidence": ["src/storage_utils.cu:13", "src/storage_utils.h declares extern C storage helpers"],
+            "candidate_framework_integration_routes": ["snapshot save path"],
+        },
+        {
+            "unit_identity": "storage:load_snapshot_gpu",
+            "source_evidence": ["src/storage_utils.cu:65", "src/storage_utils.h declares extern C storage helpers"],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        },
+    ]
+    output: dict[str, object] = {"project_dir": str(tmp_path), "custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    identities = {cast(str, variant["unit_identity"]) for variant in variants}
+    counts_by_base: dict[str, int] = {}
+    for variant in variants:
+        base = cast(str, variant["base_unit_identity"])
+        counts_by_base[base] = counts_by_base.get(base, 0) + 1
+
+    assert counts_by_base == {"storage:save_snapshot_gpu": 6, "storage:load_snapshot_gpu": 6}
+    assert normalized["expanded_operator_instances_count"] == 12
+    assert "storage:save_snapshot_gpu:ndim=3:dtype=double:device=gpu" in identities
+    assert "storage:load_snapshot_gpu:ndim=3:dtype=double:device=gpu" in identities
+    assert all("accuracy=" not in identity for identity in identities)
+    assert all("device=cpu" not in identity for identity in identities)
+
+
+def test_normalize_project_analysis_does_not_apply_unmentioned_accuracy_axis_to_helpers() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["wave", "storage", "simple_compress"]
+    surface["fine_grained_operator_units"] = [
+        "wave:forward_cuda",
+        "storage:load_snapshot_gpu",
+        "simple_compress:decompress_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "wave_forward_cuda",
+        "storage_load_snapshot_gpu",
+        "simple_compress_decompress_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "wave_iso_${ndim}d_${accuracy}_${dtype}_forward_cuda",
+        "storage_${ndim}d_${dtype}_load_snapshot_gpu",
+        "simple_compress_${ndim}d_${dtype}_decompress_cuda",
+    ]
+    surface["kernel_launch_sites"] = [
+        "src/wave.cu:FUNC(forward)",
+        "src/storage_utils.cu:STORAGE_FUNC(load_snapshot_gpu)",
+        "src/simple_compress.cu:SC_FUNC(decompress_cuda)",
+    ]
+    surface["source_evidence"] = [
+        "src/backend.py:builds wave symbols with ${ndim}, ${accuracy}, ${dtype}, and device cuda",
+        "src/backend.py:enumerates ndim 1, 2, 3",
+        "src/backend.py:enumerates accuracy 2, 4, 6, 8",
+        "src/backend.py:enumerates dtype float and double",
+        "src/storage_utils.h:STORAGE_FUNC expands storage helpers with ${ndim} and ${dtype}",
+        "src/simple_compress.h:SC_FUNC expands compression helpers with ${ndim} and ${dtype}",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "accuracy": ["2", "4", "6", "8"], "dtype": ["float", "double"], "device": ["cuda", "gpu"]}
+    surface["expanded_operator_instances_count"] = 36
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "wave:forward_cuda:ndim=1:accuracy=2:dtype=float:device=cuda",
+            "base_unit_identity": "wave:forward_cuda",
+            "axis_values": {"ndim": "1", "accuracy": "2", "dtype": "float", "device": "cuda"},
+            "source_evidence": ["src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+        {
+            "unit_identity": "storage:load_snapshot_gpu:ndim=1:dtype=float",
+            "base_unit_identity": "storage:load_snapshot_gpu",
+            "axis_values": {"ndim": "1", "dtype": "float"},
+            "source_evidence": ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu)"],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        },
+        {
+            "unit_identity": "simple_compress:decompress_cuda:ndim=1:dtype=float",
+            "base_unit_identity": "simple_compress:decompress_cuda",
+            "axis_values": {"ndim": "1", "dtype": "float"},
+            "source_evidence": ["src/simple_compress.h:SC_FUNC(decompress_cuda)"],
+            "candidate_framework_integration_routes": ["decompression path"],
+        },
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "wave:forward_cuda",
+            "source_evidence": ["src/backend.py:wave symbol uses ndim accuracy dtype", "src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+        {
+            "unit_identity": "storage:load_snapshot_gpu",
+            "source_evidence": ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu) uses ndim dtype"],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        },
+        {
+            "unit_identity": "simple_compress:decompress_cuda",
+            "source_evidence": ["src/simple_compress.h:SC_FUNC(decompress_cuda) uses ndim dtype"],
+            "candidate_framework_integration_routes": ["decompression path"],
+        },
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    counts_by_base: dict[str, int] = {}
+    for variant in variants:
+        base = cast(str, variant["base_unit_identity"])
+        counts_by_base[base] = counts_by_base.get(base, 0) + 1
+
+    assert normalized["expanded_operator_instances_count"] == 36
+    assert counts_by_base == {
+        "wave:forward_cuda": 24,
+        "storage:load_snapshot_gpu": 6,
+        "simple_compress:decompress_cuda": 6,
+    }
+    assert all("accuracy" not in cast(dict[str, str], variant["axis_values"]) for variant in variants if variant["base_unit_identity"] != "wave:forward_cuda")
+
+
+def test_normalize_project_analysis_uses_base_matched_rows_for_misordered_variant_evidence() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["flux", "tensor_store", "block_compress"]
+    surface["fine_grained_operator_units"] = [
+        "flux:propagate_cuda",
+        "tensor_store:cache_gpu",
+        "block_compress:pack_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "tensor_store_cache_gpu",
+        "flux_propagate_cuda",
+        "block_compress_pack_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "tensor_store_${ndim}d_${dtype}_cache_gpu",
+        "flux_${ndim}d_${accuracy}_${dtype}_propagate_cuda",
+        "block_compress_${ndim}d_${dtype}_pack_cuda",
+    ]
+    surface["kernel_launch_sites"] = [
+        "src/flux.cu:PROPAGATE_FUNC(propagate_cuda)",
+        "src/tensor_store.cu:STORE_FUNC(cache_gpu)",
+        "src/block_compress.cu:COMPRESS_FUNC(pack_cuda)",
+    ]
+    surface["source_evidence"] = [
+        "src/tensor_store.h:STORE_FUNC expands tensor_store cache_gpu with ${ndim} and ${dtype}",
+        "src/flux_codegen.py:builds flux propagate_cuda symbols with ${ndim}, ${accuracy}, and ${dtype}",
+        "src/block_compress.h:COMPRESS_FUNC expands block_compress pack_cuda with ${ndim} and ${dtype}",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "accuracy": ["2", "4", "6", "8"], "dtype": ["float", "double"], "device": ["cuda", "gpu"]}
+    surface["expanded_operator_instances_count"] = 0
+    surface["expanded_operator_variants"] = []
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "block_compress:pack_cuda", "source_evidence": ["src/block_compress.h:COMPRESS_FUNC(pack_cuda)"], "candidate_framework_integration_routes": ["compress path"]},
+        {"unit_identity": "tensor_store:cache_gpu", "source_evidence": ["src/tensor_store.h:STORE_FUNC(cache_gpu)"], "candidate_framework_integration_routes": ["cache path"]},
+        {"unit_identity": "flux:propagate_cuda", "source_evidence": ["src/flux.cu:PROPAGATE_FUNC(propagate_cuda)"], "candidate_public_api_routes": ["pkg.flux.propagate"]},
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    axes_by_base: dict[str, set[str]] = {}
+    counts_by_base: dict[str, int] = {}
+    for variant in variants:
+        base = cast(str, variant["base_unit_identity"])
+        axes_by_base.setdefault(base, set()).update(cast(dict[str, str], variant["axis_values"]))
+        counts_by_base[base] = counts_by_base.get(base, 0) + 1
+
+    assert counts_by_base == {
+        "flux:propagate_cuda": 24,
+        "tensor_store:cache_gpu": 6,
+        "block_compress:pack_cuda": 6,
+    }
+    assert axes_by_base == {
+        "flux:propagate_cuda": {"ndim", "accuracy", "dtype", "device"},
+        "tensor_store:cache_gpu": {"ndim", "dtype", "device"},
+        "block_compress:pack_cuda": {"ndim", "dtype", "device"},
+    }
+    assert all(
+        "accuracy" not in cast(dict[str, str], variant["axis_values"])
+        for variant in variants
+        if variant["base_unit_identity"] != "flux:propagate_cuda"
+    )
+
+
+def test_normalize_project_analysis_uses_family_template_evidence_for_paired_helpers() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["tensor_cache"]
+    surface["fine_grained_operator_units"] = [
+        "tensor_cache:save_tile_gpu",
+        "tensor_cache:load_tile_gpu",
+    ]
+    surface["discovered_operator_names"] = [
+        "tensor_cache_save_tile_gpu",
+        "tensor_cache_load_tile_gpu",
+    ]
+    surface["native_operator_symbols"] = [
+        "tensor_cache_save_tile_gpu_*d_*",
+        "tensor_cache_load_tile_gpu_*d_*",
+    ]
+    surface["source_evidence"] = [
+        "src/tensor_cache.h:cache save/load gpu variants expand over ndim and dtype",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "dtype": ["float", "double"], "device": ["gpu"]}
+    surface["expanded_operator_instances_count"] = 6
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": f"tensor_cache:load_tile_gpu:ndim={ndim}:device=gpu",
+            "base_unit_identity": "tensor_cache:load_tile_gpu",
+            "axis_values": {"ndim": ndim, "device": "gpu"},
+            "source_evidence": ["src/tensor_cache.h:TENSOR_CACHE_FUNC(load_tile_gpu)"],
+            "candidate_framework_integration_routes": ["cache load path"],
+        }
+        for ndim in ["1", "2", "3"]
+    ] + [
+        {
+            "unit_identity": f"tensor_cache:save_tile_gpu:ndim={ndim}:device=gpu",
+            "base_unit_identity": "tensor_cache:save_tile_gpu",
+            "axis_values": {"ndim": ndim, "device": "gpu"},
+            "source_evidence": ["src/tensor_cache.h:TENSOR_CACHE_FUNC(save_tile_gpu)"],
+            "candidate_framework_integration_routes": ["cache save path"],
+        }
+        for ndim in ["1", "2", "3"]
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "tensor_cache:save_tile_gpu", "source_evidence": ["src/tensor_cache.h:TENSOR_CACHE_FUNC(save_tile_gpu)"], "candidate_framework_integration_routes": ["cache save path"]},
+        {"unit_identity": "tensor_cache:load_tile_gpu", "source_evidence": ["src/tensor_cache.h:TENSOR_CACHE_FUNC(load_tile_gpu)"], "candidate_framework_integration_routes": ["cache load path"]},
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    counts_by_base: dict[str, int] = {}
+    for variant in variants:
+        base = cast(str, variant["base_unit_identity"])
+        counts_by_base[base] = counts_by_base.get(base, 0) + 1
+
+    assert normalized["expanded_operator_instances_count"] == 12
+    assert counts_by_base == {
+        "tensor_cache:save_tile_gpu": 6,
+        "tensor_cache:load_tile_gpu": 6,
+    }
+    assert any(
+        cast(str, variant["unit_identity"]) == "tensor_cache:load_tile_gpu:ndim=3:dtype=double:device=gpu"
+        for variant in variants
+    )
+
+
+def test_normalize_project_analysis_expands_source_axes_beyond_sampled_rows() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["wave", "storage"]
+    surface["fine_grained_operator_units"] = ["wave:forward_cuda", "storage:load_snapshot_gpu"]
+    surface["discovered_operator_names"] = ["wave_forward_cuda", "storage_load_snapshot_gpu"]
+    surface["native_operator_symbols"] = [
+        "wave_iso_2d_4_float_forward_cuda",
+        "storage_load_snapshot_2d_float",
+    ]
+    surface["kernel_launch_sites"] = ["src/wave.cu:FUNC(forward)", "src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu)"]
+    surface["source_evidence"] = [
+        "src/backend.py:builds wave symbols with ${ndim}, ${accuracy}, ${dtype}, and device cuda",
+        "src/backend.py:enumerates ndim 1, 2, 3",
+        "src/backend.py:enumerates accuracy 2, 4, 6, 8",
+        "src/backend.py:enumerates dtype float and double",
+        "src/storage_utils.h:STORAGE_FUNC expands storage helpers with DW_NDIM and DW_DTYPE",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "accuracy": ["2", "4", "6", "8"], "dtype": ["float", "double"], "device": ["cuda", "gpu"]}
+    surface["expanded_operator_instances_count"] = 10
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": f"wave:forward_cuda:accuracy={accuracy}:dtype={dtype}:device=cuda",
+            "base_unit_identity": "wave:forward_cuda",
+            "axis_values": {"accuracy": accuracy, "dtype": dtype, "device": "cuda"},
+            "source_evidence": ["src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        }
+        for accuracy in ["2", "4", "6", "8"]
+        for dtype in ["float", "double"]
+    ] + [
+        {
+            "unit_identity": f"storage:load_snapshot_gpu:dtype={dtype}:device=gpu",
+            "base_unit_identity": "storage:load_snapshot_gpu",
+            "axis_values": {"dtype": dtype, "device": "gpu"},
+            "source_evidence": ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu)"],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        }
+        for dtype in ["float", "double"]
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "wave:forward_cuda",
+            "source_evidence": ["src/backend.py:wave symbol uses ndim accuracy dtype", "src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+        {
+            "unit_identity": "storage:load_snapshot_gpu",
+            "source_evidence": ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu) uses DW_NDIM and DW_DTYPE"],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        },
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    counts_by_base: dict[str, int] = {}
+    for variant in variants:
+        base = cast(str, variant["base_unit_identity"])
+        counts_by_base[base] = counts_by_base.get(base, 0) + 1
+
+    assert cast(int, normalized["expanded_operator_instances_count"]) > 10
+    assert counts_by_base == {"wave:forward_cuda": 24, "storage:load_snapshot_gpu": 6}
+    assert any(
+        cast(str, variant["unit_identity"]) == "wave:forward_cuda:ndim=3:accuracy=8:dtype=double:device=cuda"
+        for variant in variants
+    )
+    assert any(
+        cast(str, variant["unit_identity"]) == "storage:load_snapshot_gpu:ndim=3:dtype=double:device=gpu"
+        for variant in variants
+    )
+
+
+def test_normalize_project_analysis_does_not_leak_caller_axes_into_helper_sources(tmp_path: Path) -> None:
+    source_dir = tmp_path / "src"
+    source_dir.mkdir()
+    _ = (source_dir / "storage_utils.h").write_text(
+        (
+            "#if defined(DW_NDIM) && defined(DW_DTYPE)\n"
+            "#define STORAGE_FUNC(name) storage_##name##_##DW_NDIM##d_##DW_DTYPE\n"
+            "int STORAGE_FUNC(load_snapshot_gpu)(void);\n"
+            "#endif\n"
+        ),
+        encoding="utf-8",
+    )
+    _ = (source_dir / "scalar.cu").write_text(
+        "#define PROPAGATOR_SYMBOL(name) scalar_##DW_NDIM##d_##DW_ACCURACY##_##DW_DTYPE##_##name##_cuda\n"
+        + "\n".join("// filler" for _ in range(80))
+        + "\nvoid caller() { STORAGE_FUNC(load_snapshot_gpu)(); }\n",
+        encoding="utf-8",
+    )
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["storage"]
+    surface["fine_grained_operator_units"] = ["storage:load_snapshot_gpu"]
+    surface["discovered_operator_names"] = ["storage_load_snapshot_gpu"]
+    surface["native_operator_symbols"] = ["storage_load_snapshot_2d_float"]
+    surface["kernel_launch_sites"] = ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu)"]
+    surface["source_evidence"] = [
+        "src/storage_utils.h:3 declares STORAGE_FUNC(load_snapshot_gpu)",
+        "src/scalar.cu:82 calls STORAGE_FUNC(load_snapshot_gpu)",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "accuracy": ["2", "4", "6", "8"], "dtype": ["float", "double"], "device": ["gpu"]}
+    surface["expanded_operator_instances_count"] = 8
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": f"storage:load_snapshot_gpu:ndim=1:accuracy={accuracy}:dtype={dtype}:device=gpu",
+            "base_unit_identity": "storage:load_snapshot_gpu",
+            "axis_values": {"ndim": "1", "accuracy": accuracy, "dtype": dtype, "device": "gpu"},
+            "source_evidence": ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu)"],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        }
+        for accuracy in ["2", "4", "6", "8"]
+        for dtype in ["float", "double"]
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": "storage:load_snapshot_gpu",
+            "source_evidence": [
+                "src/storage_utils.h:3 declares STORAGE_FUNC(load_snapshot_gpu)",
+                "src/scalar.cu:82 calls STORAGE_FUNC(load_snapshot_gpu)",
+            ],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        }
+    ]
+    output: dict[str, object] = {"project_dir": str(tmp_path), "custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+
+    assert normalized["expanded_operator_instances_count"] == 6
+    assert len(variants) == 6
+    assert all("accuracy" not in cast(dict[str, str], variant["axis_values"]) for variant in variants)
+
+
+def test_normalize_project_analysis_expands_compact_variant_axes_samples() -> None:
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["operator_families"] = ["wave", "storage", "simple_compress"]
+    surface["fine_grained_operator_units"] = [
+        "wave:forward_cuda",
+        "storage_snapshot:load_snapshot_gpu",
+        "simple_compress:decompress_cuda",
+    ]
+    surface["discovered_operator_names"] = [
+        "wave_forward_cuda",
+        "storage_snapshot_load_snapshot_gpu",
+        "simple_compress_decompress_cuda",
+    ]
+    surface["native_operator_symbols"] = [
+        "wave_iso_${ndim}d_${accuracy}_${dtype}_forward_cuda",
+        "storage_${ndim}d_${dtype}_load_snapshot_gpu",
+        "simple_compress_${ndim}d_${dtype}_decompress_cuda",
+    ]
+    surface["source_evidence"] = [
+        "src/backend.py:builds wave symbols with ${ndim}, ${accuracy}, ${dtype}, and device cuda",
+        "src/backend.py:enumerates ndim 1, 2, 3",
+        "src/backend.py:enumerates accuracy 2, 4, 6, 8",
+        "src/backend.py:enumerates dtype float and double",
+        "src/storage_utils.h:STORAGE_FUNC expands storage helpers with ${ndim} and ${dtype}",
+        "src/simple_compress.h:SC_FUNC expands compression helpers with ${ndim} and ${dtype}",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "accuracy": ["2", "4", "6", "8"], "dtype": ["float", "double"], "device": ["cuda", "gpu"]}
+    surface["expanded_operator_instances_count"] = 36
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": "wave:forward_cuda:*24{ndim=[1,2,3],accuracy=[2,4,6,8],dtype=[float,double],device=cuda}",
+            "base_unit_identity": "wave:forward_cuda",
+            "variant_axes": {"ndim": ["1", "2", "3"], "accuracy": ["2", "4", "6", "8"], "dtype": ["float", "double"], "device": "cuda"},
+            "source_evidence": ["src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        },
+        {
+            "unit_identity": "storage_snapshot:load_snapshot_gpu:*6{ndim=[1,2,3],dtype=[float,double],device=gpu}",
+            "base_unit_identity": "storage_snapshot:load_snapshot_gpu",
+            "variant_axes": {"ndim": ["1", "2", "3"], "dtype": ["float", "double"], "device": "gpu"},
+            "source_evidence": ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu)"],
+            "candidate_framework_integration_routes": ["snapshot load path"],
+        },
+        {
+            "unit_identity": "simple_compress:decompress_cuda:*6{ndim=[1,2,3],dtype=[float,double],device=cuda}",
+            "base_unit_identity": "simple_compress:decompress_cuda",
+            "variant_axes": {"ndim": ["1", "2", "3"], "dtype": ["float", "double"], "device": "cuda"},
+            "source_evidence": ["src/simple_compress.h:SC_FUNC(decompress_cuda)"],
+            "candidate_framework_integration_routes": ["decompression path"],
+        },
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "wave:forward_cuda", "source_evidence": ["src/backend.py:wave symbol uses ndim accuracy dtype", "src/wave.cu:FUNC(forward)"], "candidate_public_api_routes": ["pkg.wave.forward"]},
+        {"unit_identity": "storage_snapshot:load_snapshot_gpu", "source_evidence": ["src/storage_utils.h:STORAGE_FUNC(load_snapshot_gpu) uses ndim dtype"], "candidate_framework_integration_routes": ["snapshot load path"]},
+        {"unit_identity": "simple_compress:decompress_cuda", "source_evidence": ["src/simple_compress.h:SC_FUNC(decompress_cuda) uses ndim dtype"], "candidate_framework_integration_routes": ["decompression path"]},
+    ]
+    output: dict[str, object] = {"custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    identities = {cast(str, variant["unit_identity"]) for variant in variants}
+
+    assert normalized["expanded_operator_instances_count"] == 36
+    assert len(variants) == 36
+    assert "wave:forward_cuda:ndim=3:accuracy=8:dtype=double:device=cuda" in identities
+    assert "storage_snapshot:load_snapshot_gpu:ndim=3:dtype=double:device=gpu" in identities
+    assert "simple_compress:decompress_cuda:ndim=3:dtype=double:device=cuda" in identities
+    assert all("*" not in cast(str, variant["unit_identity"]) for variant in variants)
+
+
+def test_normalize_project_analysis_expands_unsampled_helpers_from_source_files(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    _ = (source_root / "simple_compress.h").write_text(
+        (
+            "#if defined(DW_NDIM) && defined(DW_DTYPE)\n"
+            "#define SC_FUNC(name) simple_compress_##name##_##DW_NDIM##d_##DW_DTYPE\n"
+            "int SC_FUNC(decompress_cuda)(void);\n"
+            "#endif\n"
+        ),
+        encoding="utf-8",
+    )
+    _ = (source_root / "storage_utils.h").write_text(
+        (
+            "#if defined(DW_NDIM) && defined(DW_DTYPE)\n"
+            "#define STORAGE_FUNC(name) storage_##name##_##DW_NDIM##d_##DW_DTYPE\n"
+            "int STORAGE_FUNC(load_snapshot_gpu)(void);\n"
+            "#endif\n"
+        ),
+        encoding="utf-8",
+    )
+    surface = _valid_project_analysis_custom_op_surface()
+    surface["fine_grained_operator_units"] = [
+        "wave:forward_cuda",
+        "storage:load_snapshot_gpu",
+        "simple_compress:decompress_cuda",
+    ]
+    surface["source_evidence"] = [
+        "src/backend.py:builds wave symbols with ndim accuracy dtype device cuda",
+        "src/backend.py:enumerates ndim 1, 2, 3",
+        "src/backend.py:enumerates accuracy 2, 4, 6, 8",
+        "src/backend.py:enumerates dtype float and double",
+        "src/simple_compress.h:3 declares SC_FUNC(decompress_cuda)",
+        "src/storage_utils.h:3 declares STORAGE_FUNC(load_snapshot_gpu)",
+    ]
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = {"ndim": ["1", "2", "3"], "accuracy": ["2", "4", "6", "8"], "dtype": ["float", "double"], "device": ["cuda", "gpu"]}
+    surface["expanded_operator_instances_count"] = 24
+    surface["expanded_operator_variants"] = [
+        {
+            "unit_identity": f"wave:forward_cuda:ndim={ndim}:accuracy={accuracy}:dtype={dtype}:device=cuda",
+            "base_unit_identity": "wave:forward_cuda",
+            "axis_values": {"ndim": ndim, "accuracy": accuracy, "dtype": dtype, "device": "cuda"},
+            "source_evidence": ["src/wave.cu:FUNC(forward)"],
+            "candidate_public_api_routes": ["pkg.wave.forward"],
+        }
+        for ndim in ["1", "2", "3"]
+        for accuracy in ["2", "4", "6", "8"]
+        for dtype in ["float", "double"]
+    ]
+    surface["fine_grained_operator_unit_evidence"] = [
+        {"unit_identity": "wave:forward_cuda", "source_evidence": ["src/backend.py:wave symbol uses ndim accuracy dtype"], "candidate_public_api_routes": ["pkg.wave.forward"]},
+        {"unit_identity": "storage:load_snapshot_gpu", "source_evidence": ["src/storage_utils.h:3 declares STORAGE_FUNC(load_snapshot_gpu)"], "candidate_framework_integration_routes": ["snapshot load path"]},
+        {"unit_identity": "simple_compress:decompress_cuda", "source_evidence": ["src/simple_compress.h:3 declares SC_FUNC(decompress_cuda)"], "candidate_framework_integration_routes": ["decompression path"]},
+    ]
+    output: dict[str, object] = {"project_dir": str(tmp_path), "custom_op_surface": surface}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+
+    normalized = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], normalized["expanded_operator_variants"])
+    counts_by_base: dict[str, int] = {}
+    for variant in variants:
+        base = cast(str, variant["base_unit_identity"])
+        counts_by_base[base] = counts_by_base.get(base, 0) + 1
+
+    assert normalized["expanded_operator_instances_count"] == 36
+    assert counts_by_base == {
+        "wave:forward_cuda": 24,
+        "storage:load_snapshot_gpu": 6,
+        "simple_compress:decompress_cuda": 6,
+    }
+    assert all("accuracy" not in cast(dict[str, str], variant["axis_values"]) for variant in variants if variant["base_unit_identity"] != "wave:forward_cuda")
+
+
+def test_project_analysis_rejects_sampled_variant_inventory_when_source_backed_axes_imply_more_combinations() -> None:
+    surface = _source_backed_variant_inventory_surface()
+    variants = cast(list[dict[str, object]], surface["expanded_operator_variants"])
+    surface["expanded_operator_variants"] = variants[:2]
+    surface["expanded_operator_instances_count"] = 2
+
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "validate_custom_ops_full.py",
+            "custom_op_surface": surface,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("sampled or incomplete relative to source-backed axes/templates/evidence" in error for error in result["errors"])
+
+
+def test_project_analysis_rejects_partially_expanded_source_template_inventory() -> None:
+    output: dict[str, object] = {"custom_op_surface": _source_backed_variant_inventory_surface()}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+    surface = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], surface["expanded_operator_variants"])
+    partial_variants = [
+        variant
+        for variant in variants
+        if cast(str, variant["base_unit_identity"]) != "alpha:forward_cuda"
+        or cast(dict[str, str], variant["axis_values"])["ndim"] == "1d"
+    ]
+    surface["expanded_operator_variants"] = partial_variants
+    surface["expanded_operator_instances_count"] = len(partial_variants)
+
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "validate_custom_ops_full.py",
+            "custom_op_surface": surface,
+        }
+    )
+
+    assert len(partial_variants) > 2
+    assert result["passed"] is False
+    assert any(
+        "missing combinations" in error and "alpha:forward_cuda" in error and "ndim=2d" in error
+        for error in result["errors"]
+    )
+
+
+def test_project_analysis_rejects_missing_source_template_combination_even_with_extra_rows() -> None:
+    output: dict[str, object] = {"custom_op_surface": _source_backed_variant_inventory_surface()}
+
+    from core.custom_op_variants import normalize_project_analysis_expanded_variants
+
+    normalize_project_analysis_expanded_variants(output)
+    surface = cast(dict[str, object], output["custom_op_surface"])
+    variants = cast(list[dict[str, object]], surface["expanded_operator_variants"])
+    expected_len = len(variants)
+    missing_unit = "alpha:forward_cuda:ndim=2d:dtype=double:device=cuda"
+    extra_variant = {
+        "unit_identity": "unrelated:forward_cuda:ndim=1d:dtype=float:device=cuda",
+        "base_unit_identity": "unrelated:forward_cuda",
+        "axis_values": {"ndim": "1d", "dtype": "float", "device": "cuda"},
+        "source_evidence": ["src/unrelated.cu:extra source-backed row"],
+        "candidate_public_api_routes": ["pkg.unrelated.forward"],
+    }
+    surface["expanded_operator_variants"] = [
+        variant for variant in variants if variant["unit_identity"] != missing_unit
+    ] + [extra_variant]
+    surface["expanded_operator_instances_count"] = len(cast(list[object], surface["expanded_operator_variants"]))
+
+    result = validate_project_analysis(
+        {
+            "project_dir": "/tmp/project",
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "validate_custom_ops_full.py",
+            "custom_op_surface": surface,
+        }
+    )
+
+    assert surface["expanded_operator_instances_count"] == expected_len
+    assert result["passed"] is False
+    assert any(
+        "missing combinations" in error
+        and "alpha:forward_cuda" in error
+        and "ndim=2d" in error
+        and "dtype=double" in error
+        for error in result["errors"]
+    )
 
 
 def test_project_analysis_rejects_missing_custom_op_surface_with_extension_indicators(tmp_path: Path) -> None:
@@ -2610,6 +3769,50 @@ def test_entry_static_validator_accepts_custom_op_booleans_when_all_true() -> No
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
+def test_entry_static_validator_rejects_short_project_e2e_subprocess_timeout(tmp_path: Path) -> None:
+    script_path = tmp_path / "validate_custom_ops_full.py"
+    _ = script_path.write_text(
+        """
+import subprocess
+import sys
+
+def run_project_api_e2e():
+    return subprocess.run([sys.executable, 'test_e2e_fwi.py'], timeout=600, check=False)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = validate_entry_static(
+        {
+            "validation_passed": True,
+            "issues": [],
+            "fix_plan": "Script satisfies the mandatory custom-op target.",
+            "entry_script_path": str(script_path),
+            "custom_op_static_required": True,
+            "custom_op_requirements_checked": True,
+            "script_source_driven_inventory": True,
+            "script_emits_fine_grained_units": True,
+            "script_maps_public_api_to_units": True,
+            "script_discovers_full_inventory": True,
+            "script_records_native_operator_symbols": True,
+            "script_requires_strict_opp_producer_evidence": True,
+            "script_rejects_non_opp_producer_success": True,
+            "script_runs_project_api_custom_ops": True,
+            "script_requires_per_row_route_evidence": True,
+            "script_correlates_route_evidence_to_manifest_rows": True,
+            "script_rejects_direct_or_builtin_only_routes": True,
+            "script_rejects_report_only_success": True,
+            "script_requires_project_local_artifacts": True,
+            "script_requires_project_root_artifact_existence": True,
+            "script_requires_numeric_performance": True,
+            "script_checks_no_fallback": True,
+        }
+    )
+
+    assert result["passed"] is False
+    assert any("short internal subprocess timeout=600" in error for error in result["errors"])
+
+
 def test_entry_static_validator_rejects_failed_custom_op_boolean() -> None:
     result = validate_entry_static(
         {
@@ -3241,7 +4444,7 @@ def test_project_analysis_rejects_candidate6_like_underexpanded_heterogeneous_in
             "candidate_public_api_routes": ["pkg.storage.compress"],
         })
     surface["expanded_operator_variants"] = variants
-    surface["expanded_operator_instances_count"] = 240
+    surface["expanded_operator_instances_count"] = len(variants) + 1
     surface["fine_grained_operator_unit_evidence"] = [
         {
             "unit_identity": cast(str, variant["base_unit_identity"]),
@@ -3273,13 +4476,14 @@ def test_project_analysis_rejects_sampled_per_base_generated_symbol_combinations
     source_dir = tmp_path / "src"
     source_dir.mkdir()
     _ = (source_dir / "backend_utils.py").write_text(
-        "def get_backend_function(propagator, ndim, accuracy, dtype, pass_name):\n"
-        "    return getattr(dll, f'{propagator}_iso_{ndim}d_{accuracy}_{dtype}_{pass_name}_cuda')\n"
-        "for current_ndim in [1, 2, 3]:\n"
-        "    for current_accuracy in [2, 4, 6, 8]:\n"
-        "        for current_dtype in ['float', 'double']:\n"
-        "            _assign_argtypes('alpha', current_ndim, current_accuracy, current_dtype, 'forward')\n"
-        "            _assign_argtypes('beta', current_ndim, current_accuracy, current_dtype, 'forward')\n",
+        """def get_backend_function(propagator, ndim, accuracy, dtype, pass_name):
+    return getattr(dll, f'{propagator}_iso_{ndim}d_{accuracy}_{dtype}_{pass_name}_cuda')
+for current_ndim in [1, 2, 3]:
+    for current_accuracy in [2, 4, 6, 8]:
+        for current_dtype in ['float', 'double']:
+            _assign_argtypes('alpha', current_ndim, current_accuracy, current_dtype, 'forward')
+            _assign_argtypes('beta', current_ndim, current_accuracy, current_dtype, 'forward')
+""",
         encoding="utf-8",
     )
     alpha_units = [
@@ -3328,7 +4532,7 @@ def test_project_analysis_rejects_sampled_per_base_generated_symbol_combinations
             "source_evidence": ["src/backend_utils.py:1 generated backend symbol names"],
             "candidate_public_api_routes": [f"pkg.{unit.split(':', 1)[0]}.forward"],
         }
-        for unit in cast(list[str], surface["fine_grained_operator_units"])
+        for unit in surface["fine_grained_operator_units"]
     ]
 
     result = validate_project_analysis(
@@ -3471,14 +4675,15 @@ def test_project_analysis_rejects_semantic_generated_axes_without_expanded_varia
 def test_project_analysis_rejects_source_path_required_variants_when_metadata_false(tmp_path: Path) -> None:
     source_dir = tmp_path / "src"
     source_dir.mkdir()
-    (source_dir / "backend_utils.py").write_text(
-        "def get_backend_function(propagator, ndim, accuracy, dtype, device):\n"
-        "    dtype_str = 'float' if dtype == 'float32' else 'double'\n"
-        "    return getattr(dll, f'{propagator}_iso_{ndim}d_{accuracy}_{dtype_str}_forward_cuda')\n"
-        "for current_ndim in [1, 2, 3]:\n"
-        "    for current_accuracy in [2, 4, 6, 8]:\n"
-        "        for current_dtype in ['float', 'double']:\n"
-        "            register_backend(current_ndim, current_accuracy, current_dtype)\n",
+    _ = (source_dir / "backend_utils.py").write_text(
+        """def get_backend_function(propagator, ndim, accuracy, dtype, device):
+    dtype_str = 'float' if dtype == 'float32' else 'double'
+    return getattr(dll, f'{propagator}_iso_{ndim}d_{accuracy}_{dtype_str}_forward_cuda')
+for current_ndim in [1, 2, 3]:
+    for current_accuracy in [2, 4, 6, 8]:
+        for current_dtype in ['float', 'double']:
+            register_backend(current_ndim, current_accuracy, current_dtype)
+""",
         encoding="utf-8",
     )
     surface = _valid_project_analysis_custom_op_surface()
@@ -3526,10 +4731,11 @@ def test_project_analysis_rejects_source_path_required_variants_when_metadata_fa
 def test_project_analysis_ignores_unreferenced_search_path_semantic_words(tmp_path: Path) -> None:
     source_dir = tmp_path / "src"
     source_dir.mkdir()
-    (source_dir / "common.py").write_text(
-        "def validate_shape(ndims):\n"
-        "    if len(padding) != 2 * ndims:\n"
-        "        raise RuntimeError('Expected a list with 4 entries for this dimension')\n",
+    _ = (source_dir / "common.py").write_text(
+        """def validate_shape(ndims):
+    if len(padding) != 2 * ndims:
+        raise RuntimeError('Expected a list with 4 entries for this dimension')
+""",
         encoding="utf-8",
     )
     surface = _valid_project_analysis_custom_op_surface()

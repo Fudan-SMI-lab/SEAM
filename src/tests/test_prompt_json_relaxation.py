@@ -83,6 +83,20 @@ def test_phase1_prompt_requires_cuda_native_helper_inventory():
     assert "kernel_launch_sites" in content
 
 
+def test_phase2_prompt_reuses_host_torch_stack_without_heavy_reinstalls():
+    content = (PROMPTS_DIR / "phase_2_venv_create.md").read_text()
+
+    assert "--system-site-packages" in content
+    assert "Probe the host Python" in content
+    assert "torch_npu" in content
+    assert "Inspect dependency files before installation" in content
+    assert "lightweight project dependencies versus heavyweight platform/runtime packages" in content
+    assert "Do not reinstall or upgrade heavyweight platform packages" in content
+    assert "Avoid generic PyPI resolution that pulls CUDA PyTorch dependency wheels" in content
+    assert "Do not run broad `pip install -r requirements.txt` blindly" in content
+    assert "Do not install packages into the global Python environment" in content
+
+
 def test_production_custom_op_prompts_do_not_use_project_specific_examples():
     forbidden_terms = (
         "Deepwave",
@@ -97,7 +111,7 @@ def test_production_custom_op_prompts_do_not_use_project_specific_examples():
         "3D",
     )
 
-    for filename in ("phase_1_project_analysis.md", "phase_1_5_constraint_summary.md"):
+    for filename in ("phase_1_project_analysis.md", "phase_1_5_constraint_summary.md", "phase_2_venv_create.md"):
         content = (PROMPTS_DIR / filename).read_text()
         for term in forbidden_terms:
             assert term not in content, f"{filename} contains project-specific prompt example term {term!r}"

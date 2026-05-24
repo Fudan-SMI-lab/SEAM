@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import cast
 
+from core.custom_op_variants import source_template_expanded_variants
 from core.validator_engine import ValidationDict
 
 
@@ -850,6 +851,8 @@ def _validate_expanded_variant_metadata(
     )
     _validate_variant_axes_are_source_semantic(axes, variants, errors)
     _validate_expanded_variant_target_closure_values(axes, variants, errors)
+    expected_variants = source_template_expanded_variants(surface)
+    _validate_expanded_variant_inventory_matches_source_template(expected_variants, variants, errors)
     count = surface.get("expanded_operator_instances_count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
         errors.append("custom_op_surface.expanded_operator_instances_count must be a positive integer when variant_axes_detected is true")
@@ -1140,6 +1143,69 @@ def _validate_source_required_per_base_variant_combinations(
                 + ": "
                 + _format_axis_combinations(missing)
             )
+
+
+def _validate_expanded_variant_inventory_matches_source_template(
+    expected_variants: list[dict[str, object]],
+    variants: list[dict[str, object]] | None,
+    errors: list[str],
+) -> None:
+    if not expected_variants:
+        return
+    if not variants:
+        return
+
+    expected_signatures = _expanded_variant_signatures(expected_variants)
+    observed_signatures = _expanded_variant_signatures(variants)
+    observed_signature_set = set(observed_signatures)
+    missing = [signature for signature in expected_signatures if signature not in observed_signature_set]
+    if missing:
+        errors.append(
+            "custom_op_surface.expanded_operator_variants is sampled or incomplete relative to source-backed axes/templates/evidence; missing combinations: "
+            + _format_variant_signatures(missing)
+        )
+
+
+def _expanded_variant_signatures(variants: list[dict[str, object]]) -> list[tuple[str, tuple[tuple[str, str], ...]]]:
+    signatures: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    for variant in variants:
+        base_identity = str(variant.get("base_unit_identity") or variant.get("source_unit_identity") or "").strip()
+        if not base_identity:
+            unit_identity = str(variant.get("unit_identity", "")).strip()
+            if not unit_identity:
+                continue
+            base_identity = _base_identity_from_unit_identity(unit_identity)
+        axis_values = variant.get("axis_values")
+        if not isinstance(axis_values, dict):
+            axis_values = variant.get("variant_axes")
+        ordered_axis_values: tuple[tuple[str, str], ...] = ()
+        if isinstance(axis_values, dict):
+            ordered_axis_values = tuple(
+                sorted(
+                    (
+                        str(axis_name).strip(),
+                        _normalize_declared_axis_value(str(axis_name).strip(), str(axis_value).strip()),
+                    )
+                    for axis_name, axis_value in cast(dict[object, object], axis_values).items()
+                    if isinstance(axis_name, str)
+                    and axis_name.strip()
+                    and isinstance(axis_value, (str, int, float))
+                    and not isinstance(axis_value, bool)
+                    and str(axis_value).strip()
+                )
+            )
+        signatures.append((base_identity, ordered_axis_values))
+    return signatures
+
+
+def _format_variant_signatures(signatures: list[tuple[str, tuple[tuple[str, str], ...]]]) -> str:
+    rendered = [
+        unit_identity + (" : " + ", ".join(f"{axis}={value}" for axis, value in axis_values) if axis_values else "")
+        for unit_identity, axis_values in signatures[:12]
+    ]
+    if len(signatures) > len(rendered):
+        rendered.append(f"... +{len(signatures) - len(rendered)} more")
+    return "; ".join(rendered)
 
 
 def _expected_axis_combinations(

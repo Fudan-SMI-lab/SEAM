@@ -13,6 +13,7 @@ from harness.session.manager import SessionManager
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
+from core.custom_op_variants import apply_expanded_variant_contract, expanded_variant_contract_from_outputs
 from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
 from core.prompt_loader import PromptLoader
 from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
@@ -430,7 +431,11 @@ class Orchestrator:
                 phase_3_output = loaded_output
         if not isinstance(phase_3_output, dict):
             return None
-        return dict(cast(dict[str, object], phase_3_output))
+        contract = dict(cast(dict[str, object], phase_3_output))
+        variant_overlay = expanded_variant_contract_from_outputs(phase_outputs)
+        if variant_overlay:
+            apply_expanded_variant_contract(contract, variant_overlay, include_required_checks=True)
+        return contract
 
     def _resolve_entry_script(
         self,

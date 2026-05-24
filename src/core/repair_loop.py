@@ -100,6 +100,80 @@ def _operator_generic_guidance(*, project_dir: str, entry_script: str) -> str:
     )
 
 
+def _operator_custom_op_phase1_phase3_scope(
+    *,
+    phase3_contract: dict[str, object] | None,
+    project_dir: str,
+    entry_script: str,
+) -> str:
+    if not _operator_repair_has_custom_op_contract(phase3_contract):
+        return "No active custom-op contract is present. Generic operator repair scope only; follow the runtime error and keep the fix local."
+    contract = cast(dict[str, object], phase3_contract or {})
+    lines = [
+        "Active custom-op contract repair scope",
+        f"project_dir={project_dir}",
+        f"entry_script={entry_script}",
+        f"phase3.run_command={contract.get('run_command', entry_script or '(not provided)')}",
+        f"phase3.entry_script_path={contract.get('entry_script_path', '(not provided)')}",
+        f"phase3.entry_script_kind={contract.get('entry_script_kind', '(not provided)')}",
+        f"phase3.reports_dir={contract.get('reports_dir', '(not provided)')}",
+    ]
+    required_reports = contract.get('required_report_paths')
+    if isinstance(required_reports, list) and required_reports:
+        lines.append('phase3.required_report_paths=' + ', '.join(str(item) for item in required_reports[:20]))
+    required_checks = contract.get('required_checks')
+    if isinstance(required_checks, list) and required_checks:
+        lines.append('phase3.required_checks=' + ', '.join(str(item) for item in required_checks[:20]))
+    schema = contract.get('operator_inventory_schema')
+    if isinstance(schema, dict):
+        for key in ('fine_grained_operator_units', 'operator_units', 'operators', 'rows'):
+            value = schema.get(key)
+            if isinstance(value, list) and value:
+                lines.append(f'phase3.operator_inventory_schema.{key}_count={len(value)}')
+                lines.append('phase3.operator_inventory_schema.' + key + '_sample=' + ', '.join(str(item) for item in value[:20]))
+                break
+    return "\n".join(lines)
+
+
+def _operator_custom_op_acceptance_contract_text(
+    *,
+    phase3_contract: dict[str, object] | None,
+) -> str:
+    if not _operator_repair_has_custom_op_contract(phase3_contract):
+        return "No active custom-op contract is present. Return ordinary operator repair JSON only; the strict custom-op final gate is not active."
+    contract = cast(dict[str, object], phase3_contract or {})
+    required_reports = contract.get('required_report_paths')
+    if not isinstance(required_reports, list) or not required_reports:
+        required_reports = [
+            'migration_reports/operator_inventory.json',
+            'migration_reports/migration_manifest.json',
+            'migration_reports/runtime_coverage.json',
+            'migration_reports/performance.json',
+            'migration_reports/build.json',
+            'migration_reports/custom_op_final_gate.json',
+            'migration_reports/summary.json',
+        ]
+    required_checks = contract.get('required_checks')
+    if not isinstance(required_checks, list) or not required_checks:
+        required_checks = [
+            'inventory_manifest_equality',
+            'closed_pass_entries_equals_manifest_entries',
+            'remaining_entries_zero',
+            'full_migration_status_full_pass',
+            'same_run_runtime_coverage',
+            'no_fallback_no_zero_call_no_builtin_contamination',
+        ]
+    lines = [
+        'Custom-op repair is accepted only when the full Phase 3 validation command has been rerun and current project-local reports pass strict validation.',
+        'Required reports:',
+        *(f'- {item}' for item in required_reports),
+        'Required checks:',
+        *(f'- {item}' for item in required_checks),
+        'Framework acceptance: validate_custom_op_final_gate must pass, full_migration_status must be FULL_PASS, remaining_entries must be 0, and every Phase 1/Phase 3 operator or expanded variant identity must be closed.',
+    ]
+    return "\n".join(str(line) for line in lines)
+
+
 def _operator_custom_op_guidance(
     operator_repair_context_artifact_path: str,
     *,
@@ -107,8 +181,8 @@ def _operator_custom_op_guidance(
     entry_script: str,
 ) -> str:
     return (
-        f"4. Active custom-op contract is present. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
-        "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
+        f"4. Active custom-op contract is present. Read bounded operator context: {operator_repair_context_artifact_path}; this context combines Phase 1 source discovery, the Phase 3 entry-script contract, the full validation command, expanded variant scope when present, and current migration_reports inventory / manifest / final-gate closure. Use it as the repair source of truth.\n"
+        "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. For custom-op projects, keep looping on every Phase 1/Phase 3 operator row and rerun the full Phase 3 validation script after repair. For custom-op+variant projects, keep looping on every operator+variant identity and rerun the full variant-aware validation script after repair. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
         "6. Every in-scope row must have strict Ascend C/CANN OPP custom operator producer evidence: op_host source path, op_kernel/AscendC source path, CMakeLists.txt/build.sh or equivalent OPP build script, project-local CANN/OPP build-install logs, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and performance evidence that compares real CPU baseline runtime against Ascend OPP/custom-op runtime. For this active custom-op contract, missing per-row `public_api_route_evidence` or `framework_integration_route_evidence` is a contract failure: each field may be one object or a non-empty object list, but every object must independently prove same-run public API or framework integration invocation, positive custom call count, native custom-op/OPP execution, and identity correlation to the manifest row; an empty list or any invalid list item must fail closed. Direct-only, builtin-only, fallback, zero-call, report-only, synthetic/mock, benchmark-only, ATen-only, NpuExtension-only, CppExtension-only, Python-shim, baseline-only, and stub route evidence is not valid. torch_npu.utils.cpp_extension.NpuExtension, torch.utils.cpp_extension.CppExtension, ATen-only npu_ops.cpp, and libtorch/torch_cpu/torch_npu-only builds are not opp_custom_op_artifact_evidence; NpuExtension may only be adapter evidence when separate strict OPP producer evidence exists. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Do not use same-NPU, self-baseline, diagnostic, or placeholder 1.0 speedup evidence; `speedup_vs_baseline` must approximately equal CPU `baseline_seconds / custom_seconds` for the Ascend OPP/custom-op route. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
         f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
@@ -309,6 +383,8 @@ class ReviewGateState:
 
 
 def _get_timeout(config: ConfigDict | None, key: str, default: int | None = None) -> int | None:
+    if key.startswith("session_timeout"):
+        return None
     framework_config = config.get("framework") if config else None
     if isinstance(framework_config, dict):
         framework_settings = cast(ConfigDict, framework_config)
@@ -1080,6 +1156,9 @@ class RepairLoopEngine:
             "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
+            "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
+            "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
+            "active_custom_op_full_repair_requirements": "",
         }
         analyzer_prompt = self.prompt_loader.load_prompt("phase_error_recovery", prompt_context)
         max_send_retries = 2
@@ -1761,6 +1840,9 @@ class RepairLoopEngine:
             "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
+            "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
+            "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
+            "active_custom_op_full_repair_requirements": "",
         }
         if repair_role in {"dependency_fixer", "operator_fixer"}:
             runtime_error_path, runtime_card_path = write_repair_runtime_artifacts(
@@ -1789,11 +1871,29 @@ class RepairLoopEngine:
                     project_dir=project_dir,
                     entry_script=entry_script,
                 )
+                context["phase1_phase3_repair_scope"] = _operator_custom_op_phase1_phase3_scope(
+                    phase3_contract=phase3_contract,
+                    project_dir=project_dir,
+                    entry_script=entry_script,
+                )
+                context["strict_custom_op_acceptance_contract"] = _operator_custom_op_acceptance_contract_text(
+                    phase3_contract=phase3_contract,
+                )
+                context["active_custom_op_full_repair_requirements"] = (
+                    "1. Read operatorRepairContext artifact and treat it as the source of truth.\n"
+                    "2. Repair every Phase 1/Phase 3 discovered operator and every expanded operator+variant identity.\n"
+                    "3. Rerun the full Phase 3 validation command and produce every required report.\n"
+                    "4. Return success only after the strict final gate validates FULL_PASS.\n"
+                    "5. Return FAILED/INCOMPLETE if the full repair is not yet closed."
+                )
             else:
                 context["operator_custom_op_guidance"] = _operator_generic_guidance(
                     project_dir=project_dir,
                     entry_script=entry_script,
                 )
+                context["phase1_phase3_repair_scope"] = "No active custom-op contract is present. Generic operator repair scope only; follow the runtime error and keep the fix local."
+                context["strict_custom_op_acceptance_contract"] = "No active custom-op contract is present. Return ordinary operator repair JSON only; the strict custom-op final gate is not active."
+                context["active_custom_op_full_repair_requirements"] = ""
         return self.prompt_loader.load_prompt(prompt_id, context)
 
     @staticmethod

@@ -27,6 +27,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 
 ## Hard Rules
 - Do not modify the project during this phase.
+- Do not call `task()`, launch background/sub-agent work, create todos, or wait for background task notifications in this phase. Inspect files directly and return the phase JSON in this same response.
 - Use README guidance and project files as evidence; do not invent an entry point.
 - If multiple entry candidates exist, choose the most likely executable path and make the choice deterministic.
 - If no strong CUDA evidence exists, set `cuda_detected` to `false`.

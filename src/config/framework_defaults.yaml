@@ -8,6 +8,17 @@ framework:
     gate_on_cpu_fallback: true        # trigger on CPU fallback detection
     max_review_iterations: 3          # max improvement cycles
 
+  assisted_verification:
+    enabled: true                     # server-assisted custom-op inventory/script review
+    phase1_custom_op: true
+    phase3_contract_coverage: true
+    skip_when_no_custom_op_signals: true
+    max_attempts: 2
+    timeout_seconds: 30000
+    verifier_role: "custom_op_verifier"
+    verifier_lifecycle: "persistent"
+    verifier_agent: "Sisyphus-Junior"
+
   server:
     hostname: "127.0.0.1"             # default server hostname
     port: 4098                        # default server port

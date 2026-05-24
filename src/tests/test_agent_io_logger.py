@@ -9,13 +9,13 @@ from tests.e2e.e2e_observer import TelemetryObserver
 
 class FakeSessionManager:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str, str, int, int]] = []
+        self.sent: list[tuple[str, str, str, int | float | None, int, int | float | None]] = []
 
     def get_or_create(
         self,
         role: str,
-        agent: str = "",
         lifecycle: str = "persistent",
+        agent: str = "",
         title: str = "",
         working_dir: str = "",
         initial_prompt: str = "",
@@ -27,10 +27,12 @@ class FakeSessionManager:
         session_id: str,
         command: str,
         agent: str = "",
-        timeout: int = 600,
+        timeout: int | float | None = 600,
         retries: int = 2,
+        *,
+        recovery_wait_timeout: int | float | None = None,
     ) -> str:
-        self.sent.append((session_id, command, agent, timeout, retries))
+        self.sent.append((session_id, command, agent, timeout, retries, recovery_wait_timeout))
         return "full response body"
 
     def cleanup_all(self) -> int:
@@ -78,8 +80,8 @@ def test_agent_io_logger_writes_index_and_payloads(tmp_path: Path) -> None:
     records = _read_jsonl(jsonl_path)
     assert records[0]["run_id"] == "run-1"
     assert records[0]["command_path"] == "agent_io/payloads/000001_prompt.txt"
-    assert (tmp_path / records[0]["command_path"]).read_text(encoding="utf-8") == "full prompt"
-    assert (tmp_path / records[0]["response_path"]).read_text(encoding="utf-8") == "full response"
+    assert (tmp_path / str(records[0]["command_path"])).read_text(encoding="utf-8") == "full prompt"
+    assert (tmp_path / str(records[0]["response_path"])).read_text(encoding="utf-8") == "full response"
 
 
 def test_agent_io_logger_redacts_and_truncates(tmp_path: Path) -> None:
@@ -103,8 +105,8 @@ def test_agent_io_logger_redacts_and_truncates(tmp_path: Path) -> None:
     )
 
     records = _read_jsonl(tmp_path / "agent_io" / "agent_io.jsonl")
-    command_text = (tmp_path / records[0]["command_path"]).read_text(encoding="utf-8")
-    response_text = (tmp_path / records[0]["response_path"]).read_text(encoding="utf-8")
+    command_text = (tmp_path / str(records[0]["command_path"])).read_text(encoding="utf-8")
+    response_text = (tmp_path / str(records[0]["response_path"])).read_text(encoding="utf-8")
     assert "sk-abcdefghijklmnopqrstuvwxyz" not in command_text
     assert "Bearer abcdefghijklmnopqrstuvwxyz" not in response_text
     assert records[0]["command_truncated"] is True
@@ -132,8 +134,8 @@ def test_agent_io_logger_redacts_quoted_json_secrets(tmp_path: Path) -> None:
     )
 
     records = _read_jsonl(tmp_path / "agent_io" / "agent_io.jsonl")
-    command_text = (tmp_path / records[0]["command_path"]).read_text(encoding="utf-8")
-    response_text = (tmp_path / records[0]["response_path"]).read_text(encoding="utf-8")
+    command_text = (tmp_path / str(records[0]["command_path"])).read_text(encoding="utf-8")
+    response_text = (tmp_path / str(records[0]["response_path"])).read_text(encoding="utf-8")
     assert "secret value" not in command_text
     assert "hf_secret" not in command_text
     assert "quoted-token" not in response_text
@@ -149,6 +151,23 @@ def test_telemetry_observer_keeps_positional_lifecycle_compatibility(tmp_path: P
     assert session_id == "error_analyzer-session"
     assert observer.send_command(session_id, "prompt") == "full response body"
     assert fake.sent[0][2] == ""
+
+
+def test_telemetry_observer_forwards_recovery_wait_timeout(tmp_path: Path) -> None:
+    fake = FakeSessionManager()
+    observer = TelemetryObserver(fake, tmp_path)
+    session_id = observer.get_or_create("operator_fixer", "persistent")
+
+    response = observer.send_command(
+        session_id,
+        "repair",
+        timeout=None,
+        retries=0,
+        recovery_wait_timeout=30,
+    )
+
+    assert response == "full response body"
+    assert fake.sent[0] == (session_id, "repair", "", None, 0, 30)
 
 
 def test_telemetry_observer_records_full_agent_io(tmp_path: Path) -> None:
@@ -168,5 +187,5 @@ def test_telemetry_observer_records_full_agent_io(tmp_path: Path) -> None:
     assert records[0]["phase_id"] == "phase_0"
     assert records[0]["role"] == "main_engineer"
     assert records[0]["agent"] == "main"
-    assert (tmp_path / records[0]["command_path"]).read_text(encoding="utf-8") == "complete prompt"
-    assert (tmp_path / records[0]["response_path"]).read_text(encoding="utf-8") == "full response body"
+    assert (tmp_path / str(records[0]["command_path"])).read_text(encoding="utf-8") == "complete prompt"
+    assert (tmp_path / str(records[0]["response_path"])).read_text(encoding="utf-8") == "full response body"

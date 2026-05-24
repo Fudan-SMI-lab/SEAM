@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -77,7 +78,7 @@ def test_send_command_returns_normal_text_when_idle_and_todos_complete() -> None
     assert result == "phase complete"
 
 
-def test_send_command_timeout_none_uses_finite_post_timeout() -> None:
+def test_send_command_timeout_none_uses_no_post_response_timeout() -> None:
     manager = _manager_with_message({
         "info": {"finish": "stop"},
         "parts": [{"type": "text", "text": "phase complete"}],
@@ -87,10 +88,98 @@ def test_send_command_timeout_none_uses_finite_post_timeout() -> None:
 
     post_call = next(call for call in manager.calls if call["method"] == "POST")
     assert result == "phase complete"
-    assert post_call["timeout"] == manager_module.DEFAULT_POST_RESPONSE_TIMEOUT
+    assert post_call["timeout"] is None
 
 
-def test_send_command_short_timeout_uses_short_post_timeout() -> None:
+def test_send_command_timeout_none_recovers_terminal_message_when_post_worker_stays_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "DEFAULT_POST_RESPONSE_PROBE_INTERVAL", 0.0)
+    release_post = threading.Event()
+    old_response = {
+        "ok": True,
+        "data": [
+            {
+                "info": {"role": "assistant", "finish": "stop", "time": {"completed": 10}},
+                "parts": [{"type": "text", "text": "old response"}],
+            }
+        ],
+    }
+    fresh_response = {
+        "ok": True,
+        "data": [
+            {
+                "info": {"role": "assistant", "finish": "stop", "time": {"completed": 20}},
+                "parts": [{"type": "text", "text": '{"status":"INCOMPLETE"}'}],
+            }
+        ],
+    }
+    message_responses = [old_response, fresh_response, fresh_response]
+    manager = FakeSessionManager({})
+
+    def http(
+        method: str,
+        path: str,
+        query: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        timeout: Any = None,
+    ) -> dict[str, Any]:
+        manager.calls.append({"method": method, "path": path, "query": query, "body": body, "timeout": timeout})
+        if method == "POST" and path == "/session/ses-1/message":
+            _ = release_post.wait(30)
+            return {"ok": True, "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "late worker response"}]}}
+        if method == "GET" and path == "/session/status":
+            return {"ok": True, "data": {"ses-1": {"type": "busy"}}}
+        if method == "GET" and path == "/session/ses-1/message":
+            if len(message_responses) > 1:
+                return message_responses.pop(0)
+            return message_responses[0]
+        raise AssertionError(f"Unexpected HTTP call: {method} {path}")
+
+    manager._http = http  # type: ignore[method-assign]
+    try:
+        result = manager.send_command("ses-1", "do work", timeout=None, retries=0)
+    finally:
+        release_post.set()
+
+    post_call = next(call for call in manager.calls if call["method"] == "POST")
+    assert result == '{"status":"INCOMPLETE"}'
+    assert post_call["timeout"] is None
+
+
+def test_post_message_with_wall_timeout_none_passes_no_http_timeout_without_queue_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = FakeSessionManager({})
+    observed_get_timeouts: list[Any] = []
+    original_get = manager_module.queue.Queue.get
+
+    def tracking_get(self: Any, block: bool = True, timeout: float | None = None) -> Any:
+        observed_get_timeouts.append(timeout)
+        return original_get(self, block=block, timeout=timeout)
+
+    def http(
+        method: str,
+        path: str,
+        query: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        timeout: Any = None,
+    ) -> dict[str, Any]:
+        manager.calls.append({"method": method, "path": path, "query": query, "body": body, "timeout": timeout})
+        return {"ok": True, "data": {"posted": True}}
+
+    monkeypatch.setattr(manager_module.queue.Queue, "get", tracking_get)
+    manager._http = http  # type: ignore[method-assign]
+
+    result = manager._post_message_with_wall_timeout(session_id="ses-1", payload={"parts": []}, timeout=None)
+
+    post_call = next(call for call in manager.calls if call["method"] == "POST")
+    assert result == {"ok": True, "data": {"posted": True}}
+    assert post_call["timeout"] is None
+    assert observed_get_timeouts == [None]
+
+
+def test_send_command_explicit_timeout_does_not_shorten_post_transport_guard() -> None:
     manager = _manager_with_message({
         "info": {"finish": "stop"},
         "parts": [{"type": "text", "text": "phase complete"}],
@@ -100,7 +189,20 @@ def test_send_command_short_timeout_uses_short_post_timeout() -> None:
 
     post_call = next(call for call in manager.calls if call["method"] == "POST")
     assert result == "phase complete"
-    assert post_call["timeout"] == 35.0
+    assert post_call["timeout"] == manager_module.DEFAULT_POST_RESPONSE_TIMEOUT
+
+
+def test_send_command_long_timeout_is_not_capped_at_post_layer() -> None:
+    manager = _manager_with_message({
+        "info": {"finish": "stop"},
+        "parts": [{"type": "text", "text": "phase complete"}],
+    })
+
+    result = manager.send_command("ses-1", "do long phase work", timeout=7200, retries=0)
+
+    post_call = next(call for call in manager.calls if call["method"] == "POST")
+    assert result == "phase complete"
+    assert post_call["timeout"] == manager_module.DEFAULT_POST_RESPONSE_TIMEOUT
 
 
 def test_send_command_rejects_non_finite_timeout_without_posting() -> None:
@@ -184,6 +286,60 @@ def test_send_command_recovers_empty_post_response_from_latest_history() -> None
     assert any(call["method"] == "GET" and call["path"] == "/session/status" for call in manager.calls)
 
 
+def test_send_command_prefers_phase_schema_json_after_background_prose() -> None:
+    valid_phase_json = json.dumps({
+        "project_dir": "/tmp/project",
+        "dependencies": ["torch"],
+        "cuda_detected": True,
+        "entry_script": "train.py",
+    })
+    manager = _manager_with_message(
+        {
+            "info": {"finish": "stop"},
+            "parts": [{"type": "text", "text": "Background results retrieved and reconciled."}],
+        },
+        history={
+            "ok": True,
+            "data": [
+                {
+                    "info": {"role": "user", "time": {"created": 1}},
+                    "parts": [{"type": "text", "text": "# Phase 1 - Project Analysis\nReturn JSON"}],
+                },
+                {
+                    "info": {"role": "assistant", "finish": "stop", "time": {"created": 2, "completed": 3}},
+                    "parts": [{"type": "text", "text": valid_phase_json}],
+                },
+                {
+                    "info": {"role": "user", "time": {"created": 4}},
+                    "parts": [{"type": "text", "text": "<system-reminder>[ALL BACKGROUND TASKS COMPLETE]</system-reminder>"}],
+                },
+                {
+                    "info": {"role": "assistant", "finish": "stop", "time": {"created": 5, "completed": 6}},
+                    "parts": [{"type": "text", "text": "Background results retrieved and reconciled."}],
+                },
+            ],
+        },
+    )
+
+    result = manager.send_command("ses-1", "# Phase 1 - Project Analysis\nReturn JSON", retries=0)
+
+    assert json.loads(result)["entry_script"] == "train.py"
+
+
+def test_extract_json_response_prefers_latest_fenced_schema_over_earlier_schema() -> None:
+    payload = (
+        "```json\n"
+        '{"project_dir": "/tmp/old", "dependencies": ["torch"], "cuda_detected": true, "entry_script": "old.py"}\n'
+        "```\n"
+        "Continuation notes and todo prose.\n"
+        "```json\n"
+        '{"project_dir": "/tmp/new", "dependencies": ["torch"], "cuda_detected": true, "entry_script": "new.py"}\n'
+        "```"
+    )
+
+    assert manager_module.extract_json_response(payload)["entry_script"] == "new.py"
+
+
 def test_send_command_rejects_stale_history_after_empty_post_response() -> None:
     manager = _manager_with_message(
         {"info": {"finish": "stop"}, "parts": []},
@@ -236,6 +392,7 @@ def test_send_command_waits_for_incomplete_todos_until_complete(monkeypatch: pyt
         history=[
             {"ok": True, "data": [{"parts": [{"type": "text", "text": "old assistant text"}]}]},
             {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "rerun validator"}]}]},
+            {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "rerun validator"}]}]},
             {"ok": True, "data": [{"todos": [{"status": "completed", "content": "rerun validator"}]}]},
         ],
     )
@@ -249,23 +406,21 @@ def test_send_command_waits_for_incomplete_todos_until_complete(monkeypatch: pyt
     assert len(status_calls) == 2
 
 
-def test_send_command_times_out_for_incomplete_todos_without_reposting(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_send_command_waits_for_incomplete_todos_without_reposting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
     manager = _manager_with_message(
         {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "partial repair result"}]},
         history=[
             {"ok": True, "data": [{"parts": [{"type": "text", "text": "old assistant text"}]}]},
             {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "rerun validator"}]}]},
+            {"ok": True, "data": [{"todos": [{"status": "completed", "content": "rerun validator"}]}]},
         ],
     )
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
-    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=2))
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=2)
 
     post_calls = [call for call in manager.calls if call["method"] == "POST"]
-    assert result["ok"] is False
-    assert "Session still running" in result["error"]
+    assert result == "partial repair result"
     assert len(post_calls) == 1
 
 
@@ -292,10 +447,13 @@ def test_send_command_recovers_same_session_after_post_timeout(monkeypatch: pyte
     assert len(post_calls) == 1
 
 
-def test_send_command_uses_command_timeout_for_post_timeout_recovery_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
-    manager = FakeSessionManager({
-        ("GET", "/session/ses-1/message"): {
+def test_send_command_ignores_command_timeout_for_post_timeout_recovery_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    status_responses = [
+        {"ok": True, "data": {"ses-1": {"type": "running"}}},
+        {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+    ]
+    message_responses = [
+        {
             "ok": True,
             "data": [
                 {
@@ -304,26 +462,30 @@ def test_send_command_uses_command_timeout_for_post_timeout_recovery_wait(monkey
                 }
             ],
         },
+        {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "long phase"}]}]},
+        {"ok": True, "data": [{"todos": [{"status": "completed", "content": "long phase"}]}]},
+        {"ok": True, "data": [{"parts": [{"type": "text", "text": "long phase complete"}]}]},
+    ]
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): status_responses,
+        ("GET", "/session/ses-1/message"): message_responses,
     })
     manager._post_message_with_wall_timeout = lambda **_kwargs: {"ok": False, "error": "timed out", "timeout": True}  # type: ignore[method-assign]
-    waited: list[tuple[str, float | int | None, float]] = []
 
-    def wait_for_idle(session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0) -> bool:
-        waited.append((session_id, timeout_s, interval_s))
-        return False
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=0)
 
-    manager.wait_for_idle = wait_for_idle  # type: ignore[method-assign]
-
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=30000, retries=0))
-
-    assert result["ok"] is False
-    assert result["error"] == "Session still running or has incomplete todos"
-    assert waited == [("ses-1", 30000.0, 1.0)]
+    status_calls = [call for call in manager.calls if call["method"] == "GET" and call["path"] == "/session/status"]
+    assert result == "long phase complete"
+    assert len(status_calls) >= 1
 
 
 def test_send_command_explicitly_caps_post_timeout_recovery_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    times = iter([0.0, 0.0, manager_module.DEFAULT_HARD_ERROR_WAIT_TIMEOUT + 1.0])
+    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, manager_module.DEFAULT_HARD_ERROR_WAIT_TIMEOUT + 1.0))
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
     manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "running"}}},
         ("GET", "/session/ses-1/message"): {
             "ok": True,
             "data": [
@@ -337,7 +499,15 @@ def test_send_command_explicitly_caps_post_timeout_recovery_wait(monkeypatch: py
     manager._post_message_with_wall_timeout = lambda **_kwargs: {"ok": False, "error": "timed out", "timeout": True}  # type: ignore[method-assign]
     waited: list[tuple[str, float | int | None, float]] = []
 
-    def wait_for_idle(session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0) -> bool:
+    def wait_for_idle(
+        session_id: str,
+        timeout_s: int | float | None = 300,
+        interval_s: float = 2.0,
+        *,
+        baseline_text: str | None = None,
+        command_text: str = "",
+    ) -> bool:
+        _ = baseline_text, command_text
         waited.append((session_id, timeout_s, interval_s))
         return False
 
@@ -355,7 +525,9 @@ def test_send_command_explicitly_caps_post_timeout_recovery_wait(monkeypatch: py
 
     assert result["ok"] is False
     assert result["error"] == "Session still running or has incomplete todos"
-    assert waited == [("ses-1", manager_module.DEFAULT_HARD_ERROR_WAIT_TIMEOUT, 1.0)]
+    status_calls = [call for call in manager.calls if call["method"] == "GET" and call["path"] == "/session/status"]
+    assert len(status_calls) >= 1
+    assert waited == []
 
 
 def test_send_command_wall_timeout_recovers_same_session(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -674,23 +846,21 @@ def test_completed_assistant_text_without_finish_is_terminal() -> None:
     assert manager._extract_latest_finished_assistant_text(payload) == '{"entry_script_path":"validate_custom_ops_full.py"}'
 
 
-def test_send_command_times_out_for_unfinished_tool_calls_without_reposting(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_send_command_waits_for_unfinished_tool_calls_without_reposting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
     manager = _manager_with_message(
         {"info": {"finish": "tool-calls"}, "parts": [{"type": "tool-call", "id": "call-1"}]},
         history=[
             {"ok": True, "data": [{"parts": [{"type": "text", "text": "old assistant text"}]}]},
             {"ok": True, "data": [{"parts": [{"type": "tool-call", "id": "call-1", "state": "running"}]}]},
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "tool result complete"}]}]},
         ],
     )
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
-    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=2))
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=2)
 
     post_calls = [call for call in manager.calls if call["method"] == "POST"]
-    assert result["ok"] is False
-    assert "Session still running" in result["error"]
+    assert result == "tool result complete"
     assert len(post_calls) == 1
 
 
@@ -706,7 +876,7 @@ def test_sqlite_fallback_ignores_unrelated_incomplete_todos(tmp_path: Path) -> N
     assert manager.send_command("ses-1", "do work", retries=0) == "phase complete"
 
 
-def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sqlite_fallback_waits_for_camelcase_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute('CREATE TABLE tasks ("sessionID" TEXT, status TEXT, content TEXT)')
@@ -714,17 +884,25 @@ def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, m
         conn.execute('INSERT INTO tasks ("sessionID", status, content) VALUES (?, ?, ?)', ("other-session", "completed", "other work"))
 
     manager = _sqlite_backed_manager(db_path)
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    pending_seen = {"value": False}
+    original_sqlite_state = manager._session_completion_from_sqlite
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
+    def sqlite_state(session_id: str) -> bool | None:
+        if pending_seen["value"]:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute('UPDATE tasks SET status = ? WHERE "sessionID" = ?', ("completed", "ses-1"))
+        pending_seen["value"] = True
+        return original_sqlite_state(session_id)
 
-    assert result["ok"] is False
-    assert "incomplete todos" in result["error"] or "Session still running" in result["error"]
+    manager._session_completion_from_sqlite = sqlite_state  # type: ignore[method-assign]
+
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=0)
+
+    assert result == "phase complete"
 
 
-def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sqlite_idle_session_with_pending_todo_waits_until_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute('CREATE TABLE session (id TEXT, status TEXT)')
@@ -733,14 +911,22 @@ def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, mon
         conn.execute('INSERT INTO todos ("sessionID", status, content) VALUES (?, ?, ?)', ("ses-1", "pending", "rerun validator"))
 
     manager = _sqlite_backed_manager(db_path)
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    pending_seen = {"value": False}
+    original_sqlite_state = manager._session_completion_from_sqlite
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
+    def sqlite_state(session_id: str) -> bool | None:
+        if pending_seen["value"]:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute('UPDATE todos SET status = ? WHERE "sessionID" = ?', ("completed", "ses-1"))
+        pending_seen["value"] = True
+        return original_sqlite_state(session_id)
 
-    assert result["ok"] is False
-    assert "incomplete todos" in result["error"]
+    manager._session_completion_from_sqlite = sqlite_state  # type: ignore[method-assign]
+
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=0)
+
+    assert result == "phase complete"
 
 
 def test_sqlite_idle_session_with_completed_todos_is_complete(tmp_path: Path) -> None:
@@ -779,7 +965,7 @@ def test_send_command_timeout_none_uses_sqlite_assistant_completion_without_todo
     assert manager.send_command("ses-1", "do work", timeout=None, retries=0) == "phase complete"
 
 
-def test_sqlite_assistant_completion_still_blocks_same_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sqlite_assistant_completion_waits_for_same_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     assistant_data = {
         "role": "assistant",
@@ -799,17 +985,25 @@ def test_sqlite_assistant_completion_still_blocks_same_session_pending_todo(tmp_
         conn.execute('INSERT INTO todos ("sessionID", status, content) VALUES (?, ?, ?)', ("ses-1", "pending", "rerun validator"))
 
     manager = _sqlite_backed_manager(db_path, status_data={})
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    pending_seen = {"value": False}
+    original_sqlite_state = manager._session_completion_from_sqlite
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
+    def sqlite_state(session_id: str) -> bool | None:
+        if pending_seen["value"]:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute('UPDATE todos SET status = ? WHERE "sessionID" = ?', ("completed", "ses-1"))
+        pending_seen["value"] = True
+        return original_sqlite_state(session_id)
 
-    assert result["ok"] is False
-    assert "incomplete todos" in result["error"] or "Session still running" in result["error"]
+    manager._session_completion_from_sqlite = sqlite_state  # type: ignore[method-assign]
+
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=0)
+
+    assert result == "phase complete"
 
 
-def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sqlite_assistant_completion_waits_for_active_compaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
     assistant_data = {
         "role": "assistant",
@@ -827,14 +1021,22 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
         )
 
     manager = _sqlite_backed_manager(db_path, status_data={})
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    compaction_seen = {"value": False}
+    original_sqlite_state = manager._session_completion_from_sqlite
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
+    def sqlite_state(session_id: str) -> bool | None:
+        if compaction_seen["value"]:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute('UPDATE session SET time_compacting = NULL WHERE id = ?', ("ses-1",))
+        compaction_seen["value"] = True
+        return original_sqlite_state(session_id)
 
-    assert result["ok"] is False
-    assert "Session still running" in result["error"]
+    manager._session_completion_from_sqlite = sqlite_state  # type: ignore[method-assign]
+
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=0)
+
+    assert result == "phase complete"
 
 
 def test_sqlite_fallback_skips_todo_tables_without_session_column(tmp_path: Path) -> None:
@@ -892,16 +1094,62 @@ def test_send_command_surfaces_auth_error_after_observed_idle(monkeypatch: pytes
     assert len(status_calls) == 2
 
 
-def test_wait_for_idle_timeout_none_uses_finite_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wait_for_idle_timeout_none_waits_until_idle(monkeypatch: pytest.MonkeyPatch) -> None:
     manager = _manager_with_message(
         {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "still running"}]},
-        status_type="running",
     )
-    times = iter([0.0, 0.0, 30001.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 30001.0))
+    manager.routes[("GET", "/session/status")] = [
+        {"ok": True, "data": {"ses-1": {"type": "running"}}},
+        {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+    ]
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
-    assert manager.wait_for_idle("ses-1", timeout_s=None, interval_s=0) is False
+    assert manager.wait_for_idle("ses-1", timeout_s=None, interval_s=0) is True
+
+
+def test_post_timeout_recovery_waits_past_command_timeout_while_session_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    times = iter([0.0, 0.0, 2.0, 2.0, 3.0, 3.0])
+    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 3.0))
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): [
+            {"ok": True, "data": {"ses-1": {"type": "running"}}},
+            {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ],
+        ("GET", "/session/ses-1/message"): [
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "old assistant text"}]}]},
+            {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "long phase"}]}]},
+            {"ok": True, "data": [{"todos": [{"status": "completed", "content": "long phase"}]}]},
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "completed after original timeout"}]}]},
+        ],
+    })
+    manager._post_message_with_wall_timeout = lambda **_kwargs: {"ok": False, "error": "timed out", "timeout": True}  # type: ignore[method-assign]
+
+    result = manager.send_command("ses-1", "do work", timeout=1, retries=0)
+
+    assert result == "completed after original timeout"
+
+
+def test_post_timeout_recovery_does_not_return_partial_text_while_session_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): [
+            {"ok": True, "data": {"ses-1": {"type": "running"}}},
+            {"ok": True, "data": {"ses-1": {"type": "running"}}},
+            {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ],
+        ("GET", "/session/ses-1/message"): [
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "old assistant text"}]}]},
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "I’ll inspect the validator requirements first."}]}]},
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "I’ll inspect the validator requirements first."}]}]},
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "{\"fixed\": true}"}]}]},
+        ],
+    })
+    manager._post_message_with_wall_timeout = lambda **_kwargs: {"ok": False, "error": "timed out", "timeout": True}  # type: ignore[method-assign]
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+
+    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
+
+    assert result == {"fixed": True}
 
 
 def test_hard_error_wait_timeout_none_uses_finite_cap(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -40,7 +41,8 @@ FALLBACK_AGENT_NAME = "Sisyphus"
 _DEFAULT_HTTP_TIMEOUT = object()
 DEFAULT_SESSION_WAIT_TIMEOUT = 30000.0
 DEFAULT_HARD_ERROR_WAIT_TIMEOUT = 300.0
-DEFAULT_POST_RESPONSE_TIMEOUT = 120.0
+DEFAULT_POST_RESPONSE_TIMEOUT = 600.0
+DEFAULT_POST_RESPONSE_PROBE_INTERVAL = 1.0
 
 
 class SessionManagerError(RuntimeError):
@@ -67,8 +69,9 @@ def extract_json_response(text: str) -> dict[str, Any]:
     if not text:
         return {}
 
-    match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    candidates = [match.group(1).strip()] if match else []
+    candidates: list[str] = []
+    fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    candidates.extend(block.strip() for block in reversed(fenced_blocks) if block.strip())
     candidates.append(text.strip())
 
     for candidate in candidates:
@@ -375,9 +378,17 @@ class MigrationSessionManager:
 
         return ""
 
-    def _extract_latest_completed_message_text(self, payload: Any) -> str:
+    def _extract_latest_completed_message_text(
+        self,
+        payload: Any,
+        command_text: str = "",
+    ) -> str:
         if not isinstance(payload, list):
             return self._extract_message_text(payload)
+
+        schema_text = self._extract_latest_phase_schema_text(payload, command_text)
+        if schema_text:
+            return schema_text
 
         completed_text = self._extract_latest_finished_assistant_text(payload)
         if completed_text:
@@ -406,6 +417,55 @@ class MigrationSessionManager:
             if not fallback:
                 fallback = text
         return fallback
+
+    def _extract_latest_phase_schema_text(self, payload: list[Any], command_text: str) -> str:
+        schema_keys = self._phase_schema_keys_for_command(command_text)
+        if not schema_keys:
+            return ""
+        command_time = self._latest_user_command_time(payload, command_text)
+        messages = [message for message in payload if isinstance(message, dict)]
+        messages.sort(key=self._message_sort_time, reverse=True)
+        for message in messages:
+            if command_time and self._message_sort_time(message) <= command_time:
+                continue
+            info = message.get("info")
+            role = str(info.get("role", "") if isinstance(info, dict) else message.get("role", "")).lower()
+            if role and role != "assistant":
+                continue
+            text = self._extract_message_text(message)
+            parsed = extract_json_response(text)
+            if self._phase_schema_matches(parsed, schema_keys):
+                return json.dumps(parsed, ensure_ascii=False)
+        return ""
+
+    def _latest_user_command_time(self, payload: list[Any], command_text: str) -> float:
+        if not command_text.strip():
+            return 0.0
+        messages = [message for message in payload if isinstance(message, dict)]
+        messages.sort(key=self._message_sort_time, reverse=True)
+        command_marker = command_text.strip()[:200]
+        for message in messages:
+            info = message.get("info")
+            role = str(info.get("role", "") if isinstance(info, dict) else message.get("role", "")).lower()
+            if role != "user":
+                continue
+            text = self._extract_message_text(message)
+            if command_marker and command_marker in text:
+                return self._message_sort_time(message)
+        return 0.0
+
+    @staticmethod
+    def _phase_schema_keys_for_command(command_text: str) -> set[str]:
+        normalized = command_text.lower()
+        if "phase_1_project_analysis" in normalized or "phase 1 - project analysis" in normalized:
+            return {"project_dir", "dependencies", "cuda_detected", "entry_script"}
+        if "phase_3_entry_script" in normalized or "phase 3 - entry script" in normalized or "phase 3 - entry script confirmation" in normalized:
+            return {"entry_script_path", "run_command"}
+        return set()
+
+    @staticmethod
+    def _phase_schema_matches(parsed: dict[str, Any], required_keys: set[str]) -> bool:
+        return bool(required_keys) and all(key in parsed for key in required_keys)
 
     def _extract_latest_finished_assistant_text(self, payload: Any) -> str:
         if not isinstance(payload, list):
@@ -961,10 +1021,20 @@ class MigrationSessionManager:
                     continue
         return 0.0
 
-    def wait_for_idle(self, session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0) -> bool:
+    def wait_for_idle(
+        self,
+        session_id: str,
+        timeout_s: int | float | None = 300,
+        interval_s: float = 2.0,
+        *,
+        baseline_text: str | None = None,
+        command_text: str = "",
+    ) -> bool:
         started = time.time()
-        effective_timeout = self._effective_wait_timeout(timeout_s)
-        while time.time() - started < effective_timeout:
+        deadline: float | None = None
+        if timeout_s is not None:
+            deadline = started + self._effective_wait_timeout(timeout_s)
+        while deadline is None or time.time() < deadline:
             status = self._http("GET", "/session/status")
             if not status.get("ok"):
                 error_status = status.get("status")
@@ -976,12 +1046,19 @@ class MigrationSessionManager:
 
             data = status.get("data")
             token = self._extract_status_token(data, session_id)
+            fresh_completion = ""
+            if baseline_text is not None:
+                fresh_completion = self._latest_completed_text_since_baseline(session_id, baseline_text, command_text)
             if token in RUNNING_TOKENS:
+                if fresh_completion:
+                    return True
                 time.sleep(interval_s)
                 continue
 
             todo_state = self._session_has_incomplete_todos(session_id)
             if todo_state is True:
+                if fresh_completion:
+                    return True
                 time.sleep(interval_s)
                 continue
 
@@ -990,6 +1067,8 @@ class MigrationSessionManager:
 
             sqlite_state = self._session_completion_from_sqlite(session_id)
             if sqlite_state is True:
+                if fresh_completion:
+                    return True
                 time.sleep(interval_s)
                 continue
             if sqlite_state is False:
@@ -1058,11 +1137,11 @@ class MigrationSessionManager:
                 return
             time.sleep(interval_s)
 
-    def _last_message_text_tolerant(self, session_id: str) -> str:
+    def _last_message_text_tolerant(self, session_id: str, command_text: str = "") -> str:
         resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
         if not resp.get("ok"):
             return ""
-        return self._extract_latest_completed_message_text(resp.get("data"))
+        return self._extract_latest_completed_message_text(resp.get("data"), command_text)
 
     def _last_finished_assistant_text_tolerant(self, session_id: str) -> str:
         resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
@@ -1111,13 +1190,22 @@ class MigrationSessionManager:
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if agent:
             payload["agent"] = agent
-        wait_timeout = self._effective_wait_timeout(timeout)
-        http_timeout = min(wait_timeout + 30, DEFAULT_POST_RESPONSE_TIMEOUT)
+        if timeout is not None:
+            _ = self._effective_wait_timeout(timeout)
+        http_timeout = DEFAULT_POST_RESPONSE_TIMEOUT if timeout is not None else None
         previous_text = self._last_message_text_tolerant(session_id)
+        completion_probe = None
+        if timeout is None:
+            completion_probe = lambda: self._completed_message_response_probe(
+                session_id=session_id,
+                previous_text=previous_text,
+                command_text=command_text,
+            )
         resp = self._post_message_with_wall_timeout(
             session_id=session_id,
             payload=payload,
             timeout=http_timeout,
+            completion_probe=completion_probe,
         )
         if not resp.get("ok"):
             status = resp.get("status")
@@ -1190,8 +1278,18 @@ class MigrationSessionManager:
                 raise RuntimeError("Empty session response")
             return text
 
-        if not self.wait_for_idle(session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0):
+        if not self.wait_for_idle(
+            session_id,
+            timeout_s=recovery_wait_timeout,
+            interval_s=1.0,
+            baseline_text=previous_text,
+            command_text=command_text,
+        ):
             raise TimeoutError("Session still running or has incomplete todos")
+
+        recovered_schema = self._last_message_text_tolerant(session_id, command_text)
+        if self._is_new_recovered_text(recovered_schema, previous_text, command_text):
+            return recovered_schema
 
         return text
 
@@ -1211,23 +1309,101 @@ class MigrationSessionManager:
         *,
         recovery_wait_timeout: int | float | None = None,
     ) -> str:
-        effective_timeout = self._effective_wait_timeout(timeout)
-        effective_recovery_wait_timeout = effective_timeout
+        if timeout is not None:
+            _ = self._effective_wait_timeout(timeout)
+        effective_recovery_wait_timeout: float | None = None
         if recovery_wait_timeout is not None:
-            effective_recovery_wait_timeout = min(
-                effective_timeout,
-                self._effective_wait_timeout(recovery_wait_timeout),
-            )
-        recovered_text = self._last_finished_assistant_text_tolerant(session_id)
-        if self._is_new_recovered_text(recovered_text, previous_text, command_text):
-            return recovered_text
+            effective_recovery_wait_timeout = self._effective_wait_timeout(recovery_wait_timeout)
+        started = time.time()
+        while True:
+            recovered_text = self._last_finished_or_schema_text_tolerant(session_id, command_text)
+            if self._is_new_recovered_text(recovered_text, previous_text, command_text):
+                return recovered_text
 
-        if not self.wait_for_idle(session_id, timeout_s=effective_recovery_wait_timeout, interval_s=1.0):
-            raise TimeoutError("Session still running or has incomplete todos")
-        recovered_text = self._last_message_text_tolerant(session_id)
-        if self._is_new_recovered_text(recovered_text, previous_text, command_text):
+            if effective_recovery_wait_timeout is not None and time.time() - started >= effective_recovery_wait_timeout:
+                break
+
+            if self._session_is_still_running_for_recovery(session_id, previous_text, command_text):
+                time.sleep(1.0)
+                continue
+
+            recovered_text = self._last_message_text_tolerant(session_id, command_text)
+            if self._is_new_recovered_text(recovered_text, previous_text, command_text):
+                return recovered_text
+            return ""
+
+        raise TimeoutError("Session still running or has incomplete todos")
+
+    def _last_finished_or_schema_text_tolerant(self, session_id: str, command_text: str) -> str:
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
+        if not resp.get("ok"):
+            return ""
+        data = resp.get("data")
+        if isinstance(data, list):
+            schema_text = self._extract_latest_phase_schema_text(data, command_text)
+            if schema_text:
+                return schema_text
+        return self._extract_latest_finished_assistant_text(data)
+
+    def _latest_completed_text_since_baseline(
+        self,
+        session_id: str,
+        baseline_text: str,
+        command_text: str = "",
+    ) -> str:
+        recovered_text = self._last_finished_or_schema_text_tolerant(session_id, command_text)
+        if self._is_new_recovered_text(recovered_text, baseline_text, command_text):
             return recovered_text
         return ""
+
+    def _completed_message_response_probe(
+        self,
+        *,
+        session_id: str,
+        previous_text: str,
+        command_text: str,
+    ) -> dict[str, Any] | None:
+        recovered_text = self._latest_completed_text_since_baseline(session_id, previous_text, command_text)
+        if not recovered_text:
+            return None
+        return {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "info": {"finish": "stop"},
+                "parts": [{"type": "text", "text": recovered_text}],
+            },
+        }
+
+    def _session_is_still_running_for_recovery(
+        self,
+        session_id: str,
+        baseline_text: str | None = None,
+        command_text: str = "",
+    ) -> bool:
+        status = self._http("GET", "/session/status")
+        if status.get("ok"):
+            token = self._extract_status_token(status.get("data"), session_id)
+            fresh_completion = ""
+            if baseline_text is not None:
+                fresh_completion = self._latest_completed_text_since_baseline(session_id, baseline_text, command_text)
+            if token in RUNNING_TOKENS:
+                return False if fresh_completion else True
+            todo_state = self._session_has_incomplete_todos_tolerant(session_id)
+            if todo_state is True:
+                return False if fresh_completion else True
+            if token or todo_state is False:
+                return False
+
+        sqlite_state = self._session_completion_from_sqlite(session_id)
+        if sqlite_state is True:
+            fresh_completion = ""
+            if baseline_text is not None:
+                fresh_completion = self._latest_completed_text_since_baseline(session_id, baseline_text, command_text)
+            return False if fresh_completion else True
+        if sqlite_state is False:
+            return False
+        return True
 
     @staticmethod
     def _is_new_recovered_text(recovered_text: str, previous_text: str, command_text: str) -> bool:
@@ -1238,14 +1414,42 @@ class MigrationSessionManager:
             return False
         if recovered_stripped == command_text.strip():
             return False
+        if MigrationSessionManager._is_partial_progress_text(recovered_stripped):
+            return False
         return True
+
+    @staticmethod
+    def _is_partial_progress_text(text: str) -> bool:
+        normalized = " ".join(text.strip().lower().replace("\u2019", "'").split())
+        if not normalized:
+            return False
+        partial_markers = (
+            "i read this as",
+            "i'll inspect",
+            "i will inspect",
+            "i've identified",
+            "i have identified",
+            "i've got",
+            "i have got",
+            "i'm pulling",
+            "i am pulling",
+            "i'm going to",
+            "i am going to",
+            "i'll now",
+            "i will now",
+            "next i will",
+            "let me",
+        )
+        return any(marker in normalized for marker in partial_markers)
 
     def _post_message_with_wall_timeout(
         self,
         *,
         session_id: str,
         payload: dict[str, Any],
-        timeout: float,
+        timeout: float | None,
+        completion_probe: Callable[[], dict[str, Any] | None] | None = None,
+        probe_interval_s: float = DEFAULT_POST_RESPONSE_PROBE_INTERVAL,
     ) -> dict[str, Any]:
         result_queue: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(maxsize=1)
 
@@ -1266,10 +1470,23 @@ class MigrationSessionManager:
 
         worker = threading.Thread(target=request_worker, name=f"session-post-{session_id}", daemon=True)
         worker.start()
-        try:
-            result = result_queue.get(timeout=timeout)
-        except queue.Empty:
-            return {"ok": False, "error": f"timed out after {timeout:g} seconds", "timeout": True}
+        if timeout is None:
+            if completion_probe is None:
+                result = result_queue.get()
+            else:
+                while True:
+                    try:
+                        result = result_queue.get(timeout=max(0.0, probe_interval_s))
+                        break
+                    except queue.Empty:
+                        recovered = completion_probe()
+                        if recovered is not None:
+                            return recovered
+        else:
+            try:
+                result = result_queue.get(timeout=timeout)
+            except queue.Empty:
+                return {"ok": False, "error": f"timed out after {timeout:g} seconds", "timeout": True}
         if isinstance(result, BaseException):
             raise result
         return result

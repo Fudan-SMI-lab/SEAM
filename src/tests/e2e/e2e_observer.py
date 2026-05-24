@@ -37,7 +37,7 @@ class CommandMetric:
     sequence: int
     phase_id: str | None
     session_id: str
-    timeout_seconds: int
+    timeout_seconds: int | float | None
     started_at: str
     duration_seconds: float
     status: str
@@ -76,8 +76,10 @@ class SessionManagerBackend(Protocol):
         session_id: str,
         command: str,
         agent: str = "",
-        timeout: int = 600,
+        timeout: int | float | None = 600,
         retries: int = 2,
+        *,
+        recovery_wait_timeout: int | float | None = None,
     ) -> str:
         ...
 
@@ -232,8 +234,10 @@ class TelemetryObserver:
         session_id: str,
         command: str,
         agent: str = "",
-        timeout: int = 600,
+        timeout: int | float | None = 600,
         retries: int = 2,
+        *,
+        recovery_wait_timeout: int | float | None = None,
     ) -> str:
         self._command_sequence += 1
         started_at = _utc_now()
@@ -260,6 +264,7 @@ class TelemetryObserver:
                 agent=agent,
                 timeout=timeout,
                 retries=retries,
+                recovery_wait_timeout=recovery_wait_timeout,
             )
             return response
         except Exception as exc:
@@ -269,6 +274,7 @@ class TelemetryObserver:
         finally:
             ended_at = _utc_now()
             duration_seconds = round(time.monotonic() - started_monotonic, 3)
+            timeout_seconds = 0 if timeout is None else int(timeout)
             if self._agent_io_logger is not None:
                 try:
                     _ = self._agent_io_logger.record(
@@ -281,7 +287,7 @@ class TelemetryObserver:
                         started_at=started_at,
                         ended_at=ended_at,
                         duration_seconds=duration_seconds,
-                        timeout_seconds=timeout,
+                        timeout_seconds=timeout_seconds,
                         status=status,
                         command=command,
                         response=response,
@@ -299,7 +305,7 @@ class TelemetryObserver:
                     sequence=self._command_sequence,
                     phase_id=active_phase,
                     session_id=session_id,
-                    timeout_seconds=timeout,
+                    timeout_seconds=timeout_seconds,
                     started_at=started_at,
                     duration_seconds=duration_seconds,
                     status=status,

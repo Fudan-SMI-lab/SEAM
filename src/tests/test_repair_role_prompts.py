@@ -29,6 +29,9 @@ COMMON_CONTEXT = {
     "runtime_error_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md",
     "runtime_card_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md",
     "workspace_root": "/workspace",
+    "phase1_phase3_repair_scope": "(No active custom-op contract scope in this direct generic prompt test.)",
+    "strict_custom_op_acceptance_contract": "(No active custom-op contract; agent may return regular operator repair JSON only.)",
+    "active_custom_op_full_repair_requirements": "",
     "operator_custom_op_guidance": OPERATOR_GENERIC_GUIDANCE(
         project_dir="/tmp/test_project",
         entry_script="python train.py",
@@ -109,6 +112,32 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
     context = {
         **COMMON_CONTEXT,
         "repair_role": "operator_fixer",
+        "phase1_phase3_repair_scope": (
+            "workflow_route=custom_op_with_variants\n"
+            "phase3.run_command=python train.py\n"
+            "phase3.entry_script_path=/tmp/test_project/validate_custom_ops_full.py\n"
+            "phase3.required_report_paths=migration_reports/operator_inventory.json, migration_reports/migration_manifest.json\n"
+            "phase3.required_checks=inventory_manifest_equality, remaining_entries_zero\n"
+            "phase1.operator_unit_count=2\n"
+            "phase1.custom_op_surface.expanded_operator_variants_count=2"
+        ),
+        "strict_custom_op_acceptance_contract": (
+            "Custom-op repair is accepted only when the full Phase 3 validation command has been rerun and current project-local reports pass strict validation.\n"
+            "Required reports:\n"
+            "- migration_reports/operator_inventory.json\n"
+            "- migration_reports/migration_manifest.json\n"
+            "Required checks:\n"
+            "- inventory_manifest_equality\n"
+            "- remaining_entries_zero\n"
+            "Framework acceptance: validate_custom_op_final_gate must pass, full_migration_status must be FULL_PASS, remaining_entries must be 0, and every Phase 1/Phase 3 operator or expanded variant identity must be closed."
+        ),
+        "active_custom_op_full_repair_requirements": (
+            "1. Read operatorRepairContext artifact and treat it as the source of truth.\n"
+            "2. Repair every Phase 1/Phase 3 discovered operator and every expanded operator+variant identity.\n"
+            "3. Rerun the full Phase 3 validation command and produce every required report.\n"
+            "4. Return success only after the strict final gate validates FULL_PASS.\n"
+            "5. Return FAILED/INCOMPLETE if the full repair is not yet closed."
+        ),
         "operator_custom_op_guidance": OPERATOR_CUSTOM_OP_GUIDANCE(
             "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md",
             project_dir="/tmp/test_project",
@@ -116,6 +145,11 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
         ),
     }
     prompt = loader.load_prompt("repair_operator_fixer", context)
+    assert "Phase 1 / Phase 3 Repair Scope" in prompt
+    assert "workflow_route=custom_op_with_variants" in prompt
+    assert "phase1.custom_op_surface.expanded_operator_variants_count=2" in prompt
+    assert "Strict Acceptance Contract" in prompt
+    assert "validate_custom_op_final_gate" in prompt
     assert "bounded operator context" in prompt
     assert "Active custom-op contract is present" in prompt
     assert "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md" in prompt

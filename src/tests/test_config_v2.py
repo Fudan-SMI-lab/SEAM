@@ -66,6 +66,22 @@ def test_phase_type_llm():
     assert p0.agent == "main_engineer"
 
 
+def test_inventory_phases_do_not_inject_dynamic_experiences():
+    wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
+    phases = {phase.id: phase for phase in wf.phases}
+
+    assert phases["phase_1_project_analysis"].retrieve_experience is False
+    assert phases["phase_3_entry_script"].retrieve_experience is False
+
+    repair_loop = wf.sub_workflows["repair_loop"]
+    analyze_error = next(
+        phase
+        for phase in repair_loop.phases
+        if isinstance(phase, dict) and phase.get("id") == "analyze_error"
+    )
+    assert analyze_error.get("retrieve_experience") is True
+
+
 def test_canonical_v2_yaml_has_no_phase_timeouts():
     """Canonical v2 YAML should not define phase wall-clock timeouts."""
     wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))

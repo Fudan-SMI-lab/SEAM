@@ -12,6 +12,7 @@ globals:
 agents:
   main_engineer:
     role: "main_engineer"
+    agent: "Sisyphus-Junior"
     lifecycle: "persistent"
   error_analyzer:
     role: "error_analyzer"
@@ -64,13 +65,6 @@ phases:
     validator: project_analysis
     input_mapping:
       project_dir: "${context.PROJECT_DIR}"
-    retrieve_experience: true
-    experience_query:
-      source: "project_context"
-      signals:
-        - dependencies
-        - cuda_patterns
-        - entry_script
     transitions:
       on_success: phase_1_5_constraint_summary
 

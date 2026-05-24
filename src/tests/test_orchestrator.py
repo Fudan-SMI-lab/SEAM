@@ -1,4 +1,4 @@
-# pyright: reportArgumentType=false, reportMissingParameterType=false, reportUnannotatedClassAttribute=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnusedParameter=false
+# pyright: reportArgumentType=false, reportMissingParameterType=false, reportPrivateUsage=false, reportUnannotatedClassAttribute=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnusedParameter=false
 
 import sys
 import types
@@ -411,3 +411,53 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
     assert "run_phase_6" not in call_order
     assert not any(entry.get("phase_id") == "phase_6_report" for entry in journal_entries)
     assert any(entry.get("phase_id") == "phase_5_validation" and entry.get("status") == "failed" for entry in journal_entries)
+
+
+def test_resolve_phase3_contract_overlays_phase1_expanded_variants_when_phase3_incomplete() -> None:
+    class FakeArtifactStore:
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            del phase_id
+            return None
+
+    phase_outputs: dict[str, object] = {
+        "phase_1_project_analysis": {
+            "custom_op_surface": {
+                "custom_op_detected": True,
+                "variant_axes_detected": True,
+                "variant_axes": {"shape": ["small", "large"]},
+                "expanded_operator_instances_count": 2,
+                "expanded_operator_variants": [
+                    {"unit_identity": "generic_kernel:shape=small"},
+                    {"unit_identity": "generic_kernel:shape=large"},
+                ],
+            }
+        },
+        "phase_3_entry_script": {
+            "entry_script_path": "/repo/project/validate_custom_ops_full.py",
+            "run_command": "python validate_custom_ops_full.py",
+            "required_checks": [],
+            "expanded_variant_inventory": {
+                "variant_axes_detected": False,
+                "unit_identities": ["generic_kernel:shape=small"],
+                "expanded_operator_instances_count": 1,
+            },
+        },
+    }
+
+    contract = Orchestrator(MockSessionManager(), "/repo/project", "workflow.yaml")._resolve_phase3_contract(
+        phase_outputs,
+        FakeArtifactStore(),
+    )
+
+    assert contract is not None
+    assert contract["expanded_variant_inventory"] == {
+        "variant_axes_detected": True,
+        "unit_identities": ["generic_kernel:shape=small", "generic_kernel:shape=large"],
+        "expanded_operator_instances_count": 2,
+    }
+    assert contract["variant_axis_coverage"] == {"all_axes_covered": True, "axes": {"shape": ["small", "large"]}}
+    assert set(contract["required_checks"]) >= {
+        "expanded_variant_inventory",
+        "variant_axis_coverage",
+        "per_variant_performance_report",
+    }
