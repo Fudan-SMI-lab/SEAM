@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.artifact_store import ArtifactStore
 from core.prompt_loader import PromptLoader
-from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState
+from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, force_custom_op_operator_routing_if_needed
 from core.runtime_artifacts import write_operator_repair_context_artifact
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
@@ -1676,6 +1676,25 @@ def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: 
 
     assert classification["category"] == "pathing"
     assert classification["repair_role"] == "code_adapter"
+
+
+def test_custom_op_negative_evidence_without_contract_does_not_force_operator() -> None:
+    classification = {
+        "category": "dependency",
+        "root_cause": "vendor torch is missing",
+        "suggested_fix": "select the container base environment",
+        "repair_role": "dependency_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="No custom operators exist; the custom-op evidence gate is not activated.",
+        history=[],
+        phase3_contract=None,
+    )
+
+    assert routed["category"] == "dependency"
+    assert routed["repair_role"] == "dependency_fixer"
 
 def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     outside = tmp_path / "outside"
