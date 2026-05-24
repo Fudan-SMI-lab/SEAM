@@ -330,6 +330,13 @@ def _mapping_reports_positive_evidence(evidence: Mapping[object, object]) -> boo
         "loaded",
         "executed",
         "covered",
+        "project_api_invoked",
+        "public_api_invoked",
+        "custom_op_route_executed",
+        "native_custom_op_route_executed",
+        "compiled_kernel_executed",
+        "project_api_route",
+        "public_api_route",
     )
     for field_name in positive_boolean_fields:
         if evidence.get(field_name) is True:

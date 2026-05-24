@@ -190,7 +190,6 @@ class TestValidateCustomOpFinalGate:
                         "adapter_evidence": {"imported": True, "passed": True},
                         "parity_evidence": {"verified": True, "passed": True},
                         "integration_e2e_evidence": {
-                            "passed": True,
                             "project_api_invoked": True,
                             "public_api_invoked": True,
                             "custom_op_route_executed": True,
