@@ -92,7 +92,7 @@ class AgentIOLogger:
         started_at: str,
         ended_at: str,
         duration_seconds: float,
-        timeout_seconds: int,
+        timeout_seconds: int | float | None,
         status: str,
         command: str,
         response: str,
