@@ -4752,6 +4752,103 @@ def test_disable_custom_op_injection_prevents_auto_injection(tmp_path: Path) -> 
     assert result["passed"] is True
 
 
+def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+        validator="entry_script",
+        agent="main_engineer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(
+            name="normal-entry-route",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
+            globals={"custom_op_route_enabled": False},
+        ),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+
+    normalized = executor._normalize_llm_output(
+        phase,
+        {
+            "entry_script_path": "train.py",
+            "run_command": "python train.py",
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": str(tmp_path / "migration_reports"),
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            "required_checks": ["same_run_runtime_coverage"],
+            "operator_discovery_sources": ["source"],
+            "operator_inventory_schema": {"semantic_rows": "one row per operator"},
+            "performance_report_schema": {"entries": "per unit"},
+            "validation_obligations": ["no_fallback"],
+            "phase5_entry_script_revision_allowed": True,
+        },
+        {"previous_outputs": "custom operators exist"},
+        {"phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}},
+    )
+
+    for field in (
+        "entry_script_kind",
+        "reports_dir",
+        "required_report_paths",
+        "required_checks",
+        "operator_discovery_sources",
+        "operator_inventory_schema",
+        "performance_report_schema",
+        "validation_obligations",
+        "phase5_entry_script_revision_allowed",
+    ):
+        assert field not in normalized
+    assert validate_entry_script(normalized)["passed"] is True
+
+
+def test_legacy_disable_custom_op_injection_strips_agent_contract_fields(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+        validator="entry_script",
+        agent="main_engineer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(
+            name="legacy-normal-entry-route",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
+            globals={"disable_custom_op_contract_injection": True},
+        ),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+
+    normalized = executor._normalize_llm_output(
+        phase,
+        {
+            "entry_script_path": "train.py",
+            "run_command": "python train.py",
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": str(tmp_path / "migration_reports"),
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+        },
+        {"previous_outputs": "custom operators exist"},
+        {},
+    )
+
+    assert "entry_script_kind" not in normalized
+    assert "reports_dir" not in normalized
+    assert "required_report_paths" not in normalized
+    assert validate_entry_script(normalized)["passed"] is True
+
+
 def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> None:
     """Without the disable flag (or with explicitly False), custom-op signals
     trigger entry_script_kind injection — backward-compatible behaviour."""
