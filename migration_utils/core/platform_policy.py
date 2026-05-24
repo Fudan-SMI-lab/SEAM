@@ -356,11 +356,15 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="musa_muxi",
         display_name="MUXI MUSA",
         custom_op_evidence=CustomOpEvidenceConfig(
-            target_device_values=["musa", "muxi", "musa_gpu"],
-            positive_boolean_fields=["musa_custom", "custom_musa", "musa_custom_invoked"],
+            target_device_values=["musa", "muxi", "musa_gpu", "maca", "metax", "mxgpu", "torch_maca"],
+            positive_boolean_fields=[
+                "musa_custom", "custom_musa", "musa_custom_invoked",
+                "maca_custom", "custom_maca", "maca_custom_invoked", "metax_custom_invoked",
+            ],
             artifact_path_tokens=[
                 "/musa/", "musa_kernel", "musa_op", "musa_plugin",
-                "muxi", "musart",
+                "muxi", "musart", "/maca/", "maca_kernel", "maca_op",
+                "maca_plugin", "maca_extension", "metax", "mxgpu",
             ],
             native_build_log_tokens=(
                 "musa",
@@ -368,30 +372,49 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "musart",
                 "musacc",
                 "musa_kernel",
+                "maca",
+                "metax",
+                "mxgpu",
+                "mxcc",
+                "mccl",
+                "maca_runtime",
             ),
             native_source_tokens=(
                 "musa.h",
                 "musart",
                 "musa_runtime",
                 "musa_kernel",
+                "maca",
+                "metax",
+                "maca_runtime",
+                "mxgpu",
             ),
             native_binary_tokens=(
                 b"musa",
                 b"muxi",
                 b"musart",
                 b"musacc",
+                b"maca",
+                b"metax",
+                b"mxgpu",
+                b"mxcc",
+                b"mccl",
             ),
             native_artifact_fields=(
                 "musa_custom_op_artifact",
                 "musa_custom_op_built",
                 "musa_kernel_built",
                 "musa_custom_op_loaded",
+                "maca_custom_op_artifact",
+                "maca_custom_op_built",
+                "maca_kernel_built",
+                "maca_custom_op_loaded",
             ),
             build_log_error_message=(
-                "must contain MUSA/MUXI build or link evidence, not a CPU-only build"
+                "must contain MUSA/MUXI/MACA build or link evidence, not a CPU-only build"
             ),
             binary_source_error_message=(
-                "must include independent MUSA binary or source evidence"
+                "must include independent MUSA/MUXI/MACA binary or source evidence"
             ),
             custom_op_evidence_policy=(
                 "require_real_musa_custom_op_artifacts"
@@ -399,7 +422,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         ),
         guidance_prefix="MUXI MUSA",
         guidance_native_label="MUXI GPU (MUSA)",
-        guidance_native_framework="torch_musa / MUSA PyTorch primitives",
+        guidance_native_framework="torch_musa / torch_maca / MUSA-MACA PyTorch primitives",
         guidance_python_binary="python",
     ),
     "rocm_amd": PlatformPolicy(
