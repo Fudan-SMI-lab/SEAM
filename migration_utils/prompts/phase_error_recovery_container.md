@@ -52,6 +52,10 @@ Phase 3 entry-script contract, including custom-op validation requirements:
 ## Fix History
 {previous_outputs}
 
+Use prior fixer summaries as repair evidence. If a dependency fixer reports verified remaining dependency/environment issues, route back to `dependency_fixer` with a dependency-closure fix. If it reports native/custom-op, shared-object, missing-symbol, or final-gate evidence as the remaining blocker, do not repeat dependency repair; route to `operator_fixer`.
+
+**IMPORTANT**: The fix history and prior fixer outputs (summary, modified_files, agent_diagnostics) are **hints only**. They describe what prior fixers attempted and observed, but they do NOT constitute verified facts about the current target runtime inside the container. The next fixer MUST independently verify the runtime environment, dependency closure, and execution behavior within the target container. Prior Phase 2 (.venv creation) decisions should be treated as advisory — the fixer must inspect the actual interpreter, packages, and environment inside the container before acting. Use `actual_execution_command` for all validation, not host-side commands.
+
 ## Previous Review Assessment
 {last_review}
 
@@ -100,6 +104,7 @@ recommended agent.
 - Identify the smallest credible fix that resolves the root cause.
 - Classify the failure and assign it to the right repair role.
 - Decide whether the phase is ready to retry or should stop.
+- When repeated dependency/environment failures appear, ask for verified dependency closure instead of one-package-at-a-time repair.
 
 ## Required Actions
 1. Identify the exact failed step, command, or file operation from the current failure below.

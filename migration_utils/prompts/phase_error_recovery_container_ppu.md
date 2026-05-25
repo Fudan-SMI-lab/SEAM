@@ -54,6 +54,8 @@ Phase 3 entry-script contract, including custom-op validation requirements:
 ## Fix History
 {previous_outputs}
 
+Use prior fixer summaries as repair evidence. If a dependency fixer reports verified remaining dependency/environment issues, route back to `dependency_fixer` with a dependency-closure fix. If it reports native/custom-op, shared-object, missing-symbol, or final-gate evidence as the remaining blocker, do not repeat dependency repair; route to `operator_fixer`.
+
 ## Previous Review Assessment
 {last_review}
 
@@ -97,6 +99,7 @@ the codebase and understand their own scope limitations.
 - Identify the smallest credible fix that resolves the root cause.
 - Classify the failure and assign it to the right repair role.
 - Decide whether the phase is ready to retry or should stop.
+- When repeated dependency/environment failures appear, ask for verified dependency closure instead of one-package-at-a-time repair.
 
 ## Required Actions
 1. Identify the exact failed step, command, or file operation from the current failure below.

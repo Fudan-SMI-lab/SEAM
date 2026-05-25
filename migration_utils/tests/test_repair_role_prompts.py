@@ -146,7 +146,6 @@ def test_dependency_fixer_prompt_contains_constraint_summary_and_handoff() -> No
     assert "/workspace/cuda_custom_op_skill_test_prompt.md" in prompt
     assert "第5点要求" in prompt
     assert "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
-    # New: constraint_summary content is now injected
     assert "Rule 1: No CPU fallback" in prompt
     assert "Migration Constraints (from Phase 1.5)" in prompt
     assert "No CPU Fallback (CRITICAL)" in prompt
@@ -154,9 +153,55 @@ def test_dependency_fixer_prompt_contains_constraint_summary_and_handoff() -> No
     assert "ModuleNotFoundError: No module named 'torch_npu'" not in prompt
     assert "Execution Failure" not in prompt
     assert "Error Classification" not in prompt
-    assert "agent_diagnostics" not in prompt
+    assert "handoff rationale in your `summary`" in prompt
+    assert "dependency closure" in prompt.lower()
     assert "runtime_error_artifact_path" not in prompt
     assert "runtime_card_artifact_path" not in prompt
+
+
+def test_dependency_fixer_prompt_contains_self_verified_closure_guidance() -> None:
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    prompt = _load_role_prompt(loader, "dependency_fixer")
+    assert "Self-Verified Dependency Closure (CRITICAL)" in prompt
+    assert "hints only" in prompt
+    assert "do not constitute verified facts" not in prompt  # that's in error_analyzer
+    assert "Batch In-Scope Dependency/Env Closure" in prompt
+    assert "actual execution command" in prompt.lower()
+    assert "Native/Custom-Op Handoff via Summary" in prompt
+    assert "summary" in prompt
+    assert "agent_diagnostics.handoff_recommended" not in prompt
+    assert "agent_diagnostics.dependency_closure_validated" not in prompt
+
+
+def test_muxi_container_dependency_prompt_uses_summary_for_closure_and_handoff() -> None:
+    content = (PROMPTS_DIR / "repair_dependency_fixer_container_musa.md").read_text(encoding="utf-8")
+    assert "Self-Verified Dependency Closure (CRITICAL)" in content
+    assert "hints only" in content
+    assert "Report the closure validation in `summary`" in content
+    assert "handoff need in your `summary`" in content
+    assert "agent_diagnostics.handoff_recommended" not in content
+    assert "agent_diagnostics.dependency_closure_validated" not in content
+
+
+def test_error_analyzer_prompt_contains_prior_outputs_hints_only() -> None:
+    """error_analyzer prompt warns that prior outputs are hints only."""
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    context = {
+        **COMMON_CONTEXT,
+        "phase_name": "error_analyzer",
+        "repair_role": "error_analyzer",
+        "failed_phase": "phase_5_validation",
+        "entry_script_contract": "{}",
+        "failure_log": "some error",
+        "previous_outputs": "(no history)",
+        "artifact_base_path": "/tmp/artifacts",
+        "raw_attempt_files": "(none)",
+    }
+    prompt_id = "phase_error_recovery"
+    prompt = loader.load_prompt(prompt_id, context)
+    assert "hints only" in prompt
+    assert "do NOT constitute verified facts" in prompt
+    assert "MUST independently verify" in prompt
 
 
 def test_code_adapter_prompt_contains_code_modification_content() -> None:
