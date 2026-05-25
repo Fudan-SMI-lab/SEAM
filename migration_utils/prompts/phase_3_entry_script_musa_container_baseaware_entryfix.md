@@ -7,28 +7,76 @@ You are executing `{phase_name}` for `{project_dir}`.
 ## Context
 This is a CUDA-to-MUSA/MUXI workflow. The selected command becomes the target runtime validation surface after rule migration and repair. MUSA execution should use `torch_musa`, `torch.musa`, MUSA SDK/compiler/runtime, or MUSA-supported accelerator primitives. If the actual MUXI environment exposes MACA/MetaX-compatible packages, use the observed vendor stack without changing the evidence schema.
 
+## Goal
+- Identify the TRUE entry script or command that validates the project's full real-world migration target.
+- Prefer documented project commands and existing launchers over generated scripts.
+- Create a script only when no usable command exists, and then exercise all core project features.
+- Do not choose a smoke, MVP, import-only, direct-only, or partial command when the project has a broader migration target.
+- For projects with native/custom ops, select or create a full validation script that emits the unchanged custom-op final-gate evidence schema.
+
 ## User Constraints
 {user_constraints}
 
-## Migration Constraints
+The above user constraints are **binding**. They take Priority #0: explicit user-mandated entry scripts and commands win over any custom-op generated wrappers or heuristic choices. If the user specifies an entry script or command, you must select it regardless of other rules.
+
+## Migration Constraints (from Phase 1.5)
 {constraint_summary}
 
-## Goal
-- Select a non-interactive command that validates the full target behavior.
-- Prefer user-mandated commands, documented project commands, and existing launchers.
-- Generate a wrapper only when no usable command exists.
-- For projects with native/custom ops, select or create a full validation script that emits the unchanged custom-op final-gate evidence schema.
+These constraints are binding. Consider them when selecting the entry script.
 
-## Hard Rules
-- Do not include `docker exec`, `podman exec`, `docker run`, container IDs, or container lifecycle commands in `run_command`; the framework backend handles execution.
-- `entry_script_path` and `reports_dir` must be host-visible absolute paths under `{project_dir}`.
-- `run_command` must be directly executable inside the target execution environment and may use `/workspace` paths.
-- If Phase 2 or the execution context identifies a vendor/base interpreter such as `/opt/conda/bin/python3.10`, use that absolute interpreter in `run_command`; do not use bare `python` or `python3.10` when they may resolve to system Python without vendor torch.
-- Do not weaken validation to import-only, smoke-only, report-only, direct-only, or CPU fallback success.
-- Do not say there are no custom operators unless Phase 1 source evidence supports it.
-- If custom/native ops exist, the entry must compile/load/run the native MUSA path and produce evidence.
+## Phase 2 Interpreter Choice (CRITICAL)
+
+In this same session, Phase 2 has already recorded its execution environment decision. Use it as follows:
+
+- **Use Phase 2's `python_path` as the preferred interpreter** from the Phase 2 environment decision. This field is always present and guaranteed.
+- Use Phase 2's `venv_path` and optional `env_type` only to understand context (base env vs project-local venv). They are hints, not bindings.
+- The `python_path` from Phase 2 is a preferred choice; your `run_command` must be directly executable by the target execution backend.
+
+## Custom-Op Mandatory Rules
+If the project includes CUDA/C++ custom operators or MUSA/native operators, select or create a non-interactive full validation script that discovers the inventory directly from source files, bindings, wrappers, autograd, aliases, launchers, setup scripts, and tests. The script must enumerate every source-discovered inventory unit before validation, execute coverage and performance checks for every unit, measure one overall/end-to-end speedup after all discovered custom-op units have been replaced and routed through the MUSA/MUXI native path and the project/public API, and emit one final inventory row per fine-grained source-discovered operator unit. Each final-gate row must include evidence as objects/dicts (not strings or scalars), with `name` matching `unit_identity` for consistent identity across source_inventory, manifest rows, and performance report entries. The `no_fallback_no_zero_call_no_builtin_contamination` evidence must be an object with all negative flags explicitly `false`. Script exit code 0 alone is insufficient — the custom_op_final_gate.json must pass structural evidence validation.
+
+Performance validation is configurable via platform policy (full/presence_only/disabled modes). Speedup fields may be optional in presence_only mode. CPU may be accepted as a baseline device only when explicitly configured; CPU baseline is not CPU fallback. The custom/migrated path must still prove MUSA/MUXI accelerator/native route execution.
+
+Do not claim there are no custom or native operators unless Phase 1 source evidence supports it. If custom or native operators exist, the entry script must compile, load, and run the native MUSA path and produce real project-local evidence for the observed MUXI-family accelerator path. CPU fallback, marker-only artifacts, and report-only success are invalid.
+
+## Decision Priority
+0. **User-mandated entry scripts (Priority #0)**: If the user explicitly specifies an entry script or command via constraints, that takes absolute precedence over all other rules.
+1. Use the project's documented non-interactive full validation command, adjusted only for absolute paths or the active Python interpreter chosen by Phase 2 in this session.
+2. Use an existing launcher (`train.py`, `run.py`, `generate.py`, `main.py`, `demo.py`, project test/benchmark/e2e runner) with arguments that cover the full target.
+3. For custom-op projects, create or select a full validation script when no documented full runner exists.
+4. Create `{project_dir}/smoke_test.py` only as a last resort for non-custom-op projects with no existing command.
+
+## Headless Execution Compliance
+The entry command is executed automatically in the target runtime:
+- No `input()`, `getpass()`, REPL/debugger stops, blocking GUI calls, or unbounded loops in the execution path.
+- If the existing launcher is interactive, prefer documented non-interactive flags or environment variables. Otherwise create a wrapper that calls the real entry point with safe defaults.
+- Do not invent unsupported CLI flags.
+- If you create or select a generated/wrapper script, physically write it under `{project_dir}` before returning JSON. Never return an `entry_script_path` for a file that does not exist.
+- **Verification requirement**: Before returning the final JSON, confirm the selected or created script file exists by reading its contents or listing it. Do NOT execute the full migration workload during Phase 3. You are selecting and verifying the entry script path, not running validation. Do not build, adapt, repair, or migrate the project in Phase 3.
+
+## Execution Backend Prohibition (CRITICAL)
+The framework backend handles execution and lifecycle for the target execution environment. The `run_command` you return will be executed by that backend automatically.
+- **Do NOT** include `docker exec`, `podman exec`, `docker run`, `podman run`, `podman create`, `podman start`, `podman stop`, `podman rm`, container names/IDs, or any host-level container lifecycle invocations in `run_command`.
+- **Do NOT** reference pre-existing or shared containers; the framework manages execution/lifecycle.
+- **Do**: return the direct command that runs the entry script in the target execution environment, e.g. `python3 /workspace/run_e2e.py` or `python /workspace/run_e2e.py`.
+- Execution and lifecycle are handled entirely by the framework backend. You must not attempt to manage containers or execution environment lifecycle yourself.
+
+Example good: `python3 /workspace/run_e2e.py`
+Example bad: `podman exec my-container-name python3 /opt/.../run_e2e.py`
+
+You may reason freely about the choice, but return exactly one JSON object.
+
+## Field Semantics (CRITICAL — read carefully)
+
+- **`entry_script_path`**: MUST be a **host-visible absolute path** under `{project_dir}` that is readable by file tools (e.g. `read`) and by the Phase 3.5 static validator. In container workflows, the container mounts `{project_dir}` at a container workdir (shown in execution environment context as `container_project_dir`). If the file is at `${container_project_dir}/run_e2e.py` inside the container, the corresponding host-visible path is `{project_dir}/run_e2e.py`. **Never return a container-internal-only path as `entry_script_path`** — the Phase 3 validator resolves this path on the host filesystem.
+
+- **`reports_dir`**: MUST be a **host-visible absolute path** to the project's `migration_reports` directory, normally `{project_dir}/migration_reports`. This path is used by the Phase 3 validator to locate report files on the host filesystem.
+
+- **`run_command`**: The exact non-interactive command the target execution backend will execute. This runs *inside* the container, so it may use container-visible paths (e.g. `${container_project_dir}/run_e2e.py` or `/workspace/run_e2e.py`). The backend handles host-to-container path rewriting for you. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
 
 ## Normal Output Format
+Return exactly one JSON object:
+
 ```json
 {
   "entry_script_path": "{project_dir}/run_e2e.py",
@@ -36,11 +84,6 @@ This is a CUDA-to-MUSA/MUXI workflow. The selected command becomes the target ru
   "phase5_entry_script_revision_allowed": true
 }
 ```
-
-## Custom-Op Rules
-- Do not say there are no custom operators unless Phase 1 source evidence supports it.
-- If custom/native ops exist, the entry must compile, load, run, and produce real project-local evidence for the observed MUXI-family accelerator path.
-- CPU fallback, marker-only artifacts, and report-only success are invalid.
 
 ## Custom-Op Output Format
 Keep the evidence schema names unchanged:
@@ -79,3 +122,14 @@ Keep the evidence schema names unchanged:
   "phase5_entry_script_revision_allowed": true
 }
 ```
+
+## Field Semantics (custom-op fields)
+- `entry_script_kind`: use `custom_op_full_validation` for custom-op projects; omit for normal projects.
+- `reports_dir`: target project's `migration_reports` directory for custom-op evidence. Must be a host-visible absolute path.
+- `operator_discovery_sources`: source locations the script must discover before validating; do not rely on external requirements docs for completion.
+- `operator_inventory_schema`: required inventory fields; rows without fine-grained unit identity, variant/signature, native symbols, kernel launch sites, public entry mapping, or source evidence are incomplete.
+- `performance_report_schema`: required `migration_reports/performance.json` / final `performance_report` fields for the final gate: per-unit entries for every manifest/source-inventory unit, `overall_baseline_seconds`, `overall_custom_seconds`, `overall_speedup_vs_baseline`, `overall_all_units_replaced=true` or equivalent nested all-units proof, and project/public API route proof.
+- `required_report_paths`: required migration reports the script must produce/check. Must include `build` (e.g. `migration_reports/build.json`).
+- `required_checks`: fail-closed checks including native operator symbol/kernel inventory, complete `migration_reports/performance.json` per-unit speedup-report closure, and one overall/end-to-end speedup after every discovered custom-op unit has been replaced.
+- `validation_obligations`: machine-checkable validation obligations; they must enforce full project-local runtime migration, a complete per-unit speedup report, and an overall all-units-replaced speedup report, not smoke/MVP/report-only success.
+- `phase5_entry_script_revision_allowed`: `true` means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract.
