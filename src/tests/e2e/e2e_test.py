@@ -52,7 +52,7 @@ def log(msg: str, *, flush: bool = True) -> None:
 TEMPLATE_DIR = PACKAGE_ROOT / "test_project_template"
 WORKFLOW_PATH = PACKAGE_ROOT / "workflows" / "npu_migration_v1.yaml"
 REPO_ROOT = execution_root()
-OUTPUT_ROOT = REPO_ROOT / "e2e-reports" / "migration_utils"
+OUTPUT_ROOT = REPO_ROOT / "e2e-reports" / "src"
 
 
 @dataclass
@@ -379,7 +379,7 @@ def print_summary(summary: RunSummary) -> None:
 
 def run_e2e(
     *,
-    base_url: str,
+    base_url: str | None,
     max_phase5_iter: int,
     keep_temp_dir: bool,
     agent_name: str | None,
@@ -409,7 +409,7 @@ def run_e2e(
     phase_total = 7 if user_constraints else 6
 
     try:
-        if server_auto_start and (not base_url or base_url == DEFAULT_SERVER_URL):
+        if server_auto_start and base_url is None:
             from harness.server.lifecycle import find_available_port, start_server, stop_server, wait_for_server
 
             port = server_port if server_port > 0 else find_available_port()
@@ -419,6 +419,8 @@ def run_e2e(
                 _ = stop_server(server_proc)
                 server_proc = None
                 raise RuntimeError(f"Server failed to start on {base_url}")
+        else:
+            base_url = base_url or DEFAULT_SERVER_URL
         check_server_running(base_url)
         log(f"OpenCode server reachable at {base_url}")
     except Exception as exc:
@@ -729,7 +731,7 @@ def run_e2e(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the real migration_utils E2E workflow against the test project template.")
-    _ = parser.add_argument("--server-url", default=DEFAULT_SERVER_URL, help=f"OpenCode server URL (default: {DEFAULT_SERVER_URL})")
+    _ = parser.add_argument("--server-url", default=None, help=f"OpenCode server URL (default: {DEFAULT_SERVER_URL})")
     _ = parser.add_argument(
         "--max-phase5-iter",
         type=positive_int,
@@ -784,7 +786,7 @@ def _resolve_user_constraints(raw: str) -> str:
 
 def main() -> int:
     args = build_parser().parse_args()
-    server_url = cast(str, args.server_url)
+    server_url: str | None = args.server_url
     max_phase5_iter = cast(int, args.max_phase5_iter)
     keep_temp_dir = cast(bool, args.keep_temp_dir)
     agent_name = cast(str | None, args.agent)

@@ -67,3 +67,32 @@ def test_v2_entrypoint_unaffected() -> None:
     assert v2_shell.exists(), "V2 shell wrapper must exist"
     shell_content = v2_shell.read_text(encoding="utf-8")
     assert "--workflow" not in shell_content, "V2 shell must not have --workflow"
+
+
+# ── new: --server-no-auto-start and parser regressions ──
+
+def test_v3_parser_accepts_server_no_auto_start() -> None:
+    """Verify V3 (e2e_test_v3.py) --server-no-auto-start is a recognized flag."""
+    completed = subprocess.run(
+        [sys.executable, "-m", "tests.e2e.e2e_test_v3", "--server-no-auto-start", "--help"],
+        cwd=EXECUTION_ROOT,
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, f"stderr: {completed.stderr}"
+
+
+def test_v3_parser_server_url_default_is_none() -> None:
+    code = (
+        "import sys; sys.path.insert(0, 'src'); "
+        "from tests.e2e.e2e_test_v3 import build_parser; "
+        "p = build_parser(); "
+        "defaults = {a.dest: a.default for a in p._actions}; "
+        "print(defaults.get('server_url'))"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=EXECUTION_ROOT,
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, f"stderr: {completed.stderr}"
+    assert completed.stdout.strip() == "None", f"Expected None, got {completed.stdout.strip()!r}"
