@@ -359,6 +359,7 @@ def run_e2e_v3(
     from validators.validate_rule_migration import validate as validate_rule_migration
     from validators.validate_validation_final import validate as validate_validation_final
     from validators.validate_reports import validate as validate_reports
+    from validators.validate_constraint_summary import validate as validate_constraint_summary
 
     started_at = datetime.now(timezone.utc)
     run_id = f"e2e-v3-{uuid4().hex[:12]}"
@@ -440,6 +441,7 @@ def run_e2e_v3(
         validator.register_validator("rule_migration", validate_rule_migration)
         validator.register_validator("validation_final", validate_validation_final)
         validator.register_validator("reports", validate_reports)
+        validator.register_validator("constraint_summary", validate_constraint_summary)
         validator.register_validator("repair_classification", lambda d: {"passed": True, "errors": [], "warnings": []})
 
         workflow = load_workflow(str(effective_workflow_path))
