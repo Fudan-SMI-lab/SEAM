@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import cast
 
 
+from core.assisted_verification import validate_phase1_assisted_report
 from core.custom_op_variants import normalize_project_analysis_expanded_variants
 from core.custom_op_variants import source_template_expanded_variants
 from validators.validate_project_analysis import validate as validate_project_analysis
@@ -177,6 +178,39 @@ def _dict_rows(items: Iterable[object]) -> list[dict[str, object]]:
     return rows
 
 
+def _variant_identity_with_axis_order(row: Mapping[str, object], axis_order: list[str]) -> str:
+    base = str(row.get("base_unit_identity") or "")
+    axis_values = cast(dict[str, str], row.get("axis_values", {}))
+    ordered_axes = [axis for axis in axis_order if axis in axis_values]
+    ordered_axes.extend(axis for axis in axis_values if axis not in ordered_axes)
+    return ":".join([base, *(f"{axis}={axis_values[axis]}" for axis in ordered_axes)])
+
+
+def _phase1_report_for_variants(surface: Mapping[str, object], variant_ids: list[str]) -> dict[str, object]:
+    fine_units = cast(list[str], surface["fine_grained_operator_units"])
+    return {
+        "phase_id": "phase_1_project_analysis",
+        "track": "custom_op_variant",
+        "verdict": "complete",
+        "evidence": ["source-discovered custom-op variant inventory checked"],
+        "missing_units": [],
+        "extra_units": [],
+        "missing_variants": [],
+        "extra_variants": [],
+        "collapsed_or_representative_rows": [],
+        "unresolved_source_groups": [],
+        "phase1_inventory": {
+            "fine_grained_operator_units": fine_units,
+            "expanded_operator_instances_count": len(variant_ids),
+            "expanded_unit_identities": variant_ids,
+        },
+        "source_evidence_inventory": {
+            "fine_grained_operator_units": fine_units,
+            "expanded_unit_identities": variant_ids,
+        },
+    }
+
+
 def test_source_template_expanded_variants_reads_macro_preamble_for_storage_load(tmp_path: Path) -> None:
     surface = _build_deepwave_like_surface(tmp_path / "mini_project")
     rows = source_template_expanded_variants(surface, project_dir=str(tmp_path / "mini_project"))
@@ -219,6 +253,52 @@ def test_normalize_project_analysis_expanded_variants_recovers_deepwave_like_240
         for row in variants
         if row.get("base_unit_identity") == "storage:load_snapshot_gpu"
     )
+
+
+def test_phase1_assisted_report_accepts_semantic_variant_axis_order(tmp_path: Path) -> None:
+    project_dir = tmp_path / "deepwave_like_project"
+    surface = _build_deepwave_like_surface(project_dir)
+    variants = source_template_expanded_variants(surface, project_dir=str(project_dir))
+    reordered_variants: list[dict[str, object]] = []
+    for row in variants:
+        variant = dict(row)
+        axis_values = cast(dict[str, str], variant.get("axis_values", {}))
+        if "accuracy" in axis_values and "dtype" in axis_values:
+            variant["unit_identity"] = _variant_identity_with_axis_order(
+                variant,
+                ["ndim", "accuracy", "dtype", "device"],
+            )
+        reordered_variants.append(variant)
+    surface["expanded_operator_variants"] = reordered_variants
+    surface["expanded_operator_instances_count"] = len(reordered_variants)
+    phase_output = {"project_dir": str(project_dir), "custom_op_surface": surface}
+    variant_ids = [str(row["unit_identity"]) for row in reordered_variants]
+
+    assert len(variant_ids) == 240
+    assert validate_phase1_assisted_report(_phase1_report_for_variants(surface, variant_ids), phase_output) == []
+
+
+def test_phase1_assisted_report_rejects_variant_axis_value_mismatch(tmp_path: Path) -> None:
+    project_dir = tmp_path / "deepwave_like_project"
+    surface = _build_deepwave_like_surface(project_dir)
+    variants = source_template_expanded_variants(surface, project_dir=str(project_dir))
+    bad_variants = [dict(row) for row in variants]
+    first_with_dtype = next(row for row in bad_variants if "dtype" in cast(dict[str, str], row.get("axis_values", {})))
+    bad_axis_values = dict(cast(dict[str, str], first_with_dtype["axis_values"]))
+    bad_axis_values["dtype"] = "half"
+    first_with_dtype["axis_values"] = bad_axis_values
+    first_with_dtype["unit_identity"] = _variant_identity_with_axis_order(
+        first_with_dtype,
+        ["ndim", "accuracy", "dtype", "device"],
+    )
+    surface["expanded_operator_variants"] = bad_variants
+    surface["expanded_operator_instances_count"] = len(bad_variants)
+    phase_output = {"project_dir": str(project_dir), "custom_op_surface": surface}
+    variant_ids = [str(row["unit_identity"]) for row in bad_variants]
+
+    errors = validate_phase1_assisted_report(_phase1_report_for_variants(surface, variant_ids), phase_output)
+
+    assert any("normalized Phase 1 output" in error for error in errors)
 
 
 def test_normalize_project_analysis_drops_source_discovered_alias_units(tmp_path: Path) -> None:

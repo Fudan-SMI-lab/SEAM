@@ -373,7 +373,7 @@ def phase1_inventory(phase_output: Mapping[str, object] | None) -> PhaseInventor
     units = tuple(_string_list(surface.get("fine_grained_operator_units")))
     variants = _variant_unit_ids(surface.get("expanded_operator_variants"))
     generated_variants = _source_template_variant_ids(phase_output, surface)
-    if generated_variants and set(generated_variants) != set(variants):
+    if generated_variants and not _variant_identity_sets_match(generated_variants, variants):
         variants = generated_variants
     declared_count = surface.get("expanded_operator_instances_count")
     count = len(variants)
@@ -422,7 +422,7 @@ def validate_phase1_assisted_report(report: Mapping[str, object], phase_output: 
         surface_obj = phase_output.get("custom_op_surface")
         surface: Mapping[str, object] = cast(Mapping[str, object], surface_obj) if isinstance(surface_obj, Mapping) else {}
         concrete_variants = set(_variant_unit_ids(surface.get("expanded_operator_variants")))
-        if concrete_variants and set(expected.expanded_unit_identities) != concrete_variants:
+        if concrete_variants and not _variant_identity_sets_match(expected.expanded_unit_identities, concrete_variants):
             missing = sorted(set(expected.expanded_unit_identities) - concrete_variants)
             extra = sorted(concrete_variants - set(expected.expanded_unit_identities))
             if missing:
@@ -1067,7 +1067,7 @@ def _collapsed_rows_are_report_only_variant_summary(report: Mapping[str, object]
 
 def _reported_variants_cover_expected(reported_variants: set[str], expected: PhaseInventory) -> bool:
     expected_variants = set(expected.expanded_unit_identities)
-    if reported_variants == expected_variants:
+    if _variant_identity_sets_match(expected.expanded_unit_identities, reported_variants):
         return True
     summary = "\n".join(sorted(reported_variants))
     if _verbatim_count_covers_expected(summary, expected):
@@ -1497,6 +1497,48 @@ def _expected_variant_counts_by_base(values: Sequence[str]) -> dict[str, int]:
         base = _variant_base_identity(value)
         counts[base] = counts.get(base, 0) + 1
     return counts
+
+
+def _variant_identity_sets_match(expected: Iterable[str], reported: Iterable[str]) -> bool:
+    expected_values = set(expected)
+    reported_values = set(reported)
+    if expected_values == reported_values:
+        return True
+    expected_keys = _variant_identity_key_set(expected_values)
+    reported_keys = _variant_identity_key_set(reported_values)
+    return expected_keys is not None and reported_keys is not None and expected_keys == reported_keys
+
+
+def _variant_identity_key_set(values: Iterable[str]) -> set[tuple[str, tuple[tuple[str, str], ...]]] | None:
+    keys: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+    for value in values:
+        key = _variant_identity_key(value)
+        if key is None:
+            return None
+        keys.add(key)
+    return keys
+
+
+def _variant_identity_key(value: str) -> tuple[str, tuple[tuple[str, str], ...]] | None:
+    base = _variant_base_identity(value)
+    if not base or base == value:
+        return None
+    tail = value[len(base):].lstrip(":")
+    if not tail:
+        return None
+    axis_pairs: list[tuple[str, str]] = []
+    seen_axes: set[str] = set()
+    for segment in tail.split(":"):
+        if "=" not in segment:
+            return None
+        axis_name, axis_value = segment.split("=", 1)
+        axis_name = axis_name.strip()
+        axis_value = axis_value.strip()
+        if not axis_name or not axis_value or axis_name in seen_axes:
+            return None
+        seen_axes.add(axis_name)
+        axis_pairs.append((axis_name, axis_value))
+    return base, tuple(sorted(axis_pairs))
 
 
 def _variant_base_identity(value: str) -> str:
