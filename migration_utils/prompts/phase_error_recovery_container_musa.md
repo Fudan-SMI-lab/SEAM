@@ -34,6 +34,8 @@ If backend mode is `container`, use `actual_execution_command` and do not run th
 ## Fix History
 {previous_outputs}
 
+Use prior fixer summaries as repair evidence. If a dependency fixer reports verified remaining dependency/environment issues, route back to `dependency_fixer` with a dependency-closure fix. If it reports native/custom-op, shared-object, missing-symbol, or final-gate evidence as the remaining blocker, do not repeat dependency repair; route to `operator_fixer`.
+
 ## Previous Review Assessment
 {last_review}
 
@@ -44,7 +46,7 @@ Raw execution log files from previous validation attempts:
 {raw_attempt_files}
 
 ## Goal
-Identify the first real exception, compare against history, and route exactly one repair role for the smallest credible root-cause fix.
+Identify the first real exception, compare against history, and route exactly one repair role for the smallest credible root-cause fix. When repeated dependency/environment failures appear, the suggested fix should ask for verified dependency closure instead of one-package-at-a-time repair.
 
 ## Classification Buckets
 - `environment`: device/runtime/env vars/interpreter wrong.

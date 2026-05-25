@@ -39,6 +39,8 @@ Phase 3 entry-script contract, including custom-op validation requirements:
 ## Fix History
 {previous_outputs}
 
+**IMPORTANT**: The fix history and prior fixer outputs (summary, modified_files, agent_diagnostics) are **hints only**. They describe what prior fixers attempted and observed, but they do NOT constitute verified facts about the current target runtime. The next fixer MUST independently verify the runtime environment, dependency closure, and execution behavior itself. Prior Phase 2 (.venv creation) decisions should be treated as advisory — the fixer must inspect the actual interpreter, packages, and environment before acting.
+
 ## Previous Review Assessment
 {last_review}
 
