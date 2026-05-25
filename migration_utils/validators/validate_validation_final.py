@@ -1103,8 +1103,20 @@ def _paths_match(runtime_path: str, native_path: str, project_root: Path | None)
     if project_root is not None:
         runtime_resolved = _resolve_path_under_project_root(project_root, runtime_path)
         native_resolved = _resolve_path_under_project_root(project_root, native_path)
-        return runtime_resolved is not None and native_resolved is not None and runtime_resolved == native_resolved
+        if runtime_resolved is not None and native_resolved is not None:
+            return runtime_resolved == native_resolved
+        if native_resolved is not None and _container_runtime_path_matches_project_relative(runtime_path, native_path):
+            return True
+        return False
     return _normalize_reported_path(runtime_path) == _normalize_reported_path(native_path)
+
+
+def _container_runtime_path_matches_project_relative(runtime_path: str, native_path: str) -> bool:
+    native_normalized = _normalize_reported_path(native_path)
+    if not native_normalized or native_normalized.startswith("/") or ".." in Path(native_normalized).parts:
+        return False
+    runtime_normalized = runtime_path.strip().replace("\\", "/")
+    return runtime_normalized.endswith("/" + native_normalized) or runtime_normalized == native_normalized
 
 
 def _normalize_reported_path(value: str) -> str:

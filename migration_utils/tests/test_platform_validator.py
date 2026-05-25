@@ -265,7 +265,7 @@ class TestValidateCustomOpFinalGate:
                     "built": True,
                     "loaded": True,
                     "project_relative_path": "src/pkg/libcustom.so",
-                    "runtime_loaded_module_file": "src/pkg/libcustom.so",
+                    "runtime_loaded_module_file": "/workspace/src/pkg/libcustom.so",
                     "build_provenance": {
                         "command": "mxcc -shared kernel.cu -o libcustom.so",
                         "log_path": "migration_reports/build.log",
