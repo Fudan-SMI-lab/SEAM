@@ -28,7 +28,7 @@ class ExperienceStore:
         self.cases_dir = os.path.join(repo_root, "memory", "cases")
         self.promotions_dir = os.path.join(repo_root, "memory", "promotions")
         self.index_path = os.path.join(repo_root, "memory", "index", "cases.jsonl")
-        self.skills_dir = os.path.join(repo_root, "skills")
+        self.skills_dir = os.path.join(repo_root, ".memory", "skills")
         self.registry = ExperienceRegistry(repo_root)
         self.local_skills_dir = self.registry.local_skills_dir
         self.catalog_path = self.registry.catalog_path

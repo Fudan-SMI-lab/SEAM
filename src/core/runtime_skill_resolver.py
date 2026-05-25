@@ -39,7 +39,7 @@ class RuntimeSkillResolver:
 
     def __init__(self, repo_root: str | Path) -> None:
         self.repo_root: Path = Path(repo_root)
-        self.skills_dir: Path = self.repo_root / "skills"
+        self.skills_dir: Path = self.repo_root / ".memory" / "skills"
         self.local_skills_dir: Path = self._resolve_local_skills_dir()
         self.skill_roots: tuple[tuple[str, Path], ...] = (
             ("canonical", self.skills_dir),
