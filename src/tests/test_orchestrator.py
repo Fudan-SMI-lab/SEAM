@@ -279,7 +279,7 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
         ("cleanup_all", None),
     ]
     assert journal_entries[-1]["status"] == "cleanup_completed"
-    assert prompt_loader_dirs and prompt_loader_dirs[0].endswith("migration_utils/prompts")
+    assert prompt_loader_dirs and prompt_loader_dirs[0].endswith("src/prompts")
     assert len(phase_runner_init_args) == 1
     assert phase_runner_init_args[0][0] is not None
     assert phase_runner_init_args[0][0].name == "mock-workflow"

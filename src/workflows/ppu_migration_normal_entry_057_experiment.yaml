@@ -302,7 +302,6 @@ sub_workflows:
           echo "[setup] Setup complete. Creating marker file."
           touch .normal_entry_setup_done
         cwd: "${loop_vars.project_dir}"
-        timeout: 600
         on_failure: continue
 
       - id: run_entry_script

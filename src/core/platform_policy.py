@@ -87,7 +87,7 @@ class PlatformPolicy:
     default_rule_migration_strategy: str = "report_only"
     """Default Phase 4 rule migration strategy id for this platform.
 
-    Strategy YAML files live in ``migration_utils/rule_strategies/``.
+    Strategy YAML files live in ``src/rule_strategies/``.
     The resolver checks (in order): workflow ``params.backend`` (legacy),
     workflow ``rule_migration.strategy`` (new), this field, and finally
     ``"report_only"`` as the absolute safe fallback.

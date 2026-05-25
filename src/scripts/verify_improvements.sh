@@ -50,6 +50,8 @@ fi
 REPO_ROOT="${REPO_ROOT%/}"
 if [ -d "${REPO_ROOT}/prompts" ]; then
     PROMPTS_DIR="${REPO_ROOT}/prompts"
+elif [ -d "${REPO_ROOT}/src/prompts" ]; then
+    PROMPTS_DIR="${REPO_ROOT}/src/prompts"
 elif [ -d "${REPO_ROOT}/migration_utils/prompts" ]; then
     PROMPTS_DIR="${REPO_ROOT}/migration_utils/prompts"
 else

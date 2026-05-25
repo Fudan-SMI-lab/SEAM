@@ -1,4 +1,4 @@
-"""Shared path helpers for root-aware migration_utils execution."""
+"""Shared path helpers for root-aware src/ execution."""
 
 from __future__ import annotations
 
@@ -8,17 +8,22 @@ from pathlib import Path
 
 def _parent_workspace_root() -> Path:
     """Return the workspace directory that contains SEAM."""
-    return migration_utils_root().parent.parent
+    return src_root().parent.parent
+
+
+def src_root() -> Path:
+    """Return the canonical src/ package root."""
+    return Path(__file__).resolve().parent.parent
 
 
 def migration_utils_root() -> Path:
-    """Return the migration_utils package root."""
-    return Path(__file__).resolve().parent.parent
+    """Deprecated alias for src_root(). Use src_root() instead."""
+    return src_root()
 
 
 def execution_root() -> Path:
     """Return the unified SEAM execution root."""
-    return migration_utils_root().parent
+    return src_root().parent
 
 
 def workspace_root() -> Path:
@@ -63,12 +68,12 @@ def project_search_roots() -> list[Path]:
 
 
 def resolve_relative_path(path: str | Path, *, extra_roots: list[Path] | None = None) -> Path:
-    """Resolve a relative path from cwd, execution root, then migration_utils root."""
+    """Resolve a relative path from cwd, execution root, then src root."""
     candidate = Path(path)
     if candidate.is_absolute():
         return candidate
 
-    search_roots = [Path.cwd(), execution_root(), migration_utils_root()]
+    search_roots = [Path.cwd(), execution_root(), src_root()]
     if extra_roots:
         search_roots.extend(extra_roots)
 

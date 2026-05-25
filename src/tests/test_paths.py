@@ -12,13 +12,23 @@ from core.paths import (  # noqa: E402
     legacy_workspace_root,
     project_search_roots,
     migration_utils_root,
+    src_root,
     workspace_root,
 )
 
 
+def test_src_root_is_self() -> None:
+    """src_root() should point to the src/ directory (this package)."""
+    assert src_root().name == "src"
+
+
+def test_migration_utils_root_is_deprecated_alias() -> None:
+    """migration_utils_root() is a deprecated alias for src_root()."""
+    assert migration_utils_root() == src_root()
+
+
 def test_execution_root_is_seam_root() -> None:
-    assert migration_utils_root().name == "migration_utils"
-    assert execution_root().name == "SEAM"
+    assert execution_root().name == "SEAM-merge-main-fusion-baseline"
     assert workspace_root() == execution_root()
 
 

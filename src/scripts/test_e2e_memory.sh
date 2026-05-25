@@ -12,8 +12,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MIGRATION_UTILS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$MIGRATION_UTILS_DIR/.." && pwd)"
+SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
 OUTPUT_PROJECTS_DIR="${MIGRATION_OUTPUT_PROJECTS_ROOT:-$(dirname "$REPO_ROOT")/output_projects}"
 PROJECT_SEARCH_DIRS=(
     "$REPO_ROOT/original_projects"
@@ -128,7 +128,7 @@ echo ""
 
 # ── Run unit tests first ──
 echo -e "${CYAN}── Running E2E unit tests ──${NC}"
-cd "$MIGRATION_UTILS_DIR"
+cd "$SRC_DIR"
 python tests/e2e/test_experience_memory.py
 echo ""
 

@@ -8,7 +8,7 @@ The failed phase is `{failed_phase}`.
 
 These constraints are binding. When diagnosing failures and suggesting fixes, always prefer solutions that keep computation on PPU. CPU fallback is not acceptable for custom-op contracts and must not be treated as final success.
 
-Custom-op reference: diagnosing custom-op/operator failures 时，查看 `{workspace_root}/cuda_custom_op_skill_test_prompt.md` 第2、3、5、6点要求；不要内联完整规则文本。
+Custom-op reference: diagnosing custom-op/operator failures 时，查看 `{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md` 第2、3、5、6点要求；不要内联完整规则文本。
 
 ## Environment Context (from Phase 0)
 {env_context}

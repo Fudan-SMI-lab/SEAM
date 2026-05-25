@@ -110,8 +110,8 @@ def test_phase3_and_phase5_prompts_require_complete_performance_report_closure()
 
 def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline_rules():
     expectations = {
-        "phase_error_recovery.md": ("{workspace_root}/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
-        "repair_dependency_fixer.md": ("{workspace_root}/cuda_custom_op_skill_test_prompt.md", "第5点要求"),
+        "phase_error_recovery.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
+        "repair_dependency_fixer.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第5点要求"),
     }
 
     for filename, required_phrases in expectations.items():
@@ -131,7 +131,7 @@ def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline
 
 
 def test_root_custom_op_skill_prompt_is_owned_by_execution_root():
-    prompt_path = EXECUTION_ROOT / "cuda_custom_op_skill_test_prompt.md"
+    prompt_path = EXECUTION_ROOT / "docs" / "cuda_custom_op_skill_test_prompt.md"
     content = prompt_path.read_text(encoding="utf-8")
 
     assert prompt_path.is_file()
