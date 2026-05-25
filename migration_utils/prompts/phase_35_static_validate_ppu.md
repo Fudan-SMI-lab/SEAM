@@ -3,14 +3,14 @@
 You are executing `{phase_name}` for `{project_dir}`.
 
 ## Context
-This is Phase 3.5 in the CUDA -> PPU migration workflow. Phase 3 has selected an entry script and run command. Your job is to **statically analyze** the selected entry script for patterns that would prevent automated, headless execution in Phase 5.
+This is Phase 3.5 in the CUDA -> PPU migration workflow. Phase 3 has selected an entry script and run command. Your job is to **statically analyze** the selected entry script for patterns that would prevent automated, headless execution in the target runtime.
 
 ## Goal
 Analyze the `entry_script_path` selected in Phase 3 and determine if it can run non-interactively (no user input, no infinite loops, no GUI prompts).
 
 ## Analysis Checklist
 
-Examine the entry script file at `{entry_script_path}`. This path is a **host-visible absolute path** provided by the Phase 3 output; it is readable via OpenCode file tools (e.g. `read`) and accessible inside the execution container. Check for:
+Examine the entry script file at `{entry_script_path}`. This path is a **host-visible absolute path** provided by the Phase 3 output; it is readable via file tools (e.g. `read`) and accessible inside the execution container. Check for:
 
 1. **Interactive input calls**: `input()`, `raw_input()`, `getpass()`, `getpass.getpass()`, `code.interact()`, `cmd.Cmd()`, `click.prompt()`, `rich.prompt.*`
 2. **Infinite loops without exit**: `while True:` or `while 1:` loops that have no `break`, no signal handler, no epoch/step limit, and no timeout mechanism.
