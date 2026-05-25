@@ -15,10 +15,16 @@ from harness.session.manager import extract_json_response
 from core.artifact_store import ArtifactStore
 from core.execution_backend import get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_env_ctx
 from core.paths import resolve_relative_path, workspace_root
+from core.phase_boundary import inject_phase_boundary
 from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, resolve_phase6_timeout
 from core.prompt_loader import PromptLoader
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition
+from core.validation_correction import (
+    build_phase_correction_prompt,
+    build_validation_correction_prompt,
+    extract_output_format_from_prompt,
+)
 from core.validator_engine import ValidationResult, ValidatorEngine
 from migrator.rule_based import RuleBasedMigrator
 from validators.validate_entry_script import validate as validate_entry_script
@@ -419,6 +425,7 @@ class PhaseRunner:
             prompt,
             "phase_1_5_constraint_summary",
         )
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
         raw_response = session_mgr.send_command(main_session_id, prompt, timeout=None)
         parsed: JsonObject = dict(extract_json_response(raw_response))
@@ -485,6 +492,7 @@ class PhaseRunner:
             },
         )
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_5_review")
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
         active_prompt = prompt
         parsed: JsonObject = {}
@@ -651,6 +659,7 @@ class PhaseRunner:
 
         prompt = self.prompt_loader.load_prompt("phase_6_report", prompt_context)
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_6_report")
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
         fallback_reason = ""
         try:
@@ -725,6 +734,7 @@ class PhaseRunner:
         prompt_context = self._build_prompt_context(phase, normalized_context)
         prompt = self.prompt_loader.load_prompt(phase.prompt_id, prompt_context)
         prompt = self._append_explicit_runtime_skill_markdown(prompt, phase.prompt_id)
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
         max_retry = self._resolve_max_retry(normalized_context)
         timeout = self._resolve_timeout(phase, normalized_context)
         session_ref = self._session_reference(session)
@@ -734,6 +744,18 @@ class PhaseRunner:
         for attempt in range(1, max_retry + 1):
             raw_response = self._send_prompt(session, active_prompt, timeout, session_mgr)
             parsed_output: JsonObject = dict(extract_json_response(raw_response))
+            output_format = self._extract_output_format_from_prompt(active_prompt)
+            parse_attempt = 0
+            while not parsed_output and parse_attempt < 2:
+                parse_attempt += 1
+                parse_prompt = build_validation_correction_prompt(
+                    "Your response did not contain a valid JSON object.",
+                    output_format_example=output_format,
+                    is_parse_failure=True,
+                    phase_name=phase.prompt_id,
+                )
+                raw_response = self._send_prompt(session, parse_prompt, timeout, session_mgr)
+                parsed_output = dict(extract_json_response(raw_response))
             normalized_output = self._normalize_output(phase, parsed_output, prompt_context, normalized_context)
 
             # Attach raw prompt and response for end-to-end verification.
@@ -793,35 +815,15 @@ class PhaseRunner:
         validation: ValidationResult,
         previous_prompt: str,
     ) -> str:
-        del previous_prompt
-
-        error_lines = "\n".join(f"- {error}" for error in validation.errors)
-        missing_fields: list[str] = []
-        for error_msg in validation.errors:
-            match = re.search(r"field\s+['\"](\w+)['\"]", error_msg, flags=re.IGNORECASE)
-            if match:
-                missing_fields.append(match.group(1))
-
-        field_hint = ""
-        if missing_fields:
-            field_hint = f"\n\nRequired keys missing: {', '.join(missing_fields)}."
-
-        action_hint = ""
-        if any("existing file for custom-op contracts" in error_msg for error_msg in validation.errors):
-            action_hint = (
-                "\n\nBefore returning corrected JSON, create or select the referenced "
-                + "custom-op validation script so entry_script_path points to a real file."
-            )
-
-        return (
-            f"Your previous response for {phase.prompt_id} failed validation:\n"
-            f"{error_lines}"
-            f"{field_hint}"
-            f"{action_hint}"
-            "\n\nPlease provide ONLY the corrected JSON response with the required keys. "
-            "Refer to the original prompt context above.\n"
-            "You may reason freely, but end with a single JSON object."
+        return build_phase_correction_prompt(
+            phase_name=phase.prompt_id,
+            validation_errors=[str(error) for error in validation.errors],
+            output_format_example=PhaseRunner._extract_output_format_from_prompt(previous_prompt),
         )
+
+    @staticmethod
+    def _extract_output_format_from_prompt(prompt_text: str) -> str | None:
+        return extract_output_format_from_prompt(prompt_text)
 
     def _register_default_validators(self) -> None:
         registrations = {

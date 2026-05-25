@@ -38,6 +38,7 @@ from core.session_registry import SessionRegistry
 from core.accelerator_context import extract_accelerator_context
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
+from core.phase_boundary import inject_phase_boundary
 from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_exec_env_ctx
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
@@ -45,6 +46,12 @@ from migrator.rule_based_ppu import PPURuleBasedMigrator
 from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, collect_phase6_prior_state, resolve_phase6_timeout
+from core.validation_correction import (
+    build_validation_correction_prompt,
+    expected_output_format,
+    extract_output_format_from_prompt,
+    extract_missing_fields,
+)
 from core.repair_loop import (
     _operator_custom_op_guidance,
     _operator_generic_guidance,
@@ -67,6 +74,14 @@ SUB_WORKFLOW_REPAIR_PHASE_IDS = {
     "imp_fix_code",
     "imp_fix_operator",
 }
+SUB_WORKFLOW_REPAIR_PHASE_ORDER = (
+    "fix_dependency",
+    "fix_code",
+    "fix_operator",
+    "imp_fix_dependency",
+    "imp_fix_code",
+    "imp_fix_operator",
+)
 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
 SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 30000
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
@@ -1246,8 +1261,7 @@ class WorkflowExecutor:
         prompt_text = self._append_dynamic_experience_markdown(
             prompt_text, phase, state, context, explicit_skill_bundle
         )
-
-        # 3. Parse timeout; None means no framework phase wall-clock limit.
+        prompt_text = inject_phase_boundary(prompt_text, framework_config=self.framework_config)
         timeout = self._llm_timeout_for_phase(phase)
 
         # 4. Send command
@@ -1269,13 +1283,33 @@ class WorkflowExecutor:
             output = self._phase_6_fallback_output(input_ctx, state, reason)
             return "success", output
         self._raise_for_session_error_output(output, phase.id)
-        if not output:
+
+        output_format = expected_output_format(phase.output_schema, prompt_text)
+
+        parse_attempt = 0
+        max_parse_retries = 2
+        while not output and parse_attempt < max_parse_retries:
             if phase.id == "phase_6_report":
-                output = self._phase_6_fallback_output(input_ctx, state, "Phase 6 LLM response was empty or malformed")
+                output = self._phase_6_fallback_output(
+                    input_ctx, state, "Phase 6 LLM response was empty or malformed",
+                )
                 return "success", output
+            parse_attempt += 1
+            parse_correction = self._build_validation_correction_prompt(
+                "Your response did not contain a valid JSON object.",
+                output_format_example=output_format,
+                is_parse_failure=True,
+                phase_name=phase.id,
+            )
+            raw_response = self.session_mgr.send_command(sid, parse_correction, timeout=timeout)
+            output = extract_json_response(raw_response)
+            self._raise_for_session_error_output(output, phase.id)
+        if not output:
             output = {"raw_response": raw_response}
         elif phase.id == "phase_6_report" and not self._phase_6_output_complete(output):
-            output = self._phase_6_fallback_output(input_ctx, state, "Phase 6 LLM response omitted required report fields")
+            output = self._phase_6_fallback_output(
+                input_ctx, state, "Phase 6 LLM response omitted required report fields",
+            )
             return "success", output
 
         # 6. Normalize and validate with retries
@@ -1295,12 +1329,26 @@ class WorkflowExecutor:
                 if attempt >= max_retries:
                     break
                 error_msg = "; ".join(validation_errors)
-                correction_prompt = self._build_validation_correction_prompt(error_msg)
+                correction_prompt = self._build_validation_correction_prompt(
+                    error_msg,
+                    output_format_example=output_format,
+                    phase_name=phase.id,
+                )
                 raw_response = self.session_mgr.send_command(sid, correction_prompt, timeout=timeout)
                 output = extract_json_response(raw_response)
                 self._raise_for_session_error_output(output, phase.id)
                 if not output:
-                    output = {"raw_response": raw_response}
+                    parse_correction = self._build_validation_correction_prompt(
+                        "Your response did not contain a valid JSON object.",
+                        output_format_example=output_format,
+                        is_parse_failure=True,
+                        phase_name=phase.id,
+                    )
+                    raw_response = self.session_mgr.send_command(sid, parse_correction, timeout=timeout)
+                    output = extract_json_response(raw_response)
+                    self._raise_for_session_error_output(output, phase.id)
+                    if not output:
+                        output = {"raw_response": raw_response}
                 output = self._normalize_llm_output(phase, output, input_ctx, state)
             if not validation_passed:
                 try:
@@ -1370,16 +1418,23 @@ class WorkflowExecutor:
         return isinstance(report_paths, list) and isinstance(migration_summary, dict)
 
     @staticmethod
-    def _build_validation_correction_prompt(error_msg: str) -> str:
-        action_hint = ""
-        if "existing file for custom-op contracts" in error_msg:
-            action_hint = (
-                " Before returning corrected JSON, create or select the referenced "
-                + "custom-op validation script so entry_script_path points to a real file."
-            )
-        return (
-            f"Your previous output failed validation. Error: {error_msg}."
-            f"{action_hint} Please fix and return valid JSON."
+    def _extract_output_format_from_prompt(prompt_text: str) -> str | None:
+        return extract_output_format_from_prompt(prompt_text)
+
+    @staticmethod
+    def _build_validation_correction_prompt(
+        error_msg: str,
+        *,
+        output_format_example: str | None = None,
+        is_parse_failure: bool = False,
+        phase_name: str = "",
+    ) -> str:
+        return build_validation_correction_prompt(
+            error_msg,
+            output_format_example=output_format_example,
+            is_parse_failure=is_parse_failure,
+            phase_name=phase_name,
+            missing_fields=extract_missing_fields([error_msg]),
         )
 
     def _resolve_sub_workflow_llm_timeout(self, phase: PhaseDefinition) -> int | None:
@@ -1822,12 +1877,31 @@ class WorkflowExecutor:
     def _format_history_summary(self, loop_history: list) -> str:
         if not loop_history:
             return "(No previous repair attempts)"
-        lines = ["| Iteration | Status | Duration |", "|---|---|---|"]
+        lines = ["| Iteration | Status | Duration | Summary | Agent Diagnostics |", "|---|---|---|---|---|"]
         for entry in loop_history:
             idx = entry.get("iteration", "?")
             stat = entry.get("status", "?")
             dur = entry.get("duration", "?")
-            lines.append(f"| {idx} | {stat} | {dur} |")
+            fixer_out = entry.get("fixer_outputs", {}) if isinstance(entry.get("fixer_outputs"), dict) else {}
+            row_summary = ""
+            row_diag = ""
+            if fixer_out:
+                summaries = []
+                diags = []
+                for meta in fixer_out.values():
+                    if isinstance(meta, dict):
+                        s = meta.get("summary", "")
+                        if s:
+                            summaries.append(s)
+                        ad = meta.get("agent_diagnostics", "")
+                        if ad:
+                            if isinstance(ad, dict):
+                                diags.append(json.dumps(ad, ensure_ascii=False))
+                            else:
+                                diags.append(str(ad))
+                row_summary = "; ".join(summaries)[:100] if summaries else ""
+                row_diag = "; ".join(diags)[:100] if diags else ""
+            lines.append(f"| {idx} | {stat} | {dur} | {row_summary or '(none)'} | {row_diag or '(none)'} |")
         return "\n".join(lines)
 
     def _format_error_analyzer_history(
@@ -1837,11 +1911,12 @@ class WorkflowExecutor:
             return "(No previous repair attempts — this is the first failure)"
 
         lines = [
-            "| Iter | Status | Duration | Last Category | Last Repair Role |",
-            "|------|--------|----------|---------------|------------------|",
+            "| Iter | Status | Duration | Last Category | Last Repair Role | Summary | Agent Diagnostics |",
+            "|------|--------|----------|---------------|------------------|---------|-------------------|",
         ]
         latest_category = "unknown"
         latest_repair_role = ""
+        fixer_details: list[dict] = []
         for h in loop_history:
             if not isinstance(h, dict):
                 continue
@@ -1850,9 +1925,37 @@ class WorkflowExecutor:
             if "error_category" in h or "repair_role" in h:
                 latest_category = row_category
                 latest_repair_role = row_repair_role
+            fixer_out = h.get("fixer_outputs", {}) if isinstance(h.get("fixer_outputs"), dict) else {}
+            row_summary = ""
+            row_diag = ""
+            if fixer_out:
+                summaries = []
+                diags = []
+                for pid, meta in fixer_out.items():
+                    if isinstance(meta, dict):
+                        s = meta.get("summary", "")
+                        if s:
+                            summaries.append(s)
+                        ad = meta.get("agent_diagnostics", "")
+                        if ad:
+                            if isinstance(ad, dict):
+                                diags.append(json.dumps(ad, ensure_ascii=False))
+                            else:
+                                diags.append(str(ad))
+                        if meta.get("modified_files"):
+                            fixer_details.append({
+                                "iteration": h.get("iteration", "?"),
+                                "phase": pid,
+                                "summary": s,
+                                "modified_files": meta["modified_files"],
+                                "agent_diagnostics": ad,
+                            })
+                row_summary = "; ".join(summaries)[:120] if summaries else ""
+                row_diag = "; ".join(diags)[:120] if diags else ""
             lines.append(
                 f"| Iter {h.get('iteration', '?')} | {h.get('status', '?')} | "
-                f"{h.get('duration', '?')} | {row_category} | {row_repair_role or '(none)'} |"
+                f"{h.get('duration', '?')} | {row_category} | {row_repair_role or '(none)'} | "
+                f"{row_summary or '(none)'} | {row_diag or '(none)'} |"
             )
 
         if latest_category == "unknown" and not latest_repair_role:
@@ -1870,7 +1973,44 @@ class WorkflowExecutor:
         if fix_roles:
             lines.append(f"Previous repair roles used: {', '.join(sorted(fix_roles))}")
 
+        if fixer_details:
+            lines.append("\n## Previous Fixer Outputs")
+            for fd in fixer_details:
+                lines.append(f"\nIteration {fd['iteration']}, phase `{fd['phase']}`:")
+                if fd.get("summary"):
+                    lines.append(f"  Summary: {fd['summary']}")
+                if fd.get("modified_files"):
+                    lines.append(f"  Modified files: {', '.join(fd['modified_files'])}")
+                diag = fd.get("agent_diagnostics")
+                if diag:
+                    if isinstance(diag, dict):
+                        lines.append(f"  Agent Diagnostics: {json.dumps(diag, ensure_ascii=False)}")
+                    else:
+                        lines.append(f"  Agent Diagnostics: {diag}")
+
         return "\n".join(lines)
+
+    def _collect_fixer_outputs(self, step_outputs: dict) -> dict | None:
+        result: dict[str, Any] = {}
+        for pid in SUB_WORKFLOW_REPAIR_PHASE_ORDER:
+            out = step_outputs.get(pid)
+            if not isinstance(out, dict):
+                continue
+            entry: dict[str, Any] = {}
+            if out.get("summary"):
+                entry["summary"] = str(out["summary"])
+            if out.get("modified_files"):
+                mf = out["modified_files"]
+                entry["modified_files"] = list(mf) if isinstance(mf, list) else [str(mf)]
+            if out.get("agent_diagnostics"):
+                ad = out["agent_diagnostics"]
+                if isinstance(ad, dict):
+                    entry["agent_diagnostics"] = {str(k): str(v) for k, v in ad.items()}
+                else:
+                    entry["agent_diagnostics"] = str(ad)
+            if entry:
+                result[pid] = entry
+        return result if result else None
 
     def _serialize_last_review(self, step_outputs: dict) -> str | None:
         review = step_outputs.get("review_verdict")
@@ -2785,6 +2925,9 @@ class WorkflowExecutor:
                 history_entry["entry_script_action"] = revision_result
             if verification_signal:
                 history_entry["experience_verification"] = verification_signal
+            fixer_outputs = self._collect_fixer_outputs(step_outputs)
+            if fixer_outputs:
+                history_entry["fixer_outputs"] = fixer_outputs
             loop_history.append(history_entry)
             loop_state["iteration"] = iteration
 
@@ -3169,6 +3312,28 @@ class WorkflowExecutor:
                     )
                     phase_output = extract_json_response(raw_response)
                     self._raise_for_session_error_output(phase_output, phase_id)
+
+                    sub_output_format = expected_output_format(mini.output_schema, prompt_text)
+
+                    sub_parse_attempt = 0
+                    max_sub_parse_retries = 2
+                    while not phase_output and sub_parse_attempt < max_sub_parse_retries:
+                        sub_parse_attempt += 1
+                        parse_correction = self._build_validation_correction_prompt(
+                            "Your response did not contain a valid JSON object.",
+                            output_format_example=sub_output_format,
+                            is_parse_failure=True,
+                            phase_name=phase_id,
+                        )
+                        raw_response = self._send_sub_workflow_llm_command(
+                            phase_id=phase_id,
+                            agent_id=agent_id,
+                            session_id=sid,
+                            prompt_text=parse_correction,
+                            timeout=timeout,
+                        )
+                        phase_output = extract_json_response(raw_response)
+                        self._raise_for_session_error_output(phase_output, phase_id)
                     if not phase_output:
                         phase_output = {"raw_response": raw_response}
                     phase_output = self._normalize_llm_output(mini, phase_output, input_ctx, state)
@@ -3188,7 +3353,11 @@ class WorkflowExecutor:
                             if attempt >= max_retries:
                                 break
                             error_msg = "; ".join(validation_errors)
-                            correction = self._build_validation_correction_prompt(error_msg)
+                            correction = self._build_validation_correction_prompt(
+                                error_msg,
+                                output_format_example=sub_output_format,
+                                phase_name=phase_id,
+                            )
                             raw_response = self._send_sub_workflow_llm_command(
                                 phase_id=phase_id,
                                 agent_id=agent_id,
@@ -3199,7 +3368,23 @@ class WorkflowExecutor:
                             phase_output = extract_json_response(raw_response)
                             self._raise_for_session_error_output(phase_output, phase_id)
                             if not phase_output:
-                                phase_output = {"raw_response": raw_response}
+                                parse_correction = self._build_validation_correction_prompt(
+                                    "Your response did not contain a valid JSON object.",
+                                    output_format_example=sub_output_format,
+                                    is_parse_failure=True,
+                                    phase_name=phase_id,
+                                )
+                                raw_response = self._send_sub_workflow_llm_command(
+                                    phase_id=phase_id,
+                                    agent_id=agent_id,
+                                    session_id=sid,
+                                    prompt_text=parse_correction,
+                                    timeout=timeout,
+                                )
+                                phase_output = extract_json_response(raw_response)
+                                self._raise_for_session_error_output(phase_output, phase_id)
+                                if not phase_output:
+                                    phase_output = {"raw_response": raw_response}
                             phase_output = self._normalize_llm_output(mini, phase_output, input_ctx, state)
                         if not validation_passed:
                             validation_failed = True

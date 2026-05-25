@@ -2520,7 +2520,9 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
             return json.dumps(next(analyzer_outputs))
-        return json.dumps({"fixed": True})
+        elif session_id == "session:dependency_fixer":
+            return json.dumps({"fixed": True, "summary": "Installed torch_npu; dependency closure verified; no handoff needed", "modified_files": ["requirements.txt"], "agent_diagnostics": {"verified": True}})
+        return json.dumps({"fixed": True, "summary": "Replaced unsupported op", "modified_files": ["model.py"], "agent_diagnostics": {"verified": True}})
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
@@ -2552,6 +2554,18 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert history[0]["repair_role"] == "dependency_fixer"
     assert history[1]["error_category"] == "operator"
     assert history[1]["repair_role"] == "operator_fixer"
+    # Verify fixer_outputs are propagated into loop_history
+    assert "fixer_outputs" in history[0]
+    fixer0 = history[0]["fixer_outputs"]
+    assert "fix_dependency" in fixer0
+    assert fixer0["fix_dependency"]["summary"] == "Installed torch_npu; dependency closure verified; no handoff needed"
+    assert fixer0["fix_dependency"]["modified_files"] == ["requirements.txt"]
+    assert fixer0["fix_dependency"]["agent_diagnostics"] == {"verified": "True"}
+    assert "fixer_outputs" in history[1]
+    fixer1 = history[1]["fixer_outputs"]
+    assert "fix_operator" in fixer1
+    assert fixer1["fix_operator"]["summary"] == "Replaced unsupported op"
+    assert fixer1["fix_operator"]["modified_files"] == ["model.py"]
     prompt_contexts = {
         call.args[0]: call.args[1]
         for call in prompt_loader.load_prompt.call_args_list
@@ -2570,16 +2584,142 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
         state={"error_analysis": {"category": "operator", "repair_role": "operator_fixer"}},
     )
     assert "| Iter 1 | success |" in formatted
-    assert "| Iter 1 | success |" in formatted and "dependency | dependency_fixer |" in formatted
+    assert "dependency | dependency_fixer |" in formatted
     assert "| Iter 2 | success |" in formatted and "operator | operator_fixer |" in formatted
     assert "Latest error category: operator (repair role: operator_fixer)" in formatted
+    # Verify fixer outputs appear in the formatted table and details section
+    assert "Installed torch_npu" in formatted
+    assert "Replaced unsupported op" in formatted
+    assert "Previous Fixer Outputs" in formatted
+    assert "requirements.txt" in formatted
+    assert "model.py" in formatted
 
     legacy_formatted = executor._format_error_analyzer_history(
         [{"iteration": 1, "status": "success", "duration": 0.1}],
         step_outputs={},
         state={},
     )
-    assert "| Iter 1 | success | 0.1 | unknown | (none) |" in legacy_formatted
+    assert "| Iter 1 | success | 0.1 | unknown | (none) | (none) | (none) |" in legacy_formatted
+
+
+def test_collect_fixer_outputs_extracts_summary_modified_files_and_diagnostics():
+    step_outputs = {
+        "fix_dependency": {
+            "summary": "Installed torch_npu==2.1.0",
+            "modified_files": ["requirements.txt", "setup.cfg"],
+            "agent_diagnostics": {"verified": True},
+        },
+        "fix_code": {
+            "summary": "Replaced .cuda() calls",
+            "modified_files": ["model.py"],
+            "agent_diagnostics": "All CUDA APIs migrated",
+        },
+        "analyze_error": {"category": "dependency"},
+        "irrelevant": "not a dict",
+    }
+    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+
+    assert result is not None
+    assert "fix_dependency" in result
+    assert result["fix_dependency"]["summary"] == "Installed torch_npu==2.1.0"
+    assert result["fix_dependency"]["modified_files"] == ["requirements.txt", "setup.cfg"]
+    assert result["fix_dependency"]["agent_diagnostics"] == {"verified": "True"}
+    assert "fix_code" in result
+    assert result["fix_code"]["summary"] == "Replaced .cuda() calls"
+    assert result["fix_code"]["modified_files"] == ["model.py"]
+    assert result["fix_code"]["agent_diagnostics"] == "All CUDA APIs migrated"
+    assert "fix_operator" not in result
+    assert "imp_fix_dependency" not in result
+
+
+def test_collect_fixer_outputs_returns_none_when_no_fixers():
+    step_outputs = {"analyze_error": {"category": "operator"}, "script_stderr": "error text"}
+    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+    assert result is None
+
+
+def test_format_error_analyzer_history_renders_fixer_outputs():
+    history = [
+        {
+            "iteration": 1,
+            "status": "failure",
+            "duration": 1.5,
+            "error_category": "dependency",
+            "repair_role": "dependency_fixer",
+            "fixer_outputs": {
+                "fix_dependency": {
+                    "summary": "Installed torch_npu",
+                    "modified_files": ["requirements.txt"],
+                    "agent_diagnostics": {"verified": True},
+                }
+            },
+        },
+        {
+            "iteration": 2,
+            "status": "failure",
+            "duration": 2.0,
+            "error_category": "operator",
+            "repair_role": "operator_fixer",
+            "fixer_outputs": {
+                "fix_operator": {
+                    "summary": "Replaced unsupported op with AscendC impl",
+                    "modified_files": ["model.py", "ops/custom_ops.cpp"],
+                    "agent_diagnostics": {"handoff_needed": False, "verified": True},
+                }
+            },
+        },
+    ]
+
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    formatted = executor._format_error_analyzer_history(
+        history, step_outputs={}, state={}
+    )
+
+    assert "| Iter 1 | failure | 1.5 | dependency | dependency_fixer |" in formatted
+    assert "| Iter 2 | failure | 2.0 | operator | operator_fixer |" in formatted
+    assert "Installed torch_npu" in formatted
+    assert "Replaced unsupported op with AscendC impl" in formatted
+    assert "## Previous Fixer Outputs" in formatted
+    assert "requirements.txt" in formatted
+    assert "model.py" in formatted
+    assert "ops/custom_ops.cpp" in formatted
+
+
+def test_format_history_summary_renders_fixer_outputs():
+    history = [
+        {
+            "iteration": 1,
+            "status": "failure",
+            "duration": 1.5,
+            "fixer_outputs": {
+                "fix_dependency": {
+                    "summary": "Installed torch_npu",
+                    "agent_diagnostics": {"verified": True},
+                }
+            },
+        },
+        {
+            "iteration": 2,
+            "status": "success",
+            "duration": 2.0,
+            "fixer_outputs": {
+                "fix_operator": {
+                    "summary": "Added AscendC kernel",
+                    "agent_diagnostics": "operator fixed",
+                }
+            },
+        },
+    ]
+
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    formatted = executor._format_history_summary(history)
+
+    assert "| Iteration | Status | Duration | Summary | Agent Diagnostics |" in formatted
+    assert "| 1 | failure | 1.5 | Installed torch_npu |" in formatted
+    assert "| 2 | success | 2.0 | Added AscendC kernel | operator fixed |" in formatted
+
+    empty = executor._format_history_summary([])
+    assert "(No previous repair attempts)" in empty
 
 
 def _entry_script_revision_workflow(max_iterations: int = 3, max_revisions: int = 2) -> WorkflowDefinition:

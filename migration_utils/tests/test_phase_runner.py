@@ -385,7 +385,7 @@ def test_run_review_check_json_example_text_not_session_error(tmp_path: Path) ->
 
     assert result["verdict"] == "accept"
     assert "session_error" not in result
-    assert len(session_mgr.send_calls) == 2
+    assert len(session_mgr.send_calls) == 1
 
 
 def test_validation_failure_retries_are_written_to_journal(tmp_path: Path) -> None:
@@ -430,7 +430,7 @@ def test_retry_sends_correction_prompt_not_full_prompt(tmp_path: Path) -> None:
     assert second_prompt != first_prompt
     assert "failed validation" in second_prompt
     assert "Missing required field 'platform'" in second_prompt
-    assert "Required keys missing: platform." in second_prompt
+    assert "Required or invalid fields called out by validation: platform." in second_prompt
 
 
 def test_correction_prompt_includes_error_details(tmp_path: Path) -> None:
@@ -455,7 +455,7 @@ def test_correction_prompt_includes_error_details(tmp_path: Path) -> None:
     correction_prompt, _ = session.calls[1]
     assert "Missing required field 'platform'" in correction_prompt
     assert "field 'npu_detected' must be a boolean" in correction_prompt
-    assert "Required keys missing: platform, npu_detected." in correction_prompt
+    assert "Required or invalid fields called out by validation: platform, npu_detected." in correction_prompt
 
 
 def test_correction_prompt_tells_custom_op_agent_to_create_missing_script(tmp_path: Path) -> None:
@@ -1747,3 +1747,103 @@ def test_phase_runner_no_workflow_still_injects() -> None:
     assert normalized["entry_script_kind"] == "custom_op_full_validation"
     validation = runner.validator.validate("entry_script", normalized)
     assert validation.passed is False
+
+
+# ── Phase boundary injection tests ─────────────────────────────────────
+
+from core.phase_boundary import inject_phase_boundary  # noqa: E402
+
+
+class BoundaryTestPromptLoader(PromptLoader):
+    """Captures the prompt context for boundary presence checks."""
+    def __init__(self):
+        super().__init__()
+        self.last_prompt_id = ""
+        self.last_context: dict[str, str] = {}
+
+    def load_prompt(self, phase_id: str, context: dict[str, str] | None = None) -> str:
+        self.last_prompt_id = phase_id
+        self.last_context = dict(context or {})
+        return f"# {phase_id} prompt\n\nSome instructions."
+
+
+def test_boundary_injected_in_run_single_phase(tmp_path: Path) -> None:
+    """PhaseRunner._run_single_phase injects boundary guidance."""
+    artifact_store = ArtifactStore(str(tmp_path), "test-boundary")
+    prompt_loader = BoundaryTestPromptLoader()
+    runner = PhaseRunner(
+        RecordingSessionManager(
+            json.dumps({"ok": True, "result": "valid"})
+        ),
+        artifact_store,
+        prompt_loader,
+        ValidatorEngine(),
+    )
+    from validators.validate_env_detect import validate as v_env
+    runner.validator.register_validator("env_detect", v_env)
+
+    session = MockSession([
+        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
+                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
+    ])
+    result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
+    assert result.get("platform") == "npu"
+
+    first_prompt = session.calls[0][0]
+    assert "## Phase Boundary" in first_prompt
+    assert "current phase" in first_prompt.lower()
+    assert "later phases" in first_prompt.lower()
+
+
+def test_boundary_not_injected_when_disabled(tmp_path: Path) -> None:
+    """Boundary is omitted when phase_boundary_guidance_enabled is False."""
+    artifact_store = ArtifactStore(str(tmp_path), "test-boundary-off")
+    prompt_loader = BoundaryTestPromptLoader()
+    runner = PhaseRunner(
+        RecordingSessionManager(
+            json.dumps({"ok": True, "result": "valid"})
+        ),
+        artifact_store,
+        prompt_loader,
+        ValidatorEngine(),
+        framework_config={"phase_boundary_guidance_enabled": False},
+    )
+    from validators.validate_env_detect import validate as v_env
+    runner.validator.register_validator("env_detect", v_env)
+
+    session = MockSession([
+        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
+                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
+    ])
+    result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
+    assert result.get("platform") == "npu"
+
+    first_prompt = session.calls[0][0]
+    assert "## Phase Boundary" not in first_prompt
+
+
+def test_boundary_avoids_framework_name_in_phase_prompts(tmp_path: Path) -> None:
+    """Phase prompts with boundary do not leak the framework name."""
+    artifact_store = ArtifactStore(str(tmp_path), "test-nofw")
+    prompt_loader = BoundaryTestPromptLoader()
+    runner = PhaseRunner(
+        RecordingSessionManager(
+            json.dumps({"ok": True, "result": "valid"})
+        ),
+        artifact_store,
+        prompt_loader,
+        ValidatorEngine(),
+    )
+    from validators.validate_env_detect import validate as v_env
+    runner.validator.register_validator("env_detect", v_env)
+
+    session = MockSession([
+        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
+                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
+    ])
+    result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
+    assert result.get("platform") == "npu"
+
+    first_prompt = session.calls[0][0]
+    assert "OpenCode" not in first_prompt
+    assert "SEAM" not in first_prompt
