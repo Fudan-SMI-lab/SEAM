@@ -15,3 +15,10 @@ framework:
 
   artifacts:
     key_prefix: "phase"               # consistent artifact key format
+
+  phase_boundary_guidance:
+    enabled: true                     # scopes TODOs/tools/sub-agents to current phase
+
+  omo_mode_directives:
+    enabled: true                     # OMO-style mode directives
+    scope: current_phase              # scoped to current phase only
