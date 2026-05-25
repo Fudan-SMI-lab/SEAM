@@ -32,6 +32,7 @@ from core.config_loader import load_framework_config
 from core.experience_store import ExperienceStore
 from core.paths import default_output_projects_root, execution_root
 from core.prompt_loader import PromptLoader
+from core.repair_loop import RepairLoopEngine
 from core.telemetry_bridge import TelemetryBridge
 from core.validator_engine import ValidatorEngine
 from core.workflow_executor import WorkflowExecutor
@@ -451,7 +452,7 @@ def run_e2e_v2(
         validator.register_validator("rule_migration", validate_rule_migration)
         validator.register_validator("validation_final", validate_validation_final)
         validator.register_validator("reports", validate_reports)
-        validator.register_validator("repair_classification", lambda d: {"passed": True, "errors": [], "warnings": []})
+        validator.register_validator("repair_classification", RepairLoopEngine._validate_classification)
 
         workflow = load_workflow(str(WORKFLOW_PATH))
         log(f"Workflow loaded: {workflow.name} v{workflow.version}")

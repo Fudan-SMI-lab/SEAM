@@ -1,4 +1,7 @@
 import json
+import os
+import time
+import runpy
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -10,6 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.validator_engine import ValidationDict, ValidationResult, ValidatorEngine
+from core.ascend_runtime import ascend_serving_contract_fields
+from core.ascend_runtime import write_ascend_serving_validation_wrapper
+from core.routes import normalize_serving_phase1_surface
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
@@ -536,8 +542,13 @@ def test_project_analysis_accepts_generic_multi_unit_custom_op_surface() -> None
 
 
 def _valid_serving_surface(framework: str) -> dict[str, object]:
+    route = "vllm_serving" if framework == "vllm" else "sglang_serving"
+    ascend_fields = ascend_serving_contract_fields(route)
+    import_probes = ["torch", "torch_npu", "tbe", "te", framework]
+    forbidden = ascend_fields["forbidden_runtime_markers"]
     return {
         "serving_framework": framework,
+        "serving_backend": "ascend",
         "detection_complete": True,
         "launch_command": "python serve.py --model demo",
         "launch_evidence": ["serve.py:12 launches project serving runtime"],
@@ -546,9 +557,52 @@ def _valid_serving_surface(framework: str) -> dict[str, object]:
         "readiness_probe": {"path": "/health", "expected_status": 200},
         "request_validation": {"path": "/v1/completions", "fixture": "tests/fixtures/request.json"},
         "expected_outputs": ["non-empty generated text"],
-        "required_runtime_env": ["ASCEND_VISIBLE_DEVICES"],
+        "required_runtime_env": ["Ascend NPU runtime", "CANN", "torch_npu", "tbe", "te", "ASCEND_VISIBLE_DEVICES"],
+        "runtime_env_setup": {"source_candidates": ["/usr/local/Ascend/ascend-toolkit/latest/set_env.sh"]},
+        "required_import_probes": import_probes,
+        "forbidden_runtime_markers": forbidden,
+        "ascend_runtime_checks": ascend_fields["ascend_runtime_checks"],
         "unresolved_source_groups": [],
     }
+
+
+
+
+def test_normalize_serving_phase1_surface_repairs_model_shape() -> None:
+    payload: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "dependencies": ["torch", "torch_npu", "vllm"],
+        "cuda_detected": True,
+        "entry_script": "mineru-openai-server --engine vllm",
+        "migration_route": "vllm_serving",
+        "serving_runtime_surface": {
+            "serving_framework": "vllm",
+            "serving_backend": "ascend",
+            "detection_complete": True,
+            "launch_command": "mineru-openai-server --engine vllm",
+            "launch_evidence": ["pyproject.toml defines mineru-openai-server"],
+            "project_demo_or_test_evidence": ["demo/demo.py submits requests"],
+            "project_test_files": ["demo/demo.py"],
+            "readiness_probe": {"endpoint": "/v1/models"},
+            "request_validation": {"endpoint": "/v1/chat/completions"},
+            "expected_outputs": ["parsed markdown"],
+            "required_runtime_env": ["cann", "torch_npu", "tbe", "te", "vllm"],
+            "runtime_env_setup": ["source CANN set_env.sh", "export PYTHONPATH for tbe/te"],
+            "required_import_probes": ["torch", "torch_npu", "vllm"],
+            "forbidden_runtime_markers": ["NCCL_"],
+            "ascend_runtime_checks": {"cann_env_loaded": True},
+            "unresolved_source_groups": [],
+        },
+    }
+
+    normalize_serving_phase1_surface(payload)
+
+    surface = cast(dict[str, object], payload["serving_runtime_surface"])
+    assert isinstance(surface["runtime_env_setup"], dict)
+    assert "tbe" in cast(list[str], surface["required_import_probes"])
+    assert "te" in cast(list[str], surface["required_import_probes"])
+    assert "cann_env_loaded" in cast(list[str], surface["ascend_runtime_checks"])
+    assert validate_project_analysis(payload)["passed"] is True
 
 
 @pytest.mark.parametrize(("route", "framework"), [("vllm_serving", "vllm"), ("sglang_serving", "sglang")])
@@ -565,6 +619,111 @@ def test_project_analysis_accepts_complete_serving_route_surface(route: str, fra
     )
 
     assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_ascend_serving_wrapper_rewrites_missing_validation_input(tmp_path: Path) -> None:
+    pdf_dir = tmp_path / "demo" / "pdfs"
+    pdf_dir.mkdir(parents=True)
+    _ = (pdf_dir / "demo1.pdf").write_bytes(b"%PDF-1.4\n% test\n")
+
+    wrapper_path = write_ascend_serving_validation_wrapper(
+        project_dir=tmp_path,
+        route="vllm_serving",
+        launch_command=".venv/bin/mineru -p demo/demo.pdf -o output_dir -b vlm-engine",
+        readiness_probe={},
+        request_validation={},
+        project_test_files=["demo/pdfs/demo1.pdf"],
+        expected_outputs=[],
+        required_checks=[],
+    )
+    namespace = runpy.run_path(str(wrapper_path))
+
+    evidence, command = namespace["rewrite_missing_input_args"](
+        [".venv/bin/mineru", "-p", "demo/demo.pdf", "-o", "output_dir", "-b", "vlm-engine"],
+        tmp_path,
+    )
+
+    assert command == [".venv/bin/mineru", "-p", "demo/pdfs/demo1.pdf", "-o", "output_dir", "-b", "vlm-engine"]
+    assert evidence["blocking_missing_input"] is False
+    assert evidence["replacements"] == [
+        {
+            "original_value": "demo/demo.pdf",
+            "suffix": ".pdf",
+            "original_exists": False,
+            "actual_value": "demo/pdfs/demo1.pdf",
+            "replaced": True,
+            "missing_input_blocks_validation": False,
+        }
+    ]
+
+
+def test_ascend_serving_wrapper_embeds_json_literals_as_valid_python(tmp_path: Path) -> None:
+    wrapper_path = write_ascend_serving_validation_wrapper(
+        project_dir=tmp_path,
+        route="vllm_serving",
+        launch_command="python noop.py",
+        readiness_probe={"enabled": True, "missing": None},
+        request_validation={"checks": [False, True, None]},
+        project_test_files=["demo/demo.pdf"],
+        expected_outputs=["artifact"],
+        required_checks=["readiness_probe_passed"],
+    )
+
+    source = wrapper_path.read_text(encoding="utf-8")
+    assert "= true" not in source
+    assert "= false" not in source
+    namespace = runpy.run_path(str(wrapper_path))
+
+    assert namespace["READINESS_PROBE"] == {"enabled": True, "missing": None}
+    assert namespace["REQUEST_VALIDATION"] == {"checks": [False, True, None]}
+    assert namespace["PROJECT_TEST_FILES"] == ["demo/demo.pdf"]
+
+
+def test_ascend_serving_wrapper_watchdog_cleans_detached_project_process(tmp_path: Path) -> None:
+    wrapper_path = write_ascend_serving_validation_wrapper(
+        project_dir=tmp_path,
+        route="vllm_serving",
+        launch_command="python noop.py",
+        readiness_probe={},
+        request_validation={},
+        project_test_files=[],
+        expected_outputs=[],
+        required_checks=[],
+    )
+    namespace = runpy.run_path(str(wrapper_path))
+    child_script = tmp_path / "child_sleep.py"
+    child_script.write_text("import time\ntime.sleep(120)\n", encoding="utf-8")
+    parent_script = tmp_path / "parent_spawn.py"
+    parent_script.write_text(
+        "import pathlib\n"
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        "root = pathlib.Path(__file__).resolve().parent\n"
+        "child = subprocess.Popen([sys.executable, str(root / 'child_sleep.py')], start_new_session=True)\n"
+        "(root / 'child.pid').write_text(str(child.pid), encoding='utf-8')\n"
+        "print(f'spawned {child.pid}', flush=True)\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+
+    result = namespace["run_command_with_watchdog"](
+        [sys.executable, str(parent_script)],
+        cwd=tmp_path,
+        env=os.environ.copy(),
+        timeout_seconds=2.0,
+        idle_timeout_seconds=0.0,
+    )
+
+    assert result["timed_out"] is True
+    cleaned = cast(list[dict[str, object]], result["cleaned_processes"])
+    assert any("child_sleep.py" in str(item.get("cmdline", "")) for item in cleaned)
+    child_pid = int((tmp_path / "child.pid").read_text(encoding="utf-8"))
+    for _ in range(30):
+        if not Path(f"/proc/{child_pid}").exists():
+            break
+        time.sleep(0.1)
+    assert not Path(f"/proc/{child_pid}").exists()
 
 
 def test_project_analysis_rejects_serving_route_missing_launch_or_demo_evidence() -> None:
@@ -2239,7 +2398,8 @@ def test_entry_script_validator_accepts_safe_single_process_commands(run_command
 
 
 def _valid_serving_contract(tmp_path: Path, route: str, framework: str, entry_kind: str) -> dict[str, object]:
-    script_path = tmp_path / "validate_serving.py"
+    ascend_fields = ascend_serving_contract_fields(route)
+    script_path = tmp_path / f"validate_{framework}_serving.py"
     _ = script_path.write_text("print('serving validation')\n", encoding="utf-8")
     return {
         "project_dir": str(tmp_path),
@@ -2248,6 +2408,7 @@ def _valid_serving_contract(tmp_path: Path, route: str, framework: str, entry_ki
         "entry_script_kind": entry_kind,
         "migration_route": route,
         "serving_framework": framework,
+        "serving_backend": "ascend",
         "launch_command": "python -m vllm.entrypoints.openai.api_server --model demo"
         if framework == "vllm"
         else "python -m sglang.launch_server --model-path demo",
@@ -2255,7 +2416,11 @@ def _valid_serving_contract(tmp_path: Path, route: str, framework: str, entry_ki
         "request_validation": {"url": "http://127.0.0.1:8000/v1/completions", "fixture": "tests/request.json"},
         "project_test_files": ["tests/test_serving_api.py"],
         "expected_outputs": ["response contains generated text"],
-        "required_runtime_env": ["ASCEND_VISIBLE_DEVICES"],
+        "required_runtime_env": ["Ascend NPU runtime", "CANN", "torch_npu", "tbe", "te", "ASCEND_VISIBLE_DEVICES"],
+        "runtime_env_setup": {"source_candidates": ["/usr/local/Ascend/ascend-toolkit/latest/set_env.sh"]},
+        "required_import_probes": ["torch", "torch_npu", "tbe", "te", framework],
+        "forbidden_runtime_markers": ascend_fields["forbidden_runtime_markers"],
+        "ascend_runtime_checks": ascend_fields["ascend_runtime_checks"],
         "required_checks": [
             "project_demo_or_test_execution",
             "serving_api_request_validation",
@@ -2479,6 +2644,15 @@ def _valid_serving_final_gate(route: str = "vllm_serving", framework: str = "vll
         "readiness_probe": {"passed": True, "status_code": 200},
         "request_validation": {"passed": True, "project_fixture": "tests/request.json"},
         "npu_execution_evidence": {"passed": True, "device": "npu:0", "torch_npu_observed": True},
+        "ascend_runtime_evidence": {
+            "serving_backend": "ascend",
+            "cann_env_loaded": True,
+            "torch_npu_imported": True,
+            "tbe_imported": True,
+            "te_imported": True,
+            f"{framework}_imported": True,
+            "forbidden_runtime_markers_absent": True,
+        },
         "project_demo_or_test_executed": True,
         "serving_api_validated": True,
         "npu_execution_observed": True,
@@ -2487,6 +2661,45 @@ def _valid_serving_final_gate(route: str = "vllm_serving", framework: str = "vll
         "import_only": False,
         "smoke_only": False,
     }
+
+
+
+
+def test_normalize_serving_phase1_surface_repairs_model_shape() -> None:
+    payload: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "dependencies": ["torch", "torch_npu", "vllm"],
+        "cuda_detected": True,
+        "entry_script": "mineru-openai-server --engine vllm",
+        "migration_route": "vllm_serving",
+        "serving_runtime_surface": {
+            "serving_framework": "vllm",
+            "serving_backend": "ascend",
+            "detection_complete": True,
+            "launch_command": "mineru-openai-server --engine vllm",
+            "launch_evidence": ["pyproject.toml defines mineru-openai-server"],
+            "project_demo_or_test_evidence": ["demo/demo.py submits requests"],
+            "project_test_files": ["demo/demo.py"],
+            "readiness_probe": {"endpoint": "/v1/models"},
+            "request_validation": {"endpoint": "/v1/chat/completions"},
+            "expected_outputs": ["parsed markdown"],
+            "required_runtime_env": ["cann", "torch_npu", "tbe", "te", "vllm"],
+            "runtime_env_setup": ["source CANN set_env.sh", "export PYTHONPATH for tbe/te"],
+            "required_import_probes": ["torch", "torch_npu", "vllm"],
+            "forbidden_runtime_markers": ["NCCL_"],
+            "ascend_runtime_checks": {"cann_env_loaded": True},
+            "unresolved_source_groups": [],
+        },
+    }
+
+    normalize_serving_phase1_surface(payload)
+
+    surface = cast(dict[str, object], payload["serving_runtime_surface"])
+    assert isinstance(surface["runtime_env_setup"], dict)
+    assert "tbe" in cast(list[str], surface["required_import_probes"])
+    assert "te" in cast(list[str], surface["required_import_probes"])
+    assert "cann_env_loaded" in cast(list[str], surface["ascend_runtime_checks"])
+    assert validate_project_analysis(payload)["passed"] is True
 
 
 @pytest.mark.parametrize(("route", "framework"), [("vllm_serving", "vllm"), ("sglang_serving", "sglang")])
