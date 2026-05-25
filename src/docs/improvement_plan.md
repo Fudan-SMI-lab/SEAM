@@ -24,7 +24,7 @@ Deepwave 项目 E2E 测试虽然 exit 0、loss 下降，但实际 100% 的波传
 ## 改动总览
 
 ```
-migration_utils/
+src/
 ├── scripts/sm_adapt_cli.py                          # 新增 --user-constraints 参数
 ├── core/orchestrator.py                             # 传递约束 + 注入 review session 到 Phase 5
 ├── core/phase_runner.py                             # 新增 run_phase_1_5() + run_review_check()

@@ -66,7 +66,7 @@
 建议写入 E2E report 目录：
 
 ```text
-SEAM/e2e-reports/migration_utils/<YYYYMMDD_HHMMSS>/agent_io/
+SEAM/e2e-reports/src/<YYYYMMDD_HHMMSS>/agent_io/
 ├── agent_io.jsonl
 ├── payloads/
 │   ├── 000001_prompt.txt
@@ -215,7 +215,7 @@ framework:
 建议新增文件：
 
 ```text
-migration_utils/core/agent_io_logger.py
+src/core/agent_io_logger.py
 ```
 
 职责：
@@ -261,7 +261,7 @@ class AgentIOLogger:
 文件：
 
 ```text
-migration_utils/tests/e2e/e2e_observer.py
+src/tests/e2e/e2e_observer.py
 ```
 
 新增可选构造参数：
@@ -300,8 +300,8 @@ if self._agent_io_logger is not None:
 文件：
 
 ```text
-migration_utils/tests/e2e/e2e_test.py
-migration_utils/tests/e2e/e2e_test_v2.py
+src/tests/e2e/e2e_test.py
+src/tests/e2e/e2e_test_v2.py
 ```
 
 在创建 `TelemetryObserver` 前初始化 logger：
@@ -394,7 +394,7 @@ python - <<'PY'
 import json
 from pathlib import Path
 
-path = Path('e2e-reports/migration_utils/<timestamp>/agent_io/agent_io.jsonl')
+path = Path('e2e-reports/src/<timestamp>/agent_io/agent_io.jsonl')
 for line in path.read_text().splitlines():
     item = json.loads(line)
     if item.get('phase_id') == 'phase_5_validation':
@@ -405,8 +405,8 @@ PY
 ### 11.2 打开某次 prompt/response
 
 ```bash
-less e2e-reports/migration_utils/<timestamp>/agent_io/payloads/000012_prompt.txt
-less e2e-reports/migration_utils/<timestamp>/agent_io/payloads/000012_response.txt
+less e2e-reports/src/<timestamp>/agent_io/payloads/000012_prompt.txt
+less e2e-reports/src/<timestamp>/agent_io/payloads/000012_response.txt
 ```
 
 ### 11.3 与 phase artifact 对齐
@@ -425,7 +425,7 @@ less e2e-reports/migration_utils/<timestamp>/agent_io/payloads/000012_response.t
 新增测试文件：
 
 ```text
-migration_utils/tests/test_agent_io_logger.py
+src/tests/test_agent_io_logger.py
 ```
 
 测试点：
@@ -459,7 +459,7 @@ SM_ADAPT_FULL_AGENT_IO=1 bash scripts/run_e2e.sh 05_InsectID --dry-run
 ```bash
 SM_ADAPT_FULL_AGENT_IO=1 python -m tests.e2e.e2e_test_v2 \
   --server-url http://127.0.0.1:4098 \
-  --project-dir migration_utils/test_project_template \
+  --project-dir src/test_project_template \
   --max-phase5-iter 1 \
   --keep-temp-dir
 ```
@@ -504,7 +504,7 @@ SM_ADAPT_FULL_AGENT_IO=1 python -m tests.e2e.e2e_test_v2 \
 ## 14. 推荐最终目录结构
 
 ```text
-e2e-reports/migration_utils/<timestamp>/
+e2e-reports/src/<timestamp>/
 ├── summary.json
 ├── phase_results.json
 ├── telemetry.json

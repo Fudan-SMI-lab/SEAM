@@ -846,7 +846,7 @@ AND cpu_fallback_detected?
 │  6. remove temp dir (unless --keep-temp-dir)             │
 │                                                           │
 │  输出:                                                    │
-│  - e2e-reports/migration_utils/<timestamp>/                  │
+│  - e2e-reports/src/<timestamp>/                  │
 │    ├── before_snapshot.json                              │
 │    ├── after_snapshot.json                               │
 │    ├── summary.json                                      │

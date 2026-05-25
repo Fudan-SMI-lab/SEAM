@@ -1,6 +1,6 @@
 # SEAM 容器执行后端设计文档
 
-> 本文档面向后续开发者，描述 SEAM 迁移框架（`SEAM/migration_utils/`）在 Phase 5 验证阶段引入 Docker/Podman 容器执行后端时的架构、兼容性契约和实现规划。
+> 本文档面向后续开发者，描述 SEAM 迁移框架（`SEAM/src/`）在 Phase 5 验证阶段引入 Docker/Podman 容器执行后端时的架构、兼容性契约和实现规划。
 
 ---
 
@@ -359,7 +359,7 @@ def _check_existing_container(self) -> None:
 ### 5.2 新增 Prompt 文件计划
 
 ```
-migration_utils/prompts/
+src/prompts/
 ├── container_env_detect_v2.md          # Phase 0 容器增强探测（不替换原有 phase_0_env_detect.md）
 ├── container_phase_5_entry.md          # Phase 5 容器模式入口脚本执行提示
 ├── container_dependency_fix.md         # 容器模式下的依赖修复提示
@@ -371,7 +371,7 @@ migration_utils/prompts/
 不修改 `npu_migration_v2.yaml`，而是新建容器变体:
 
 ```
-migration_utils/workflows/
+src/workflows/
 ├── npu_migration_v2.yaml               # 现有，本地执行，永不修改
 ├── npu_migration_v2_container.yaml     # NPU 容器变体
 ├── ppu_migration_v1.yaml               # PPU 本地（未来新增）
@@ -801,7 +801,7 @@ devices:
 ### 13.1 新增文件清单
 
 ```
-migration_utils/
+src/
 ├── core/
 │   ├── execution_backend.py          # 新增: ExecutionBackend 抽象接口
 │   ├── container_config.py           # 新增: ContainerConfig 数据类与解析
@@ -1404,18 +1404,18 @@ execution_backend:
 
 | 文件 | 角色 | 修改策略 |
 |------|------|---------|
-| `migration_utils/workflows/npu_migration_v2.yaml` | 主 workflow | **不修改** |
-| `migration_utils/config/framework_defaults.yaml` | 默认配置 | **添加新段**，不修改现有 |
-| `migration_utils/core/types.py` | 类型定义 | **添加** `ContainerConfig`（或移至 container_config.py） |
-| `migration_utils/core/repair_loop.py` | Phase 5 引擎 | **集成** `ExecutionBackend`（不改 API） |
-| `migration_utils/core/workflow_executor.py` | 工作流引擎 | **集成** `ExecutionBackend`（shell phase） |
-| `migration_utils/core/orchestrator.py` | 编排器 | **解析** `execution_backend` 并注入 |
-| `migration_utils/core/prompt_loader.py` | Prompt 加载 | **不修改** |
-| `migration_utils/core/config_loader.py` | 配置加载 | **不修改** |
-| `migration_utils/prompts/` | 提示模板 | **新增** 文件，不修改现有 |
-| `migration_utils/core/execution_backend.py` | 新功能 | **新增** |
-| `migration_utils/core/container_config.py` | 新功能 | **新增** |
-| `migration_utils/schemas/execution_backend.json` | YAML 验证 schema | **新增** |
+| `src/workflows/npu_migration_v2.yaml` | 主 workflow | **不修改** |
+| `src/config/framework_defaults.yaml` | 默认配置 | **添加新段**，不修改现有 |
+| `src/core/types.py` | 类型定义 | **添加** `ContainerConfig`（或移至 container_config.py） |
+| `src/core/repair_loop.py` | Phase 5 引擎 | **集成** `ExecutionBackend`（不改 API） |
+| `src/core/workflow_executor.py` | 工作流引擎 | **集成** `ExecutionBackend`（shell phase） |
+| `src/core/orchestrator.py` | 编排器 | **解析** `execution_backend` 并注入 |
+| `src/core/prompt_loader.py` | Prompt 加载 | **不修改** |
+| `src/core/config_loader.py` | 配置加载 | **不修改** |
+| `src/prompts/` | 提示模板 | **新增** 文件，不修改现有 |
+| `src/core/execution_backend.py` | 新功能 | **新增** |
+| `src/core/container_config.py` | 新功能 | **新增** |
+| `src/schemas/execution_backend.json` | YAML 验证 schema | **新增** |
 
 ---
 
