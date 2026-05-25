@@ -8,7 +8,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 {previous_outputs}
 
 ## Goal
-Statically validate the Phase 3 entry script and command contract before Phase 5 executes it. Do not run the workload.
+Statically validate the Phase 3 entry script and command contract before the target runtime executes it. Do not run the workload.
 
 ## Required Actions
 1. Read `{entry_script_path}` and verify it exists on the host-visible filesystem.
@@ -20,7 +20,7 @@ Statically validate the Phase 3 entry script and command contract before Phase 5
 7. For custom/native ops, reject import-only or report-only wrappers that do not compile/load/run accelerator evidence.
 
 ## Hard Rules
-- Do not execute Phase 5 here.
+- Do not execute the target runtime here.
 - Do not accept CPU fallback or validation that only imports modules.
 - Return exactly one JSON object and no other JSON.
 

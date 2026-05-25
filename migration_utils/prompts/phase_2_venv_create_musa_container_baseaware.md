@@ -12,7 +12,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 - Container project directory: `{container_project_dir}`
 - Read-only probe command prefix: `{container_probe_command_prefix}`
 
-When `execution_backend_mode` is `container`, choose an environment valid inside that container. Use `container_env_facts` as a starting point, then prefer safe read-only verification inside the container when the facts are incomplete or surprising. Host-side OpenCode command output is not authoritative for `python_path`, package availability, torch location, accelerator runtime, or device visibility. If container evidence is unavailable after safe probing, report the container runtime as unknown or blocked rather than filling `python_path` with a host-only interpreter.
+When `execution_backend_mode` is `container`, choose an environment valid inside that container. Use `container_env_facts` as a starting point, then prefer safe read-only verification inside the container when the facts are incomplete or surprising. Host-side file tool command output is not authoritative for `python_path`, package availability, torch location, accelerator runtime, or device visibility. If container evidence is unavailable after safe probing, report the container runtime as unknown or blocked rather than filling `python_path` with a host-only interpreter.
 
 ## Prior Phase Context
 {previous_outputs}
@@ -21,7 +21,7 @@ When `execution_backend_mode` is `container`, choose an environment valid inside
 {constraint_summary}
 
 ## Goal
-Choose the Python environment that Phase 5 should actually use. Prefer the container/base environment or local base environment when it already contains vendor torch and the accelerator runtime.
+Choose the Python environment that the target runtime should actually use. Prefer the container/base environment or local base environment when it already contains vendor torch and the accelerator runtime.
 
 ## Runtime Mode Rules
 - Container mode: choose an interpreter path or PATH command verified inside the container. Do not report a host-only interpreter as `python_path`.
@@ -44,7 +44,7 @@ Choose the Python environment that Phase 5 should actually use. Prefer the conta
 
 ## Hard Rules
 - End with exactly one JSON object containing at least `venv_path`, `python_path`, and `installed_packages`.
-- `python_path` must be directly executable in the target runtime for Phase 5.
+- `python_path` must be directly executable in the target runtime.
 - Do not claim installed packages were installed unless the install actually happened.
 
 ## Output Format

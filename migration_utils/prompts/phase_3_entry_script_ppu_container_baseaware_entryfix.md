@@ -5,7 +5,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 {execution_environment_context}
 
 ## Context
-This is a CUDA - PPU migration workflow. The selected command will become the Phase 5 validation surface after Phase 4 migration and repair. PPU exposes CUDA-compatible APIs (`torch.cuda`), so `torch.cuda` calls are expected and correct in this environment.
+This is a CUDA - PPU migration workflow. The selected command will become the target runtime validation surface after rule migration and repair. PPU exposes CUDA-compatible APIs (`torch.cuda`), so `torch.cuda` calls are expected and correct in this environment.
 
 ## Goal
 - Identify the TRUE entry script or command that validates the project's full real-world migration target.
@@ -25,11 +25,11 @@ These constraints are binding. Consider them when selecting the entry script.
 
 ## Phase 2 Interpreter Choice (CRITICAL)
 
-In this same OpenCode session, Phase 2 has already recorded its execution environment decision. Use it as follows:
+In this same session, Phase 2 has already recorded its execution environment decision. Use it as follows:
 
 - **Use Phase 2's `python_path` as the preferred interpreter** from the Phase 2 environment decision. This field is always present and guaranteed.
 - Use Phase 2's `venv_path` and optional `env_type` only to understand context (base env vs project-local venv). They are hints, not bindings.
-- The `python_path` from Phase 2 is a preferred choice; your `run_command` must be directly executable by the Phase 5 target execution backend.
+- The `python_path` from Phase 2 is a preferred choice; your `run_command` must be directly executable by the target execution backend.
 
 ## Custom-Op Mandatory Rules
 If the project includes CUDA/C++ custom operators, select or create a non-interactive full validation script that discovers the inventory directly from source files, bindings, wrappers, autograd, aliases, launchers, setup scripts, and tests. The script must enumerate every source-discovered inventory unit before validation, execute coverage and performance checks for every unit, measure one overall/end-to-end speedup after all discovered custom-op units have been replaced and routed through the project/public API, and emit one final inventory row per fine-grained source-discovered operator unit. Each final-gate row must include evidence as objects/dicts (not strings or scalars), with `name` matching `unit_identity` for consistent identity across source_inventory, manifest rows, and performance report entries. The `no_fallback_no_zero_call_no_builtin_contamination` evidence must be an object with all negative flags explicitly `false`. Script exit code 0 alone is insufficient — the custom_op_final_gate.json must pass structural evidence validation.
@@ -44,7 +44,7 @@ Performance validation is configurable via platform policy (full/presence_only/d
 4. Create `{project_dir}/smoke_test.py` only as a last resort for non-custom-op projects with no existing command.
 
 ## Headless Execution Compliance
-The entry command is executed automatically in Phase 5:
+The entry command is executed automatically in the target runtime:
 - No `input()`, `getpass()`, REPL/debugger stops, blocking GUI calls, or unbounded loops in the execution path.
 - If the existing launcher is interactive, prefer documented non-interactive flags or environment variables. Otherwise create a wrapper that calls the real entry point with safe defaults.
 - Do not invent unsupported CLI flags.
@@ -52,7 +52,7 @@ The entry command is executed automatically in Phase 5:
 - **Verification requirement**: Before returning the final JSON, confirm the selected or created script file exists by reading its contents or listing it. Do NOT execute the full migration workload during Phase 3. You are selecting and verifying the entry script path, not running validation.
 
 ## Execution Backend Prohibition (CRITICAL)
-The framework backend handles execution and lifecycle for the Phase 5 target execution environment. The `run_command` you return will be executed by that backend automatically.
+The framework backend handles execution and lifecycle for the target execution environment. The `run_command` you return will be executed by that backend automatically.
 - **Do NOT** include `docker exec`, `podman exec`, `docker run`, `podman run`, `podman create`, `podman start`, `podman stop`, `podman rm`, container names/IDs, or any host-level container lifecycle invocations in `run_command`.
 - **Do NOT** reference pre-existing or shared containers; the framework manages execution/lifecycle.
 - **Do**: return the direct command that runs the entry script in the target execution environment, e.g. `python3 /workspace/smoke_validate.py` or `python smoke_validate.py`.
@@ -65,11 +65,11 @@ You may reason freely about the choice, but return exactly one JSON object.
 
 ## Field Semantics (CRITICAL — read carefully)
 
-- **`entry_script_path`**: MUST be a **host-visible absolute path** under `{project_dir}` that is readable by OpenCode tools (e.g. `read`) and by the Phase 3.5 static validator. In container workflows, the container mounts `{project_dir}` at a container workdir (shown in execution environment context as `container_project_dir`). If the file is at `${container_project_dir}/validate_fwi.py` inside the container, the corresponding host-visible path is `{project_dir}/validate_fwi.py`. **Never return a container-internal-only path as `entry_script_path`** — the Phase 3 validator resolves this path on the host filesystem.
+- **`entry_script_path`**: MUST be a **host-visible absolute path** under `{project_dir}` that is readable by file tools (e.g. `read`) and by the Phase 3.5 static validator. In container workflows, the container mounts `{project_dir}` at a container workdir (shown in execution environment context as `container_project_dir`). If the file is at `${container_project_dir}/validate_fwi.py` inside the container, the corresponding host-visible path is `{project_dir}/validate_fwi.py`. **Never return a container-internal-only path as `entry_script_path`** — the Phase 3 validator resolves this path on the host filesystem.
 
 - **`reports_dir`**: MUST be a **host-visible absolute path** to the project's `migration_reports` directory, normally `{project_dir}/migration_reports`. This path is used by the Phase 3 validator to locate report files on the host filesystem.
 
-- **`run_command`**: The exact non-interactive command the Phase 5 execution backend will execute. This runs *inside* the container, so it may use container-visible paths (e.g. `${container_project_dir}/validate_fwi.py` or `/workspace/validate_fwi.py`). The Phase 5 backend handles host-to-container path rewriting for you. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
+- **`run_command`**: The exact non-interactive command the target execution backend will execute. This runs *inside* the container, so it may use container-visible paths (e.g. `${container_project_dir}/validate_fwi.py` or `/workspace/validate_fwi.py`). The backend handles host-to-container path rewriting for you. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
 
 ## Output Format
 Return exactly one JSON object:
@@ -128,4 +128,4 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 - `required_report_paths`: required migration reports the script must produce/check. Must include `build` (e.g. `migration_reports/build.json`).
 - `required_checks`: fail-closed checks including native operator symbol/kernel inventory, complete `migration_reports/performance.json` per-unit speedup-report closure, and one overall/end-to-end speedup after every discovered custom-op unit has been replaced.
 - `validation_obligations`: machine-checkable validation obligations; they must enforce full project-local runtime migration, a complete per-unit speedup report, and an overall all-units-replaced speedup report, not smoke/MVP/report-only success.
-- `phase5_entry_script_revision_allowed`: `true` means Phase 5 may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract.
+- `phase5_entry_script_revision_allowed`: `true` means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract.

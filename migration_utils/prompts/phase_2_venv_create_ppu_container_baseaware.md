@@ -5,7 +5,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 {execution_environment_context}
 
 ## Goal
-- Decide whether the target Phase 5 execution environment's base Python environment or a project-local virtual environment best fits the migration workload.
+- Decide whether the target runtime's base Python environment or a project-local virtual environment best fits the migration workload.
 - Install the required project dependencies plus any PPU-compatible packages in the selected environment.
 - Use PPU vendor package index or offline wheelhouse by default.
 
@@ -16,11 +16,11 @@ You are executing `{phase_name}` for `{project_dir}`.
 
 ## Decision Process (CRITICAL)
 
-Before running any commands, inspect the target Phase 5 execution environment to gather facts:
+Before running any commands, inspect the target runtime to gather facts:
 
-1. **Inspect the target Phase 5 execution environment**:
+1. **Inspect the target runtime**:
    - When the backend is a framework-created container, examine the container base environment (Python interpreters, versions, preinstalled packages — especially `torch`, `vllm`, and related libraries).
-   - When the backend is local/host, examine the host base environment directly. OpenCode tools and Phase 5 both observe the same local environment.
+   - When the backend is local/host, examine the host base environment directly. File tools and the target runtime both observe the same local environment.
    - Key question: does the base environment already satisfy the project's requirements?
 
 2. **Check the project for an existing venv**: look for `.venv`, `venv/`, or similar directories under `{project_dir}`. If one exists, inspect its Python version and installed packages.
@@ -45,7 +45,7 @@ Before running any commands, inspect the target Phase 5 execution environment to
 6. Install PPU-compatible dependencies needed for execution. The PPU environment already provides `torch` with CUDA-compatible APIs, do NOT install `torch_npu` from public PyPI, as it can overwrite the PPU-provided `torch`.
 7. Record the final environment root as `venv_path`, interpreter path, and a concise package list.
 
-**Important for container mode**: OpenCode tools (file read, grep, etc.) observe the host filesystem. The `python3` you find via OpenCode tooling on the host reflects the *host* Python, not necessarily the container's. Use the Execution Environment Context above and container probe facts as your authoritative source for the target execution environment.
+**Important for container mode**: File tools (read, grep, etc.) observe the host filesystem. The `python3` you find via file tooling on the host reflects the *host* Python, not necessarily the container's. Use the Execution Environment Context above and container probe facts as your authoritative source for the target execution environment.
 
 ## Hard Rules
 - Use PPU vendor index, PTG/t-head artifactory, or offline PPU wheelhouse first for all installs.
@@ -84,6 +84,6 @@ You may additionally include `"env_type": "base_env"` or `"env_type": "venv"` to
 
 ## Field Semantics
 - `venv_path`: absolute path to the active Python environment root. For a base environment, use the base prefix (e.g. `/usr/local`). For a project-local virtual environment, use the `.venv` directory path.
-- `python_path`: absolute path to (or PATH command for) the Python interpreter callable in the **target Phase 5 execution environment**. For container backends, this is the interpreter path or command valid inside the container, not necessarily the host Python discovered by OpenCode tools.
+- `python_path`: absolute path to (or PATH command for) the Python interpreter callable in the **target runtime**. For container backends, this is the interpreter path or command valid inside the container, not necessarily the host Python discovered by file tools.
 - `installed_packages`: concise package list that reflects the usable execution environment.
 - `env_type` (optional): `"base_env"` or `"venv"`. Present to help Phase 3 read your choice; the three keys above are the required ones.

@@ -3,7 +3,7 @@
 You are executing `{phase_name}` for `{project_dir}`.
 
 ## Context
-This is a CUDA -> PPU migration workflow. The selected command will become the Phase 5 validation surface after Phase 4 migration and repair. PPU exposes CUDA-compatible APIs (`torch.cuda`), so `torch.cuda` calls are expected and correct in this environment.
+This is a CUDA -> PPU migration workflow. The selected command will become the target runtime validation surface after rule migration and repair. PPU exposes CUDA-compatible APIs (`torch.cuda`), so `torch.cuda` calls are expected and correct in this environment.
 
 ## Goal
 - Identify the TRUE entry script/command that validates the project's full real-world migration target.
@@ -28,7 +28,7 @@ Performance validation is configurable via platform policy (full/presence_only/d
 4. Create `{project_dir}/smoke_test.py` only as a last resort for non-custom-op projects with no existing command.
 
 ## Headless Execution Compliance
-The entry command is executed automatically in Phase 5:
+The entry command is executed automatically in the target runtime:
 - No `input()`, `getpass()`, REPL/debugger stops, blocking GUI calls, or unbounded loops in the execution path.
 - If the existing launcher is interactive, prefer documented non-interactive flags/env vars. Otherwise create a wrapper that calls the real entry point with safe defaults.
 - Do not invent unsupported CLI flags.
@@ -60,6 +60,6 @@ Return exactly one JSON object. Legacy projects may return only the two existing
 For CUDA/C++ custom-op projects, keep those fields and add the backward-compatible contract as in the original phase_3_entry_script prompt.
 
 ## Field Semantics
-- `entry_script_path`: host-visible absolute path to the selected or created script. This path is readable by the framework (OpenCode tools such as `read`), by Phase 3.5 (static validator), and by the Phase 5 execution backend after any container path mapping.
-- `run_command`: exact non-interactive command Phase 5 will execute inside the framework-created container. Use container-visible paths or host paths that the backend can map. Use the container base Python interpreter by default; use a project-local venv interpreter only if Phase 2 explicitly created one. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
-- `phase5_entry_script_revision_allowed`: `true` (default) means Phase 5 may revise the entry script/command if validation finds the selected command or path is incorrect. Revision is bounded to finding a working entry that matches the project's actual migration target.
+- `entry_script_path`: host-visible absolute path to the selected or created script. This path is readable by file tools (such as `read`), by Phase 3.5 (static validator), and by the target execution backend after any container path mapping.
+- `run_command`: exact non-interactive command the target runtime will execute inside the framework-created container. Use container-visible paths or host paths that the backend can map. Use the container base Python interpreter by default; use a project-local venv interpreter only if Phase 2 explicitly created one. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
+- `phase5_entry_script_revision_allowed`: `true` (default) means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. Revision is bounded to finding a working entry that matches the project's actual migration target.

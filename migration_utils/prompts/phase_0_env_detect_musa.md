@@ -12,15 +12,15 @@ You are executing `{phase_name}` for the target project at `{project_dir}`.
 - Container project directory: `{container_project_dir}`
 - Read-only probe command prefix: `{container_probe_command_prefix}`
 
-When `execution_backend_mode` is `container`, the target runtime is the container above. Use `container_env_facts` and read-only probes inside that container as evidence. Host-side OpenCode command output is setup context only; it is not authoritative for Python, torch, accelerator availability, device count, SDK paths, or runtime libraries used by Phase 5. If a container probe is incomplete or failed, try safe read-only container probes with the command prefix above before reporting unknowns. Do not substitute host Python or host torch facts for missing container facts.
+When `execution_backend_mode` is `container`, the target runtime is the container above. Use `container_env_facts` and read-only probes inside that container as evidence. Host-side file tool command output is setup context only; it is not authoritative for Python, torch, accelerator availability, device count, SDK paths, or runtime libraries used by the target runtime. If a container probe is incomplete or failed, try safe read-only container probes with the command prefix above before reporting unknowns. Do not substitute host Python or host torch facts for missing container facts.
 
 ## Goal
-Detect facts about the target runtime that Phase 5 will use. The workflow targets the MUXI accelerator family, but the observed vendor stack may be native MUSA, MACA/MetaX, mcPyTorch, or another CUDA-compatible vendor PyTorch distribution.
+Detect facts about the target runtime that later validation phases will use. The workflow targets the MUXI accelerator family, but the observed vendor stack may be native MUSA, MACA/MetaX, mcPyTorch, or another CUDA-compatible vendor PyTorch distribution.
 
 ## Runtime Selection Rule
 - If the execution context says `execution_backend_mode: container`, probe inside the framework target container/base image when commands are available.
 - If the execution context says `execution_backend_mode: local`, probe the local host environment directly and do not mention container-only paths.
-- OpenCode file tools see the host filesystem; command probes must still target the runtime described above.
+- File tools see the host filesystem; command probes must still target the runtime described above.
 
 ## Required Actions
 1. Read README/setup notes under `{project_dir}` only for setup clues; do not infer device availability from source code.

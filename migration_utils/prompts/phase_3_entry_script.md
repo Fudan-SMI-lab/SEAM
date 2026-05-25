@@ -3,7 +3,7 @@
 You are executing `{phase_name}` for `{project_dir}`.
 
 ## Context
-This is a CUDA -> Ascend NPU migration workflow. The selected command will become the Phase 5 validation surface after Phase 4 migration and repair. Original CUDA scripts may fail on NPU at this stage; do not avoid CUDA-dependent paths because they fail before migration.
+This is a CUDA -> Ascend NPU migration workflow. The selected command will become the target runtime validation surface after rule migration and repair. Original CUDA scripts may fail on NPU at this stage; do not avoid CUDA-dependent paths because they fail before migration.
 
 ## Goal
 - Identify the TRUE entry script/command that validates the project's full real-world migration target.
@@ -28,7 +28,7 @@ Performance validation is configurable via the platform policy (`performance_val
 4. Create `{project_dir}/smoke_test.py` only as a last resort for non-custom-op projects with no existing command. It must import real modules, run realistic data flow, include CUDA-dependent modules, and have an `if __name__ == "__main__":` guard.
 
 ## Headless Execution Compliance
-The entry command is executed automatically in Phase 5:
+The entry command is executed automatically in the target runtime:
 - No `input()`, `getpass()`, REPL/debugger stops, blocking GUI calls, or unbounded loops in the execution path.
 - If the existing launcher is interactive, prefer documented non-interactive flags/env vars. Otherwise create a wrapper that calls the real entry point with safe defaults.
 - Do not invent unsupported CLI flags.
@@ -86,8 +86,8 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 ```
 
 ## Field Semantics
-- `entry_script_path`: host-visible absolute path to the selected or created script. This path is readable by the framework (OpenCode tools such as `read`), by Phase 3.5 (static validator), and by the Phase 5 execution backend after any container path mapping.
-- `run_command`: exact non-interactive command Phase 5 will execute. In container workflows, the framework executes this command inside its created container; use container-visible paths or host paths that the backend can map. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
+- `entry_script_path`: host-visible absolute path to the selected or created script. This path is readable by file tools (such as `read`), by Phase 3.5 (static validator), and by the target execution backend after any container path mapping.
+- `run_command`: exact non-interactive command the target runtime will execute. In container workflows, the framework executes this command inside its created container; use container-visible paths or host paths that the backend can map. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
 - `entry_script_kind`: use `custom_op_full_validation` for custom-op projects; omit for normal projects.
 - `reports_dir`: target project's `migration_reports` directory for custom-op evidence.
 - `operator_discovery_sources`: source locations the script must discover before validating; do not rely on external requirements docs for completion.
@@ -96,4 +96,4 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 - `required_report_paths`: required migration reports the script must produce/check.
 - `required_checks`: fail-closed checks including native operator symbol/kernel inventory, complete `migration_reports/performance.json` per-unit speedup-report closure, and one overall/end-to-end speedup after every discovered custom-op unit has been replaced.
 - `validation_obligations`: machine-checkable validation obligations; they must enforce full project-local runtime migration, a complete per-unit speedup report, and an overall all-units-replaced speedup report, not smoke/MVP/report-only success.
-- `phase5_entry_script_revision_allowed`: `true` means Phase 5 may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract. For non-custom-op projects, revision is similarly bounded to finding a working entry that matches the project's actual migration target.
+- `phase5_entry_script_revision_allowed`: `true` means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract. For non-custom-op projects, revision is similarly bounded to finding a working entry that matches the project's actual migration target.

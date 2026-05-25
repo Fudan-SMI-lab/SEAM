@@ -5,7 +5,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 {execution_environment_context}
 
 ## Context
-This is a CUDA-to-MUSA/MUXI workflow. The selected command becomes the Phase 5 validation surface after rule migration and repair. MUSA execution should use `torch_musa`, `torch.musa`, MUSA SDK/compiler/runtime, or MUSA-supported accelerator primitives. If the actual MUXI environment exposes MACA/MetaX-compatible packages, use the observed vendor stack without changing the evidence schema.
+This is a CUDA-to-MUSA/MUXI workflow. The selected command becomes the target runtime validation surface after rule migration and repair. MUSA execution should use `torch_musa`, `torch.musa`, MUSA SDK/compiler/runtime, or MUSA-supported accelerator primitives. If the actual MUXI environment exposes MACA/MetaX-compatible packages, use the observed vendor stack without changing the evidence schema.
 
 ## User Constraints
 {user_constraints}
