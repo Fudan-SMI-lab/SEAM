@@ -11,8 +11,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MIGRATION_UTILS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$MIGRATION_UTILS_DIR/.." && pwd)"
+SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
 OUTPUT_PROJECTS_DIR="${MIGRATION_OUTPUT_PROJECTS_ROOT:-$(dirname "$REPO_ROOT")/output_projects}"
 PROJECT_SEARCH_DIRS=(
     "$REPO_ROOT/original_projects"
@@ -27,6 +27,7 @@ MAX_ITER=8
 KEEP_TEMP=true
 REVIEW_GATE=true
 DRY_RUN=false
+SERVER_NO_AUTO_START=false
 EXTRA_ARGS=""
 
 # ── Color helpers ──
@@ -60,6 +61,7 @@ Options:
   --no-review            Disable Review Gate
   --no-keep-temp         Don't keep output project directory (default: keep)
   --agent NAME           Override auto-detected agent name
+  --server-no-auto-start Disable auto-start of OpenCode server
   --dry-run              Validate setup without running the test
   --extra 'ARGS...'      Pass extra arguments to e2e_test_v2.py
   --verbose              Enable verbose debug logging
@@ -87,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --no-review)            REVIEW_GATE=false; shift ;;
         --no-keep-temp)         KEEP_TEMP=false; shift ;;
         --agent)                EXTRA_ARGS="$EXTRA_ARGS --agent $2"; shift 2 ;;
+        --server-no-auto-start)  SERVER_NO_AUTO_START=true; shift ;;
         --dry-run)              DRY_RUN=true; shift ;;
         --verbose)              EXTRA_ARGS="$EXTRA_ARGS --verbose"; shift ;;
         --extra)                EXTRA_ARGS="$EXTRA_ARGS $2"; shift 2 ;;
@@ -139,6 +142,7 @@ echo -e "${GREEN}Server:${NC}    $SERVER_URL"
 echo -e "${GREEN}Max iter:${NC}  $MAX_ITER"
 echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
+echo -e "${GREEN}Auto-start:${NC} $( [[ "$SERVER_NO_AUTO_START" == true ]] && echo 'false' || echo 'true' )"
 echo -e "${GREEN}Root:${NC}      $REPO_ROOT"
 echo -e "${GREEN}Output:${NC}    $OUTPUT_PROJECTS_DIR"
 echo -e "${GREEN}Extra:    ${NC}  ${EXTRA_ARGS:-(none)}"
@@ -206,6 +210,11 @@ fi
 echo ""
 echo -e "${GREEN}════ All checks passed ═════${NC}"
 
+NO_AUTO_FLAG=""
+if [[ "$SERVER_NO_AUTO_START" == true ]]; then
+    NO_AUTO_FLAG="--server-no-auto-start"
+fi
+
 # ── Dry-run mode ──
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
@@ -223,6 +232,9 @@ if [[ "$DRY_RUN" == true ]]; then
     fi
     if [[ "$HAS_CONSTRAINTS" == true ]]; then
         echo "    --user-constraints $PROJECT_DIR/ADAPTATION_REQUIREMENTS.md \\"
+    fi
+    if [[ -n "$NO_AUTO_FLAG" ]]; then
+        echo "    $NO_AUTO_FLAG \\"
     fi
     echo "    $EXTRA_ARGS"
     exit 0
@@ -256,6 +268,7 @@ python -m tests.e2e.e2e_test_v2 \
     $KEEP_FLAG \
     $REVIEW_FLAG \
     $CONSTRAINTS_FLAG \
+    $NO_AUTO_FLAG \
     $EXTRA_ARGS
 
 EXIT_CODE=$?
@@ -271,7 +284,7 @@ else
     echo -e "${RED}══════════════════════════════════════════════════════════${NC}"
 fi
 echo ""
-echo -e "${CYAN}Reports:${NC}  $REPO_ROOT/e2e-reports/migration_utils/$(date +%Y%m%d)_*/"
+echo -e "${CYAN}Reports:${NC}  $REPO_ROOT/e2e-reports/src/$(date +%Y%m%d)_*/"
 echo -e "${CYAN}Output:${NC}   $OUTPUT_PROJECTS_DIR/${PROJECT_NAME}_$(date +%Y%m%d)_*/"
 echo ""
 

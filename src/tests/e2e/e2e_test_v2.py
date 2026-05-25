@@ -52,7 +52,7 @@ EXCLUDED_SNAPSHOT_DIRS = {".git", ".sm-artifacts", ".venv", "__pycache__"}
 REPO_ROOT = execution_root()
 TEMPLATE_DIR = PACKAGE_ROOT / "test_project_template"
 WORKFLOW_PATH = PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"
-OUTPUT_ROOT = REPO_ROOT / "e2e-reports" / "migration_utils"
+OUTPUT_ROOT = REPO_ROOT / "e2e-reports" / "src"
 
 
 @dataclass
@@ -291,7 +291,7 @@ def build_v2_summary(
 
 def run_e2e_v2(
     *,
-    base_url: str,
+    base_url: str | None,
     max_phase5_iter: int,
     keep_temp_dir: bool,
     agent_name: str | None,
@@ -321,7 +321,7 @@ def run_e2e_v2(
     telemetry_bridge: TelemetryBridge | None = None
 
     try:
-        if server_auto_start and (not base_url or base_url == DEFAULT_SERVER_URL):
+        if server_auto_start and base_url is None:
             from harness.server.lifecycle import find_available_port, start_server, stop_server, wait_for_server
             port = server_port if server_port > 0 else find_available_port()
             base_url = f"http://127.0.0.1:{port}"
@@ -330,6 +330,8 @@ def run_e2e_v2(
                 _ = stop_server(server_proc)
                 server_proc = None
                 raise RuntimeError(f"Server failed to start on {base_url}")
+        else:
+            base_url = base_url or DEFAULT_SERVER_URL
         check_server_running(base_url)
         log(f"OpenCode server reachable at {base_url}")
     except Exception as exc:
@@ -519,7 +521,7 @@ def run_e2e_v2(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run YAML-driven migration_utils E2E migration workflow.")
-    _ = parser.add_argument("--server-url", default=DEFAULT_SERVER_URL)
+    _ = parser.add_argument("--server-url", default=None)
     _ = parser.add_argument("--max-phase5-iter", type=positive_int, default=DEFAULT_MAX_PHASE5_ITER)
     _ = parser.add_argument("--keep-temp-dir", action="store_true")
     _ = parser.add_argument("--project-dir", type=Path, default=None)
