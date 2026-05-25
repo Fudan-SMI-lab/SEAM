@@ -705,7 +705,7 @@ def get_execution_environment_context(
         parts.append("## Execution Environment Context")
         parts.append("")
         parts.append("- **execution_backend_mode**: container")
-        parts.append("- **Target runtime**: Phase 5 executes inside the framework-created container.")
+        parts.append("- **Target runtime**: the target runtime phase executes inside the framework-created container.")
         host_proj = getattr(backend, "_host_project_dir", None) or "(not yet set)"
         parts.append(f"- **Host project dir**: {host_proj}")
         container_proj = getattr(getattr(backend, "config", None), "container_workdir", "(unknown)")
@@ -724,16 +724,16 @@ def get_execution_environment_context(
             error = probe_facts.get("error", "")
             extra = f" — {error}" if error else ""
             parts.append(f"- **Container probe**: status={status}{extra}")
-        parts.append("- **Tooling note**: OpenCode file tools (read, grep, etc.) observe the host filesystem, not the container. For Phase 5 execution, use paths and commands valid inside the target container environment.")
+        parts.append("- **Tooling note**: OpenCode file tools (read, grep, etc.) observe the host filesystem, not the container. For target-runtime execution, use paths and commands valid inside the target container environment.")
         return "\n".join(parts)
 
     # LocalBackend or None
     return (
         "## Execution Environment Context\n\n"
         "- **execution_backend_mode**: local\n"
-        "- **Target runtime**: Phase 5 executes on the host/local environment directly.\n"
-        "- **Tooling note**: OpenCode tools and Phase 5 observe the same local environment.\n"
-        "  File paths, Python interpreters, and commands you see are exactly what Phase 5 will use."
+        "- **Target runtime**: the target runtime phase executes on the host/local environment directly.\n"
+        "- **Tooling note**: OpenCode tools and the target runtime observe the same local environment.\n"
+        "  File paths, Python interpreters, and commands you see are exactly what the target runtime will use."
     )
 
 
