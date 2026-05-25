@@ -6,6 +6,7 @@ import shlex
 from pathlib import Path
 from typing import cast
 
+from core.ascend_runtime import ascend_serving_contract_fields
 from core.routes import SERVING_ENTRY_KINDS, serving_framework_for_route, serving_route_from_contract
 from core.validator_engine import ValidationDict
 
@@ -32,6 +33,11 @@ SERVING_FIELDS = {
     "project_test_files",
     "expected_outputs",
     "required_runtime_env",
+    "serving_backend",
+    "runtime_env_setup",
+    "required_import_probes",
+    "forbidden_runtime_markers",
+    "ascend_runtime_checks",
     "required_checks",
     "serving_reports_dir",
     "required_report_paths",
@@ -253,6 +259,11 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
     expected_framework = serving_framework_for_route(route)
     if data.get("serving_framework") != expected_framework:
         errors.append(f"serving_framework must be '{expected_framework}' for {entry_script_kind}")
+    if data.get("serving_backend") != "ascend":
+        errors.append("serving_backend must be 'ascend' for vLLM/SGLang serving contracts")
+
+    _validate_serving_entry_script_path(data, expected_framework or "", errors)
+    _validate_serving_run_command(data, errors)
 
     launch_command = data.get("launch_command")
     if not isinstance(launch_command, str) or not launch_command.strip():
@@ -286,11 +297,66 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
         values = _string_list(data.get(field))
         if values is None or not values:
             errors.append(f"{field} must be a non-empty list for serving contracts")
+    _validate_ascend_serving_contract_fields(data, route, errors)
 
     for field in ("readiness_probe", "request_validation"):
         value = data.get(field)
         if not isinstance(value, dict) or not value:
             errors.append(f"{field} must be a non-empty object for serving contracts")
+
+
+def _validate_serving_entry_script_path(data: dict[str, object], expected_framework: str, errors: list[str]) -> None:
+    project_dir = data.get("project_dir")
+    entry_script_path = data.get("entry_script_path")
+    if not isinstance(entry_script_path, str) or not entry_script_path.strip():
+        return
+    if not Path(entry_script_path).name == f"validate_{expected_framework}_serving.py":
+        errors.append("entry_script_path must point to the generated Ascend serving validation wrapper")
+    if not isinstance(project_dir, str) or not project_dir.strip():
+        errors.append("project_dir must be present for serving contracts")
+        return
+    project_root = Path(project_dir).expanduser().resolve(strict=False)
+    resolved = _resolve_project_local_path(entry_script_path, project_root)
+    if resolved is None or not resolved.is_file():
+        errors.append("entry_script_path must be an existing project-local Ascend serving wrapper")
+
+
+def _validate_serving_run_command(data: dict[str, object], errors: list[str]) -> None:
+    run_command = data.get("run_command")
+    entry_script_path = data.get("entry_script_path")
+    if not isinstance(run_command, str) or not isinstance(entry_script_path, str):
+        return
+    try:
+        tokens = shlex.split(run_command)
+    except ValueError:
+        return
+    if not tokens:
+        return
+    if tokens[0].endswith("python") or tokens[0].endswith("python3"):
+        if len(tokens) < 2 or Path(tokens[1]).name != Path(entry_script_path).name:
+            errors.append("run_command must execute the generated Ascend serving wrapper with project .venv python")
+    else:
+        errors.append("run_command for serving contracts must invoke python directly, not inline env prefixes or shell wrappers")
+
+
+def _validate_ascend_serving_contract_fields(data: dict[str, object], route: str, errors: list[str]) -> None:
+    required = ascend_serving_contract_fields(route)
+    runtime_setup = data.get("runtime_env_setup")
+    if not isinstance(runtime_setup, dict) or not runtime_setup:
+        errors.append("runtime_env_setup must describe CANN/Ascend environment setup")
+    for field in ("required_import_probes", "forbidden_runtime_markers", "ascend_runtime_checks"):
+        values = _string_list(data.get(field))
+        if values is None or not values:
+            errors.append(f"{field} must be a non-empty list for Ascend serving contracts")
+            continue
+        observed = {value.lower() for value in values}
+        for expected in _string_list(required.get(field)) or []:
+            if expected.lower() not in observed:
+                errors.append(f"{field} missing Ascend serving requirement: {expected}")
+    runtime_env = {value.lower() for value in (_string_list(data.get("required_runtime_env")) or [])}
+    for token in ("cann", "torch_npu", "tbe", "te"):
+        if not any(token in value for value in runtime_env):
+            errors.append(f"required_runtime_env missing Ascend serving token: {token}")
 
 
 def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> None:

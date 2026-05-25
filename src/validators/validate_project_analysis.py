@@ -7,6 +7,8 @@ import re
 from typing import cast
 
 from core.custom_op_variants import source_template_expanded_variants
+from core.custom_op_source_discovery import NativeUnit
+from core.ascend_runtime import ascend_serving_contract_fields
 from core.routes import MIGRATION_ROUTES, is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 
@@ -160,15 +162,6 @@ PLAIN_EXPORT_PATTERN = re.compile(
     RETURN_TYPE_PATTERN
     + r"\s+(?P<name>[A-Za-z_]\w*(?:_cuda|_gpu))\s*\("
 )
-
-
-@dataclass(frozen=True)
-class NativeUnit:
-    identity: str
-    family: str
-    symbol: str
-    source_path: str
-    line_number: int
 
 
 @dataclass(frozen=True)
@@ -375,6 +368,8 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
         errors.append(
             f"serving_runtime_surface.serving_framework must be '{expected_framework}' for migration_route={migration_route}"
         )
+    if surface.get("serving_backend") != "ascend":
+        errors.append("serving_runtime_surface.serving_backend must be 'ascend' for vLLM/SGLang routes")
 
     detection_complete = surface.get("detection_complete")
     if not isinstance(detection_complete, bool):
@@ -419,6 +414,7 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
         non_empty_message="serving_runtime_surface.required_runtime_env must list required NPU/serving runtime environment evidence",
         require_non_empty=True,
     )
+    _validate_ascend_serving_surface_contract(str(migration_route), surface, errors)
     for field_name in ("readiness_probe", "request_validation"):
         value = surface.get(field_name)
         if not isinstance(value, dict) or not value:
@@ -431,6 +427,34 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
             errors.append(
                 "serving_runtime_surface.unresolved_source_groups must be empty when detection_complete=true"
             )
+
+
+def _validate_ascend_serving_surface_contract(route: str, surface: dict[str, object], errors: list[str]) -> None:
+    required = ascend_serving_contract_fields(route)
+    runtime_setup = surface.get("runtime_env_setup")
+    if not isinstance(runtime_setup, dict) or not runtime_setup:
+        errors.append("serving_runtime_surface.runtime_env_setup must describe CANN/Ascend environment setup")
+    for field_name in ("required_import_probes", "forbidden_runtime_markers", "ascend_runtime_checks"):
+        _validate_string_list(surface, field_name, errors, require_non_empty=True)
+    required_env = _normalized_set(_string_list_values(surface, "required_runtime_env"))
+    for token in ("cann", "torch_npu", "tbe", "te"):
+        if not any(token in value for value in required_env):
+            errors.append(f"serving_runtime_surface.required_runtime_env must include Ascend runtime token {token}")
+    for field_name in ("required_import_probes", "forbidden_runtime_markers"):
+        observed = _normalized_set(_string_list_values(surface, field_name))
+        for expected in _string_list_from_object(required.get(field_name)):
+            if expected.lower() not in observed:
+                errors.append(f"serving_runtime_surface.{field_name} missing Ascend requirement: {expected}")
+
+
+def _normalized_set(values: list[str]) -> set[str]:
+    return {value.strip().lower() for value in values if value.strip()}
+
+
+def _string_list_from_object(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in cast(list[object], value) if isinstance(item, str) and item.strip()]
 
 
 def _validate_string_list(

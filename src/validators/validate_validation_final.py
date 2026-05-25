@@ -233,12 +233,35 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
         errors.append("serving_api_validated must be true")
     if data.get("npu_execution_observed") is not True:
         errors.append("npu_execution_observed must be true")
+    _validate_ascend_serving_runtime_evidence(data, errors)
 
     for field in ("cuda_fallback_detected", "cpu_fallback_detected", "import_only", "smoke_only"):
         if data.get(field) is not False:
             errors.append(f"{field} must be false")
 
     return {"passed": not errors, "errors": errors, "warnings": []}
+
+
+def _validate_ascend_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
+    evidence_value = data.get("ascend_runtime_evidence")
+    if not isinstance(evidence_value, Mapping):
+        errors.append("ascend_runtime_evidence must be present for serving FULL_PASS validation")
+        return
+    evidence = cast(Mapping[object, object], evidence_value)
+    if evidence.get("serving_backend") != "ascend":
+        errors.append("ascend_runtime_evidence.serving_backend must be ascend")
+    for field in (
+        "cann_env_loaded",
+        "torch_npu_imported",
+        "tbe_imported",
+        "te_imported",
+        "forbidden_runtime_markers_absent",
+    ):
+        if evidence.get(field) is not True:
+            errors.append(f"ascend_runtime_evidence.{field} must be true")
+    framework = data.get("serving_framework")
+    if isinstance(framework, str) and evidence.get(f"{framework}_imported") is not True:
+        errors.append(f"ascend_runtime_evidence.{framework}_imported must be true")
 
 
 def validate_custom_op_final_gate(data: dict[str, object], project_root: str | Path | None = None) -> ValidationDict:
