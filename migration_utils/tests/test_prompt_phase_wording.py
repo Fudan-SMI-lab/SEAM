@@ -64,6 +64,46 @@ def test_no_opencode_wording_in_early_prompts(prompt_file: Path) -> None:
     )
 
 
+# ── Regression: specific early prompts changed for neutral target-runtime wording ─
+
+
+EXPERIENCE_PHASE1 = PROMPTS_DIR / "experience_query_phase1.md"
+CONSTRAINT_SUMMARY = PROMPTS_DIR / "phase_1_5_constraint_summary.md"
+CONSTRAINT_SUMMARY_PPU = PROMPTS_DIR / "phase_1_5_constraint_summary_ppu.md"
+
+
+def test_experience_query_phase1_no_phase5() -> None:
+    """experience_query_phase1.md was changed from 'Unlike Phase 5' to 'Unlike later repair phases'."""
+    text = EXPERIENCE_PHASE1.read_text(encoding="utf-8")
+    assert "Unlike later repair phases" in text, (
+        "expected neutral 'Unlike later repair phases' wording"
+    )
+    assert "Unlike Phase 5" not in text, (
+        "experience_query_phase1.md must not contain explicit 'Unlike Phase 5'; "
+        "use neutral 'Unlike later repair phases' instead."
+    )
+
+
+def test_constraint_summary_no_phase_enumeration() -> None:
+    """phase_1_5_constraint_summary.md was changed to say 'ALL subsequent phases and agents'."""
+    text = CONSTRAINT_SUMMARY.read_text(encoding="utf-8")
+    assert "ALL subsequent phases and agents" in text, (
+        "expected neutral 'ALL subsequent phases and agents' wording"
+    )
+    assert "Phase 2, 3, 4, 5 repair agents" not in text, (
+        "phase_1_5_constraint_summary.md must not enumerate individual phase numbers; "
+        "use 'ALL subsequent phases and agents' instead."
+    )
+
+
+def test_constraint_summary_ppu_already_neutral() -> None:
+    """phase_1_5_constraint_summary_ppu.md was already neutral — verify it still is."""
+    text = CONSTRAINT_SUMMARY_PPU.read_text(encoding="utf-8")
+    assert "ALL subsequent phases" in text, (
+        "expected neutral 'ALL subsequent phases' wording"
+    )
+
+
 # ── Phase 3 MUSA/MUXI entryfix prompt contract tests ─────────────────────────
 
 MUSA_ENTRYFIX_PROMPT = PROMPTS_DIR / "phase_3_entry_script_musa_container_baseaware_entryfix.md"

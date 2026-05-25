@@ -59,7 +59,7 @@ Example good: `python3 /workspace/057_example_fwi.py`
 Example bad: `podman exec zihang_vllm_ppu python3 /home/.../057_example_fwi.py`
 
 ## Dependency Awareness
-The entry script may require these packages. A **deterministic setup phase** (`phase_4_5_normal_entry_setup`) runs before the target runtime phase and installs/builds all dependencies with PPU CUDA support. Do NOT suggest CPU fallback in your run_command or recommendations.
+The entry script may require these packages. A **deterministic setup phase** runs before the target runtime phase and installs/builds all dependencies with PPU CUDA support. Do NOT suggest CPU fallback in your run_command or recommendations.
 
 Required packages (installed by setup phase):
 - `matplotlib` -- plotting; must use non-interactive `Agg` backend in headless mode

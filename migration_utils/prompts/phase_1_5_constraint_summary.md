@@ -28,7 +28,7 @@ Produce a concise, actionable list of migration rules derived from the user cons
 ## Hard Rules
 - Do not dilute or remove user constraints. If a constraint is technically challenging, note the challenge but still include it as a rule.
 - If a user constraint conflicts with the project's architecture, flag it and explain why, but still include it.
-- The rules you generate WILL be injected into ALL subsequent phases (Phase 2, 3, 4, 5 repair agents, error analyzer, and review agent). They are binding.
+- The rules you generate WILL be injected into ALL subsequent phases and agents. They are binding.
 
 ## Output Format
 End with a JSON block:
