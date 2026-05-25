@@ -12,7 +12,7 @@ from core.types import RuntimeSkillsConfig
 
 
 def write_skill(root: Path, name: str, markdown: str | None = None, data: dict[str, Any] | None = None) -> Path:
-    skill_dir = root / "skills" / name
+    skill_dir = root / ".memory" / "skills" / name
     skill_dir.mkdir(parents=True)
     if markdown is not None:
         (skill_dir / "SKILL.md").write_text(markdown, encoding="utf-8")
@@ -44,7 +44,7 @@ def test_resolves_markdown_skill_before_json_fallback(tmp_path: Path):
     )
 
     assert bundle.names == ["npu-skill"]
-    assert bundle.paths == [str(tmp_path / "skills" / "npu-skill" / "SKILL.md")]
+    assert bundle.paths == [str(tmp_path / ".memory" / "skills" / "npu-skill" / "SKILL.md")]
     assert "## Explicit Runtime Skills" in bundle.markdown
     assert "# Rendered Skill" not in bundle.markdown
     assert bundle.missing == []
@@ -66,7 +66,7 @@ def test_falls_back_to_skill_data_json(tmp_path: Path):
     )
 
     assert bundle.names == ["json-only"]
-    assert bundle.paths == [str(tmp_path / "skills" / "json-only" / "skill_data.json")]
+    assert bundle.paths == [str(tmp_path / ".memory" / "skills" / "json-only" / "skill_data.json")]
     assert "# JSON Only Skill" not in bundle.markdown
     assert "- Install torch-npu" not in bundle.markdown
 
@@ -103,7 +103,7 @@ def test_canonical_skill_wins_over_same_named_local_skill(tmp_path: Path):
         phase_config=RuntimeSkillsConfig(include=["same"], inject_full=True)
     )
 
-    assert bundle.paths == [str(tmp_path / "skills" / "same" / "SKILL.md")]
+    assert bundle.paths == [str(tmp_path / ".memory" / "skills" / "same" / "SKILL.md")]
     assert bundle.skills[0].source == "canonical"
     assert "Canonical guidance" in bundle.markdown
     assert "Local guidance" not in bundle.markdown

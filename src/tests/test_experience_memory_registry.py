@@ -52,7 +52,7 @@ def test_catalog_upsert_read_preserves_required_fields(tmp_path):
         "target_roles": ["dependency_fixer"],
         "target_phases": ["phase_5_validation"],
         "trigger_fingerprint": "dependency|torch_npu_install|pip|torch-npu",
-        "asset_paths": ["skills/npu-fix/skill_data.json"],
+        "asset_paths": [".memory/skills/npu-fix/skill_data.json"],
         "source_runs": ["run-1"],
     })
 
@@ -112,7 +112,7 @@ def test_catalog_upsert_preserves_existing_usage_counters(tmp_path):
 
 def test_rebuild_catalog_from_skill_data(tmp_path):
     store = ExperienceStore(str(tmp_path))
-    skill_dir = tmp_path / "skills" / "npu-flash-attn"
+    skill_dir = tmp_path / ".memory" / "skills" / "npu-flash-attn"
     skill_dir.mkdir(parents=True)
     (skill_dir / "skill_data.json").write_text(json.dumps({
         "name": "npu-flash-attn",
@@ -132,7 +132,7 @@ def test_rebuild_catalog_from_skill_data(tmp_path):
     entry = entries[0]
     assert entry["id"] == "promoted-npu-flash-attn"
     assert entry["source_runs"] == ["run-1", "run-2"]
-    assert os.path.join("skills", "npu-flash-attn", "skill_data.json") in entry["asset_paths"]
+    assert os.path.join(".memory", "skills", "npu-flash-attn", "skill_data.json") in entry["asset_paths"]
 
 
 def test_rebuild_catalog_discovers_local_skill_pack_assets(tmp_path):
@@ -463,13 +463,13 @@ def test_integrity_reports_missing_asset_paths(tmp_path):
         "type": "skill",
         "status": "promoted",
         "title": "Broken",
-        "asset_paths": ["skills/missing/skill_data.json"],
+        "asset_paths": [".memory/skills/missing/skill_data.json"],
     })
 
     report = store.validate_integrity()
 
     assert report["ok"] is False
-    assert report["missing_asset_paths"] == [{"id": "promoted-broken", "path": "skills/missing/skill_data.json"}]
+    assert report["missing_asset_paths"] == [{"id": "promoted-broken", "path": ".memory/skills/missing/skill_data.json"}]
 
 
 def test_rebuild_catalog_ignores_non_canonical_promotion_metadata_json(tmp_path):

@@ -216,8 +216,8 @@ def test_list_json_assets_round_trip_as_valid_json_in_staging_and_promotion(tmp_
         "confidence": 0.8,
         "_asset_contents": {"examples/code_changes.json": code_changes},
     })
-    promoted_asset = tmp_path / "skills" / "list-json-skill" / "examples" / "code_changes.json"
-    assert promoted_path.endswith(os.path.join("skills", "list-json-skill", "skill_data.json"))
+    promoted_asset = tmp_path / ".memory" / "skills" / "list-json-skill" / "examples" / "code_changes.json"
+    assert promoted_path.endswith(os.path.join(".memory", "skills", "list-json-skill", "skill_data.json"))
     assert json.loads(promoted_asset.read_text(encoding="utf-8")) == code_changes
 
 
@@ -276,7 +276,7 @@ def test_auto_promote_preserves_non_skill_type(tmp_path):
     assert promoted is True
     promoted_entries = [entry for entry in store.read_index() if entry.get("status") == "promoted"]
     assert promoted_entries[0]["type"] == "document"
-    assert not (tmp_path / "skills" / "New Case").exists()
+    assert not (tmp_path / ".memory" / "skills" / "New Case").exists()
 
 
 def test_legacy_skill_promotion_still_writes_expected_files(tmp_path):
@@ -292,8 +292,8 @@ def test_legacy_skill_promotion_still_writes_expected_files(tmp_path):
         "steps": ["Install CPU torch before torch-npu"],
     })
 
-    assert path.endswith(os.path.join("skills", "legacy-skill", "skill_data.json"))
-    assert (tmp_path / "skills" / "legacy-skill" / "SKILL.md").is_file()
+    assert path.endswith(os.path.join(".memory", "skills", "legacy-skill", "skill_data.json"))
+    assert (tmp_path / ".memory" / "skills" / "legacy-skill" / "SKILL.md").is_file()
     assert store.read_index()[0]["id"] == "promoted-legacy-skill"
     assert store.read_catalog()[0]["type"] == "skill"
 

@@ -19,7 +19,7 @@ class ExperienceRegistry:
         self.promotions_dir = os.path.join(self.memory_dir, "promotions")
         self.quarantine_dir = os.path.join(self.memory_dir, "quarantine")
         self.archive_dir = os.path.join(self.memory_dir, "archive")
-        self.skills_dir = os.path.join(repo_root, "skills")
+        self.skills_dir = os.path.join(repo_root, ".memory", "skills")
         self.local_skills_dir = self._resolve_local_skills_dir()
         self.catalog_path = os.path.join(self.index_dir, "experiences.jsonl")
         self.manifest_path = os.path.join(self.memory_dir, "manifest.json")
