@@ -35,7 +35,8 @@ class TestGetExecutionEnvironmentContext:
         result = get_execution_environment_context(None)
         assert "execution_backend_mode" in result
         assert "local" in result
-        assert "Phase 5" in result
+        assert "target runtime" in result.lower()
+        assert "Phase 5" not in result, "get_execution_environment_context must not leak explicit Phase 5"
         assert "host/local" in result or "host" in result.lower()
 
     def test_local_backend_returns_local_context(self):
@@ -55,7 +56,8 @@ class TestGetExecutionEnvironmentContext:
         result = get_execution_environment_context(backend, probe_facts=None)
         assert "execution_backend_mode" in result
         assert "container" in result
-        assert "Phase 5" in result
+        assert "target runtime" in result.lower()
+        assert "Phase 5" not in result, "get_execution_environment_context must not leak explicit Phase 5"
         assert "container" in result.lower()
 
     def test_container_mode_with_probe_facts(self):
@@ -151,19 +153,23 @@ class TestBaseAwarePromptsHavePlaceholder:
         assert PLACEHOLDER in content
 
 
-# ── Phase 2 wording: target Phase 5 execution environment ────────────────
+# ── Phase 2 wording: neutral target-runtime execution environment ────────
 
 
 class TestPhase2TargetExecutionEnvWording:
-    def test_mentions_target_phase5_execution_environment(self):
+    def test_mentions_target_runtime_execution_environment(self):
         content = (PROMPTS_DIR / f"{BASEAWARE_PHASE2}.md").read_text(encoding="utf-8")
-        assert "Phase 5" in content
+        assert "target runtime" in content.lower()
+        assert "Phase 5" not in content, (
+            "Phase 2 prompt must not leak explicit Phase 5; use neutral target-runtime wording."
+        )
         assert "execution environment" in content.lower()
 
     def test_python_path_callable_in_target_env(self):
         content = (PROMPTS_DIR / f"{BASEAWARE_PHASE2}.md").read_text(encoding="utf-8")
         lower = content.lower()
-        assert "phase 5" in lower or "target" in lower
+        assert "target" in lower, "Phase 2 prompt must use target-runtime-neutral wording"
+        assert "phase 5" not in lower, "Phase 2 prompt must not leak explicit Phase 5"
         assert "python_path" in lower
 
     def test_container_mode_non_authoritative_host_tools(self):
