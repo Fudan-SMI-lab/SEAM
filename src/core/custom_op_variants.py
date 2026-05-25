@@ -11,6 +11,8 @@ import shlex
 import sys
 from typing import cast
 
+from core.custom_op_source_discovery import discover_required_cuda_native_units_from_project
+
 
 EXPANDED_VARIANT_CONTRACT_FIELDS = frozenset(
     {
@@ -27,6 +29,37 @@ REQUIRED_VARIANT_CHECKS = (
     "per_variant_performance_report",
 )
 PREFERRED_AXIS_ORDER = ("ndim", "accuracy", "dtype", "layout", "mode")
+HELPER_FAMILY_SUFFIXES = ("_utils", "_util", "_helpers", "_helper", "_ops", "_op", "_kernels", "_kernel")
+OPERATOR_INVENTORY_AXIS_NAMES = frozenset(
+    {
+        "unit",
+        "units",
+        "operator",
+        "operators",
+        "operator_unit",
+        "operator_units",
+        "base_unit",
+        "base_units",
+        "source_unit",
+        "source_units",
+        "unit_identity",
+        "unit_identities",
+        "expanded_unit",
+        "expanded_units",
+        "fine_grained_operator_unit",
+        "fine_grained_operator_units",
+    }
+)
+STRICT_OPERATOR_INVENTORY_AXIS_NAMES = frozenset(
+    {
+        "unit_identity",
+        "unit_identities",
+        "expanded_unit",
+        "expanded_units",
+        "fine_grained_operator_unit",
+        "fine_grained_operator_units",
+    }
+)
 DEVICE_SUFFIX_PATTERN = re.compile(r"(?:^|[:_\-])(cuda|gpu)(?:$|[:_\-])", re.IGNORECASE)
 
 IMPLEMENTATION_DETAIL_AXIS_PATTERNS = (
@@ -68,6 +101,8 @@ def normalize_project_analysis_expanded_variants(output: dict[str, object]) -> N
         return
 
     surface = cast(dict[str, object], custom_op_surface)
+    project_dir = output.get("project_dir")
+    _supplement_source_discovered_cuda_units(surface, project_dir)
     _canonicalize_compact_cuda_base_units(surface)
     variants = surface.get("expanded_operator_variants")
     if isinstance(variants, list) and variants:
@@ -76,7 +111,6 @@ def normalize_project_analysis_expanded_variants(output: dict[str, object]) -> N
         if not isinstance(declared_count, int) or isinstance(declared_count, bool) or declared_count < variant_count:
             surface["expanded_operator_instances_count"] = variant_count
 
-    project_dir = output.get("project_dir")
     generated = source_template_expanded_variants(surface, project_dir=str(project_dir) if isinstance(project_dir, str) else None)
     if not generated:
         return
@@ -87,6 +121,155 @@ def normalize_project_analysis_expanded_variants(output: dict[str, object]) -> N
     surface["expanded_operator_instances_count"] = len(generated)
     _merge_variant_axes_from_generated_rows(surface, generated)
     _mark_discovery_complete_for_full_generated_inventory(surface, generated)
+
+
+def _supplement_source_discovered_cuda_units(surface: dict[str, object], project_dir: object) -> None:
+    if surface.get("custom_op_detected") is not True:
+        return
+    if not isinstance(project_dir, str) or not project_dir.strip():
+        return
+    discovered_units = discover_required_cuda_native_units_from_project(project_dir)
+    if not discovered_units:
+        return
+
+    for field_name in (
+        "operator_families",
+        "fine_grained_operator_units",
+        "discovered_operator_names",
+        "native_operator_symbols",
+        "kernel_launch_sites",
+        "source_evidence",
+        "searched_source_paths",
+        "searched_source_roots",
+    ):
+        if not isinstance(surface.get(field_name), list):
+            surface[field_name] = []
+    if not isinstance(surface.get("fine_grained_operator_unit_evidence"), list):
+        surface["fine_grained_operator_unit_evidence"] = []
+
+    reported = _source_discovered_unit_report_tokens(surface)
+    for unit in discovered_units:
+        identity = str(getattr(unit, "identity", "")).strip()
+        family = str(getattr(unit, "family", "")).strip()
+        symbol = str(getattr(unit, "symbol", "")).strip()
+        source_path = str(getattr(unit, "source_path", "")).strip()
+        line_number = getattr(unit, "line_number", "")
+        if not identity or _source_discovered_unit_is_reported(identity, family, symbol, reported):
+            continue
+
+        source_reference = f"{source_path}:{line_number} {symbol}" if source_path else symbol
+        _append_unique_string(surface, "operator_families", family)
+        _append_unique_string(surface, "fine_grained_operator_units", identity)
+        _append_unique_string(surface, "discovered_operator_names", identity)
+        _append_unique_string(surface, "native_operator_symbols", symbol or identity)
+        _append_unique_string(surface, "kernel_launch_sites", source_reference)
+        _append_unique_string(surface, "source_evidence", source_reference)
+        _append_unique_string(surface, "searched_source_paths", source_path)
+        if source_path:
+            root_name = source_path.split("/", 1)[0]
+            _append_unique_string(surface, "searched_source_roots", root_name)
+        evidence = cast(list[object], surface["fine_grained_operator_unit_evidence"])
+        evidence.append(
+            {
+                "unit_identity": identity,
+                "source_evidence": [source_reference],
+                "candidate_framework_integration_routes": [
+                    f"project native CUDA symbol {symbol or identity} in {source_path or project_dir}"
+                ],
+            }
+        )
+        reported.update(_source_discovered_unit_tokens(identity, family, symbol))
+    _restrict_to_source_discovered_units(surface, discovered_units)
+
+
+def _restrict_to_source_discovered_units(surface: dict[str, object], discovered_units: Sequence[object]) -> None:
+    discovered_identities = [
+        identity
+        for unit in discovered_units
+        if (identity := str(getattr(unit, "identity", "")).strip())
+    ]
+    if not discovered_identities:
+        return
+    discovered_set = set(discovered_identities)
+    existing_units = _string_list(surface.get("fine_grained_operator_units"))
+    retained_units = _ordered_unique([unit for unit in existing_units if unit in discovered_set])
+    retained_units = _ordered_unique([*retained_units, *discovered_identities])
+    surface["fine_grained_operator_units"] = retained_units
+    surface["operator_families"] = _ordered_unique([unit.split(":", 1)[0] for unit in retained_units if ":" in unit])
+
+    evidence = surface.get("fine_grained_operator_unit_evidence")
+    if isinstance(evidence, list):
+        retained_evidence: list[object] = []
+        for item in cast(list[object], evidence):
+            if not isinstance(item, Mapping):
+                retained_evidence.append(item)
+                continue
+            unit_identity = cast(Mapping[object, object], item).get("unit_identity")
+            if isinstance(unit_identity, str) and unit_identity.strip() and unit_identity.strip() not in discovered_set:
+                continue
+            retained_evidence.append(item)
+        surface["fine_grained_operator_unit_evidence"] = retained_evidence
+
+    variants = surface.get("expanded_operator_variants")
+    if isinstance(variants, list):
+        retained_variants: list[object] = []
+        for item in cast(list[object], variants):
+            if not isinstance(item, Mapping):
+                retained_variants.append(item)
+                continue
+            variant = cast(Mapping[object, object], item)
+            base_identity = str(variant.get("base_unit_identity") or variant.get("source_unit_identity") or "").strip()
+            if base_identity and base_identity not in discovered_set:
+                continue
+            retained_variants.append(item)
+        surface["expanded_operator_variants"] = retained_variants
+
+
+def _append_unique_string(surface: dict[str, object], field_name: str, value: str) -> None:
+    if not value:
+        return
+    items = surface.get(field_name)
+    if not isinstance(items, list):
+        surface[field_name] = [value]
+        return
+    existing = {item for item in cast(list[object], items) if isinstance(item, str)}
+    if value not in existing:
+        cast(list[object], items).append(value)
+
+
+def _source_discovered_unit_report_tokens(surface: Mapping[str, object]) -> set[str]:
+    tokens: set[str] = set()
+    for field_name in ("fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols"):
+        for value in _string_list(surface.get(field_name)):
+            token = _source_discovered_unit_token(value)
+            if token:
+                tokens.add(token)
+    evidence = surface.get("fine_grained_operator_unit_evidence")
+    if isinstance(evidence, list):
+        for item in cast(list[object], evidence):
+            if isinstance(item, Mapping):
+                unit_identity = cast(Mapping[object, object], item).get("unit_identity")
+                if isinstance(unit_identity, str):
+                    token = _source_discovered_unit_token(unit_identity)
+                    if token:
+                        tokens.add(token)
+    return tokens
+
+
+def _source_discovered_unit_is_reported(identity: str, family: str, symbol: str, reported: set[str]) -> bool:
+    return any(token in reported for token in _source_discovered_unit_tokens(identity, family, symbol))
+
+
+def _source_discovered_unit_tokens(identity: str, family: str, symbol: str) -> set[str]:
+    tokens = {_source_discovered_unit_token(identity)}
+    if family and symbol:
+        tokens.add(_source_discovered_unit_token(f"{family}:{symbol}"))
+        tokens.add(_source_discovered_unit_token(f"{family}_{symbol}"))
+    return {token for token in tokens if token}
+
+
+def _source_discovered_unit_token(value: str) -> str:
+    return value.strip().lower()
 
 
 def source_template_expanded_variants(surface: Mapping[str, object], *, project_dir: str | None = None) -> list[dict[str, object]]:
@@ -100,12 +283,12 @@ def _source_template_expanded_variants(surface: Mapping[str, object], *, project
     if not isinstance(raw_axes, Mapping):
         return []
     raw_axes_map = cast(Mapping[object, object], raw_axes)
-    axes = _normalized_axis_values(raw_axes_map)
-    if not axes:
-        return []
     fine_units = _string_list(surface.get("fine_grained_operator_units"))
     base_units = [unit for unit in fine_units if "=" not in unit]
     if not base_units:
+        return []
+    axes = _canonicalized_template_axes(_normalized_axis_values(raw_axes_map), base_units)
+    if not axes:
         return []
 
     names = _string_list(surface.get("discovered_operator_names"))
@@ -278,8 +461,15 @@ def _device_sibling_aliases(fine_units: Sequence[str], axes: Mapping[str, list[s
 
 
 def _canonical_helper_family_unit(base_unit: str) -> str:
-    if base_unit.startswith("storage_utils:"):
-        return "storage:" + base_unit.split(":", 1)[1]
+    family, separator, symbol = base_unit.partition(":")
+    if not separator:
+        return base_unit
+    canonical_family = family
+    if canonical_family.endswith("_iso"):
+        canonical_family = canonical_family[:-4]
+    canonical_family = _strip_helper_family_suffix(canonical_family)
+    if canonical_family != family:
+        return f"{canonical_family}:{symbol}"
     return base_unit
 
 
@@ -462,7 +652,8 @@ def _source_template_axis_values_from_rows(
                 *_named_axis_values_from_row(row, axis_name, axes),
             ])
         for axis_name, values in _positional_brace_axis_values_from_row(row, allowed_axes).items():
-            values_by_axis[axis_name] = _ordered_unique([*values_by_axis[axis_name], *values])
+            normalized_values = [_normalize_source_axis_value(value, axis_name, axes) for value in values]
+            values_by_axis[axis_name] = _ordered_unique([*values_by_axis[axis_name], *normalized_values])
     return {axis: values for axis, values in values_by_axis.items() if values}
 
 
@@ -665,6 +856,68 @@ def _normalized_axis_values(raw_axes: Mapping[object, object]) -> dict[str, list
         if values:
             axes[axis_name] = _ordered_unique(values)
     return axes
+
+
+def _canonicalized_template_axes(axes: Mapping[str, list[str]], base_units: Sequence[str]) -> dict[str, list[str]]:
+    canonical_axes: dict[str, list[str]] = {}
+    for raw_axis, raw_values in axes.items():
+        axis_name = _canonical_template_axis_name(raw_axis)
+        values = _canonical_template_axis_values(axis_name, raw_values)
+        if not values or _is_operator_inventory_axis(axis_name, values, base_units):
+            continue
+        canonical_axes[axis_name] = _ordered_unique([*canonical_axes.get(axis_name, []), *values])
+    return canonical_axes
+
+
+def _canonical_template_axis_name(axis_name: str) -> str:
+    normalized = axis_name.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"dim", "dims", "dimension", "dimensions", "n_dim", "n_dims", "num_dim", "num_dims"}:
+        return "ndim"
+    return normalized
+
+
+def _canonical_template_axis_values(axis_name: str, values: Sequence[str]) -> list[str]:
+    if axis_name != "ndim":
+        return _ordered_unique([value.strip().lower() for value in values if value.strip()])
+    selected_by_dimension: dict[str, str] = {}
+    ordered_dimensions: list[str] = []
+    for value in values:
+        normalized = value.strip().lower()
+        if not normalized:
+            continue
+        match = re.fullmatch(r"([1-9]\d*)d?", normalized)
+        if not match:
+            if normalized not in selected_by_dimension:
+                selected_by_dimension[normalized] = normalized
+                ordered_dimensions.append(normalized)
+            continue
+        dimension = match.group(1)
+        if dimension not in selected_by_dimension:
+            selected_by_dimension[dimension] = normalized
+            ordered_dimensions.append(dimension)
+    return [selected_by_dimension[dimension] for dimension in ordered_dimensions]
+
+
+def _is_operator_inventory_axis(axis_name: str, values: Sequence[str], base_units: Sequence[str]) -> bool:
+    if axis_name not in OPERATOR_INVENTORY_AXIS_NAMES:
+        return False
+    if axis_name in STRICT_OPERATOR_INVENTORY_AXIS_NAMES:
+        return True
+    return _axis_values_overlap_base_units(values, base_units)
+
+
+def _axis_values_overlap_base_units(values: Sequence[str], base_units: Sequence[str]) -> bool:
+    base_tokens = set()
+    for base_unit in base_units:
+        base_tokens.update(_operator_inventory_tokens(base_unit))
+    return any(token in base_tokens for value in values for token in _operator_inventory_tokens(value))
+
+
+def _operator_inventory_tokens(value: str) -> set[str]:
+    normalized = value.strip().lower().replace("-", "_")
+    if not normalized:
+        return set()
+    return {normalized, normalized.replace(":", "_")}
 
 
 def _axis_values_from_axis_rows(rows: list[object]) -> dict[str, list[str]]:
@@ -992,6 +1245,7 @@ def _source_relevant_snippet(base_unit: str, lines: Sequence[str]) -> str:
 
 
 def _source_paths_from_text(base_unit: str, text: str) -> list[Path]:
+    direct_paths: list[Path] = []
     paths: list[Path] = []
     fallback_paths: list[Path] = []
     base_tokens = _base_match_tokens(base_unit)
@@ -999,12 +1253,34 @@ def _source_paths_from_text(base_unit: str, text: str) -> list[Path]:
         line_paths = _safe_source_paths_from_line(line)
         if not line_paths:
             continue
+        direct_paths.extend(path for path in line_paths if _source_path_matches_base_family(base_unit, path))
         normalized_line = line.lower().replace("-", "_").replace(":", "_")
         if _line_matches_base(normalized_line, base_tokens):
             paths.extend(line_paths)
         else:
             fallback_paths.extend(path for path in line_paths if _is_native_source_path(path))
-    return _ordered_unique_paths(paths or fallback_paths)
+    return _ordered_unique_paths(direct_paths or paths or fallback_paths)
+
+
+def _source_path_matches_base_family(base_unit: str, path: Path) -> bool:
+    family = base_unit.split(":", 1)[0].strip().lower().replace("-", "_")
+    stem = path.stem.strip().lower().replace("-", "_")
+    if not family or not stem:
+        return False
+    canonical_family = _strip_helper_family_suffix(family)
+    canonical_stem = _strip_helper_family_suffix(stem)
+    if stem == family or canonical_stem == canonical_family:
+        return True
+    suffix = stem[len(canonical_family):] if stem.startswith(canonical_family) else ""
+    return suffix in HELPER_FAMILY_SUFFIXES
+
+
+def _strip_helper_family_suffix(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    for suffix in HELPER_FAMILY_SUFFIXES:
+        if normalized.endswith(suffix) and len(normalized) > len(suffix):
+            return normalized[: -len(suffix)]
+    return normalized
 
 
 def _safe_source_paths_from_line(line: str) -> list[Path]:

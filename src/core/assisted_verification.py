@@ -558,11 +558,12 @@ def validate_phase3_assisted_report(
             errors.append("assisted Phase 3 verifier found extra unit coverage: " + ", ".join(extra_units[:20]))
 
     if expected.requires_variant_coverage:
-        covered = set(_string_list(contract_inventory.get("covered_variant_identities")))
+        coverage_value = contract_inventory.get("covered_variant_identities")
+        covered = set(_string_list(coverage_value))
         expected_variants = set(expected.expanded_unit_identities)
-        if not covered:
+        if not _has_variant_coverage_entries(coverage_value):
             errors.append("assisted Phase 3 report must list covered_variant_identities for custom_op_variant track")
-        elif not _reported_variants_cover_expected(covered, expected):
+        elif not _reported_variant_coverage_covers_expected(coverage_value, expected):
             missing = sorted(expected_variants - covered)
             extra = sorted(covered - expected_variants)
             if missing:
@@ -618,7 +619,7 @@ def build_phase3_verification_prompt(
         "# Phase 3 Custom-Op Validation-Coverage Verification\n\n"
         "You are the assisted verifier for SEAM. Use OpenCode tools to inspect the Phase 3 validation script and contract. Verify that the script/contract covers every verified Phase 1 custom-op unit, and for custom_op_variant projects every expanded variant identity.\n"
         "Phase 3 has three routes: ordinary CUDA keeps the existing documented/project entry behavior unchanged; custom-op without variants must create/select a fail-closed validation script that checks per-fine-grained-unit Ascend OPP build/install provenance after Phase 5; custom-op with variants must additionally require one build.json row per expanded target variant, exact unit_identity set equality, and CANN/OPP build/install provenance for every expanded variant.\n"
-        "If coverage is representative-only, sampled, family-only, non-executable, or missing per-variant obligations, report incomplete. Do not require Phase 5 migration_reports files to exist during Phase 3; accept a strict Phase 3 script contract when it declares the required reports and fails closed on missing/incomplete manifest, runtime, performance, build, and final-gate rows for every Phase 1 identity. Actual report existence/content is validated in Phase 5. This is a read-only verification step: do not modify files, do not create todos, do not launch background/sub-agent tasks, and do not continue after the JSON report.\n\n"
+        "If coverage is representative-only, sampled, family-only, non-executable, or missing per-variant obligations, report incomplete. Do not require Phase 5 migration_reports files to exist during Phase 3; accept a strict Phase 3 script contract when it declares the required reports and fails closed on missing/incomplete manifest, runtime, performance, build, and final-gate rows for every Phase 1 identity. covered_variant_identities may contain exact identity strings or structured count/base_units/axes summaries only when they prove the same exact Phase 1 set. Actual report existence/content is validated in Phase 5. This is a read-only verification step: do not modify files, do not create todos, do not launch background/sub-agent tasks, and do not continue after the JSON report.\n\n"
         f"Project dir: {project_dir}\n"
         f"Expected track: {inventory.track}\n"
         f"Expected units: {len(inventory.fine_grained_operator_units)}\n"
@@ -786,6 +787,219 @@ def _string_list(value: object) -> list[str]:
     return result
 
 
+def _has_variant_coverage_entries(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in cast(list[object], value):
+        if isinstance(item, (str, int, float)) and not isinstance(item, bool) and str(item).strip():
+            return True
+        if isinstance(item, Mapping):
+            item_map = cast(Mapping[object, object], item)
+            if any(key in item_map for key in ("unit_identity", "identity_set", "base_units", "base_unit_counts", "count", "unique_count", "axes", "variant_axis_coverage")):
+                return True
+    return False
+
+
+def _reported_variant_coverage_covers_expected(value: object, expected: PhaseInventory) -> bool:
+    reported = set(_string_list(value))
+    if reported and _reported_variants_cover_expected(reported, expected):
+        return True
+    return _structured_variant_coverage_covers_expected(value, expected)
+
+
+def _structured_variant_coverage_covers_expected(value: object, expected: PhaseInventory) -> bool:
+    if not isinstance(value, list):
+        return False
+    expected_counts = _expected_variant_counts_by_base(expected.expanded_unit_identities)
+    accumulated_counts: dict[str, int] = {}
+    aggregate_valid = False
+    invalid_summary = False
+    for item in cast(list[object], value):
+        if not isinstance(item, Mapping):
+            continue
+        item_map = cast(Mapping[object, object], item)
+        kind, counts = _structured_variant_summary_counts(item_map, expected)
+        if kind == "none":
+            continue
+        if kind == "invalid":
+            invalid_summary = True
+            continue
+        if kind == "aggregate":
+            aggregate_valid = True
+            continue
+        for base, count in counts.items():
+            if base in accumulated_counts:
+                invalid_summary = True
+                continue
+            accumulated_counts[base] = count
+    if invalid_summary:
+        return False
+    if aggregate_valid:
+        return True
+    return (
+        bool(accumulated_counts)
+        and accumulated_counts == expected_counts
+        and sum(accumulated_counts.values()) == expected.expanded_operator_instances_count
+    )
+
+
+def _structured_variant_summary_counts(
+    summary: Mapping[object, object],
+    expected: PhaseInventory,
+) -> tuple[str, dict[str, int]]:
+    if not any(key in summary for key in ("identity_set", "base_units", "base_unit_counts", "count", "unique_count", "axes", "variant_axis_coverage")):
+        return "none", {}
+    expected_units = set(expected.fine_grained_operator_units)
+    base_unit_counts = _structured_base_unit_counts(summary.get("base_unit_counts"))
+    if base_unit_counts:
+        if set(base_unit_counts) != expected_units:
+            return "invalid", {}
+        if sum(base_unit_counts.values()) != expected.expanded_operator_instances_count:
+            return "invalid", {}
+        expected_counts = _expected_variant_counts_by_base(expected.expanded_unit_identities)
+        if base_unit_counts == expected_counts:
+            return "aggregate", {}
+        return "invalid", {}
+    grouped_axis_counts = _structured_axis_group_base_unit_counts(summary, expected)
+    if grouped_axis_counts:
+        expected_counts = _expected_variant_counts_by_base(expected.expanded_unit_identities)
+        if grouped_axis_counts == expected_counts and sum(grouped_axis_counts.values()) == expected.expanded_operator_instances_count:
+            return "group", grouped_axis_counts
+        return "invalid", {}
+    base_units = set(_string_list(summary.get("base_units")))
+    if not base_units:
+        return "invalid", {}
+    if not base_units.issubset(expected_units):
+        return "invalid", {}
+    base_unit_count = _positive_int_field(summary, "base_unit_count")
+    if base_unit_count is not None and base_unit_count != len(base_units):
+        return "invalid", {}
+    count_values = [
+        count
+        for count in (_positive_int_field(summary, "count"), _positive_int_field(summary, "unique_count"))
+        if count is not None
+    ]
+    if not count_values:
+        return "invalid", {}
+    if len(set(count_values)) != 1:
+        return "invalid", {}
+    count = count_values[0]
+    if base_units == expected_units and count == expected.expanded_operator_instances_count:
+        return "aggregate", {}
+    per_base_count = _structured_per_base_variant_count(summary.get("axes"), count, len(base_units))
+    if per_base_count <= 0:
+        return "invalid", {}
+    return "group", {base: per_base_count for base in base_units}
+
+
+def _structured_per_base_variant_count(axes: object, count: int, base_unit_count: int) -> int:
+    axis_product = _axis_product_from_structured_axes(axes)
+    if axis_product > 0 and axis_product * base_unit_count == count:
+        return axis_product
+    if base_unit_count > 0 and count % base_unit_count == 0:
+        return count // base_unit_count
+    return 0
+
+
+def _structured_axis_group_base_unit_counts(
+    summary: Mapping[object, object],
+    expected: PhaseInventory,
+) -> dict[str, int]:
+    axes = summary.get("axes")
+    if not isinstance(axes, Mapping):
+        axes = summary.get("variant_axis_coverage")
+        if isinstance(axes, Mapping):
+            axes = cast(Mapping[object, object], axes).get("axes")
+    if not isinstance(axes, Mapping):
+        return {}
+    expected_units = set(expected.fine_grained_operator_units)
+    counts: dict[str, int] = {}
+    found_group = False
+    for raw_key, raw_units in summary.items():
+        if not isinstance(raw_key, str):
+            continue
+        axis_names = _axis_names_from_base_units_group_key(raw_key, axes)
+        if not axis_names:
+            continue
+        found_group = True
+        base_units = set(_string_list(raw_units))
+        if not base_units or not base_units.issubset(expected_units):
+            return {}
+        per_base_count = _axis_product_for_names(axes, axis_names)
+        if per_base_count <= 0:
+            return {}
+        for base_unit in base_units:
+            if base_unit in counts:
+                return {}
+            counts[base_unit] = per_base_count
+    return counts if found_group else {}
+
+
+def _axis_names_from_base_units_group_key(key: str, axes: Mapping[object, object]) -> list[str]:
+    normalized = key.strip().lower().replace("-", "_")
+    prefix = "base_units_with_"
+    suffix = "_axes"
+    if not normalized.startswith(prefix) or not normalized.endswith(suffix):
+        return []
+    body = normalized[len(prefix):-len(suffix)]
+    available_axes = [
+        axis.strip().lower().replace("-", "_")
+        for axis in axes
+        if isinstance(axis, str) and axis.strip()
+    ]
+    axis_names = [
+        axis
+        for axis in available_axes
+        if re.search(rf"(?<![A-Za-z0-9]){re.escape(axis)}(?![A-Za-z0-9])", body)
+    ]
+    return _ordered_unique(axis_names)
+
+
+def _axis_product_for_names(axes: Mapping[object, object], axis_names: Sequence[str]) -> int:
+    product = 1
+    for axis_name in axis_names:
+        values = axes.get(axis_name)
+        if not isinstance(values, list) or not values:
+            return 0
+        product *= len(cast(list[object], values))
+    return product
+
+
+def _structured_base_unit_counts(value: object) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    counts: dict[str, int] = {}
+    for key, item in cast(Mapping[object, object], value).items():
+        if not isinstance(key, str) or not key.strip():
+            return {}
+        if not isinstance(item, int) or isinstance(item, bool) or item <= 0:
+            return {}
+        counts[key.strip()] = item
+    return counts
+
+
+def _axis_product_from_structured_axes(axes: object) -> int:
+    if not isinstance(axes, Mapping):
+        return 0
+    lengths: list[int] = []
+    for value in cast(Mapping[object, object], axes).values():
+        if isinstance(value, list) and value:
+            lengths.append(len(cast(list[object], value)))
+    if not lengths:
+        return 0
+    product = 1
+    for length in lengths:
+        product *= length
+    return product
+
+
+def _positive_int_field(values: Mapping[object, object], key: str) -> int | None:
+    value = values.get(key)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
 def _as_list(value: object) -> list[object]:
     return cast(list[object], value) if isinstance(value, list) else []
 
@@ -812,21 +1026,43 @@ def _phase1_verifier_failure_is_report_only(report: Mapping[str, object], errors
         "extra_units",
         "missing_variants",
         "extra_variants",
-        "collapsed_or_representative_rows",
         "unresolved_source_groups",
     )
     if any(not _list_empty(report.get(field)) for field in blocking_fields):
         return False
+    collapsed_rows = _as_list(report.get("collapsed_or_representative_rows"))
+    if collapsed_rows and not _collapsed_rows_are_report_only_variant_summary(report, collapsed_rows):
+        return False
     allowed_fragments = (
+        "phase1_inventory fine_grained_operator_units does not match normalized Phase 1 output",
+        "source inventory reports missing normalized units",
+        "source inventory omits normalized units",
+        "normalized Phase 1 output is incomplete relative to source-template expansion",
+        "normalized Phase 1 output has variants outside source-template expansion",
         "expanded_unit_identities does not cover normalized Phase 1 output",
         "expanded_operator_instances_count does not match normalized Phase 1 output",
         "must list phase1_inventory expanded_unit_identities",
         "must list source_evidence_inventory expanded_unit_identities",
+        "report contains collapsed_or_representative_rows",
     )
     return bool(errors) and all(
         any(fragment in error for fragment in allowed_fragments)
         for error in errors
     )
+
+
+def _collapsed_rows_are_report_only_variant_summary(report: Mapping[str, object], rows: Sequence[object]) -> bool:
+    if not rows:
+        return True
+    phase1_inventory_report = _mapping(report.get("phase1_inventory"))
+    count = phase1_inventory_report.get("expanded_operator_instances_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        return False
+    text = _flatten_report_text(list(rows)).lower()
+    if str(count) not in text:
+        return False
+    summary_terms = ("cartesian", "expanded", "variant", "source-required", "total")
+    return sum(1 for term in summary_terms if term in text) >= 2
 
 
 def _reported_variants_cover_expected(reported_variants: set[str], expected: PhaseInventory) -> bool:
