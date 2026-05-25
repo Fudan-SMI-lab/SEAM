@@ -74,7 +74,7 @@ python3.10 -m pytest tests/ -x -q
 cd /path/to/SEAM
 
 python3.10 -m tests.e2e.e2e_test_v3 \
-  --workflow-path migration_utils/workflows/ppu_migration_normal_entry_057_experiment.yaml \
+  --workflow-path src/workflows/ppu_migration_normal_entry_057_experiment.yaml \
   --project-dir /path/to/deepwave_project \
   --output-dir ./output_projects \
   --server-url http://127.0.0.1:4098 \
@@ -87,7 +87,7 @@ python3.10 -m tests.e2e.e2e_test_v3 \
 
 | 参数 | 值 | 说明 |
 |------|---|------|
-| `--workflow-path` | `migration_utils/workflows/ppu_migration_normal_entry_057_experiment.yaml` | 普通入口 YAML |
+| `--workflow-path` | `src/workflows/ppu_migration_normal_entry_057_experiment.yaml` | 普通入口 YAML |
 | `--project-dir` | `/path/to/deepwave_project` | DeepWave 源码根目录 |
 | `--output-dir` | `./output_projects` | 迁移产物输出目录 |
 | `--server-url` | `http://127.0.0.1:4098` | OpenCode 服务地址 |
@@ -119,7 +119,7 @@ python3.10 -m tests.e2e.e2e_test_v3 \
 cd /path/to/SEAM
 
 python3.10 -m tests.e2e.e2e_test_v3 \
-  --workflow-path migration_utils/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
+  --workflow-path src/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
   --project-dir /path/to/deepwave_project \
   --output-dir ./output_projects \
   --server-url http://127.0.0.1:4098 \
@@ -132,7 +132,7 @@ python3.10 -m tests.e2e.e2e_test_v3 \
 
 | 参数 | 值 | 说明 |
 |------|---|------|
-| `--workflow-path` | `migration_utils/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml` | Custom-Op YAML |
+| `--workflow-path` | `src/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml` | Custom-Op YAML |
 | `--project-dir` | `/path/to/deepwave_project` | DeepWave 源码根目录 |
 | `--output-dir` | `./output_projects` | 迁移产物输出目录 |
 | `--server-url` | `http://127.0.0.1:4098` | OpenCode 服务地址 |
@@ -146,7 +146,7 @@ python3.10 -m tests.e2e.e2e_test_v3 \
 
 ```bash
 python3.10 -m tests.e2e.e2e_test_v3 \
-  --workflow-path migration_utils/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
+  --workflow-path src/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
   --project-dir /path/to/deepwave_project \
   --user-constraints /path/to/ADAPTATION_REQUIREMENTS.md \
   --output-dir ./output_projects \
@@ -174,16 +174,16 @@ python3.10 -m tests.e2e.e2e_test_v3 \
 | `output_projects/deepwave_project_<timestamp>/migration_reports/baseline.json` | baseline 设备测量记录 |
 | `output_projects/deepwave_project_<timestamp>/migration_reports/runtime_coverage.json` | 同次运行覆盖计数 |
 | `output_projects/deepwave_project_<timestamp>/migration_reports/build.log` | 构建日志（须含 PPU 原生构建 token，如 `ppuccl`） |
-| `e2e-reports/migration_utils/<timestamp>/summary.json` | 顶层运行总结 |
-| `e2e-reports/migration_utils/<timestamp>/phase_results.json` | 逐 Phase 详细结果 |
-| `e2e-reports/migration_utils/<timestamp>/before_snapshot.json` / `after_snapshot.json` | 迁移前后 Python 文件快照 |
+| `e2e-reports/src/<timestamp>/summary.json` | 顶层运行总结 |
+| `e2e-reports/src/<timestamp>/phase_results.json` | 逐 Phase 详细结果 |
+| `e2e-reports/src/<timestamp>/before_snapshot.json` / `after_snapshot.json` | 迁移前后 Python 文件快照 |
 
 ### 查看整体运行状态
 
 ```bash
 python3.10 -c "
 import json, sys
-s = json.load(open('e2e-reports/migration_utils/<timestamp>/summary.json'))
+s = json.load(open('e2e-reports/src/<timestamp>/summary.json'))
 print('Status:', s['overall_status'])
 for p in s['phases']:
     print(f'  {p[\"phase_id\"]}: {p[\"status\"]} ({p[\"duration_seconds\"]}s)')
@@ -340,8 +340,8 @@ diff -qr "$DEST" "$SRC" \
 V3 launcher 提供 dry-run，用于检查项目路径、workflow YAML 和工作目录：
 
 ```bash
-bash migration_utils/scripts/run_e2e_v3.sh /path/to/deepwave_project \
-  --workflow migration_utils/workflows/ppu_migration_normal_entry_057_experiment.yaml \
+bash src/scripts/run_e2e_v3.sh /path/to/deepwave_project \
+  --workflow src/workflows/ppu_migration_normal_entry_057_experiment.yaml \
   --dry-run \
   --server-url http://127.0.0.1:4098
 ```
@@ -367,12 +367,12 @@ curl http://127.0.0.1:4098/session
 
 ### Phase 5 修复循环始终 exit 1
 
-检查 `e2e-reports/migration_utils/<timestamp>/phase_results.json`：
+检查 `e2e-reports/src/<timestamp>/phase_results.json`：
 
 ```bash
 python3.10 -c "
 import json
-r = json.load(open('e2e-reports/migration_utils/<timestamp>/phase_results.json'))
+r = json.load(open('e2e-reports/src/<timestamp>/phase_results.json'))
 for p in r:
     if p['phase_id'] == 'phase_5_validation':
         print(json.dumps(p, indent=2))
@@ -391,7 +391,7 @@ for p in r:
 ls -lt output_projects/ | head -5
 
 # E2E 报告
-ls -lt e2e-reports/migration_utils/ | head -5
+ls -lt e2e-reports/src/ | head -5
 ```
 
 ### 创建 Session 失败
@@ -426,14 +426,14 @@ python -m tests.e2e.e2e_test_v2 \
 
 ```bash
 # V2 Shell launcher — 已弃用
-bash migration_utils/scripts/run_e2e_v2.sh 04_Deepwave \
+bash src/scripts/run_e2e_v2.sh 04_Deepwave \
   --dry-run \
   --server-url http://127.0.0.1:4098
 ```
 
 ```bash
 # V2 Dry-run — 已弃用
-bash migration_utils/scripts/run_e2e_v2.sh 04_Deepwave --dry-run --server-url http://127.0.0.1:4098
+bash src/scripts/run_e2e_v2.sh 04_Deepwave --dry-run --server-url http://127.0.0.1:4098
 ```
 
 > **注意**：以上不再是现行迁移方式。当前 V3 路由使用容器内 PPU 平台，不依赖 NPU/CANN/torch_npu 环境。

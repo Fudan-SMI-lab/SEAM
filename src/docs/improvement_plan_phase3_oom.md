@@ -6,7 +6,7 @@
 目前的 Phase 3 Prompt 仅要求提供运行命令，未明确限制脚本的交互性。导致 LLM 选择了包含 `while True: input()` 的交互式命令行界面（CLI）脚本，使得 Phase 5 验证阶段挂起或无法自动化运行。
 
 ### 修改方案
-在 `migration_utils/prompts/phase_3_entry_script.md` 中增加 **"Headless Execution Compliance"** 章节。
+在 `src/prompts/phase_3_entry_script.md` 中增加 **"Headless Execution Compliance"** 章节。
 
 ### Prompt 追加内容
 ```markdown
@@ -94,7 +94,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
   - id: phase_35_static_entry_validation
     name: Static Entry Validation
     timeout: 600
-    prompt_template: "migration_utils/prompts/phase_35_static_validate.md"
+    prompt_template: "src/prompts/phase_35_static_validate.md"
     output_schema: {} # Dynamic JSON structure
     validator: entry_static
     transitions:
@@ -109,7 +109,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
 ## 3. Issue 3: OOM 防护与临时文件重定向
 
 ### 修改方案
-在 `migration_utils/core/repair_loop.py` 中，修改 `subprocess.run` 调用方式，由内存捕获改为文件重定向。
+在 `src/core/repair_loop.py` 中，修改 `subprocess.run` 调用方式，由内存捕获改为文件重定向。
 
 ### 代码实现细节
 

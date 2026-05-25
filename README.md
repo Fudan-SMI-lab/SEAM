@@ -1,6 +1,6 @@
 # SEAM: GPU Migration Autopilot
 
-[![Workflow](https://img.shields.io/badge/workflow-YAML--driven-2f6fed)](migration_utils/workflows/)
+[![Workflow](https://img.shields.io/badge/workflow-YAML--driven-2f6fed)](src/workflows/)
 [![Runtime](https://img.shields.io/badge/runtime-OpenCode%20Server-111827)](#opencode-server)
 [![Target](https://img.shields.io/badge/target-multi--platform-c026d3)](#quickstart)
 [![Custom Ops](https://img.shields.io/badge/custom--op-final%20gate-ef4444)](#cuda-custom-op-vs-normal-flow)
@@ -13,7 +13,7 @@ The core idea is simple: migration is not finished when code has been rewritten.
 
 | Capability | What it means |
 | --- | --- |
-| YAML state machine | Phases, agents, validators, transitions, sub-workflows, and runtime skills are defined in YAML workflow files under `migration_utils/workflows/`. |
+| YAML state machine | Phases, agents, validators, transitions, sub-workflows, and runtime skills are defined in YAML workflow files under `src/workflows/`. |
 | OpenCode orchestration | Persistent roles coordinate project analysis, environment setup, code adaptation, dependency repair, and operator repair. |
 | Platform policy | `target_platform` presets (PPU, Ascend NPU, MUSA, ROCm, MLU, generic) drive platform-specific validation tokens, migration rules, and evidence requirements. |
 | Deterministic migration | Built-in rule migration handles common platform-specific replacements before runtime validation. |
@@ -102,10 +102,10 @@ flowchart LR
 
 ```text
 SEAM/
-├── migration_utils/        # Core state-machine framework, validators, prompts, workflow YAML, tests
+├── src/                    # Core state-machine framework, validators, prompts, workflow YAML, tests
 ├── .skills/                # Runtime skill packs that can be injected by YAML phases
-├── skills/                 # Promoted experience-memory skills
-├── memory/                 # Experience cases, staging candidates, and refined lessons
+├── .memory/skills/         # Promoted experience-memory skills
+├── .memory/memory/         # Experience cases, staging candidates, and refined lessons
 ├── docs/                   # Migration notes and project analysis docs
 ├── scripts/                # Utility checks for local setup
 ├── tests/                  # Root wrappers for E2E entrypoints
@@ -164,8 +164,8 @@ Two V3 entrypoints are available: the shell launcher (`run_e2e_v3.sh`) and the d
 This uses the container-based PPU smoke workflow. The project directory is discovered from `cuda_projects/` or `original_projects/`:
 
 ```bash
-bash migration_utils/scripts/run_e2e_v3.sh my_project \
-  --workflow migration_utils/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
+bash src/scripts/run_e2e_v3.sh my_project \
+  --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
   --server-url http://127.0.0.1:4098 \
   --max-iter 8 \
   --verbose
@@ -177,7 +177,7 @@ For a project at an arbitrary path, use the direct Python entrypoint instead:
 python3.10 -m tests.e2e.e2e_test_v3 \
   --project-dir /path/to/your_cuda_project \
   --output-dir ./output_projects \
-  --workflow-path migration_utils/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
+  --workflow-path src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
   --server-url http://127.0.0.1:4098 \
   --max-phase5-iter 8 \
   --keep-temp-dir \
@@ -192,7 +192,7 @@ For projects with CUDA custom operators (e.g. DeepWave), use the auto-mode workf
 python3.10 -m tests.e2e.e2e_test_v3 \
   --project-dir /path/to/deepwave_project \
   --output-dir ./output_projects \
-  --workflow-path migration_utils/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
+  --workflow-path src/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
   --server-url http://127.0.0.1:4098 \
   --max-phase5-iter 8 \
   --keep-temp-dir \
@@ -204,18 +204,18 @@ python3.10 -m tests.e2e.e2e_test_v3 \
 ### Dry-run setup check
 
 ```bash
-bash migration_utils/scripts/run_e2e_v3.sh my_project \
-  --workflow migration_utils/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
+bash src/scripts/run_e2e_v3.sh my_project \
+  --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
   --dry-run \
   --server-url http://127.0.0.1:4098
 ```
 
 ### Default workflow (legacy NPU)
 
-If `--workflow-path` is omitted, the V3 runner falls back to the default NPU workflow (`migration_utils/workflows/npu_migration_v2.yaml`):
+If `--workflow-path` is omitted, the V3 runner falls back to the default NPU workflow (`src/workflows/npu_migration_v2.yaml`):
 
 ```bash
-bash migration_utils/scripts/run_e2e_v3.sh my_project \
+bash src/scripts/run_e2e_v3.sh my_project \
   --server-url http://127.0.0.1:4098 \
   --max-iter 8 \
   --verbose
@@ -223,7 +223,7 @@ bash migration_utils/scripts/run_e2e_v3.sh my_project \
 
 ## Command Parameters
 
-### `migration_utils/scripts/run_e2e_v3.sh`
+### `src/scripts/run_e2e_v3.sh`
 
 | Parameter | Meaning |
 | --- | --- |
@@ -260,7 +260,7 @@ bash migration_utils/scripts/run_e2e_v3.sh my_project \
 
 ## Add Skills In YAML
 
-Runtime skills are attached directly to agents, phases, or sub-workflow phases in workflow YAML files under `migration_utils/workflows/`.
+Runtime skills are attached directly to agents, phases, or sub-workflow phases in workflow YAML files under `src/workflows/`.
 
 Minimal list form:
 
@@ -330,10 +330,10 @@ Each E2E run produces artifacts at several locations:
 | `output_projects/<project>_<timestamp>/` | The migrated project copy with all applied changes. This is your working output. |
 | `output_projects/<project>_<timestamp>/.sm-artifacts/` | Per-phase canonical artifacts (journal, telemetry, snapshots). |
 | `output_projects/<project>_<timestamp>/migration_reports/` | Key reports written by the entry script: `custom_op_final_gate.json`, `migration_manifest.json`, `performance.json`, `baseline.json`, `runtime_coverage.json`, `build.log`. |
-| `e2e-reports/migration_utils/<YYYYMMDD_HHMMSS>/` | E2E harness summary and telemetry. |
-| `e2e-reports/migration_utils/<timestamp>/summary.json` | Top-level run summary: `overall_status`, per-phase status/timing, session/command counts, errors. |
-| `e2e-reports/migration_utils/<timestamp>/phase_results.json` | Per-phase detailed results. |
-| `e2e-reports/migration_utils/<timestamp>/before_snapshot.json` / `after_snapshot.json` | Python file snapshots before and after migration for diff analysis. |
+| `e2e-reports/src/<YYYYMMDD_HHMMSS>/` | E2E harness summary and telemetry. |
+| `e2e-reports/src/<timestamp>/summary.json` | Top-level run summary: `overall_status`, per-phase status/timing, session/command counts, errors. |
+| `e2e-reports/src/<timestamp>/phase_results.json` | Per-phase detailed results. |
+| `e2e-reports/src/<timestamp>/before_snapshot.json` / `after_snapshot.json` | Python file snapshots before and after migration for diff analysis. |
 
 ### How to analyze results
 
@@ -341,7 +341,7 @@ Each E2E run produces artifacts at several locations:
 ```bash
 python3.10 -c "
 import json
-s = json.load(open('e2e-reports/migration_utils/<timestamp>/summary.json'))
+s = json.load(open('e2e-reports/src/<timestamp>/summary.json'))
 print('Status:', s['overall_status'])
 for p in s['phases']:
     print(f'  {p[\"phase_id\"]}: {p[\"status\"]} ({p[\"duration_seconds\"]}s)')
@@ -433,16 +433,16 @@ CPU can appear as a baseline device for performance comparison when `performance
 
 ```bash
 # Validate local improvement contracts
-bash migration_utils/scripts/verify_improvements.sh --repo-root . --output-dir /tmp/seam-verify
+bash src/scripts/verify_improvements.sh --repo-root . --output-dir /tmp/seam-verify
 
 # Show the launcher command without running the migration (V3)
-bash migration_utils/scripts/run_e2e_v3.sh my_project \
-  --workflow migration_utils/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
+bash src/scripts/run_e2e_v3.sh my_project \
+  --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
   --dry-run \
   --server-url http://127.0.0.1:4098
 
 # Run the framework test suite
-python -m pytest migration_utils/tests -q
+python -m pytest src/tests -q
 ```
 
 ## License And Citation
