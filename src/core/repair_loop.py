@@ -1158,6 +1158,7 @@ class RepairLoopEngine:
             "workspace_root": _workspace_root(),
             "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
             "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
+            "operator_repair_progress_block": "(No current custom-op repair progress block is available in this repair-loop context.)",
             "active_custom_op_full_repair_requirements": "",
         }
         analyzer_prompt = self.prompt_loader.load_prompt("phase_error_recovery", prompt_context)
@@ -1823,6 +1824,8 @@ class RepairLoopEngine:
     ) -> str:
         repair_role = classification["repair_role"]
         prompt_id = _REPAIR_PROMPT_IDS.get(repair_role, "repair_code_adapter")
+        if repair_role == "operator_fixer" and _operator_repair_has_custom_op_contract(phase3_contract):
+            prompt_id = "repair_custom_op_variant_service"
         context: dict[str, str] = {
             "repair_role": repair_role,
             "entry_script": entry_script,
@@ -1842,6 +1845,7 @@ class RepairLoopEngine:
             "workspace_root": _workspace_root(),
             "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
             "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
+            "operator_repair_progress_block": "(No current custom-op repair progress block is available in this repair-loop context.)",
             "active_custom_op_full_repair_requirements": "",
         }
         if repair_role in {"dependency_fixer", "operator_fixer"}:

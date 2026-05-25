@@ -54,7 +54,10 @@ from core.routes import (
     CUSTOM_OP_WITH_VARIANTS,
     ORDINARY_CUDA,
     SERVING_ROUTES,
+    serving_entry_kind_for_route,
     serving_framework_for_route,
+    normalize_serving_phase1_surface,
+    normalize_serving_phase3_contract,
     serving_route_from_contract,
 )
 from core.assisted_verification import (
@@ -92,6 +95,9 @@ TOP_LEVEL_LLM_FRESH_RETRIES_DEFAULT = 2
 CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT = 6 * 60 * 60
 CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT = 3
 CUSTOM_OP_OPERATOR_INCOMPLETE_MAX_CONTINUATIONS_DEFAULT = 1
+SUB_WORKFLOW_REPAIR_CONTINUATION_ATTEMPTS_DEFAULT = 3
+CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_DEFAULT = 10 * 60
+CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_DEFAULT = 5.0
 CUSTOM_OP_FAIL_CLOSED_STATUS = "fail_closed_missing_strict_opp_evidence"
 CUSTOM_OP_STAGNATION_FAIL_CLOSED_STATUS = "stagnation_fail_closed_missing_strict_opp_evidence"
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
@@ -1237,7 +1243,12 @@ class WorkflowExecutor:
         self._inject_llm_baseline_context(input_ctx, phase, state)
         self._inject_llm_phase_specific_context(input_ctx, phase, state)
 
-        prompt_text = self.prompt_loader.load_prompt(phase.prompt_template, input_ctx)
+        prompt_template = self._prompt_template_for_llm_phase(
+            phase_id=phase.id,
+            default_template=phase.prompt_template,
+            state=state,
+        )
+        prompt_text = self.prompt_loader.load_prompt(prompt_template, input_ctx)
         prompt_text, explicit_skill_bundle = self._append_explicit_runtime_skill_markdown(
             prompt_text, phase, agent_id
         )
@@ -2244,6 +2255,15 @@ class WorkflowExecutor:
                         last_error = incomplete_error
                         last_raw = json.dumps({"ok": False, "error": incomplete_error, "retryable": True})
                         if incomplete_continuations >= max_incomplete_continuations:
+                            recovered_output = self._wait_for_operator_repair_current_final_gate(
+                                phase_id=phase_id,
+                                state=state,
+                                context=context,
+                                loop_vars=loop_vars,
+                                command_started_at=command_started_at,
+                            )
+                            if recovered_output is not None:
+                                return json.dumps(recovered_output)
                             return last_raw
                         incomplete_continuations += 1
                         prompt_for_attempt = self._custom_op_operator_continuation_prompt(
@@ -2273,6 +2293,15 @@ class WorkflowExecutor:
                         last_error = report_incomplete_error
                         last_raw = json.dumps({"ok": False, "error": report_incomplete_error, "retryable": True})
                         if incomplete_continuations >= max_incomplete_continuations:
+                            recovered_output = self._wait_for_operator_repair_current_final_gate(
+                                phase_id=phase_id,
+                                state=state,
+                                context=context,
+                                loop_vars=loop_vars,
+                                command_started_at=command_started_at,
+                            )
+                            if recovered_output is not None:
+                                return json.dumps(recovered_output)
                             return last_raw
                         incomplete_continuations += 1
                         prompt_for_attempt = self._custom_op_operator_continuation_prompt(
@@ -2301,9 +2330,82 @@ class WorkflowExecutor:
                     return json.dumps(recovered_output)
                 break
 
+        recovered_output = self._wait_for_operator_repair_current_final_gate(
+            phase_id=phase_id,
+            state=state,
+            context=context,
+            loop_vars=loop_vars,
+            command_started_at=command_started_at,
+        )
+        if recovered_output is not None:
+            return json.dumps(recovered_output)
         if last_raw:
             return last_raw
         return json.dumps({"ok": False, "error": last_error})
+
+    def _custom_op_operator_final_gate_grace_seconds(self) -> float:
+        raw_value = self.framework_config.get(
+            "custom_op_operator_final_gate_grace_seconds",
+            os.environ.get(
+                "SEAM_CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_SECONDS",
+                CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_DEFAULT,
+            ),
+        )
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            return float(CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_DEFAULT)
+        return max(0.0, value)
+
+    def _custom_op_operator_final_gate_poll_interval_seconds(self) -> float:
+        raw_value = self.framework_config.get(
+            "custom_op_operator_final_gate_poll_interval_seconds",
+            os.environ.get(
+                "SEAM_CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_SECONDS",
+                CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_DEFAULT,
+            ),
+        )
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            return float(CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_DEFAULT)
+        return max(0.1, value)
+
+    def _wait_for_operator_repair_current_final_gate(
+        self,
+        *,
+        phase_id: str,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+        command_started_at: float | None,
+    ) -> dict[str, object] | None:
+        grace_seconds = self._custom_op_operator_final_gate_grace_seconds()
+        if grace_seconds <= 0:
+            return None
+        contract = state.get("phase_3_entry_script")
+        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
+            return None
+        reports_dir = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars)
+        gate_path = reports_dir / "custom_op_final_gate.json"
+        if not gate_path.exists():
+            return None
+        deadline = time.time() + grace_seconds
+        interval = self._custom_op_operator_final_gate_poll_interval_seconds()
+        while True:
+            recovered = self._recover_operator_repair_from_current_final_gate(
+                phase_id=phase_id,
+                state=state,
+                context=context,
+                loop_vars=loop_vars,
+                command_started_at=command_started_at,
+            )
+            if recovered is not None:
+                return recovered
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            time.sleep(min(interval, remaining))
 
     def _should_use_custom_op_operator_outer_loop_prompt(
         self,
@@ -2947,6 +3049,163 @@ class WorkflowExecutor:
         )
         return any(key in output for key in completion_keys)
 
+    @classmethod
+    def _repair_response_continuation_reason(cls, phase_id: str, output: dict[str, Any]) -> str | None:
+        if phase_id not in SUB_WORKFLOW_REPAIR_PHASE_IDS:
+            return None
+        if output.get("communication_error") is True:
+            return "repair phase ended with a retryable communication error before completing a fix"
+        raw_response = str(output.get("raw_response") or "").strip()
+        public_keys = {str(key) for key in output if not str(key).startswith("_")}
+        if raw_response and public_keys.issubset({"raw_response"}):
+            return "repair phase returned prose/status text instead of final repair JSON"
+        if cls._is_status_only_llm_response(output):
+            return "repair phase returned status/progress-only JSON instead of a completed repair result"
+        if public_keys and public_keys.issubset(STATUS_ONLY_LLM_RESPONSE_KEYS | {"session_id", "raw_response"}):
+            return "repair phase returned status/progress-only JSON instead of a completed repair result"
+        if cls._partial_progress_text(raw_response):
+            return "repair phase returned an in-progress update instead of continuing until the fix was applied"
+        if not cls._repair_output_has_actionable_progress(output):
+            return "repair phase returned JSON without modified files, dependency commands, environment changes, or verification evidence"
+        return None
+
+    @classmethod
+    def _repair_output_has_actionable_progress(cls, output: dict[str, Any]) -> bool:
+        fixed = output.get("fixed")
+        if isinstance(fixed, bool) and fixed:
+            return True
+        for key in (
+            "modified_files",
+            "commands_run",
+            "installed_packages",
+            "environment_changes",
+            "generated_artifacts",
+            "created_files",
+            "updated_files",
+            "verification_commands",
+            "tests_run",
+        ):
+            if cls._nonempty_repair_progress_value(output.get(key)):
+                return True
+        for key in ("verification", "validation", "agent_diagnostics"):
+            value = output.get(key)
+            if isinstance(value, Mapping) and value:
+                return True
+            if isinstance(value, list) and value:
+                return True
+        return False
+
+    @staticmethod
+    def _nonempty_repair_progress_value(value: object) -> bool:
+        if isinstance(value, list):
+            return any(str(item).strip() for item in value)
+        if isinstance(value, Mapping):
+            return bool(value)
+        if isinstance(value, str):
+            return bool(value.strip())
+        return False
+
+    def _continue_repair_phase_until_actionable(
+        self,
+        *,
+        phase_id: str,
+        agent_id: str,
+        session_id: str,
+        phase: PhaseDefinition,
+        phase_output: dict[str, Any],
+        prompt_context: dict[str, Any],
+        state: dict[str, Any],
+        timeout: int | None,
+    ) -> tuple[dict[str, Any], str | None]:
+        current_output = phase_output
+        reason = self._repair_response_continuation_reason(phase_id, current_output)
+        if reason is None:
+            return current_output, None
+        attempts = self._repair_phase_continuation_attempts()
+        for attempt in range(1, attempts + 1):
+            prompt = self._build_repair_phase_continuation_prompt(
+                phase_id=phase_id,
+                reason=reason,
+                previous_output=current_output,
+                attempt=attempt,
+                max_attempts=attempts,
+                prompt_context=prompt_context,
+            )
+            raw_response = self._send_sub_workflow_llm_command(
+                phase_id=phase_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                prompt_text=prompt,
+                timeout=timeout,
+            )
+            parsed = extract_json_response(raw_response)
+            self._raise_for_session_error_output(parsed, phase_id)
+            if not parsed:
+                current_output = {"raw_response": raw_response}
+            else:
+                current_output = self._normalize_llm_output(phase, parsed, prompt_context, state)
+            reason = self._repair_response_continuation_reason(phase_id, current_output)
+            if reason is None:
+                return current_output, None
+        return current_output, (
+            f"{phase_id} did not produce an actionable completed repair after {attempts} "
+            f"same-session continuation prompt(s): {reason}"
+        )
+
+    def _repair_phase_continuation_attempts(self) -> int:
+        raw = self.framework_config.get("repair_continuation_attempts")
+        if raw is None:
+            raw = self.framework_config.get("sub_workflow_repair_continuation_attempts")
+        if raw is None:
+            return SUB_WORKFLOW_REPAIR_CONTINUATION_ATTEMPTS_DEFAULT
+        try:
+            return max(0, min(10, int(str(raw))))
+        except (TypeError, ValueError):
+            return SUB_WORKFLOW_REPAIR_CONTINUATION_ATTEMPTS_DEFAULT
+
+    def _build_repair_phase_continuation_prompt(
+        self,
+        *,
+        phase_id: str,
+        reason: str,
+        previous_output: dict[str, Any],
+        attempt: int,
+        max_attempts: int,
+        prompt_context: dict[str, Any],
+    ) -> str:
+        previous_json = json.dumps(previous_output, ensure_ascii=False, indent=2, sort_keys=True)
+        required_shape = json.dumps(
+            {
+                "modified_files": ["path/or/empty-only-for-dependency-env-change"],
+                "commands_run": ["commands actually run, if any"],
+                "installed_packages": ["packages installed or pinned, if any"],
+                "environment_changes": ["env/runtime changes, if any"],
+                "summary": "what was actually changed",
+                "verification": ["verification commands and observed result"],
+                "agent_diagnostics": "remaining blocker or empty string",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        return (
+            "Your previous Phase 5 repair response was not an actionable completed repair result.\n"
+            f"Reason: {reason}.\n"
+            f"Continuation attempt: {attempt}/{max_attempts}.\n\n"
+            "Continue in this same session. Do not return a plan, progress update, or 'I will' message. "
+            "Use the already-provided project context and keep working until you have actually applied a fix or made a verified dependency/environment change.\n\n"
+            f"Project dir: {self.project_dir}\n"
+            f"Entry command: {prompt_context.get('entry_script', '')}\n"
+            f"Repair phase: {phase_id}\n\n"
+            "For code_adapter/operator_fixer repairs, final JSON must include non-empty modified_files plus verification evidence. "
+            "For dependency_fixer repairs, final JSON may use non-empty commands_run, installed_packages, or environment_changes when no source file changes are needed. "
+            "If the current role is wrong, make the smallest safe diagnostic change you can, record the exact blocker in agent_diagnostics, and still return final JSON only.\n\n"
+            "Required final JSON shape:\n"
+            f"```json\n{required_shape}\n```\n\n"
+            "Previous non-actionable response:\n"
+            f"```json\n{previous_json}\n```"
+        )
+
+
     @staticmethod
     def _communication_failure_output(output: dict[str, object]) -> dict[str, object]:
         return {
@@ -2955,6 +3214,21 @@ class WorkflowExecutor:
             "communication_error": True,
             "retryable": True,
         }
+
+    @staticmethod
+    def _prompt_template_for_llm_phase(
+        *,
+        phase_id: str,
+        default_template: str,
+        state: dict[str, Any],
+    ) -> str:
+        if phase_id in {"fix_operator", "imp_fix_operator"}:
+            phase3_contract = state.get("phase_3_entry_script")
+            if isinstance(phase3_contract, dict) and _operator_repair_has_custom_op_contract(
+                cast(dict[str, object], phase3_contract)
+            ):
+                return "repair_custom_op_variant_service"
+        return default_template
 
     def _recover_operator_repair_from_current_final_gate(
         self,
@@ -3582,16 +3856,25 @@ class WorkflowExecutor:
         if "project_analysis" in phase_id or phase_id == "phase_1":
             normalized["project_dir"] = prompt_context.get("project_dir", self.project_dir)
             self._normalize_project_analysis_variant_count(normalized)
+            normalize_serving_phase1_surface(normalized)
 
         # phase_3_entry_script: inject entry_script_path
         if "entry_script" in phase_id or phase_id == "phase_3":
+            ph1 = state.get("phase_1_project_analysis") or state.get("phase_1")
             if "entry_script_path" not in normalized:
-                ph1 = state.get("phase_1_project_analysis") or state.get("phase_1")
                 if isinstance(ph1, dict) and ph1.get("entry_script"):
                     normalized["entry_script_path"] = ph1["entry_script"]
                 elif prompt_context.get("entry_script"):
                     normalized["entry_script_path"] = prompt_context["entry_script"]
-            if normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(state, prompt_context):
+            if isinstance(ph1, dict) and ph1.get("migration_route") in SERVING_ROUTES:
+                route = str(ph1["migration_route"])
+                normalize_serving_phase3_contract(
+                    normalized,
+                    route=route,
+                    project_dir=str(self.project_dir),
+                    phase1_output=ph1,
+                )
+            elif normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(state, prompt_context):
                 _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
                 normalized["project_dir"] = str(self.project_dir)
             variant_overlay = expanded_variant_contract_from_outputs(state)
@@ -4501,6 +4784,10 @@ class WorkflowExecutor:
                 loop_state["stagnation_count"] = 0
                 continue
 
+            if self._iteration_made_repair_progress(step_outputs):
+                loop_state["stagnation_count"] = 0
+                continue
+
             # 4c. Stagnation check (builtin)
             error_sig = self._normalize_error_signature(
                 loop_state.get("script_stderr", "") or loop_state.get("last_error", "")
@@ -5049,9 +5336,12 @@ class WorkflowExecutor:
                             loop_state=loop_state,
                         )
                     else:
-                        prompt_text = self.prompt_loader.load_prompt(
-                            mini.prompt_template, input_ctx
+                        prompt_template = self._prompt_template_for_llm_phase(
+                            phase_id=str(phase_id),
+                            default_template=mini.prompt_template,
+                            state=state,
                         )
+                        prompt_text = self.prompt_loader.load_prompt(prompt_template, input_ctx)
                         if not self._is_slim_repair_prompt_phase(phase_id):
                             prompt_text = self._append_inherited_experience_markdown(
                                 prompt_text, phase_id, step_outputs
@@ -5105,7 +5395,26 @@ class WorkflowExecutor:
                     if not phase_output:
                         phase_output = {"raw_response": raw_response}
                     phase_output = self._normalize_llm_output(mini, phase_output, input_ctx, state)
-                    if isinstance(phase_output, dict):
+                    repair_continuation_error = None
+                    if isinstance(phase_output, dict) and str(phase_id) in SUB_WORKFLOW_REPAIR_PHASE_IDS and not use_custom_op_gate_polling:
+                        phase_output, repair_continuation_error = self._continue_repair_phase_until_actionable(
+                            phase_id=str(phase_id),
+                            agent_id=agent_id,
+                            session_id=sid,
+                            phase=mini,
+                            phase_output=phase_output,
+                            prompt_context=input_ctx,
+                            state=state,
+                            timeout=timeout,
+                        )
+                        if repair_continuation_error:
+                            phase_status = "communication_error"
+                            phase_output = self._communication_failure_output({
+                                **phase_output,
+                                "ok": False,
+                                "error": repair_continuation_error,
+                            })
+                    if isinstance(phase_output, dict) and phase_status != "communication_error":
                         recovered_output = self._recover_operator_repair_from_valid_full_pass_output(
                             phase_id=str(phase_id),
                             phase_output=phase_output,
@@ -5949,6 +6258,20 @@ class WorkflowExecutor:
         return None
 
     # ── Stagnation detection ────────────────────────────────────────────
+
+    @classmethod
+    def _iteration_made_repair_progress(cls, step_outputs: dict[str, Any]) -> bool:
+        for phase_id in SUB_WORKFLOW_REPAIR_PHASE_IDS:
+            output = step_outputs.get(phase_id)
+            if not isinstance(output, dict):
+                continue
+            if cls._repair_response_continuation_reason(phase_id, output) is None:
+                return True
+        return False
+
+    @classmethod
+    def _iteration_executed_repair_phase(cls, step_outputs: dict[str, Any]) -> bool:
+        return cls._iteration_made_repair_progress(step_outputs)
 
     def _check_stagnation(
         self,
