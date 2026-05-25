@@ -11,7 +11,6 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "migration_utils"))
 
 from core.config import load_workflow
 from core.prompt_loader import PromptLoader
@@ -502,6 +501,8 @@ class TestPPUSmokeWorkflow:
 
     def test_smoke_project_files_exist(self):
         project_root = Path(__file__).resolve().parent.parent.parent.parent / "application_migration_cases" / "SEAM_PPU_SMOKE"
+        if not project_root.is_dir():
+            pytest.skip("External corpus application_migration_cases/SEAM_PPU_SMOKE is absent — skip smoke project file check")
         for fname in ("README.md", "requirements.txt", "smoke_validate.py", "ppu_target.py"):
             fpath = project_root / fname
             assert fpath.exists(), f"Smoke project file missing: {fpath}"

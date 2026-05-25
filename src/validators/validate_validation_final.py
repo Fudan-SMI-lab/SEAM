@@ -1016,6 +1016,11 @@ def _native_compiled_artifact_paths(
     ]
     if platform_signaled:
         return platform_signaled
+    # When platform_policy is None (legacy NPU), the platform check above already ran
+    # the NPU token check.  Generic ".so" files that fail the NPU token check are NOT
+    # acceptable native artifacts — they must carry Ascend/CANN/opp signals.
+    if platform_policy is None:
+        return []
     return [value for value in candidates if _is_compiled_project_artifact_path(value)]
 
 

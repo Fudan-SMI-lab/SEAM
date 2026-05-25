@@ -143,7 +143,7 @@ def test_dependency_fixer_prompt_contains_constraint_summary_and_handoff() -> No
     assert "环境、包、导入、版本、安装和运行依赖问题" in prompt
     assert "算子、custom-op实现或CUDA/NPU代码改写问题" in prompt
     assert "{workspace_root}" not in prompt
-    assert "/workspace/cuda_custom_op_skill_test_prompt.md" in prompt
+    assert "/workspace/docs/cuda_custom_op_skill_test_prompt.md" in prompt
     assert "第5点要求" in prompt
     assert "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
     assert "Rule 1: No CPU fallback" in prompt

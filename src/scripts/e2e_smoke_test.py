@@ -69,7 +69,7 @@ class MockSessionManager:
             self._sessions[key] = f"{role}-{lifecycle}-session"
         return self._sessions[key]
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = None, **kwargs: object) -> str:
         self.send_command_calls.append((session_id, command, timeout))
         if command.startswith("# Phase 0 - Environment Detection") or command.startswith(
             "Your previous response for phase_0_env_detect"

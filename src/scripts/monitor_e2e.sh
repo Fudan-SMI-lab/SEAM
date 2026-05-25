@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Live tail of migration_utils E2E execution logs
+# Live tail of src E2E execution logs
 # Usage: ./monitor_e2e.sh
 set -euo pipefail
 
-MIGRATION_UTILS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_FILE="${MIGRATION_UTILS_DIR}/e2e_run.log"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG_FILE="${SRC_DIR}/e2e_run.log"
 
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'

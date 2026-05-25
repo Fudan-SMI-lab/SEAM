@@ -5,7 +5,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "migration_utils"))
 
 from migrator.rule_based import RuleBasedMigrator
 

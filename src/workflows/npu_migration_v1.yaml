@@ -12,9 +12,9 @@ globals:
 phases:
   - id: phase_0
     name: Environment Detection
-    prompt_template: "migration_utils/prompts/phase_0_env_detect.md"
+    prompt_template: "src/prompts/phase_0_env_detect.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_0_env_detect.json"
+      $ref: "src/schemas/phase_0_env_detect.json"
     validator: env_detect
     transitions:
       on_success: phase_1
@@ -22,9 +22,9 @@ phases:
 
   - id: phase_1
     name: Project Analysis
-    prompt_template: "migration_utils/prompts/phase_1_project_analysis.md"
+    prompt_template: "src/prompts/phase_1_project_analysis.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_1_project_analysis.json"
+      $ref: "src/schemas/phase_1_project_analysis.json"
     validator: project_analysis
     transitions:
       on_success: phase_2
@@ -32,9 +32,9 @@ phases:
 
   - id: phase_2
     name: Virtual Environment Setup
-    prompt_template: "migration_utils/prompts/phase_2_venv_create.md"
+    prompt_template: "src/prompts/phase_2_venv_create.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_2_venv.json"
+      $ref: "src/schemas/phase_2_venv.json"
     validator: venv
     transitions:
       on_success: phase_3
@@ -42,9 +42,9 @@ phases:
 
   - id: phase_3
     name: Entry Script Analysis
-    prompt_template: "migration_utils/prompts/phase_3_entry_script.md"
+    prompt_template: "src/prompts/phase_3_entry_script.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_3_entry_script.json"
+      $ref: "src/schemas/phase_3_entry_script.json"
     validator: entry_script
     transitions:
       on_success: phase_35
@@ -52,9 +52,9 @@ phases:
 
   - id: phase_35
     name: Entry Script Static Compliance Check
-    prompt_template: "migration_utils/prompts/phase_35_static_validate.md"
+    prompt_template: "src/prompts/phase_35_static_validate.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_35_static_validate.json"
+      $ref: "src/schemas/phase_35_static_validate.json"
     validator: entry_static
     transitions:
       on_success: phase_4
@@ -62,9 +62,9 @@ phases:
 
   - id: phase_4
     name: Rule Migration
-    prompt_template: "migration_utils/prompts/phase_4_rule_migration.md"
+    prompt_template: "src/prompts/phase_4_rule_migration.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_4_rule_migration.json"
+      $ref: "src/schemas/phase_4_rule_migration.json"
     validator: rule_migration
     transitions:
       on_success: phase_5
@@ -72,9 +72,9 @@ phases:
 
   - id: phase_5
     name: Final Validation
-    prompt_template: "migration_utils/prompts/phase_5_validation.md"
+    prompt_template: "src/prompts/phase_5_validation.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_5_validation_final.json"
+      $ref: "src/schemas/phase_5_validation_final.json"
     validator: validation_final
     transitions:
       on_success: phase_6
@@ -82,9 +82,9 @@ phases:
 
   - id: phase_6
     name: Reports
-    prompt_template: "migration_utils/prompts/phase_6_report.md"
+    prompt_template: "src/prompts/phase_6_report.md"
     output_schema:
-      $ref: "migration_utils/schemas/phase_6_reports.json"
+      $ref: "src/schemas/phase_6_reports.json"
     validator: reports
     transitions:
       on_success: complete
@@ -92,7 +92,7 @@ phases:
 
   - id: error_recovery
     name: Error Recovery
-    prompt_template: "migration_utils/prompts/phase_error_recovery.md"
+    prompt_template: "src/prompts/phase_error_recovery.md"
     output_schema: {}
     validator: null
     transitions:

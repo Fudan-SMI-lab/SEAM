@@ -2069,7 +2069,7 @@ class WorkflowExecutor:
                     normalized["entry_script_path"] = ph1["entry_script"]
                 elif prompt_context.get("entry_script"):
                     normalized["entry_script_path"] = prompt_context["entry_script"]
-            workflow_globals = getattr(self.workflow, "globals", None) or {}
+            workflow_globals = getattr(getattr(self, "workflow", None), "globals", None) or {}
             if self._custom_op_route_disabled(workflow_globals):
                 normalized = self._strip_custom_op_contract_fields(normalized)
             else:
@@ -2081,7 +2081,7 @@ class WorkflowExecutor:
 
         if "phase_35" in phase_id or "static_validate" in phase_id:
             phase_3_output = state.get("phase_3_entry_script")
-            workflow_globals = getattr(self.workflow, "globals", None) or {}
+            workflow_globals = getattr(getattr(self, "workflow", None), "globals", None) or {}
             if (
                 not self._custom_op_route_disabled(workflow_globals)
                 and isinstance(phase_3_output, dict)
@@ -2091,7 +2091,7 @@ class WorkflowExecutor:
                 normalized["entry_script_kind"] = "custom_op_full_validation"
 
         if (
-            not self._custom_op_route_disabled(getattr(self.workflow, "globals", None) or {})
+            not self._custom_op_route_disabled(getattr(getattr(self, "workflow", None), "globals", None) or {})
             and (phase_id == "analyze_error" or normalized.get("repair_role") in {"dependency_fixer", "code_adapter", "operator_fixer"})
         ):
             history_text = str(prompt_context.get("previous_outputs", ""))

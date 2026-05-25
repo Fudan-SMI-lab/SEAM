@@ -7,7 +7,7 @@ Provides a resolver/factory with this precedence:
 3. ``PlatformPolicy.default_rule_migration_strategy``      (per-platform default)
 4. ``report_only`` safe fallback                            (absolute default)
 
-Strategy definitions live in ``migration_utils/rule_strategies/*.yaml``.
+Strategy definitions live in ``src/rule_strategies/*.yaml``.
 """
 
 from __future__ import annotations
