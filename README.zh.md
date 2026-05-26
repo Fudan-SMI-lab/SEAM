@@ -4,10 +4,9 @@
 
 
 <p align="center">
-  <img src="https://img.shields.io/github/license/seam-project/seam" alt="LICENSE">
-  <img src="https://img.shields.io/badge/runtime-OpenCode%20Server-111827" alt="pencode-server">
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
+    <a href="https://opencode.ai"><img alt="OpenCode Server" src="https://img.shields.io/badge/runtime-OpenCode%20Server-111827" ></a>
 </p>
-
 
 <p align="center">
   <a href="README.en.md">English</a> |
@@ -96,7 +95,7 @@ SEAM采用行为验证、错误分类和精准路由、三振出局、Fail-close
 
 ### 文档
 
-- [用户手册](docs/USER_GUIDE.md) — 详细的功能介绍、配置方法和使用指南
+- [用户手册](docs/User_Guide.md) — 详细的功能介绍、配置方法和使用指南
 - [常见问题解答](docs/FAQ.md) — 用户最常遇到的疑问
 - [贡献指南](docs/CONTRIBUTING.md) — 如何参与贡献
 - [更新日志](docs/CHANGELOG.md) — 版本历史与发布说明

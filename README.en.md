@@ -4,10 +4,9 @@
 
 
 <p align="center">
-  <img src="https://img.shields.io/github/license/seam-project/seam" alt="LICENSE">
-  <img src="https://img.shields.io/badge/runtime-OpenCode%20Server-111827" alt="pencode-server">
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
+    <a href="https://opencode.ai"><img alt="OpenCode Server" src="https://img.shields.io/badge/runtime-OpenCode%20Server-111827" ></a>
 </p>
-
 
 <p align="center">
   <a href="README.en.md">English</a> |
@@ -99,7 +98,7 @@ See [SEAM Technical Introduction](docs/SEAM_Tech_Intro.zh.md) for detailed techn
 
 ### Documentation
 
-- [User Guide](docs/USER_GUIDE.md) — Usage, configuration and feature docs
+- [User Guide](docs/User_Guide.md) — Usage, configuration and feature docs
 - [FAQ](docs/FAQ.md) — Common issues and solutions
 - [Contributing](docs/CONTRIBUTING.md) — How to join development
 - [Changelog](docs/CHANGELOG.md) — Version updates and release notes
