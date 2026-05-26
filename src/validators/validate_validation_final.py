@@ -343,6 +343,128 @@ def validate_custom_op_final_gate(data: dict[str, object], project_root: str | P
     return {"passed": not errors, "errors": errors, "warnings": []}
 
 
+def custom_op_final_gate_unit_ledger(
+    data: object,
+    *,
+    target_units: list[str] | None = None,
+    project_root: str | Path | None = None,
+) -> dict[str, object]:
+    """Build a diagnostic strict per-unit progress ledger for custom-op repair prompts.
+
+    This helper never relaxes ``validate_custom_op_final_gate``. It classifies each
+    target unit from the same strict row/source/performance checks so repair prompts
+    can say which units are genuinely closed and which still need evidence.
+    """
+
+    root_errors: list[str] = []
+    resolved_project_root = _resolve_existing_project_root(project_root, root_errors)
+    gate = data if isinstance(data, Mapping) else {}
+    units = _dedupe_strings(target_units or [])
+    if not units:
+        units = _infer_custom_op_ledger_target_units(gate, resolved_project_root)
+
+    row_items = gate.get("rows") if isinstance(gate.get("rows"), list) else []
+    rows_by_name: dict[str, tuple[int, Mapping[object, object]]] = {}
+    for index, row_obj in enumerate(cast(list[object], row_items)):
+        if not isinstance(row_obj, Mapping):
+            continue
+        row = cast(Mapping[object, object], row_obj)
+        row_name = _extract_row_name(row)
+        if row_name and row_name not in rows_by_name:
+            rows_by_name[row_name] = (index, row)
+
+    source_entries = _extract_inventory_entries(gate.get("source_inventory"))
+    performance_report = gate.get("performance_report") or gate.get("performance_report_evidence")
+    performance_entries = (
+        _extract_performance_report_entries(cast(Mapping[object, object], performance_report))
+        if isinstance(performance_report, Mapping)
+        else {}
+    )
+
+    ledger_rows: list[dict[str, object]] = []
+    strict_pass_units: list[str] = []
+    remaining_units: list[str] = []
+
+    for unit in units:
+        unit_errors = list(root_errors)
+        row_pair = rows_by_name.get(unit)
+        if row_pair is None:
+            unit_errors.append("missing custom_op_final_gate row")
+        else:
+            index, row = row_pair
+            _validate_gate_row(row, index, unit_errors, resolved_project_root)
+            _validate_native_inventory_entry(row, f"rows[{index}]", unit_errors)
+
+        if source_entries:
+            source_entry = source_entries.get(unit)
+            if source_entry is None:
+                unit_errors.append("missing source_inventory entry")
+            else:
+                _validate_native_inventory_entry(source_entry, f"source_inventory.entries[{unit}]", unit_errors)
+        else:
+            unit_errors.append("missing source_inventory entries")
+
+        if isinstance(performance_report, Mapping):
+            performance_entry = performance_entries.get(unit)
+            if performance_entry is None:
+                unit_errors.append("missing performance_report entry")
+            else:
+                _validate_performance_report_entry(performance_entry, unit, unit_errors)
+        else:
+            unit_errors.append("missing performance_report")
+
+        deduped_errors = _dedupe_strings(unit_errors)
+        if deduped_errors:
+            status = "remaining"
+            remaining_units.append(unit)
+        else:
+            status = "strict_pass"
+            strict_pass_units.append(unit)
+        ledger_rows.append(
+            {
+                "unit_identity": unit,
+                "status": status,
+                "missing_evidence": deduped_errors,
+            }
+        )
+
+    return {
+        "total_count": len(units),
+        "strict_pass_count": len(strict_pass_units),
+        "remaining_count": len(remaining_units),
+        "strict_pass_units": strict_pass_units,
+        "remaining_units": remaining_units,
+        "units": ledger_rows,
+        "global_errors": _dedupe_strings(root_errors),
+    }
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    for value in values:
+        cleaned = str(value).strip()
+        if cleaned and cleaned not in deduped:
+            deduped.append(cleaned)
+    return deduped
+
+
+def _infer_custom_op_ledger_target_units(gate: Mapping[object, object], project_root: Path | None) -> list[str]:
+    units: list[str] = []
+    expanded_variant_units = _extract_expanded_variant_units(gate, [])
+    units.extend(sorted(expanded_variant_units))
+    units.extend(_load_required_manifest_units(project_root, []))
+
+    rows = gate.get("rows")
+    if isinstance(rows, list):
+        for row_obj in cast(list[object], rows):
+            if isinstance(row_obj, Mapping):
+                row_name = _extract_row_name(cast(Mapping[object, object], row_obj))
+                if row_name:
+                    units.append(row_name)
+    units.extend(_extract_inventory_entries(gate.get("source_inventory")).keys())
+    return _dedupe_strings(units)
+
+
 def _extract_expanded_variant_units(data: Mapping[object, object], errors: list[str]) -> set[str]:
     metadata = data.get("expanded_variant_inventory")
     if metadata is None:

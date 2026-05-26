@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from core.custom_op_variants import expanded_variant_contract_from_contract
+from validators.validate_validation_final import custom_op_final_gate_unit_ledger
 
 
 NO_EXPERIENCE_CARDS_NOTE = "(No analyzer-selected experience cards)"
@@ -209,6 +210,12 @@ def _operator_repair_context_markdown(
             "Current migration_reports do not cover every Phase 3 operator identity; continue repair from the Phase 3 operator scope."
         )
     progress = _progress_summary(gate)
+    ledger_target_units = expanded_variant_units or phase3_units or _operator_unit_identities(inventory, manifest, gate)
+    ledger = custom_op_final_gate_unit_ledger(
+        _object_dict(gate) or {},
+        target_units=ledger_target_units,
+        project_root=project_path,
+    )
 
     required_report_paths = _string_list(contract.get("required_report_paths"))
     required_checks = _string_list(contract.get("required_checks"))
@@ -299,6 +306,9 @@ def _operator_repair_context_markdown(
         "## Current Final-Gate Progress",
         *[f"- {item}" for item in progress],
         "",
+        "## Strict Per-Unit Progress Ledger",
+        *_strict_progress_lines(ledger),
+        "",
         "## Bounded Parallelization Guidance",
         "- Repair only the currently failing or assigned operator/custom-op units needed for the final gate.",
         "- Independent operator units may be split into bounded sub-tasks when their source files, build artifacts, and tests do not overlap.",
@@ -364,7 +374,15 @@ def _phase1_discovery_lines(phase1_analysis: dict[str, object]) -> list[str]:
 def _reports_dir(project_path: Path, contract: dict[str, object]) -> Path:
     raw = contract.get("reports_dir")
     if isinstance(raw, str) and raw.strip():
-        return Path(raw).expanduser().resolve()
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = project_path / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(project_path)
+        except (OSError, ValueError):
+            return (project_path / "migration_reports").resolve()
+        return resolved
     return (project_path / "migration_reports").resolve()
 
 
@@ -441,6 +459,21 @@ def _operator_units(inventory: object, manifest: object, gate: object) -> list[s
             if summary and summary not in units:
                 units.append(summary)
             if len(units) >= 50:
+                return units
+    return units
+
+
+def _operator_unit_identities(inventory: object, manifest: object, gate: object) -> list[str]:
+    units: list[str] = []
+    for data in (inventory, manifest, gate):
+        for entry in _candidate_entries(data):
+            if not isinstance(entry, dict):
+                continue
+            entry_dict = cast(dict[str, object], entry)
+            value = entry_dict.get("unit_identity") or entry_dict.get("name") or entry_dict.get("operator") or entry_dict.get("op_name")
+            if isinstance(value, str) and value.strip() and value.strip() not in units:
+                units.append(value.strip())
+            if len(units) >= 500:
                 return units
     return units
 
@@ -565,3 +598,33 @@ def _progress_summary(gate: object) -> list[str]:
         "report_parity_passed",
     )
     return [f"{field}: {gate_dict.get(field, '(missing)')}" for field in fields]
+
+
+def _strict_progress_lines(ledger: dict[str, object]) -> list[str]:
+    lines = [
+        f"Total Target Units: {ledger.get('total_count', 0)}",
+        f"Strict Pass Units: {ledger.get('strict_pass_count', 0)}",
+        f"Remaining Units: {ledger.get('remaining_count', 0)}",
+    ]
+    strict_units = ledger.get("strict_pass_units")
+    if isinstance(strict_units, list) and strict_units:
+        lines.append("Strict Pass Unit Identities: " + ", ".join(str(unit) for unit in strict_units[:50]))
+    remaining_units = ledger.get("remaining_units")
+    if isinstance(remaining_units, list) and remaining_units:
+        lines.append("Remaining Unit Identities: " + ", ".join(str(unit) for unit in remaining_units[:50]))
+    raw_units = ledger.get("units")
+    detail_count = 0
+    if isinstance(raw_units, list):
+        for item in raw_units:
+            if not isinstance(item, dict) or item.get("status") == "strict_pass":
+                continue
+            unit = str(item.get("unit_identity") or "").strip()
+            missing = item.get("missing_evidence")
+            missing_items = [str(value) for value in missing[:6]] if isinstance(missing, list) else []
+            detail = "; ".join(missing_items) if missing_items else "strict evidence incomplete"
+            lines.append(f"Remaining Detail [{unit}]: {detail}")
+            detail_count += 1
+            if detail_count >= 20:
+                lines.append("Remaining Detail: truncated; inspect final-gate/unit ledger for the full list")
+                break
+    return lines

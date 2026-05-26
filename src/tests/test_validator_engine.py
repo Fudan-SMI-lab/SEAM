@@ -23,6 +23,7 @@ from validators.validate_project_analysis import validate as validate_project_an
 from validators.validate_reports import validate as validate_reports
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_validation_final import (
+    custom_op_final_gate_unit_ledger,
     validate as validate_validation_final,
     validate_custom_op_final_gate,
     validate_serving_final_gate,
@@ -387,6 +388,53 @@ def _write_strict_opp_fixture(project_root: Path) -> None:
     )
     _ = (reports_dir / "build.log").write_text(build_log_text, encoding="utf-8")
     _ = (reports_dir / "opp_install.log").write_text("install OPP package into ASCEND_OPP_PATH vendors/customize\n", encoding="utf-8")
+
+
+def test_custom_op_unit_ledger_reports_strict_pass_and_remaining_units(tmp_path: Path) -> None:
+    _write_custom_op_manifest(tmp_path, ["ScalarFwd2D"])
+    _write_strict_opp_fixture(tmp_path)
+    gate = _valid_custom_op_final_gate()
+
+    ledger = custom_op_final_gate_unit_ledger(
+        gate,
+        target_units=["ScalarFwd2D", "ScalarBwd2D"],
+        project_root=tmp_path,
+    )
+
+    assert ledger["strict_pass_units"] == ["ScalarFwd2D"]
+    assert ledger["remaining_units"] == ["ScalarBwd2D"]
+    rows = cast(list[dict[str, object]], ledger["units"])
+    missing_row = rows[1]
+    assert missing_row["unit_identity"] == "ScalarBwd2D"
+    assert "missing custom_op_final_gate row" in cast(list[str], missing_row["missing_evidence"])
+
+
+def test_custom_op_unit_ledger_rejects_weak_full_pass_rows(tmp_path: Path) -> None:
+    weak_gate: dict[str, object] = {
+        "status": "FULL_PASS",
+        "rows": [
+            {
+                "unit_identity": "sampling:gather_points",
+                "status": "FULL_PASS",
+                "opp_artifact_verified": True,
+                "parity_verified": True,
+            }
+        ],
+    }
+
+    ledger = custom_op_final_gate_unit_ledger(
+        weak_gate,
+        target_units=["sampling:gather_points"],
+        project_root=tmp_path,
+    )
+
+    assert ledger["strict_pass_units"] == []
+    assert ledger["remaining_units"] == ["sampling:gather_points"]
+    row = cast(list[dict[str, object]], ledger["units"])[0]
+    missing = "\n".join(cast(list[str], row["missing_evidence"]))
+    assert "opp_custom_op_artifact_evidence" in missing
+    assert "same_run_runtime_coverage" in missing
+    assert "performance_report" in missing
 
 
 def _write_generated_opp_unit(project_root: Path, snake_name: str, camel_name: str) -> None:

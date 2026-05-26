@@ -33,6 +33,10 @@ def test_operator_repair_context_uses_phase3_inventory_when_reports_missing(tmp_
     assert "interpolate:three_nn(unknowns,knowns)" in text
     assert "fallback rows are scope only, not final evidence" in text
     assert "strict_ascend_c_cann_opp_artifacts" in text
+    assert "Strict Per-Unit Progress Ledger" in text
+    assert "Strict Pass Units: 0" in text
+    assert "Remaining Units: 2" in text
+    assert "Remaining Unit Identities: sampling:gather_points(points,idx), interpolate:three_nn(unknowns,knowns)" in text
 
 
 def test_operator_repair_context_prefers_report_inventory_over_phase3_fallback(tmp_path: Path) -> None:
@@ -68,6 +72,38 @@ def test_operator_repair_context_prefers_report_inventory_over_phase3_fallback(t
     assert "Phase3 Unit 1: phase3:unit" in text
     assert "fallback rows are scope only" not in text
     assert "continue repair from the Phase 3 operator scope" in text
+
+
+def test_operator_repair_context_ignores_external_reports_dir(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_reports = project_dir / "migration_reports"
+    external_reports = tmp_path / "external_reports"
+    project_reports.mkdir(parents=True)
+    external_reports.mkdir()
+    _ = (project_reports / "operator_inventory.json").write_text(
+        '{"rows": [{"unit_identity": "project:unit", "status": "discovered"}]}',
+        encoding="utf-8",
+    )
+    _ = (external_reports / "operator_inventory.json").write_text(
+        '{"rows": [{"unit_identity": "external:unit", "status": "discovered"}]}',
+        encoding="utf-8",
+    )
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "reports_dir": str(external_reports),
+        "operator_inventory_schema": {"fine_grained_operator_units": ["phase3:unit"]},
+    }
+
+    context_path = write_operator_repair_context_artifact(
+        artifact_dir=str(tmp_path / ".sm-artifacts" / "run"),
+        project_dir=str(project_dir),
+        entry_script="python validate.py",
+        phase3_contract=phase3_contract,
+    )
+
+    text = Path(context_path).read_text(encoding="utf-8")
+    assert "project:unit" in text
+    assert "external:unit" not in text
 
 
 def test_operator_repair_context_lists_expanded_variants_as_missing_report_scope(tmp_path: Path) -> None:
