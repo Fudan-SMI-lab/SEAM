@@ -1,3 +1,6 @@
+# 开发迭代记录文档
+
+# GAP_AUDIT_REPORT
 # sm-adapt 框架差距分析报告 (Gap Audit Report)
 
 > **审计日期**: 2025-04-19
