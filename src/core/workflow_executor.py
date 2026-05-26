@@ -2963,6 +2963,43 @@ class WorkflowExecutor:
                 final_status = "skipped"
                 break
 
+            # 4e. Post-repair canonical rerun (last iteration only)
+            # When a repair fixer executed in the final iteration but the stale
+            # script_exit_code is still nonzero, re-run the sub-workflow once to
+            # obtain a fresh exit code and let success-conditioned phases (e.g.
+            # custom_op_final_gate) validate the repaired state.
+            if iteration == max_iterations and loop_state.get("script_exit_code", 0) != 0:
+                fixer_outputs = self._collect_fixer_outputs(step_outputs)
+                if fixer_outputs:
+                    logger.info(
+                        "Last-iteration post-repair canonical rerun for phase '%s' (fixer: %s)",
+                        phase.id, list(fixer_outputs.keys()),
+                    )
+                    # Save experience-tracking state that the bonus
+                    # re-run would queue fresh items into but must not
+                    # overwrite the already-stamped records.
+                    _pending = loop_state.get("pending_experience_verifications")
+                    _verified = loop_state.get("experience_verifications")
+                    bonus_result = self._run_sub_workflow(
+                        sub_wf_def, loop_vars, state, context, sub_wf_phases,
+                        sub_wf_blocks, step_outputs, loop_history, loop_state,
+                    )
+                    loop_state.update(bonus_result.get("step_outputs", {}))
+                    # Restore experience-tracking records so the bonus
+                    # pass never corrupts stamped/verified state.
+                    if _pending is not None:
+                        loop_state["pending_experience_verifications"] = _pending
+                    if _verified is not None:
+                        loop_state["experience_verifications"] = _verified
+                    # Re-check stop conditions after bonus pass
+                    bonus_stop = self._check_stop_conditions(
+                        stop_conds, loop_state, self.workflow.globals or {}
+                    )
+                    if bonus_stop:
+                        final_status = bonus_stop
+                        logger.info("Post-repair stop condition matched: '%s'", bonus_stop)
+                        break
+
         if final_status == "success" and loop_state.get("script_exit_code") != 0:
             final_status = "failure"
 

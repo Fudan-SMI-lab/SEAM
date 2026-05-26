@@ -2164,6 +2164,9 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
     assert "Read /skills/runtime-card/SKILL.md" in card_text
 
 def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path):
+    import sys as _sys
+
+    python = _sys.executable
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2173,7 +2176,10 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
             {
                 "id": "run_entry_script",
                 "type": "shell",
-                "command": "python -c \"import pathlib, sys; p=pathlib.Path('flag'); sys.exit(0 if p.exists() else 1)\"",
+                "command": (
+                    f"{python} -c \"import pathlib, sys; "
+                    f"p=pathlib.Path('{tmp_path / 'flag'}'); sys.exit(0 if p.exists() else 1)\""
+                ),
                 "on_failure": "continue",
             },
             {
@@ -2600,6 +2606,127 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
         state={},
     )
     assert "| Iter 1 | success | 0.1 | unknown | (none) | (none) | (none) |" in legacy_formatted
+
+
+def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Path):
+    """Regression: when a fixer runs on the last loop iteration, the stale
+    non-zero script_exit_code from the earlier run_entry_script must be
+    refreshed by a canonical re-run so the loop can return success."""
+    import sys as _sys
+
+    python = _sys.executable  # use the same interpreter, portable across envs
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+        phases=[
+            {
+                "id": "run_entry_script",
+                "type": "shell",
+                "command": (
+                    f"{python} -c \"import pathlib, sys; "
+                    f"p=pathlib.Path('{tmp_path / 'flag'}'); sys.exit(0 if p.exists() else 1)\""
+                ),
+                "on_failure": "continue",
+            },
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "condition": "$.script_exit_code != 0",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "condition": "$.script_exit_code != 0",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {"dependency_fixer": "fix_dependency"},
+            },
+            {
+                "id": "fix_dependency",
+                "condition": "$.script_exit_code != 0",
+                "type": "llm",
+                "prompt_template": "fix_dependency_prompt",
+                "agent": "dependency_fixer",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="last_iter_rerun",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "dependency_fixer": {"role": "dependency_fixer", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+
+    # On the first pass run_entry_script fails (no flag yet).
+    # The fix_dependency LLM creates the flag so the canonical re-run passes.
+    def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
+        if session_id == "session:error_analyzer":
+            return json.dumps({
+                "repair_role": "dependency_fixer",
+                "category": "dependency",
+                "root_cause": "missing flag",
+                "suggested_fix": "create flag file",
+            })
+        # dependency_fixer: create the flag file so re-run succeeds
+        flag_path = tmp_path / "flag"
+        flag_path.write_text("fixed", encoding="utf-8")
+        return json.dumps({
+            "fixed": True,
+            "summary": "Created flag file",
+            "modified_files": [str(flag_path)],
+        })
+
+    session_mgr.send_command.side_effect = respond
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: template
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    # The canonical re-run must produce success
+    assert result["status"] == "success", f"Expected success, got {result['status']}"
+    assert result["loop_state"]["script_exit_code"] == 0
+    assert len(result["loop_history"]) == 1
+
+    # Only error_analyzer + fix_dependency were called (bonus pass
+    # succeeds without triggering another analyze_error cycle).
+    assert session_mgr.send_command.call_count == 2
+    called_sessions = [c.args[0] for c in session_mgr.send_command.call_args_list]
+    assert called_sessions == ["session:error_analyzer", "session:dependency_fixer"]
 
 
 def test_collect_fixer_outputs_extracts_summary_modified_files_and_diagnostics():
