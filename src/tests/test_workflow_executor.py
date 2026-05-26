@@ -4,6 +4,7 @@ import json
 import pytest
 import tempfile
 import os
+import sys
 import time
 from unittest.mock import MagicMock, patch
 from pathlib import Path
@@ -4648,7 +4649,7 @@ def test_workflow_executor_project_analysis_variant_correction_prompt_guides_ful
     assert "expanded_operator_instances_count` exactly to the number of objects listed" in prompt
     assert "do not claim a Cartesian-product count unless every concrete row is actually present" in prompt
     assert "includes every source-enumerated target value" in prompt
-    assert "do not keep only the common sample" in prompt
+    assert "do not keep only a representative subset" in prompt
     assert "must expand beyond the distinct base-unit count" in prompt
     assert "concrete `source_evidence` plus public or framework route evidence" in prompt
     assert "heterogeneous base units" in prompt
@@ -7095,7 +7096,7 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
 
 
 def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path) -> None:
-    outside = tmp_path / "outside_reports"
+    outside = tmp_path.parent / f"{tmp_path.name}_outside_reports"
     outside.mkdir()
     (outside / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
     _write_native_custom_op_gate_artifacts(tmp_path)
@@ -8992,3 +8993,141 @@ def test_phase3_normalization_preserves_phase1_serving_route_over_custom_op_resp
     assert normalized["launch_command"] == "python -m sglang.launch_server --model-path model"
     assert str(normalized["serving_reports_dir"]).endswith("migration_reports/serving")
     assert normalized["required_report_paths"] == ["migration_reports/serving/serving_final_gate.json"]
+
+
+
+def test_workflow_executor_scaffolds_canonical_reports_before_and_after_phase5_entry_script(tmp_path: Path) -> None:
+    units = [f"variant_route:dtype={'double' if i >= 120 else 'float'}:variant={i}" for i in range(240)]
+    phase = PhaseDefinition(
+        id="run_entry_script",
+        name="Run",
+        prompt_template="",
+        output_schema={},
+        type="shell",
+        on_failure="continue",
+    )
+    setattr(phase, "command", "${loop_vars.entry_script}")
+    workflow = WorkflowDefinition(name="wf", version="1", phases=[], terminals=["complete"], agents={})
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    state: dict[str, object] = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": str(tmp_path / "migration_reports"),
+            "expanded_variant_inventory": {
+                "variant_axes_detected": True,
+                "unit_identities": units,
+                "expanded_operator_instances_count": 240,
+            },
+        }
+    }
+    loop_state: dict[str, object] = {}
+
+    status, output = executor._execute_shell_phase(
+        phase,
+        state,
+        {},
+        loop_vars={"entry_script": f"{sys.executable} -c 'print(123)'"},
+        loop_state=loop_state,
+    )
+
+    assert status == "success"
+    assert cast(dict[str, object], output)["exit_code"] == 1
+    assert "custom_op_opp_preflight" in cast(dict[str, object], output)
+    gate = json.loads((tmp_path / "migration_reports" / "custom_op_final_gate.json").read_text(encoding="utf-8"))
+    assert gate["inventory_count"] == 240
+    assert gate["closed_pass_entries"] == 0
+    assert gate["remaining_entries"] == 240
+    assert len(gate["strict_per_unit_ledger"]) == 240
+    assert gate["strict_per_unit_ledger"][239]["unit_identity"] == units[239]
+    assert loop_state["script_exit_code"] == 1
+
+
+def test_workflow_executor_scaffolds_canonical_reports_in_contract_reports_dir(tmp_path: Path) -> None:
+    contract_reports_dir = tmp_path / "custom_reports"
+    phase = PhaseDefinition(
+        id="run_entry_script",
+        name="Run",
+        prompt_template="",
+        output_schema={},
+        type="shell",
+        on_failure="continue",
+    )
+    setattr(phase, "command", "${loop_vars.entry_script}")
+    workflow = WorkflowDefinition(name="wf", version="1", phases=[], terminals=["complete"], agents={})
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    state: dict[str, object] = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate.py",
+            "reports_dir": str(contract_reports_dir),
+            "operator_inventory_schema": {"fine_grained_operator_units": ["unit:a"]},
+        }
+    }
+    loop_state: dict[str, object] = {}
+
+    status, output = executor._execute_shell_phase(
+        phase,
+        state,
+        {"PROJECT_DIR": str(tmp_path)},
+        loop_vars={"entry_script": f"{sys.executable} -c 'print(1)'", "project_dir": str(tmp_path)},
+        loop_state=loop_state,
+    )
+
+    assert status == "success"
+    assert cast(dict[str, object], output)["exit_code"] == 1
+    assert (contract_reports_dir / "custom_op_final_gate.json").is_file()
+    assert not (tmp_path / "migration_reports" / "custom_op_final_gate.json").exists()
+
+
+def test_workflow_executor_operator_repair_error_taxonomy(tmp_path: Path) -> None:
+    workflow = WorkflowDefinition(name="wf", version="1", phases=[], terminals=["complete"], agents={})
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    state: dict[str, object] = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": str(tmp_path / "migration_reports"),
+            "operator_inventory_schema": {"fine_grained_operator_units": ["unit:a"]},
+        }
+    }
+
+    incomplete = executor._custom_op_operator_current_reports_incomplete_error(
+        state=state,
+        context={},
+        loop_vars=None,
+        command_started_at=None,
+    )
+    assert incomplete.startswith("missing_current_final_gate:")
+    assert WorkflowExecutor._custom_op_operator_incomplete_response_error('{"status":"partial"}').startswith("partial_status_response:")
+    retryable_output: dict[str, object] = {"ok": False, "error": "Compaction response is incomplete"}
+    assert WorkflowExecutor._operator_repair_communication_failure("fix_operator", retryable_output) is True
+    assert retryable_output["error_taxonomy"] == "retryable_server_session_failure"
+
+    missing = WorkflowExecutor._operator_repair_error_message(
+        "missing_current_final_gate",
+        "custom-op operator repair did not produce current custom_op_final_gate.json before strict OPP final gate FULL_PASS",
+    )
+    assert missing.startswith("missing_current_final_gate:")

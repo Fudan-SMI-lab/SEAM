@@ -67,7 +67,11 @@ from core.assisted_verification import (
 )
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
-from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
+from core.runtime_artifacts import (
+    scaffold_or_refresh_custom_op_canonical_reports,
+    write_operator_repair_context_artifact,
+    write_repair_runtime_artifacts,
+)
 from core.repair_loop import (
     _operator_custom_op_guidance,
     _operator_generic_guidance,
@@ -2025,7 +2029,7 @@ class WorkflowExecutor:
                 hint += (
                     " Because validation reports expanded variant errors, return a full replacement Phase 1 JSON with the complete corrected `custom_op_surface`. "
                     "Set `expanded_operator_instances_count` exactly to the number of objects listed in `expanded_operator_variants`; do not claim a Cartesian-product count unless every concrete row is actually present. "
-                    "Ensure `variant_axes` includes every source-enumerated target value from the validation errors, such as missing `ndim`, `accuracy`, or `dtype` values, and expand `expanded_operator_variants` into separate concrete rows until those values are represented in row `axis_values`; do not keep only the common sample like `ndim=2d`, `accuracy=4`, `dtype=float` when other values are source-enumerated. "
+                    "Ensure `variant_axes` includes every source-enumerated target value from the validation errors, and expand `expanded_operator_variants` into separate concrete rows until those values are represented in row `axis_values`; do not keep only a representative subset when other values are source-enumerated. "
                     "Ensure the replacement observes every source-enumerated `variant_axes` value at least once by concrete `expanded_operator_variants` rows. "
                     "If the validator says the variant count must expand beyond the distinct base-unit count, add concrete variant rows beyond one row per base unit until the source-enumerated axis values are covered. "
                     "If the validator reports missing source-required per-base axis combinations, enumerate the full concrete combination set for each affected `base_unit_identity` over the source-required axes that apply to that base; do not satisfy the error with representative samples that merely cover each axis value globally. "
@@ -2214,15 +2218,15 @@ class WorkflowExecutor:
                 "strict contract still fails",
             )
         ):
-            return "custom-op operator repair returned incomplete before strict OPP final gate FULL_PASS"
+            return WorkflowExecutor._operator_repair_error_message("partial_status_response", "custom-op operator repair returned incomplete before strict OPP final gate FULL_PASS")
 
         errors = output.get("errors") or output.get("validation_errors") or output.get("remaining_errors")
         if isinstance(errors, list) and errors:
-            return "custom-op operator repair returned errors before strict OPP final gate FULL_PASS"
+            return WorkflowExecutor._operator_repair_error_message("partial_status_response", "custom-op operator repair returned errors before strict OPP final gate FULL_PASS")
         if isinstance(errors, str) and errors.strip():
-            return "custom-op operator repair returned errors before strict OPP final gate FULL_PASS"
+            return WorkflowExecutor._operator_repair_error_message("partial_status_response", "custom-op operator repair returned errors before strict OPP final gate FULL_PASS")
         if error_signal:
-            return "custom-op operator repair returned errors before strict OPP final gate FULL_PASS"
+            return WorkflowExecutor._operator_repair_error_message("partial_status_response", "custom-op operator repair returned errors before strict OPP final gate FULL_PASS")
         return ""
 
     def _send_custom_op_operator_repair_with_gate_polling(
@@ -2882,6 +2886,34 @@ class WorkflowExecutor:
             logger.warning("Could not refresh operator repair context for continuation: %s", exc)
             return ""
 
+
+    def _refresh_custom_op_canonical_reports_for_state(
+        self,
+        *,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+    ) -> dict[str, object] | None:
+        contract = state.get("phase_3_entry_script")
+        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
+            return None
+        project_dir = self.project_dir
+        if loop_vars and isinstance(loop_vars.get("project_dir"), str):
+            project_dir = str(loop_vars["project_dir"])
+        elif isinstance(context.get("PROJECT_DIR"), str):
+            project_dir = str(context["PROJECT_DIR"])
+        phase1 = state.get("phase_1_project_analysis")
+        phase1_analysis = cast(dict[str, object], phase1) if isinstance(phase1, dict) else None
+        try:
+            return scaffold_or_refresh_custom_op_canonical_reports(
+                project_dir=project_dir,
+                phase3_contract=cast(dict[str, object], contract),
+                phase1_analysis=phase1_analysis,
+            )
+        except Exception as exc:
+            logger.warning("Could not refresh fail-closed custom-op canonical reports: %s", exc)
+            return None
+
     def _custom_op_operator_current_reports_incomplete_error(
         self,
         *,
@@ -2898,15 +2930,15 @@ class WorkflowExecutor:
         try:
             stat_result = gate_path.stat()
         except OSError:
-            return "custom-op operator repair did not produce current custom_op_final_gate.json before strict OPP final gate FULL_PASS"
+            return self._operator_repair_error_message("missing_current_final_gate", "custom-op operator repair did not produce current custom_op_final_gate.json before strict OPP final gate FULL_PASS")
         if command_started_at is not None and stat_result.st_mtime + 1.0 < command_started_at:
-            return "custom-op operator repair custom_op_final_gate.json is stale before strict OPP final gate FULL_PASS"
+            return self._operator_repair_error_message("stale_current_final_gate", "custom-op operator repair custom_op_final_gate.json is stale before strict OPP final gate FULL_PASS")
         try:
             gate_data = json.loads(gate_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return "custom-op operator repair wrote malformed custom_op_final_gate.json before strict OPP final gate FULL_PASS"
+            return self._operator_repair_error_message("malformed_current_final_gate", "custom-op operator repair wrote malformed custom_op_final_gate.json before strict OPP final gate FULL_PASS")
         if not isinstance(gate_data, dict):
-            return "custom-op operator repair wrote malformed custom_op_final_gate.json before strict OPP final gate FULL_PASS"
+            return self._operator_repair_error_message("malformed_current_final_gate", "custom-op operator repair wrote malformed custom_op_final_gate.json before strict OPP final gate FULL_PASS")
         gate_map = cast(dict[str, object], gate_data)
         status_text = " ".join(
             str(gate_map.get(key) or "")
@@ -2921,7 +2953,7 @@ class WorkflowExecutor:
             or _positive_int(remaining)
             or (isinstance(closed, int) and isinstance(manifest, int) and closed < manifest)
         ):
-            return "custom-op operator repair reports are still INCOMPLETE before strict OPP final gate FULL_PASS"
+            return self._operator_repair_error_message("incomplete_canonical_reports", "custom-op operator repair reports are still INCOMPLETE before strict OPP final gate FULL_PASS")
         validation = validate_custom_op_final_gate(gate_map, project_root=reports_dir.parent)
         if validation.get("passed") is not True or gate_map.get("full_migration_status") != "FULL_PASS":
             errors = validation.get("errors")
@@ -2930,8 +2962,8 @@ class WorkflowExecutor:
                 remaining = len(errors) - 12
                 if remaining > 0:
                     details = f"{details}; ... +{remaining} more"
-                return f"custom-op operator repair reports do not validate strict OPP final gate FULL_PASS: {details}"
-            return "custom-op operator repair reports do not validate strict OPP final gate FULL_PASS"
+                return self._operator_repair_error_message("strict_final_gate_validation_failed", f"custom-op operator repair reports do not validate strict OPP final gate FULL_PASS: {details}")
+            return self._operator_repair_error_message("strict_final_gate_validation_failed", "custom-op operator repair reports do not validate strict OPP final gate FULL_PASS")
         return ""
 
     def _custom_op_operator_fail_closed_report_summary(
@@ -3113,7 +3145,14 @@ class WorkflowExecutor:
         if not isinstance(output, dict):
             return False
         error = str(output.get("error") or "").strip()
-        return bool(error) and cls._is_retryable_session_error_text(error)
+        retryable = bool(error) and cls._is_retryable_session_error_text(error)
+        if retryable:
+            output.setdefault("error_taxonomy", "retryable_server_session_failure")
+        return retryable
+
+    @staticmethod
+    def _operator_repair_error_message(taxonomy: str, message: str) -> str:
+        return f"{taxonomy}: {message}"
 
     @staticmethod
     def _is_retryable_session_error_text(error_text: str) -> bool:
@@ -3131,9 +3170,13 @@ class WorkflowExecutor:
         if not isinstance(output, dict):
             return False
         if output.get("retryable") is True:
+            output.setdefault("error_taxonomy", "retryable_server_session_failure")
             return True
         error = str(output.get("error") or "").strip()
-        return bool(error) and cls._is_retryable_session_error_text(error)
+        retryable = bool(error) and cls._is_retryable_session_error_text(error)
+        if retryable:
+            output.setdefault("error_taxonomy", "retryable_server_session_failure")
+        return retryable
 
     @classmethod
     def _operator_repair_partial_response(cls, phase_id: str, output: object) -> bool:
@@ -4167,6 +4210,8 @@ class WorkflowExecutor:
             loop_vars,
             current_run_entry_script,
         )
+        if entry_script_command:
+            self._refresh_custom_op_canonical_reports_for_state(state=state, context=context, loop_vars=loop_vars)
         if preflight_result is not None and preflight_result.get("passed") is not True:
             stderr = format_custom_op_opp_preflight_failure(preflight_result)
             captured = {
@@ -4228,6 +4273,9 @@ class WorkflowExecutor:
                         os.unlink(p)
                     except OSError:
                         pass
+
+        if entry_script_command:
+            self._refresh_custom_op_canonical_reports_for_state(state=state, context=context, loop_vars=loop_vars)
 
         captured = {
             "exit_code": exit_code,
@@ -4437,7 +4485,31 @@ class WorkflowExecutor:
             project_dir = context["PROJECT_DIR"]
         else:
             project_dir = self.project_dir
-        return Path(str(project_dir)).resolve() / "migration_reports"
+        project_path = Path(str(project_dir)).resolve()
+        raw_reports_dir = contract.get("reports_dir")
+        if isinstance(raw_reports_dir, str) and raw_reports_dir.strip():
+            candidate = Path(raw_reports_dir).expanduser()
+            if not candidate.is_absolute():
+                candidate = project_path / candidate
+            try:
+                resolved = candidate.resolve()
+                _ = resolved.relative_to(project_path)
+            except (OSError, ValueError):
+                return self._safe_default_custom_op_reports_dir(project_path)
+            return resolved
+        return self._safe_default_custom_op_reports_dir(project_path)
+
+    @staticmethod
+    def _safe_default_custom_op_reports_dir(project_path: Path) -> Path:
+        for name in ("migration_reports", ".seam_migration_reports"):
+            candidate = project_path / name
+            if candidate.is_symlink():
+                try:
+                    _ = candidate.resolve().relative_to(project_path)
+                except (OSError, ValueError):
+                    continue
+            return candidate.resolve()
+        return (project_path / ".seam_migration_reports_safe").resolve()
 
     @staticmethod
     def _record_custom_op_gate_failure(loop_state: dict | None, result: dict[str, Any]) -> None:
