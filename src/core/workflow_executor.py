@@ -2924,6 +2924,13 @@ class WorkflowExecutor:
             return "custom-op operator repair reports are still INCOMPLETE before strict OPP final gate FULL_PASS"
         validation = validate_custom_op_final_gate(gate_map, project_root=reports_dir.parent)
         if validation.get("passed") is not True or gate_map.get("full_migration_status") != "FULL_PASS":
+            errors = validation.get("errors")
+            if isinstance(errors, list) and errors:
+                details = "; ".join(str(error) for error in errors[:12])
+                remaining = len(errors) - 12
+                if remaining > 0:
+                    details = f"{details}; ... +{remaining} more"
+                return f"custom-op operator repair reports do not validate strict OPP final gate FULL_PASS: {details}"
             return "custom-op operator repair reports do not validate strict OPP final gate FULL_PASS"
         return ""
 

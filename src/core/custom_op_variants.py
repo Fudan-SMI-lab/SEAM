@@ -229,6 +229,7 @@ def _restrict_to_source_discovered_units(surface: dict[str, object], discovered_
                 continue
             retained_variants.append(item)
         surface["expanded_operator_variants"] = retained_variants
+        surface["expanded_operator_instances_count"] = len(retained_variants)
 
 
 def _sample_backed_existing_units(surface: Mapping[str, object]) -> set[str]:
@@ -240,7 +241,7 @@ def _sample_backed_existing_units(surface: Mapping[str, object]) -> set[str]:
                 continue
             variant = cast(Mapping[object, object], item)
             base_identity = str(variant.get("base_unit_identity") or variant.get("source_unit_identity") or "").strip()
-            if base_identity:
+            if base_identity and _device_suffix_for_unit(base_identity) in {"cuda", "gpu"}:
                 protected.add(base_identity)
     return protected
 
@@ -685,6 +686,7 @@ def _named_axis_values_from_row(row: str, axis_name: str, axes: Mapping[str, lis
             rf"(?<![A-Za-z0-9_]){axis_pattern}\s*(?:=|:)\s*[\[{{]([^\]}}]{{1,500}})[\]}}]",
             rf"(?<![A-Za-z0-9_]){axis_pattern}\s+in\s*\[([^\]]{{1,500}})\]",
             rf"(?<![A-Za-z0-9_]){axis_pattern}\s+([A-Za-z0-9_.+-]+(?:\s*,\s*[A-Za-z0-9_.+-]+)+)",
+            rf"(?<![A-Za-z0-9_]){axis_pattern}\s+([A-Za-z0-9_.+-]+(?:\s*/\s*[A-Za-z0-9_.+-]+)+)",
         ):
             for match in re.finditer(pattern, row, flags=re.IGNORECASE):
                 values.extend(_split_axis_value_list(match.group(1)))
@@ -743,7 +745,7 @@ def _positional_brace_axis_values_from_row(row: str, axis_order: Sequence[str]) 
 
 def _split_axis_value_list(raw_values: str) -> list[str]:
     values: list[str] = []
-    for raw_value in raw_values.split(","):
+    for raw_value in re.split(r"[,/]", raw_values):
         value = raw_value.strip().strip("'\"").lower()
         if _safe_axis_value_token(value):
             values.append(value)
