@@ -13,11 +13,28 @@ from typing import Protocol, cast, runtime_checkable
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
+from core.assisted_verification import (
+    AssistedVerificationResult,
+    AssistedVerificationRunner,
+    attach_assisted_summary,
+)
+from core.custom_op_opp_preflight import has_custom_op_contract, has_explicit_no_custom_op_contract
+from core.custom_op_variants import (
+    apply_expanded_variant_contract,
+    ensure_strict_expanded_variant_validation_script,
+    expanded_variant_contract_from_outputs,
+    normalize_project_analysis_expanded_variants,
+)
 from core.execution_backend import get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_env_ctx
 from core.paths import resolve_relative_path, workspace_root
 from core.phase_boundary import inject_phase_boundary
 from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, resolve_phase6_timeout
 from core.prompt_loader import PromptLoader
+from core.routes import (
+    SERVING_ROUTES,
+    normalize_serving_phase1_surface,
+    normalize_serving_phase3_contract,
+)
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition
 from core.validation_correction import (
@@ -31,6 +48,9 @@ from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
 from validators.validate_project_analysis import validate as validate_project_analysis
+from validators.validate_phase_1_custom_op_completeness import validate as validate_phase_1_custom_op_completeness
+from validators.validate_phase_3_custom_op_contract_coverage import validate as validate_phase_3_custom_op_contract_coverage
+from validators.validate_reports import validate as validate_reports
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
 
@@ -102,10 +122,16 @@ logger = logging.getLogger(__name__)
 
 
 class SessionManagerLike(Protocol):
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         ...
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str:
+    def send_command(
+        self,
+        session_id: str,
+        command: str,
+        timeout: int | None = None,
+        retries: int | None = None,
+    ) -> str:
         ...
 
 
@@ -614,6 +640,15 @@ class PhaseRunner:
 
         return report
 
+    @staticmethod
+    def _artifact_report_dir(artifact_store: ArtifactStore, project_dir: str) -> str:
+        artifact_dir = getattr(artifact_store, "artifact_dir", None)
+        if isinstance(artifact_dir, str):
+            return os.path.join(artifact_dir, "reports")
+        if isinstance(artifact_dir, Path):
+            return str(artifact_dir / "reports")
+        return str(Path(project_dir) / ".sm-artifacts" / "reports")
+
     def run_phase_6(
         self,
         project_dir: str,
@@ -642,7 +677,7 @@ class PhaseRunner:
 
         prior_artifacts = collect_phase6_prior_artifacts(artifact_store)
 
-        report_dir = os.path.join(artifact_store.artifact_dir, "reports")
+        report_dir = self._artifact_report_dir(artifact_store, str(project_dir))
         os.makedirs(report_dir, exist_ok=True)
 
         prompt_context = {
@@ -652,10 +687,10 @@ class PhaseRunner:
             "report_dir": report_dir,
         }
         for k, v in self._container_context.items():
-            prompt_context.setdefault(k, v)
+            _ = prompt_context.setdefault(k, v)
         for k, v in _get_exec_ctx(None).items():
-            prompt_context.setdefault(k, v)
-        prompt_context.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
+            _ = prompt_context.setdefault(k, v)
+        _ = prompt_context.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
 
         prompt = self.prompt_loader.load_prompt("phase_6_report", prompt_context)
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_6_report")
@@ -770,6 +805,41 @@ class PhaseRunner:
             validation = self.validator.validate(phase.validator_name, normalized_output)
             last_validation = validation
             if validation.passed:
+                assisted_result = self._run_assisted_verification(
+                    phase=phase,
+                    output=normalized_output,
+                    context=normalized_context,
+                    session_mgr=session_mgr,
+                    artifact_store=artifact_store,
+                    attempt=attempt,
+                )
+                if assisted_result is not None:
+                    normalized_output = attach_assisted_summary(normalized_output, assisted_result)
+                    if not assisted_result.passed:
+                        last_validation = ValidationResult(
+                            passed=False,
+                            errors=assisted_result.errors or ["assisted verification failed"],
+                            warnings=assisted_result.warnings,
+                        )
+                        _ = artifact_store.write_journal(
+                            self._build_journal_entry(
+                                phase=phase,
+                                attempt=attempt,
+                                status="assisted_verification_failed",
+                                session_ref=session_ref,
+                                raw_path=raw_path,
+                                canonical_path="",
+                                validation=last_validation,
+                            )
+                        )
+                        if attempt < max_retry:
+                            active_prompt = assisted_result.correction_prompt or self._build_correction_prompt(
+                                phase=phase,
+                                validation=last_validation,
+                                previous_prompt=prompt,
+                            )
+                            continue
+                        break
                 validated_output = dict(normalized_output)
                 _ = validated_output.pop("_meta", None)
                 canonical_path = artifact_store.mark_validated(phase.artifact_id, validated_output)
@@ -825,6 +895,66 @@ class PhaseRunner:
     def _extract_output_format_from_prompt(prompt_text: str) -> str | None:
         return extract_output_format_from_prompt(prompt_text)
 
+    def _run_assisted_verification(
+        self,
+        *,
+        phase: PhaseSpec,
+        output: JsonObject,
+        context: JsonObject,
+        session_mgr: SessionManagerLike,
+        artifact_store: ArtifactStore,
+        attempt: int,
+    ) -> AssistedVerificationResult | None:
+        if phase.prompt_id not in {"phase_1_project_analysis", "phase_3_entry_script"}:
+            return None
+        runner = AssistedVerificationRunner(
+            session_mgr=session_mgr,
+            artifact_store=artifact_store,
+            framework_config=self.framework_config,
+        )
+        if not runner.config.enabled:
+            return None
+        project_dir = self._assisted_project_dir(context)
+        phase_output = self._without_meta(output)
+        if phase.prompt_id == "phase_1_project_analysis":
+            return runner.verify_phase1(
+                phase_output=phase_output,
+                project_dir=project_dir,
+                attempt=attempt,
+            )
+
+        return runner.verify_phase3(
+            phase_output=phase_output,
+            phase1_output=self._phase1_output_from_context(context),
+            project_dir=project_dir,
+            attempt=attempt,
+        )
+
+    def _assisted_project_dir(self, context: JsonObject) -> str:
+        for key in ("project_dir", "PROJECT_DIR"):
+            value = context.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return "."
+
+    @classmethod
+    def _phase1_output_from_context(cls, context: JsonObject) -> dict[str, object] | None:
+        previous_outputs = context.get("previous_outputs")
+        if not isinstance(previous_outputs, dict):
+            return None
+        outputs = cast(dict[str, object], previous_outputs)
+        for key in ("phase_1_project_analysis", "phase_1"):
+            phase_output = outputs.get(key)
+            if isinstance(phase_output, dict):
+                return cls._without_meta(cast(dict[str, object], phase_output))
+        return None
+
+    @staticmethod
+    def _without_meta(output: dict[str, object]) -> dict[str, object]:
+        clean = dict(output)
+        _ = clean.pop("_meta", None)
+        return clean
+
     def _register_default_validators(self) -> None:
         registrations = {
             "env_detect": validate_env_detect,
@@ -832,6 +962,9 @@ class PhaseRunner:
             "venv": validate_venv,
             "entry_script": validate_entry_script,
             "entry_static": validate_entry_static,
+            "phase_1_custom_op_completeness_check": validate_phase_1_custom_op_completeness,
+            "phase_3_custom_op_contract_coverage_check": validate_phase_3_custom_op_contract_coverage,
+            "reports": validate_reports,
         }
         for name, validator_fn in registrations.items():
             self.validator.register_validator(name, validator_fn)
@@ -1071,6 +1204,7 @@ class PhaseRunner:
 
     def _build_prompt_context(self, phase: PhaseSpec, context: JsonObject) -> dict[str, str]:
         previous_outputs = context.get("previous_outputs", {})
+        previous_output_map = cast(JsonObject, previous_outputs) if isinstance(previous_outputs, dict) else {}
         prompt_ctx: dict[str, str] = {
             "phase_name": str(context.get("phase_name", phase.prompt_id)),
             "project_dir": str(context.get("project_dir", ".")),
@@ -1078,18 +1212,18 @@ class PhaseRunner:
             "user_constraints": str(context.get("user_constraints", "")),
         }
         if phase.prompt_id not in self._SHARED_SESSION_PHASES:
-            filtered = self._filter_previous_outputs(phase.prompt_id, previous_outputs)
+            filtered = self._filter_previous_outputs(phase.prompt_id, previous_output_map)
             prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
         if phase.prompt_id == "phase_35_static_validate":
-            filtered = self._filter_previous_outputs(phase.prompt_id, previous_outputs)
+            filtered = self._filter_previous_outputs(phase.prompt_id, previous_output_map)
             prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
             entry_script = self._lookup_previous_output(filtered, "phase_3_entry_script", "entry_script_path")
             prompt_ctx["entry_script_path"] = str(entry_script) if entry_script else "(not available)"
         for k, v in self._container_context.items():
-            prompt_ctx.setdefault(k, v)
+            _ = prompt_ctx.setdefault(k, v)
         for k, v in _get_exec_ctx(None).items():
-            prompt_ctx.setdefault(k, v)
-        prompt_ctx.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
+            _ = prompt_ctx.setdefault(k, v)
+        _ = prompt_ctx.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
         return prompt_ctx
 
     @staticmethod
@@ -1146,34 +1280,68 @@ class PhaseRunner:
         normalized = dict(output)
         if phase.prompt_id == "phase_0_env_detect" and "python_version" not in normalized:
             normalized["python_version"] = self._current_python_version()
-        if phase.prompt_id == "phase_1_project_analysis" and "project_dir" not in normalized:
+        if phase.prompt_id == "phase_1_project_analysis":
             normalized["project_dir"] = str(prompt_context["project_dir"])
+            normalize_project_analysis_expanded_variants(normalized)
+            normalize_serving_phase1_surface(normalized)
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
+            previous_output_map = cast(dict[str, object], previous_outputs) if isinstance(previous_outputs, dict) else {}
+            phase1_route = self._lookup_previous_output(previous_output_map, "phase_1_project_analysis", "migration_route")
             if "entry_script_path" not in normalized:
-                entry_script = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "entry_script")
+                entry_script = self._lookup_previous_output(previous_output_map, "phase_1_project_analysis", "entry_script")
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
-            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            raw_workflow_globals_phase35: object = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            workflow_globals = cast(dict[str, object], raw_workflow_globals_phase35) if isinstance(raw_workflow_globals_phase35, dict) else {}
             if self._custom_op_route_disabled(workflow_globals):
                 normalized = self._strip_custom_op_contract_fields(normalized)
             else:
-                if self._custom_op_required_signal(previous_outputs, context):
+                if isinstance(phase1_route, str) and phase1_route in SERVING_ROUTES:
+                    raw_phase1_output = previous_output_map.get("phase_1_project_analysis")
+                    phase1_output = cast(JsonObject, raw_phase1_output) if isinstance(raw_phase1_output, dict) else None
+                    normalize_serving_phase3_contract(
+                        normalized,
+                        route=phase1_route,
+                        project_dir=str(prompt_context["project_dir"]),
+                        phase1_output=phase1_output,
+                    )
+                elif self._custom_op_required_signal(previous_output_map, context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+                    normalized["project_dir"] = str(prompt_context["project_dir"])
+                variant_overlay = expanded_variant_contract_from_outputs(previous_output_map)
+                if variant_overlay:
+                    apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
+                    ensure_strict_expanded_variant_validation_script(
+                        normalized,
+                        variant_overlay,
+                        project_dir=str(prompt_context["project_dir"]),
+                    )
             normalized = self._normalize_phase3_container_paths(
                 normalized, prompt_context,
             )
         if phase.prompt_id == "phase_35_static_validate":
             previous_outputs = context.get("previous_outputs", {})
+            previous_output_map = cast(dict[str, object], previous_outputs) if isinstance(previous_outputs, dict) else {}
             entry_script_kind = self._lookup_previous_output(
-                previous_outputs,
+                previous_output_map,
                 "phase_3_entry_script",
                 "entry_script_kind",
             )
-            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            raw_workflow_globals: object = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            workflow_globals = cast(dict[str, object], raw_workflow_globals) if isinstance(raw_workflow_globals, dict) else {}
             if not self._custom_op_route_disabled(workflow_globals) and entry_script_kind == "custom_op_full_validation":
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
+                entry_script_path = self._lookup_previous_output(
+                    previous_output_map,
+                    "phase_3_entry_script",
+                    "entry_script_path",
+                )
+                if isinstance(entry_script_path, str) and entry_script_path.strip():
+                    _ = normalized.setdefault("entry_script_path", entry_script_path)
+            if expanded_variant_contract_from_outputs(previous_output_map):
+                normalized["expanded_variant_static_required"] = True
         return normalized
 
     @staticmethod
@@ -1186,7 +1354,7 @@ class PhaseRunner:
     def _strip_custom_op_contract_fields(output: JsonObject) -> JsonObject:
         stripped = dict(output)
         for field in CUSTOM_OP_CONTRACT_KEYS:
-            stripped.pop(field, None)
+            _ = stripped.pop(field, None)
         return stripped
 
     @staticmethod
@@ -1250,28 +1418,18 @@ class PhaseRunner:
     def _custom_op_signal(cls, value: object) -> bool | None:
         if isinstance(value, str):
             if any(pattern.search(value) for pattern in CUSTOM_OP_NEGATIVE_PATTERNS):
-                return None
+                return False
             lowered = value.lower()
-            if any(term.lower() in lowered for term in CUSTOM_OP_REQUIRED_TERMS):
-                return True
-            return None
+            return any(term.lower() in lowered for term in CUSTOM_OP_REQUIRED_TERMS) or None
         if isinstance(value, dict):
             value_dict = cast(dict[object, object], value)
-            if value_dict.get("entry_script_kind") == "custom_op_full_validation":
+            contract_dict = cast(dict[str, object], value)
+            if has_custom_op_contract(contract_dict):
                 return True
-            if value_dict.get("custom_op_detected") is True:
-                return True
-            if value_dict.get("custom_op_detected") is False:
+            if has_explicit_no_custom_op_contract(contract_dict):
                 return False
-            if any(key in value_dict for key in CUSTOM_OP_CONTRACT_KEYS):
-                return True
             custom_op_surface = value_dict.get("custom_op_surface")
             if isinstance(custom_op_surface, dict):
-                surface = cast(dict[object, object], custom_op_surface)
-                if surface.get("custom_op_detected") is True:
-                    return True
-                if surface.get("custom_op_detected") is False:
-                    return False
                 return cls._custom_op_signal_from_iterable(
                     item for key, item in value_dict.items() if key not in {"_meta", "custom_op_surface"}
                 )
