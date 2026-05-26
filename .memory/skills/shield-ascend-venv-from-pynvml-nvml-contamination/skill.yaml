@@ -1,0 +1,8 @@
+name: shield-ascend-venv-from-pynvml-nvml-contamination
+title: Shield Ascend-only venvs from inherited pynvml/NVML contamination
+description: Shield Ascend-only venvs from inherited pynvml/NVML contamination
+category: dependency_issue
+subtype: nvml_contamination
+target_roles: ["dependency_fixer", "validation_runner"]
+target_phases: ["fix_dependency", "phase_5_validation"]
+trigger_fingerprint: {'runtime': 'Ascend NPU / torch_npu / vllm-ascend', 'symptoms': ['pynvml FutureWarning during torch or torch_npu import', 'NVML or CUDA/NVIDIA warning markers in Ascend-only validation', 'forbidden CUDA/NVIDIA marker gate failures'], 'environment_markers': ['venv uses system site-packages', 'inherited _pynvml_redirector present in sys.meta_path', 'pynvml import resolves from system or inherited site-packages'], 'repair_actions': ['pip uninstall project-local pynvml if present', 'add venv-local sitecustomize.py removing _pynvml_redirector from sys.meta_path', 'add venv-local pynvml.py shim raising ModuleNotFoundError', 'rerun import preflight and final NPU validation'], 'success_signals': ['torch, torch_npu, tbe, te, and vllm import successfully', 'forbidden_runtime_markers_absent=true', 'no CUDA/NVIDIA/NVML fallback evidence']}

@@ -1,0 +1,185 @@
+{
+  "type": "skill",
+  "skill_name": "shield-ascend-venv-from-pynvml-nvml-contamination",
+  "title": "Shield Ascend-only venvs from inherited pynvml/NVML contamination",
+  "category": "dependency_issue",
+  "subtype": "nvml_contamination",
+  "tags": [
+    "torch-npu",
+    "ascend",
+    "pynvml",
+    "system-site-packages",
+    "runtime-contamination",
+    "no-cuda-fallback"
+  ],
+  "symptom": "An Ascend-only validation venv that uses system site-packages emits pynvml/NVML CUDA or NVIDIA FutureWarning markers during torch or torch_npu import, causing false forbidden-runtime-marker evidence even though the intended runtime path is torch_npu/vllm-ascend.",
+  "root_cause": "The venv inherits a deprecated system pynvml package and a _pynvml_redirector meta-path finder from system site-packages. During torch/torch_npu import, those inherited hooks make NVML bindings visible inside an Ascend-only runtime and emit CUDA/NVIDIA warning text unrelated to the actual NPU stack.",
+  "fix_steps": [
+    "1. Confirm the validation target is an Ascend-only runtime using torch_npu/vllm-ascend and that CUDA/NVIDIA/NVML warnings appear during torch or torch_npu import.",
+    "2. If pynvml is installed inside the project venv, uninstall it with the venv Python: `<venv>/bin/python -m pip uninstall -y pynvml`.",
+    "3. Add a venv-local `<venv>/lib/python3.10/site-packages/sitecustomize.py` that removes any `_pynvml_redirector` finder from `sys.meta_path` at Python startup.",
+    "4. Add a venv-local `<venv>/lib/python3.10/site-packages/pynvml.py` shim that raises `ModuleNotFoundError` so inherited NVML bindings are treated as unavailable in the Ascend-only runtime.",
+    "5. Run an import preflight in the venv and verify `torch`, `torch_npu`, `tbe`, `te`, and `vllm` import successfully without the pynvml FutureWarning.",
+    "6. Run the Phase 5 or final serving validation and verify the runtime import fields report `cann_env_loaded=true`, `torch_npu_imported=true`, `tbe_imported=true`, `te_imported=true`, `vllm_imported=true`, and `forbidden_runtime_markers_absent=true`.",
+    "7. If validation still fails after the warning is removed, classify the remaining failure separately; in the source run the remaining blocker after this fix was an unrelated Python `SyntaxError` in `mineru/backend/vlm/utils.py`, not a dependency/package failure."
+  ],
+  "affected_patterns": [
+    "pynvml FutureWarning during torch or torch_npu import",
+    "NVML or CUDA/NVIDIA warning markers in Ascend-only validation logs",
+    "venv using system site-packages where `pynvml` resolves from inherited/system packages",
+    "`_pynvml_redirector` present in `sys.meta_path`"
+  ],
+  "code_changes": [
+    {
+      "file": ".venv/lib/python3.10/site-packages/pynvml.py",
+      "before": "# No venv-local pynvml shim; inherited system pynvml can be imported during torch/torch_npu startup.",
+      "after": "\"\"\"Project-local Ascend runtime shim that hides inherited NVML bindings.\\n\\nThe project venv includes system site-packages for the Ascend torch_npu/vLLM stack.\\nA deprecated system pynvml package emits CUDA/NVIDIA warnings during torch import,\\nso expose pynvml as unavailable inside this Ascend-only venv.\\n\"\"\"\\n\\nraise ModuleNotFoundError(\"pynvml is disabled for the Ascend-only serving runtime\")\\n"
+    },
+    {
+      "file": ".venv/lib/python3.10/site-packages/sitecustomize.py",
+      "before": "# No venv-local startup filter; inherited _pynvml_redirector remains in sys.meta_path.",
+      "after": "\"\"\"Project-local startup fixes for the Ascend serving environment.\"\"\"\\n\\nimport sys\\n\\n\\ndef _without_pynvml_redirector(finder: object) -> bool:\\n    return finder.__class__.__module__ != \"_pynvml_redirector\"\\n\\n\\nsys.meta_path[:] = [finder for finder in sys.meta_path if _without_pynvml_redirector(finder)]\\n"
+    }
+  ],
+  "references": [
+    "validated/phase_fix_dependency_canonical.json",
+    "raw/phase_fix_dependency_attempt0.json",
+    "reports/SUMMARY_REPORT.md",
+    "validated/phase_5_validation_canonical.json"
+  ],
+  "tools_needed": [
+    "venv python",
+    "pip",
+    "lsp_diagnostics",
+    "phase 5 validation command"
+  ],
+  "antipatterns": [
+    "Do NOT treat pynvml/NVML warnings as evidence that CUDA/NVIDIA runtime is required for an Ascend-only torch_npu/vllm-ascend validation path.",
+    "Do NOT install or preserve pynvml inside the Ascend-only validation venv to silence the warning; make pynvml unavailable locally instead.",
+    "Do NOT remove the system site-packages dependency blindly if the Ascend torch_npu, tbe, te, or vllm-ascend stack is being inherited from the environment.",
+    "Do NOT classify later validation failures as dependency contamination once import preflight passes and forbidden runtime markers are absent; continue diagnosis on the new concrete failure."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v2-691a73de905b",
+    "candidate_id": "candidate-001",
+    "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/MinerU_20260525_184831",
+    "target_roles": [
+      "dependency_fixer",
+      "validation_runner"
+    ],
+    "target_phases": [
+      "fix_dependency",
+      "phase_5_validation"
+    ],
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "8.1.RC1",
+    "verified_packages": [
+      "torch==2.5.1+cpu",
+      "torch_npu==2.5.1",
+      "vllm==0.7.3+empty",
+      "vllm-ascend==0.7.3"
+    ],
+    "source_verification": [
+      "Import preflight succeeded without the pynvml FutureWarning for torch 2.5.1+cpu, torch_npu 2.5.1, tbe, te, and vllm 0.7.3.",
+      "validate_vllm_serving.py import preflight passed with forbidden_runtime_markers_absent=true.",
+      "Final summary reported forbidden runtime marker scan returned no hits and no CUDA, NVIDIA, NCCL, CPU fallback, or CUDA fallback evidence was recorded."
+    ],
+    "refiner_reasoning": "The evidence shows a reusable environment-remediation procedure rather than a pure source-code rewrite: uninstall project-local pynvml if present, add two venv-local shim files, and verify Ascend imports plus forbidden-marker absence. The final migration report confirms the dependency/runtime shim files were part of the successful MinerU vllm_serving Ascend NPU migration.",
+    "created_at": "2026-05-26T00:39:13.998686+00:00"
+  },
+  "confidence": 0.9,
+  "target_roles": [
+    "dependency_fixer",
+    "validation_runner"
+  ],
+  "target_phases": [
+    "fix_dependency",
+    "phase_5_validation"
+  ],
+  "trigger_fingerprint": {
+    "runtime": "Ascend NPU / torch_npu / vllm-ascend",
+    "symptoms": [
+      "pynvml FutureWarning during torch or torch_npu import",
+      "NVML or CUDA/NVIDIA warning markers in Ascend-only validation",
+      "forbidden CUDA/NVIDIA marker gate failures"
+    ],
+    "environment_markers": [
+      "venv uses system site-packages",
+      "inherited _pynvml_redirector present in sys.meta_path",
+      "pynvml import resolves from system or inherited site-packages"
+    ],
+    "repair_actions": [
+      "pip uninstall project-local pynvml if present",
+      "add venv-local sitecustomize.py removing _pynvml_redirector from sys.meta_path",
+      "add venv-local pynvml.py shim raising ModuleNotFoundError",
+      "rerun import preflight and final NPU validation"
+    ],
+    "success_signals": [
+      "torch, torch_npu, tbe, te, and vllm import successfully",
+      "forbidden_runtime_markers_absent=true",
+      "no CUDA/NVIDIA/NVML fallback evidence"
+    ]
+  },
+  "solidifier": "skill_solidifier",
+  "classifier": {
+    "type": "skill",
+    "target_roles": [
+      "dependency_fixer",
+      "validation_runner"
+    ],
+    "target_phases": [
+      "fix_dependency",
+      "phase_5_validation"
+    ],
+    "solidifier": "skill_solidifier",
+    "reasoning": "The candidate is a reusable, actionable remediation procedure for Ascend-only validation environments contaminated by inherited pynvml/NVML hooks. It includes diagnosis triggers, concrete environment edits, shim creation, and required validation steps. Although deterministic, it is broader than a pure mechanical code transformation because it involves runtime-environment handling and verification workflow, so skill is a better fit than rule.",
+    "confidence": 0.9,
+    "trigger_fingerprint": {
+      "runtime": "Ascend NPU / torch_npu / vllm-ascend",
+      "symptoms": [
+        "pynvml FutureWarning during torch or torch_npu import",
+        "NVML or CUDA/NVIDIA warning markers in Ascend-only validation",
+        "forbidden CUDA/NVIDIA marker gate failures"
+      ],
+      "environment_markers": [
+        "venv uses system site-packages",
+        "inherited _pynvml_redirector present in sys.meta_path",
+        "pynvml import resolves from system or inherited site-packages"
+      ],
+      "repair_actions": [
+        "pip uninstall project-local pynvml if present",
+        "add venv-local sitecustomize.py removing _pynvml_redirector from sys.meta_path",
+        "add venv-local pynvml.py shim raising ModuleNotFoundError",
+        "rerun import preflight and final NPU validation"
+      ],
+      "success_signals": [
+        "torch, torch_npu, tbe, te, and vllm import successfully",
+        "forbidden_runtime_markers_absent=true",
+        "no CUDA/NVIDIA/NVML fallback evidence"
+      ]
+    }
+  },
+  "candidate_id": "candidate-001",
+  "problem_description": "A venv using system site packages inherited pynvml and a _pynvml_redirector hook, causing CUDA/NVIDIA FutureWarning contamination during torch/torch_npu imports. In Ascend validation this can create false CUDA/NVIDIA evidence, fail forbidden-marker gates, or encourage the wrong runtime assumptions even when the intended path is torch_npu/vllm-ascend.",
+  "rough_fix_approach": "When an Ascend-only validation environment emits pynvml/NVML warnings, uninstall project-local pynvml if present, add a venv-local sitecustomize.py that removes _pynvml_redirector from sys.meta_path at startup, add a venv-local pynvml.py shim that raises ModuleNotFoundError, then rerun import preflight and final NPU validation to ensure torch, torch_npu, tbe, te, and vllm import without CUDA/NVIDIA fallback markers.",
+  "recommended_type": "rule",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/MinerU_20260525_184831",
+  "name": "shield-ascend-venv-from-pynvml-nvml-contamination",
+  "asset_names": [
+    "SKILL.md",
+    "references/sources.md",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ],
+  "id": "e2e-v2-691a73de905b-exp-20260526003913",
+  "run_id": "e2e-v2-691a73de905b",
+  "created_at": "2026-05-26T00:39:13.999370+00:00",
+  "merged_from_runs": [
+    "e2e-v2-570be999f9f4",
+    "e2e-v2-691a73de905b-exp-20260526003913",
+    "e2e-v2-e836c60243f2"
+  ],
+  "promoted_at": "2026-05-26T00:42:00.053268+00:00",
+  "promotion_type": "skill"
+}
