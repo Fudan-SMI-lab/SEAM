@@ -45,6 +45,8 @@ You must close all operator+variant rows with real implementation, build, instal
 1. Re-read the Phase 1 operator inventory, Phase 3 validation script, runtime artifacts, source CUDA files, bindings, wrappers, autograd paths, launch sites, setup/build files, and tests.
 2. Build a source-of-truth manifest from source discovery only. Do not invent operators from names in a report. Do not drop variants because they are difficult.
 3. For each base CUDA operator, understand the original semantics, including tensor shapes, dtype, ndim, accuracy/order, boundary handling, storage/compression behavior, gradients, stream/synchronization behavior, and public API call path.
+   - Treat every expanded variant axis declared by the Phase 3 contract as required scope. If the inventory includes dtype rows such as `double`/float64, those rows are blocking scope and must be implemented, routed, measured for parity/performance, and closed in the same full contract-derived ledger as every other variant.
+   - If any report or coverage summary contains `missing_by_dtype`, missing dtype variants, or equivalent axis-specific gaps, state that they are blocking defects. Do not weaken closure to a partial count or omit those rows from guidance, manifests, runtime coverage, performance, or final-gate evidence.
 4. Implement real Ascend C/CANN OPP sources:
    - `op_host` with real shape inference and tiling logic.
    - `op_kernel` with real AscendC computation that reads inputs and writes outputs.
@@ -110,7 +112,9 @@ Return one JSON object only:
     "path": "migration_reports/custom_op_final_gate.json",
     "validated_by_framework": true,
     "full_migration_status": "FULL_PASS",
-    "closed_pass_entries": 0,
+    "inventory_count": 1,
+    "manifest_entries": 1,
+    "closed_pass_entries": 1,
     "remaining_entries": 0
   },
   "summary": "short factual summary",
@@ -118,4 +122,4 @@ Return one JSON object only:
 }
 ```
 
-If `validated_by_framework` is not true, `status` must not be `FULL_PASS`.
+If `validated_by_framework` is not true, `status` must not be `FULL_PASS`. For `FULL_PASS`, replace the sample count `1` with the actual positive row count, and `inventory_count`, `manifest_entries`, and `closed_pass_entries` must be equal.
