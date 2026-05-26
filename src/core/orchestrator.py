@@ -14,8 +14,10 @@ from core.accelerator_context import extract_accelerator_context
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
-from core.execution_backend import get_container_prompt_context, get_execution_environment_context
+from core.custom_op_variants import apply_expanded_variant_contract, expanded_variant_contract_from_outputs
+from core.execution_backend import ExecutionBackend, get_container_prompt_context, get_execution_environment_context
 from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
+from core.types import ExecutionBackendConfig, PhaseDefinition
 from core.prompt_loader import PromptLoader
 from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
 from core.platform_policy import PlatformPolicy, resolve_policy
@@ -26,7 +28,6 @@ from rule_strategies import create_migrator_resolved
 # Kept as module-level references for test monkeypatch compatibility.
 # The resolver uses importlib to instantiate migrators by strategy config.
 from migrator.rule_based import RuleBasedMigrator  # noqa: F401
-from migrator.rule_based_ppu import PPURuleBasedMigrator  # noqa: F401
 
 JsonDict = dict[str, object]
 
@@ -137,7 +138,7 @@ class Orchestrator:
             workflow=workflow,
             framework_config=fw_config,
         )
-        exec_backend = self._resolve_execution_backend(workflow, active_project_dir)
+        exec_backend = cast(ExecutionBackend | None, self._resolve_execution_backend(workflow, active_project_dir))
         container_ctx = self._preflight_and_probe(exec_backend)
         runner.set_container_context(container_ctx)
         exec_env_ctx = self._build_execution_environment_context(exec_backend, container_ctx)
@@ -326,7 +327,7 @@ class Orchestrator:
         runner: PhaseRunner,
         project_dir: str,
         artifact_store: ArtifactStore,
-        migrator: object,
+        migrator: RuleBasedMigrator,
     ) -> dict[str, object]:
         phase_4_runner = runner.run_phase_4
         phase_4_signature = inspect.signature(phase_4_runner)
@@ -335,7 +336,7 @@ class Orchestrator:
         return cast(_Phase4RunnerWithoutProjectDir, phase_4_runner)(artifact_store, migrator)
 
     @staticmethod
-    def _select_rule_based_migrator(platform_policy: PlatformPolicy, workflow: object | None = None) -> object:
+    def _select_rule_based_migrator(platform_policy: PlatformPolicy, workflow: object | None = None) -> RuleBasedMigrator:
         """Select the appropriate rule-based migrator using configuration-driven resolution.
 
         Uses the strategy resolver with precedence:
@@ -347,24 +348,26 @@ class Orchestrator:
         This keeps the legacy Orchestrator path aligned with WorkflowExecutor.
         """
         backend = Orchestrator._phase_4_backend_from_workflow(workflow)
-        workflow_rule_migration = getattr(workflow, "rule_migration", None) if workflow is not None else None
-        return create_migrator_resolved(
+        workflow_rule_migration_raw = getattr(workflow, "rule_migration", None) if workflow is not None else None
+        workflow_rule_migration = cast(dict[str, object], workflow_rule_migration_raw) if isinstance(workflow_rule_migration_raw, dict) else None
+        return cast(RuleBasedMigrator, create_migrator_resolved(
             workflow_params_backend=backend,
-            workflow_rule_migration=workflow_rule_migration if isinstance(workflow_rule_migration, dict) else None,
+            workflow_rule_migration=workflow_rule_migration,
             platform_policy_strategy=platform_policy.default_rule_migration_strategy,
-        )
+        ))
 
     @staticmethod
     def _phase_4_backend_from_workflow(workflow: object | None) -> str | None:
-        phases = getattr(workflow, "phases", None)
-        if not isinstance(phases, list):
+        phases_obj = getattr(workflow, "phases", None)
+        if not isinstance(phases_obj, list):
             return None
-        for phase in phases:
-            operation = getattr(phase, "params", {}).get("operation") if isinstance(getattr(phase, "params", None), dict) else None
-            phase_operation = getattr(phase, "operation", None) or operation
-            is_rule_phase = getattr(phase, "id", "") == "phase_4_rule_migration" or phase_operation == "rule_based_migration"
-            params = getattr(phase, "params", None)
-            if is_rule_phase and isinstance(params, dict):
+        phases = cast(list[object], phases_obj)
+        for phase_obj in phases:
+            phase = cast(PhaseDefinition, phase_obj)
+            params = phase.params
+            operation = params.get("operation")
+            is_rule_phase = phase.id == "phase_4_rule_migration" or operation == "rule_based_migration"
+            if is_rule_phase:
                 backend = params.get("backend")
                 if isinstance(backend, str) and backend.strip():
                     return backend.strip()
@@ -488,7 +491,11 @@ class Orchestrator:
                 phase_3_output = loaded_output
         if not isinstance(phase_3_output, dict):
             return None
-        return dict(cast(dict[str, object], phase_3_output))
+        contract = dict(cast(dict[str, object], phase_3_output))
+        variant_overlay = expanded_variant_contract_from_outputs(phase_outputs)
+        if variant_overlay:
+            apply_expanded_variant_contract(contract, variant_overlay, include_required_checks=True)
+        return contract
 
     def _resolve_entry_script(
         self,
@@ -579,8 +586,11 @@ class Orchestrator:
         project_dir: str,
     ) -> object:
         """Create an execution backend from workflow config, mirroring WorkflowExecutor behavior."""
-        eb_cfg = getattr(workflow, "execution_backend", None)
-        if eb_cfg is None or eb_cfg.mode == "local":
+        eb_cfg_obj = getattr(workflow, "execution_backend", None)
+        if eb_cfg_obj is None:
+            return None
+        eb_cfg = cast(ExecutionBackendConfig, eb_cfg_obj)
+        if eb_cfg.mode == "local":
             return None
 
         from core.execution_backend import ContainerBackend, auto_select_backend
@@ -596,7 +606,7 @@ class Orchestrator:
         backend.set_project_dir(project_dir)
         return backend
 
-    def _auto_select_image(self, config: object) -> object:
+    def _auto_select_image(self, config: ExecutionBackendConfig) -> ExecutionBackendConfig:
         """Run agent image-selection for ``mode=auto`` before container creation."""
         from core.execution_backend import ContainerBackend
         from core.types import ExecutionBackendConfig as _EBC
@@ -607,9 +617,9 @@ class Orchestrator:
         candidates: list[str] = []
         is_discovered = False
 
-        cfg_list = getattr(config, "images", None) or []
+        cfg_list = config.images or []
         # Normalize: filter out None/"None" artifacts
-        candidates = [c for c in cfg_list if str(c).strip() and str(c).strip() != "None"]
+        candidates = [str(c) for c in cfg_list if str(c).strip() and str(c).strip() != "None"]
 
         if len(candidates) == 1:
             return config
@@ -617,7 +627,8 @@ class Orchestrator:
         if not candidates:
             try:
                 probe = ContainerBackend(config)
-                discovered = probe._discover_local_images()
+                discover_local_images = cast(object, getattr(probe, "_discover_local_images"))
+                discovered = cast(list[str], discover_local_images()) if callable(discover_local_images) else []
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).warning("Auto image discovery failed: %s", exc)
@@ -707,10 +718,10 @@ class Orchestrator:
         sid = self.session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
         try:
             raw = self.session_mgr.send_command(sid, prompt_text, timeout=120)
-            parsed = _extract(raw)
-            if isinstance(parsed, dict):
-                selected = parsed.get("selected_image")
-                return str(selected) if selected else None
+            parsed_obj = cast(object, _extract(raw))
+            parsed = cast(dict[str, object], parsed_obj) if isinstance(parsed_obj, dict) else {}
+            selected = parsed.get("selected_image")
+            return str(selected) if selected else None
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Image selection prompt failed: %s", exc)
@@ -718,26 +729,28 @@ class Orchestrator:
         return None
 
     @staticmethod
-    def _preflight_and_probe(backend: object) -> dict[str, str]:
+    def _preflight_and_probe(backend: ExecutionBackend | None) -> dict[str, str]:
         if backend is None:
             return {}
         preflight = getattr(backend, "preflight", None)
         if callable(preflight):
-            preflight()
+            _ = preflight()
         probe_fn = getattr(backend, "probe_environment", None)
         probe_facts: dict[str, object] | None = None
         if callable(probe_fn):
-            probe_facts = probe_fn()
+            probe_facts_obj = probe_fn()
+            probe_facts = cast(dict[str, object], probe_facts_obj) if isinstance(probe_facts_obj, dict) else None
         return get_container_prompt_context(backend, probe_facts)
 
     @staticmethod
-    def _build_execution_environment_context(backend: object, container_ctx: dict[str, str] | None = None) -> str:
+    def _build_execution_environment_context(backend: ExecutionBackend | None, container_ctx: dict[str, str] | None = None) -> str:
         from core.execution_backend import LocalBackend as _LocalBackend
         probe_facts: dict[str, object] | None = None
         if container_ctx and "container_env_facts" in container_ctx:
             import json
             try:
-                probe_facts = json.loads(container_ctx["container_env_facts"])
+                loaded_facts = cast(object, json.loads(container_ctx["container_env_facts"]))
+                probe_facts = cast(dict[str, object], loaded_facts) if isinstance(loaded_facts, dict) else None
             except (json.JSONDecodeError, TypeError):
                 pass
         if backend is None or isinstance(backend, _LocalBackend):
@@ -745,7 +758,7 @@ class Orchestrator:
         return get_execution_environment_context(backend, probe_facts or {})
 
     @staticmethod
-    def _cleanup_execution_backend(backend: object) -> None:
+    def _cleanup_execution_backend(backend: ExecutionBackend | None) -> None:
         if backend is None:
             return
         try:
