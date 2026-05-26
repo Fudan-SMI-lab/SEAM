@@ -2904,3 +2904,26 @@ def test_phase_runner_phase3_normalization_preserves_phase1_serving_route(tmp_pa
     assert normalized["launch_command"] == "python -m sglang.launch_server --model-path model"
     assert str(normalized["serving_reports_dir"]).endswith("migration_reports/serving")
     assert normalized["required_report_paths"] == ["migration_reports/serving/serving_final_gate.json"]
+
+
+
+def test_phase_runner_registers_custom_op_assisted_validators() -> None:
+    validator = ValidatorEngine()
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        cast(ArtifactStore, object()),
+        cast(PromptLoader, object()),
+        validator,
+    )
+
+    assert runner is not None
+    phase1_result = validator.validate(
+        "phase_1_custom_op_completeness_check",
+        {"phase1_output": {}, "report": {}},
+    )
+    phase3_result = validator.validate(
+        "phase_3_custom_op_contract_coverage_check",
+        {"phase1_output": {}, "phase3_output": {}, "report": {}},
+    )
+    assert isinstance(phase1_result, ValidationResult)
+    assert isinstance(phase3_result, ValidationResult)

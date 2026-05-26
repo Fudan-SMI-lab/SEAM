@@ -42,6 +42,8 @@ from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
 from validators.validate_project_analysis import validate as validate_project_analysis
+from validators.validate_phase_1_custom_op_completeness import validate as validate_phase_1_custom_op_completeness
+from validators.validate_phase_3_custom_op_contract_coverage import validate as validate_phase_3_custom_op_contract_coverage
 from validators.validate_reports import validate as validate_reports
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
@@ -1135,6 +1137,8 @@ class PhaseRunner:
             "entry_script": validate_entry_script,
             "entry_static": validate_entry_static,
             "reports": validate_reports,
+            "phase_1_custom_op_completeness_check": validate_phase_1_custom_op_completeness,
+            "phase_3_custom_op_contract_coverage_check": validate_phase_3_custom_op_contract_coverage,
         }
         for name, validator_fn in registrations.items():
             self.validator.register_validator(name, validator_fn)
