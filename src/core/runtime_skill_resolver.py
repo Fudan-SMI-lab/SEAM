@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from .types import RuntimeSkillsConfig
 
@@ -18,7 +18,7 @@ class RuntimeSkill:
     path: str
     content: str
     source: str = "canonical"
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -40,9 +40,11 @@ class RuntimeSkillResolver:
     def __init__(self, repo_root: str | Path) -> None:
         self.repo_root: Path = Path(repo_root)
         self.skills_dir: Path = self.repo_root / ".memory" / "skills"
+        self.direct_skills_dir: Path = self.repo_root / "skills"
         self.local_skills_dir: Path = self._resolve_local_skills_dir()
         self.skill_roots: tuple[tuple[str, Path], ...] = (
             ("canonical", self.skills_dir),
+            ("direct", self.direct_skills_dir),
             ("local", self.local_skills_dir),
         )
 
@@ -142,8 +144,9 @@ class RuntimeSkillResolver:
             )
 
         if data_path.is_file():
-            loaded = json.loads(data_path.read_text(encoding="utf-8"))
-            data = cast(dict[str, Any], loaded) if isinstance(loaded, dict) else {}
+            loaded_text = data_path.read_text(encoding="utf-8")
+            loaded_obj = cast(object, json.loads(loaded_text))
+            data = cast(dict[str, object], loaded_obj) if isinstance(loaded_obj, dict) else {}
             content = self._format_skill_data(name, data) if inject_full else ""
             return RuntimeSkill(
                 name=name,
@@ -168,7 +171,7 @@ class RuntimeSkillResolver:
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
-    def _format_skill_data(self, name: str, data: dict[str, Any]) -> str:
+    def _format_skill_data(self, name: str, data: dict[str, object]) -> str:
         title = data.get("title") or data.get("description") or name
         lines = [f"# {str(title)}", ""]
         for key in ("when_to_use", "root_cause", "fix_steps", "steps", "antipatterns", "references"):
@@ -177,7 +180,8 @@ class RuntimeSkillResolver:
             lines.append(f"## {key.replace('_', ' ').title()}")
             value = data[key]
             if isinstance(value, list):
-                lines.extend(f"- {str(item)}" for item in value)
+                value_items = cast(list[object], value)
+                lines.extend(f"- {str(item)}" for item in value_items)
             else:
                 lines.append(str(value))
             lines.append("")
