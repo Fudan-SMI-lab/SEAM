@@ -1,15 +1,15 @@
 {
   "counts": {
     "by_status": {
-      "promoted": 6,
+      "promoted": 8,
       "quarantined": 1
     },
     "by_type": {
       "prompt": 1,
       "rule": 1,
-      "skill": 5
+      "skill": 7
     },
-    "total": 7
+    "total": 9
   },
   "schema_version": 1,
   "storage_roots": {
@@ -25,5 +25,5 @@
     "skills": ".memory/skills",
     "staging": ".memory/memory/staging"
   },
-  "updated_at": "2026-05-25T22:05:06.605262+00:00"
+  "updated_at": "2026-05-26T11:36:53.412141+00:00"
 }
