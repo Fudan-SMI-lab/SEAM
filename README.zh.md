@@ -111,7 +111,7 @@ SEAM采用行为验证、错误分类和精准路由、三振出局、Fail-close
 
 ---
 
-###开源许可证
+### 开源许可证
 
 SEAM 基于 MIT License 开源。详见 [LICENSE](LICENSE) 文件。
 
