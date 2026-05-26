@@ -13,11 +13,12 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol, TypedDict, cast
+from typing import Callable, Protocol, TypedDict, cast
 
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
+from core.custom_op_variants import apply_expanded_variant_contract, expanded_variant_contract_from_contract
 from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx
 from core.paths import workspace_root
 from core.prompt_loader import PromptLoader
@@ -26,7 +27,11 @@ from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
 from core.platform_policy import PlatformPolicy
 from validators.validate_entry_script import validate as validate_entry_script
-from validators.validate_validation_final import validate as validate_validation_final, validate_custom_op_final_gate
+from validators.validate_validation_final import (
+    custom_op_final_gate_unit_ledger,
+    validate as validate_validation_final,
+    validate_custom_op_final_gate,
+)
 
 JsonDict = dict[str, object]
 ConfigDict = dict[str, object]
@@ -108,6 +113,54 @@ def _operator_generic_guidance(
     )
 
 
+def _operator_custom_op_target_units(phase3_contract: dict[str, object] | None) -> list[str]:
+    if not isinstance(phase3_contract, dict):
+        return []
+    variant_overlay = expanded_variant_contract_from_contract(phase3_contract)
+    units = variant_overlay.get("unit_identities")
+    if isinstance(units, list):
+        unit_items = cast(list[object], units)
+        return [str(unit).strip() for unit in unit_items if isinstance(unit, str) and unit.strip()]
+    schema_obj = phase3_contract.get("operator_inventory_schema")
+    if isinstance(schema_obj, dict):
+        schema = cast(dict[str, object], schema_obj)
+        raw_units = schema.get("fine_grained_operator_units")
+        if isinstance(raw_units, list):
+            raw_unit_items = cast(list[object], raw_units)
+            return [str(unit).strip() for unit in raw_unit_items if isinstance(unit, str) and unit.strip()]
+    return []
+
+
+def _operator_custom_op_progress_block(phase3_contract: dict[str, object] | None, project_dir: str) -> str:
+    target_units = _operator_custom_op_target_units(phase3_contract)
+    reports_dir = Path(project_dir).resolve() / "migration_reports"
+    gate_path = reports_dir / "custom_op_final_gate.json"
+    gate_data: object = {}
+    if gate_path.exists() and gate_path.stat().st_size <= _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
+        try:
+            loaded_gate = cast(object, json.loads(gate_path.read_text(encoding="utf-8")))
+            gate_data = loaded_gate
+        except (OSError, json.JSONDecodeError):
+            gate_data = {}
+    gate_map = cast(dict[str, object], gate_data) if isinstance(gate_data, dict) else {}
+    ledger = custom_op_final_gate_unit_ledger(
+        gate_map,
+        target_units=target_units or None,
+        project_root=project_dir,
+    )
+    lines = [
+        "Current strict custom-op final-gate progress",
+        f"target_units={ledger.get('total_count', 0)}",
+        f"strict_pass_units={ledger.get('strict_pass_count', 0)}",
+        f"remaining_units={ledger.get('remaining_count', 0)}",
+    ]
+    remaining = ledger.get("remaining_units")
+    if isinstance(remaining, list) and remaining:
+        remaining_items = cast(list[object], remaining)
+        lines.append("remaining_unit_identities=" + ", ".join(str(unit) for unit in remaining_items[:50]))
+    return "\n".join(lines)
+
+
 def _operator_custom_op_guidance(
     operator_repair_context_artifact_path: str,
     *,
@@ -131,19 +184,16 @@ def _operator_custom_op_guidance(
                 "Performance validation is skipped. All other gates still apply."
             )
 
-    schema_checklist = (
-        "\nFinal-gate evidence object schema (every in-scope row MUST satisfy):\n"
-        "- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, "
-        "project_relative_path, runtime_loaded_module_file, build_provenance={command, log_path}\n"
-        "- adapter_evidence: object/dict with imported=true, passed=true\n"
-        "- parity_evidence: object/dict with verified=true, passed=true\n"
-        "- integration_e2e_evidence: object/dict with project_api_invoked=true, custom_op_route_executed=true, "
-        "native_custom_op_route_executed=true\n"
-        "- same_run_runtime_coverage: object/dict with same_run=true, custom_call_count > 0, "
-        "project_api_route=true, native_custom_op_route_executed=true\n"
-        "- performance_evidence: object/dict with baseline_seconds > 0, custom_seconds > 0, "
-        "baseline_device (string), custom_device (string), project_api_invoked=true"
-    )
+    schema_checklist = "\n".join([
+        "",
+        "Final-gate evidence object schema (every in-scope row MUST satisfy):",
+        "- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, project_relative_path, runtime_loaded_module_file, build_provenance={command, log_path}",
+        "- adapter_evidence: object/dict with imported=true, passed=true",
+        "- parity_evidence: object/dict with verified=true, passed=true",
+        "- integration_e2e_evidence: object/dict with project_api_invoked=true, custom_op_route_executed=true, native_custom_op_route_executed=true",
+        "- same_run_runtime_coverage: object/dict with same_run=true, custom_call_count > 0, project_api_route=true, native_custom_op_route_executed=true",
+        "- performance_evidence: object/dict with baseline_seconds > 0, custom_seconds > 0, baseline_device (string), custom_device (string), project_api_invoked=true",
+    ])
     if perf_mode == "full":
         schema_checklist += ", speedup_vs_baseline > 0"
     schema_checklist += (
@@ -160,22 +210,26 @@ def _operator_custom_op_guidance(
         native_artifact_desc = f"real on-disk {native_label} compiled artifacts"
         native_build_desc = f"project-local build provenance/logs with {native_label} build or link evidence"
         native_path_desc = "runtime-loaded compiled artifact paths (not .py)"
-        return (
-            f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
-            "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-            f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation."
-            + schema_checklist + perf_mode_note + "\n"
-            f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
-            "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
-        )
-    return (
-        f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
-        "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation."
-        + schema_checklist + perf_mode_note + "\n"
-        f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
-        "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
-    )
+        return "".join([
+            f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n",
+            "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n",
+            f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
+            schema_checklist,
+            perf_mode_note,
+            "\n",
+            f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, ",
+            "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。",
+        ])
+    return "".join([
+        f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n",
+        "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n",
+        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
+        schema_checklist,
+        perf_mode_note,
+        "\n",
+        f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, ",
+        "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。",
+    ])
 
 
 def _operator_repair_has_custom_op_contract(phase3_contract: dict[str, object] | None) -> bool:
@@ -345,7 +399,7 @@ class SessionManagerLike(Protocol):
     def get_or_create(self, role: str, lifecycle: str) -> str:
         ...
 
-    def send_command(self, session_id: str, command: str, timeout: Any = None) -> str:
+    def send_command(self, session_id: str, command: str, timeout: object = None) -> str:
         ...
 
 
@@ -357,6 +411,8 @@ class RepairLoopEngine:
     prompt_loader: PromptLoader
     validator: ValidatorEngine
     config: ConfigDict | None
+    exec_backend: object | None
+    platform_policy: PlatformPolicy | None
 
     def __init__(
         self,
@@ -365,7 +421,7 @@ class RepairLoopEngine:
         prompt_loader: PromptLoader,
         validator: ValidatorEngine,
         config: ConfigDict | None = None,
-        exec_backend: object = None,
+        exec_backend: object | None = None,
         platform_policy: PlatformPolicy | None = None,
     ) -> None:
         self.session_mgr = session_mgr
@@ -386,11 +442,14 @@ class RepairLoopEngine:
         if not (text.startswith("{") and text.endswith("}")):
             return None
         try:
-            parsed = json.loads(text)
+            parsed = cast(object, json.loads(text))
         except json.JSONDecodeError:
             return None
-        if isinstance(parsed, dict) and parsed.get("ok") is False and parsed.get("error"):
-            return str(parsed["error"])
+        if isinstance(parsed, dict):
+            parsed_map = cast(dict[str, object], parsed)
+            parsed_error = parsed_map.get("error")
+            if parsed_map.get("ok") is False and parsed_error:
+                return str(parsed_error)
         return None
 
     @staticmethod
@@ -593,7 +652,11 @@ class RepairLoopEngine:
         active_phase3_contract = dict(phase3_contract or {})
 
         entry_script_timeout = _get_timeout(self.config, "entry_script_timeout")
-        script_cwd, env_vars, cmd_argv, use_shell = self._prepare_entry_command(entry_script, project_dir)
+        prepared_command = self._prepare_entry_command(entry_script, project_dir)
+        script_cwd: str = prepared_command[0]
+        env_vars: dict[str, str] = dict(prepared_command[1])
+        cmd_argv: list[str] = list(prepared_command[2])
+        use_shell: bool = bool(prepared_command[3])
 
         with tempfile.TemporaryDirectory(prefix="repair-loop-") as tmp_dir:
             stdout_log_path = os.path.join(tmp_dir, "out.log")
@@ -606,12 +669,19 @@ class RepairLoopEngine:
                 try:
                     run_start = time.monotonic()
 
+                    current_script_cwd: str = str(script_cwd)
+                    current_env_vars: dict[str, str] = dict(env_vars)
+                    current_cmd_argv: list[str] = list(cmd_argv)
+                    current_use_shell: bool = bool(use_shell)
+
                     if isinstance(self.exec_backend, ContainerBackend):
                         try:
+                            container_command: str | list[str] = " ".join(current_cmd_argv) if current_use_shell else current_cmd_argv
+                            container_env: dict[str, str] | None = current_env_vars if current_env_vars else None
                             exec_result = self.exec_backend.run(
-                                command=" ".join(cmd_argv) if use_shell else cmd_argv,
-                                cwd=script_cwd,
-                                env=env_vars if env_vars else None,
+                                command=container_command,
+                                cwd=current_script_cwd,
+                                env=container_env,
                                 timeout=entry_script_timeout,
                             )
                             final_exit_code = exec_result.exit_code
@@ -630,17 +700,17 @@ class RepairLoopEngine:
                             execution_duration = round(time.monotonic() - run_start, 1)
                     else:
                         run_env = os.environ.copy()
-                        run_env.update(env_vars)
+                        run_env.update(current_env_vars)
 
                         with open(stdout_log_path, "w", encoding="utf-8") as stdout_handle, open(
                             stderr_log_path, "w", encoding="utf-8"
                         ) as stderr_handle:
                             if use_shell:
                                 completed = subprocess.run(
-                                    cmd_argv,
+                                    current_cmd_argv,
                                     stdout=stdout_handle,
                                     stderr=stderr_handle,
-                                    cwd=script_cwd,
+                                    cwd=current_script_cwd,
                                     shell=True,
                                     executable="/bin/bash",
                                     timeout=entry_script_timeout,
@@ -648,10 +718,10 @@ class RepairLoopEngine:
                                 )
                             else:
                                 completed = subprocess.run(
-                                    cmd_argv,
+                                    current_cmd_argv,
                                     stdout=stdout_handle,
                                     stderr=stderr_handle,
-                                    cwd=script_cwd,
+                                    cwd=current_script_cwd,
                                     shell=False,
                                     timeout=entry_script_timeout,
                                     env=run_env,
@@ -670,7 +740,8 @@ class RepairLoopEngine:
                             final_exit_code = 1
                             gate_errors = gate_result.get("errors")
                             if isinstance(gate_errors, list) and gate_errors:
-                                concise_gate_errors = "; ".join(str(error) for error in gate_errors[:5])
+                                gate_error_items = cast(list[object], gate_errors)
+                                concise_gate_errors = "; ".join(str(error) for error in gate_error_items[:5])
                             else:
                                 concise_gate_errors = "custom-op final gate failed"
                             final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed: {concise_gate_errors}".strip()
@@ -718,7 +789,8 @@ class RepairLoopEngine:
                                         "history": list(context.history),
                                     },
                                 }
-                                review_result = review_callable(review_payload)
+                                raw_review_result = cast(object, review_callable(review_payload))
+                                review_result = cast(dict[str, object], raw_review_result) if isinstance(raw_review_result, dict) else {"verdict": "session_error", "reasoning": "review callable returned a non-object result"}
                                 self._log(
                                     f"[Iter {iteration}] Review verdict: {review_result.get('verdict', 'unknown')}",
                                     logger,
@@ -727,14 +799,13 @@ class RepairLoopEngine:
                                 self._log(f"[Iter {iteration}] Review step failed: {e}", logger)
 
                         if review_result is not None:
-                            last_review = review_result
-
-                        if review_result is not None:
-                            verdict = str(review_result.get("verdict", "")).lower()
-                            session_error = review_result.get("session_error")
+                            typed_review_result: dict[str, object] = dict(review_result)
+                            last_review = typed_review_result
+                            verdict = str(typed_review_result.get("verdict", "")).lower()
+                            session_error = typed_review_result.get("session_error")
 
                             if verdict == "session_error" or session_error:
-                                reason = str(session_error or review_result.get("reasoning", "Review session failed"))
+                                reason = str(session_error or typed_review_result.get("reasoning", "Review session failed"))
                                 self._log(
                                     f"[Iter {iteration}] Review gate: SESSION_ERROR - {reason}",
                                     logger,
@@ -868,10 +939,10 @@ class RepairLoopEngine:
                     last_review=last_review,
                     env_context=env_context or {},
                     phase3_contract=active_phase3_contract,
-                    cmd_argv=cmd_argv,
-                    use_shell=use_shell,
-                    script_cwd=script_cwd,
-                    env_vars=env_vars,
+                    cmd_argv=list(cmd_argv),
+                    use_shell=bool(use_shell),
+                    script_cwd=str(script_cwd),
+                    env_vars=dict(env_vars),
                 )
                 last_classification = classification
                 self._log(
@@ -895,14 +966,18 @@ class RepairLoopEngine:
                     active_phase3_contract["run_command"] = entry_script
                     if action_result.get("entry_script_path"):
                         active_phase3_contract["entry_script_path"] = str(action_result["entry_script_path"])
-                    script_cwd, env_vars, cmd_argv, use_shell = self._prepare_entry_command(entry_script, project_dir)
+                    prepared_command = self._prepare_entry_command(entry_script, project_dir)
+                    script_cwd = cast(str, prepared_command[0])
+                    env_vars = dict(prepared_command[1])
+                    cmd_argv = list(cast(list[str], prepared_command[2]))
+                    use_shell = bool(prepared_command[3])
                     repeated_error_count = 0
                     last_error_signature = None
                     fix_attempt = {
                         "status": "entry_script_revised",
                         "message": str(action_result.get("reason", "")),
                     }
-                    iteration_record: IterationRecord = {
+                    revision_iteration_record: IterationRecord = {
                         "iteration": iteration,
                         "exit_code": final_exit_code,
                         "stdout": final_stdout,
@@ -912,7 +987,7 @@ class RepairLoopEngine:
                         "fix_attempt": fix_attempt,
                         "error_analyzer_session_id": analyzer_session_id,
                     }
-                    self._record_iteration(iteration, context, iteration_record)
+                    self._record_iteration(iteration, context, revision_iteration_record)
                     status = "max_iterations"
                     continue
 
@@ -1127,6 +1202,10 @@ class RepairLoopEngine:
             "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
+            "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
+            "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
+            "operator_repair_progress_block": "(No current custom-op repair progress block is available in this repair-loop context.)",
+            "active_custom_op_full_repair_requirements": "",
         }
         exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
         prompt_context.update(_get_exec_ctx(
@@ -1187,7 +1266,7 @@ class RepairLoopEngine:
             root_cause_raw = str(parsed.get("root_cause", ""))
             suggested_fix_raw = str(parsed.get("suggested_fix", ""))
             action_candidate = parsed.get("entry_script_action")
-            entry_script_action_raw = action_candidate if isinstance(action_candidate, dict) else None
+            entry_script_action_raw = cast(dict[str, object], action_candidate) if isinstance(action_candidate, dict) else None
 
             if repair_role_raw in _REPAIR_ROLES:
                 break
@@ -1240,10 +1319,12 @@ class RepairLoopEngine:
         framework_config = self.config.get("framework") if self.config else None
         raw: object = None
         if isinstance(framework_config, dict):
-            raw = framework_config.get("max_entry_script_revisions")
-            entry_cfg = framework_config.get("entry_script")
+            framework_map = cast(dict[str, object], framework_config)
+            raw = framework_map.get("max_entry_script_revisions")
+            entry_cfg = framework_map.get("entry_script")
             if raw is None and isinstance(entry_cfg, dict):
-                raw = entry_cfg.get("max_revisions")
+                entry_map = cast(dict[str, object], entry_cfg)
+                raw = entry_map.get("max_revisions")
         if raw is None:
             return 2
         try:
@@ -1423,6 +1504,8 @@ class RepairLoopEngine:
             result["errors"] = ["custom-op final gate report must be a JSON object"]
             return result
         gate_map = cast(dict[str, object], gate_data)
+        variant_overlay = expanded_variant_contract_from_contract(contract)
+        apply_expanded_variant_contract(gate_map, variant_overlay, include_required_checks=False)
         validation = validate_custom_op_final_gate(
             gate_map,
             project_root=reports_dir.parent,
@@ -1558,7 +1641,7 @@ class RepairLoopEngine:
             return "(attempt log unavailable)"
 
         try:
-            payload_raw: object = json.loads(Path(attempt_path).read_text(encoding="utf-8"))  # pyright: ignore[reportAny]
+            payload_raw = cast(object, json.loads(Path(attempt_path).read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             return "(attempt log unavailable)"
 
@@ -1802,6 +1885,8 @@ class RepairLoopEngine:
             prompt_id = _REPAIR_PROMPT_IDS_CONTAINER.get(repair_role, "repair_code_adapter_container")
         else:
             prompt_id = _REPAIR_PROMPT_IDS.get(repair_role, "repair_code_adapter")
+        if repair_role == "operator_fixer" and _operator_repair_has_custom_op_contract(phase3_contract):
+            prompt_id = "repair_custom_op_variant_service"
         context: dict[str, str] = {
             "repair_role": repair_role,
             "entry_script": entry_script,
@@ -1819,6 +1904,10 @@ class RepairLoopEngine:
             "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
+            "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
+            "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
+            "operator_repair_progress_block": "(No current custom-op repair progress block is available in this repair-loop context.)",
+            "active_custom_op_full_repair_requirements": "",
         }
         exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
         context.update(_get_exec_ctx(
@@ -1852,6 +1941,8 @@ class RepairLoopEngine:
                     entry_script=entry_script,
                     platform_policy=self.platform_policy,
                 )
+                context["operator_repair_progress_block"] = _operator_custom_op_progress_block(phase3_contract, project_dir)
+                context["active_custom_op_full_repair_requirements"] = context["operator_custom_op_guidance"]
             else:
                 context["operator_custom_op_guidance"] = _operator_generic_guidance(
                     project_dir=project_dir,
