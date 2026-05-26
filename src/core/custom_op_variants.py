@@ -192,7 +192,8 @@ def _restrict_to_source_discovered_units(surface: dict[str, object], discovered_
         return
     discovered_set = set(discovered_identities)
     existing_units = _string_list(surface.get("fine_grained_operator_units"))
-    retained_units = _ordered_unique([unit for unit in existing_units if unit in discovered_set])
+    protected_existing_units = _sample_backed_existing_units(surface)
+    retained_units = _ordered_unique([unit for unit in existing_units if unit in discovered_set or unit in protected_existing_units])
     retained_units = _ordered_unique([*retained_units, *discovered_identities])
     surface["fine_grained_operator_units"] = retained_units
     surface["operator_families"] = _ordered_unique([unit.split(":", 1)[0] for unit in retained_units if ":" in unit])
@@ -205,7 +206,12 @@ def _restrict_to_source_discovered_units(surface: dict[str, object], discovered_
                 retained_evidence.append(item)
                 continue
             unit_identity = cast(Mapping[object, object], item).get("unit_identity")
-            if isinstance(unit_identity, str) and unit_identity.strip() and unit_identity.strip() not in discovered_set:
+            if (
+                isinstance(unit_identity, str)
+                and unit_identity.strip()
+                and unit_identity.strip() not in discovered_set
+                and unit_identity.strip() not in protected_existing_units
+            ):
                 continue
             retained_evidence.append(item)
         surface["fine_grained_operator_unit_evidence"] = retained_evidence
@@ -219,10 +225,24 @@ def _restrict_to_source_discovered_units(surface: dict[str, object], discovered_
                 continue
             variant = cast(Mapping[object, object], item)
             base_identity = str(variant.get("base_unit_identity") or variant.get("source_unit_identity") or "").strip()
-            if base_identity and base_identity not in discovered_set:
+            if base_identity and base_identity not in discovered_set and base_identity not in protected_existing_units:
                 continue
             retained_variants.append(item)
         surface["expanded_operator_variants"] = retained_variants
+
+
+def _sample_backed_existing_units(surface: Mapping[str, object]) -> set[str]:
+    protected: set[str] = set()
+    variants = surface.get("expanded_operator_variants")
+    if isinstance(variants, list):
+        for item in cast(list[object], variants):
+            if not isinstance(item, Mapping):
+                continue
+            variant = cast(Mapping[object, object], item)
+            base_identity = str(variant.get("base_unit_identity") or variant.get("source_unit_identity") or "").strip()
+            if base_identity:
+                protected.add(base_identity)
+    return protected
 
 
 def _append_unique_string(surface: dict[str, object], field_name: str, value: str) -> None:
