@@ -1697,6 +1697,69 @@ def test_custom_op_operator_retryable_incomplete_output_keeps_persistent_session
     session_mgr.get_or_create.assert_called_once_with(role="operator_fixer", lifecycle="persistent")
 
 
+def test_custom_op_operator_missing_gate_consumes_long_wait_polls(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    reports_dir = project_dir / "migration_reports"
+    reports_dir.mkdir()
+    workflow = WorkflowDefinition(
+        name="operator-long-wait",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={"operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    session_mgr.send_command.side_effect = ["still building", "still integrating", "still probing"]
+    artifact_store = MagicMock()
+    artifact_store.artifact_dir = str(project_dir / ".sm-artifacts" / "testrun")
+    artifact_store.raw_dir = str(project_dir / ".sm-artifacts" / "testrun" / "raw")
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(project_dir),
+        output_dir=str(project_dir),
+        framework_config={
+            "custom_op_operator_full_repair_wait_timeout": 1,
+            "custom_op_operator_max_polls": 3,
+            "custom_op_operator_incomplete_max_continuations": 0,
+            "custom_op_operator_final_gate_grace_seconds": 0,
+        },
+    )
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate_custom_ops_full.py",
+            "reports_dir": str(reports_dir),
+            "operator_inventory_schema": {"fine_grained_operator_units": ["op1"]},
+        }
+    }
+
+    raw = executor._send_custom_op_operator_repair_with_gate_polling(
+        phase_id="fix_operator",
+        agent_id="operator_fixer",
+        session_id="session:operator_fixer",
+        prompt_text="initial repair prompt",
+        timeout=None,
+        state=state,
+        context={},
+        loop_vars={"entry_script": "python validate_custom_ops_full.py"},
+        command_started_at=time.time(),
+    )
+
+    assert session_mgr.send_command.call_count == 3
+    prompts = [call.args[1] for call in session_mgr.send_command.call_args_list]
+    assert prompts[0] == "initial repair prompt"
+    assert "long-running custom-op `fix_operator` repair" in prompts[1]
+    assert "remaining_operator_variant_gaps: op1" in prompts[1]
+    result = json.loads(raw)
+    assert result["retryable"] is True
+    assert "did not produce current custom_op_final_gate.json" in result["error"]
+
+
 def test_operator_fix_partial_prose_is_retryable_not_stagnation(tmp_path: Path):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -1752,11 +1815,11 @@ def test_operator_fix_partial_prose_is_retryable_not_stagnation(tmp_path: Path):
     partial_response = "I read this as implementation-continuation for the custom-op repair: I’ll inspect the validator requirements first."
     session_mgr.send_command.side_effect = [
         operator_classification,
-        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)),
         operator_classification,
-        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)),
         operator_classification,
-        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
     executor = WorkflowExecutor(
@@ -2268,7 +2331,7 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
         validator,
         project_dir=str(tmp_path),
         output_dir=str(tmp_path),
-        framework_config={"custom_op_operator_incomplete_max_continuations": 0},
+        framework_config={"custom_op_operator_incomplete_max_continuations": 0, "custom_op_operator_max_polls": 1},
     )
 
     result = executor._run_sub_workflow(
@@ -2675,6 +2738,30 @@ def _write_one_row_custom_op_gate(project_dir: Path, inventory: dict[str, object
     gate = _valid_custom_op_final_gate()
     gate["expanded_variant_inventory"] = inventory
     (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+
+
+def test_custom_op_progress_block_reports_strict_remaining_units(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    _write_one_row_custom_op_gate(
+        project_dir,
+        {"variant_axes_detected": True, "unit_identities": ["ScalarFwd2D", "ScalarBwd2D"], "expanded_operator_instances_count": 2},
+    )
+    executor = _workflow_executor_for_custom_op_gate(project_dir)
+
+    text = executor._custom_op_operator_repair_progress_block(
+        state={"phase_3_entry_script": _expanded_variant_contract(project_dir)},
+        context={"PROJECT_DIR": str(project_dir)},
+        loop_vars=None,
+    )
+
+    assert "completed_evidence_count: 1" in text
+    assert "completed_evidence_units: ScalarFwd2D" in text
+    assert "remaining_or_unknown_count: 1" in text
+    assert "remaining_operator_variant_gaps: ScalarBwd2D" in text
+    assert "strict_per_unit_pass_count: 1" in text
+    assert "strict_per_unit_remaining_count: 1" in text
+    assert "remaining_detail[ScalarBwd2D]: missing custom_op_final_gate row" in text
 
 
 def test_workflow_executor_custom_op_final_gate_false_variant_metadata_cannot_bypass_expanded_closure(tmp_path: Path) -> None:
@@ -7246,7 +7333,7 @@ def test_operator_full_pass_repair_output_does_not_recover_stale_gate_without_cu
     fix_output = result["loop_state"]["fix_operator"]
     assert fix_output["communication_error"] is True
     assert "stale before strict OPP final gate FULL_PASS" in fix_output["error"]
-    assert session_mgr.send_command.call_count == 3
+    assert session_mgr.send_command.call_count == 1 + CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
 
 
 def test_operator_full_pass_repair_output_does_not_recover_invalid_gate(tmp_path: Path) -> None:
@@ -7269,12 +7356,13 @@ def test_operator_full_pass_repair_output_does_not_recover_invalid_gate(tmp_path
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
-    session_mgr.send_command.side_effect = [
-        json.dumps({"repair_role": "operator_fixer", "category": "operator", "root_cause": "stale gate", "suggested_fix": "regenerate full gate"}),
-        json.dumps({
+    invalid_full_pass_claim = json.dumps({
             "summary": "FULL_PASS: claimed final gate closure.",
             "verification": {"result": {"status": "PASS"}},
-        }),
+        })
+    session_mgr.send_command.side_effect = [
+        json.dumps({"repair_role": "operator_fixer", "category": "operator", "root_cause": "stale gate", "suggested_fix": "regenerate full gate"}),
+        *(invalid_full_pass_claim for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
     executor = WorkflowExecutor(
@@ -7733,7 +7821,7 @@ def test_custom_op_operator_incomplete_response_is_retryable_not_completed(tmp_p
     assert all(timeout is None for timeout in operator_timeouts)
     assert operator_retries
     assert all(retries == 0 for retries in operator_retries)
-    assert operator_recovery_waits == [CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT] * 2
+    assert operator_recovery_waits == [CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT] * (CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)
 
 
 def test_custom_op_operator_terminal_fail_closed_reports_continue_same_session_by_default(tmp_path: Path) -> None:
@@ -8010,6 +8098,7 @@ def test_custom_op_operator_outer_loop_second_attempt_uses_compact_progress_prom
         session_mgr,
         framework_config={
             "custom_op_operator_incomplete_max_continuations": 0,
+            "custom_op_operator_max_polls": 1,
             "custom_op_operator_final_gate_grace_seconds": 0,
         },
         max_iterations=2,
@@ -8046,9 +8135,10 @@ def test_custom_op_operator_outer_loop_second_attempt_uses_compact_progress_prom
     assert "later outer repair-loop iteration" in second_prompt
     assert "Previous repair results/history" in second_prompt
     assert "total_target_operator_variant_inventory: 2" in second_prompt
-    assert "completed_evidence_count: 1" in second_prompt
-    assert "completed_evidence_units: op:forward" in second_prompt
-    assert "remaining_operator_variant_gaps: op:backward" in second_prompt
+    assert "completed_evidence_count: 0" in second_prompt
+    assert "completed_evidence_units: none proven by current reports" in second_prompt
+    assert "remaining_operator_variant_gaps: op:forward, op:backward" in second_prompt
+    assert "strict_per_unit_remaining_count: 2" in second_prompt
     assert "op:backward missing same-run runtime coverage" in second_prompt
     assert "repair_operator_fixer prompt" in second_prompt
 
@@ -8104,10 +8194,11 @@ def test_custom_op_operator_continuation_prompt_reports_expanded_variant_progres
     assert "target_inventory_source: Phase 1/Phase 3 expanded_variant_inventory.operator+variant unit_identities" in prompt
     assert "total_target_operator_variant_inventory: 2" in prompt
     assert "all_target_operators_and_variants: op:forward:dtype=float, op:forward:dtype=double" in prompt
-    assert "completed_evidence_count: 1" in prompt
-    assert "completed_evidence_units: op:forward:dtype=float" in prompt
-    assert "remaining_or_unknown_count: 1" in prompt
-    assert "remaining_operator_variant_gaps: op:forward:dtype=double" in prompt
+    assert "completed_evidence_count: 0" in prompt
+    assert "completed_evidence_units: none proven by current reports" in prompt
+    assert "remaining_or_unknown_count: 2" in prompt
+    assert "remaining_operator_variant_gaps: op:forward:dtype=float, op:forward:dtype=double" in prompt
+    assert "remaining_detail[op:forward:dtype=float]" in prompt
     assert "custom_op_final_gate_report: status=FAIL, full_migration_status=INCOMPLETE" in prompt
     assert "op:forward:dtype=double missing runtime coverage" in prompt
     assert "op:forward:dtype=double missing OPP artifact evidence" in prompt

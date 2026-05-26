@@ -324,6 +324,8 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     assert "full_migration_status == FULL_PASS" in prompt
     assert "same-run runtime coverage > 0" in prompt
     assert "CPU baseline runtime against Ascend OPP/custom-op runtime" in prompt
+    assert "remaining_operator_variant_gaps" in prompt
+    assert "custom_op_final_gate_report" in prompt
     assert "report-only" in prompt
     assert "MVP-only" in prompt
     assert "zero-call" in prompt

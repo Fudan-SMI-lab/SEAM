@@ -30,7 +30,11 @@ from core.runtime_artifacts import write_operator_repair_context_artifact, write
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
 from validators.validate_entry_script import validate as validate_entry_script
-from validators.validate_validation_final import validate as validate_validation_final, validate_custom_op_final_gate
+from validators.validate_validation_final import (
+    custom_op_final_gate_unit_ledger,
+    validate as validate_validation_final,
+    validate_custom_op_final_gate,
+)
 
 JsonDict = dict[str, object]
 ConfigDict = dict[str, object]
@@ -172,6 +176,100 @@ def _operator_custom_op_acceptance_contract_text(
         'Framework acceptance: validate_custom_op_final_gate must pass, full_migration_status must be FULL_PASS, remaining_entries must be 0, and every Phase 1/Phase 3 operator or expanded variant identity must be closed.',
     ]
     return "\n".join(str(line) for line in lines)
+
+
+def _operator_custom_op_target_units(phase3_contract: dict[str, object] | None) -> list[str]:
+    if not _operator_repair_has_custom_op_contract(phase3_contract):
+        return []
+    contract = cast(dict[str, object], phase3_contract or {})
+    overlay = expanded_variant_contract_from_contract(contract)
+    inventory = overlay.get("expanded_variant_inventory")
+    if isinstance(inventory, dict):
+        units = _string_list_from_inventory_values(inventory.get("unit_identities"))
+        if units:
+            return units
+    schema = contract.get("operator_inventory_schema")
+    if isinstance(schema, dict):
+        for key in ("fine_grained_operator_units", "operator_units", "operators", "rows"):
+            units = _string_list_from_inventory_values(schema.get(key))
+            if units:
+                return units
+    return []
+
+
+def _operator_custom_op_progress_block(
+    *,
+    phase3_contract: dict[str, object] | None,
+    project_dir: str,
+) -> str:
+    if not _operator_repair_has_custom_op_contract(phase3_contract):
+        return "(No active custom-op contract.)"
+    project_path = Path(project_dir).resolve()
+    reports_dir = project_path / "migration_reports"
+    gate_path = reports_dir / "custom_op_final_gate.json"
+    gate: dict[str, object] = {}
+    gate_status = f"missing at {gate_path}"
+    if gate_path.exists() and gate_path.stat().st_size <= _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
+        try:
+            gate_data = json.loads(gate_path.read_text(encoding="utf-8"))
+            if isinstance(gate_data, dict):
+                gate = cast(dict[str, object], gate_data)
+                status_parts = []
+                for key in ("status", "full_migration_status", "inventory_count", "closed_pass_entries", "remaining_entries"):
+                    if key in gate:
+                        status_parts.append(f"{key}={gate[key]}")
+                gate_status = ", ".join(status_parts) or f"present at {gate_path}"
+            else:
+                gate_status = f"non-object at {gate_path}"
+        except (OSError, json.JSONDecodeError) as exc:
+            gate_status = f"malformed at {gate_path}: {exc}"
+    target_units = _operator_custom_op_target_units(phase3_contract)
+    ledger = custom_op_final_gate_unit_ledger(gate, target_units=target_units, project_root=project_path)
+    strict_units = cast(list[str], ledger.get("strict_pass_units") or [])
+    remaining_units = cast(list[str], ledger.get("remaining_units") or [])
+    lines = [
+        f"- total_target_operator_variant_inventory: {len(target_units) if target_units else ledger.get('total_count', 'unknown')}",
+        f"- completed_evidence_count: {len(strict_units)}",
+        "- completed_evidence_units: " + (", ".join(strict_units) if strict_units else "none proven by current reports"),
+        f"- remaining_or_unknown_count: {len(remaining_units) if target_units else ledger.get('remaining_count', 'unknown')}",
+        "- remaining_operator_variant_gaps: " + (", ".join(remaining_units) if remaining_units else "none listed by strict per-unit ledger"),
+        f"- custom_op_final_gate_report: {gate_status}",
+    ]
+    raw_units = ledger.get("units")
+    detail_count = 0
+    if isinstance(raw_units, list):
+        for item in raw_units:
+            if not isinstance(item, dict) or item.get("status") == "strict_pass":
+                continue
+            unit = str(item.get("unit_identity") or "").strip()
+            missing = item.get("missing_evidence")
+            missing_items = [str(value) for value in missing[:6]] if isinstance(missing, list) else []
+            detail = "; ".join(missing_items) if missing_items else "strict evidence incomplete"
+            lines.append(f"- remaining_detail[{unit}]: {detail}")
+            detail_count += 1
+            if detail_count >= 20:
+                lines.append("- remaining_detail: truncated; inspect custom_op_final_gate strict ledger for the full list")
+                break
+    return "\n".join(lines)[:8000]
+
+
+def _string_list_from_inventory_values(value: object) -> list[str]:
+    units: list[str] = []
+    if not isinstance(value, list):
+        return units
+    for item in value:
+        unit = ""
+        if isinstance(item, str):
+            unit = item.strip()
+        elif isinstance(item, dict):
+            for key in ("unit_identity", "row_id", "name", "operator", "op_name", "id"):
+                raw = item.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    unit = raw.strip()
+                    break
+        if unit and unit not in units:
+            units.append(unit)
+    return units
 
 
 def _operator_custom_op_guidance(
@@ -1882,6 +1980,10 @@ class RepairLoopEngine:
                 )
                 context["strict_custom_op_acceptance_contract"] = _operator_custom_op_acceptance_contract_text(
                     phase3_contract=phase3_contract,
+                )
+                context["operator_repair_progress_block"] = _operator_custom_op_progress_block(
+                    phase3_contract=phase3_contract,
+                    project_dir=project_dir,
                 )
                 context["active_custom_op_full_repair_requirements"] = (
                     "1. Read operatorRepairContext artifact and treat it as the source of truth.\n"
