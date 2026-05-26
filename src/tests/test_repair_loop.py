@@ -312,6 +312,10 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     runtime_dir = Path(artifact_store.artifact_dir) / "runtime"
     operator_context = runtime_dir / "operatorRepairContext_demo_custom_project_.md"
     assert str(operator_context.resolve()) in prompt
+    assert "Real Ascend Custom-Op Variant Service" in prompt
+    assert "This is not a report-generation task" in prompt
+    assert "Any AscendC kernel body only ignores arguments" in prompt
+    assert "performance numbers are constants, formulas, fabricated ratios" in prompt
     assert "bounded operator context" in prompt
     assert "inventory / manifest / final-gate" in prompt.lower()
     assert "freeze manifest rows" in prompt
@@ -320,6 +324,8 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     assert "full_migration_status == FULL_PASS" in prompt
     assert "same-run runtime coverage > 0" in prompt
     assert "CPU baseline runtime against Ascend OPP/custom-op runtime" in prompt
+    assert "remaining_operator_variant_gaps" in prompt
+    assert "custom_op_final_gate_report" in prompt
     assert "report-only" in prompt
     assert "MVP-only" in prompt
     assert "zero-call" in prompt
@@ -359,10 +365,12 @@ def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tm
         history=[],
     )
 
-    assert len(prompt.splitlines()) == 3
+    assert len(prompt.splitlines()) <= 40
     assert "ModuleNotFoundError" not in prompt
     assert "## Execution Failure" not in prompt
-    assert "agent_diagnostics" not in prompt
+    assert "Dependency Fixer" in prompt
+    assert "commands_run" in prompt
+    assert "agent_diagnostics" in prompt
 
     runtime_dir = Path(artifact_store.artifact_dir) / "runtime"
     runtime_error = runtime_dir / "runtime_error_demo_dependency_project_.md"

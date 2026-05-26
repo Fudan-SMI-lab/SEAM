@@ -1356,6 +1356,98 @@ def test_operator_fix_session_error_continues_phase5_loop(tmp_path: Path):
     ]
 
 
+
+
+def test_repair_phase_gets_validation_iteration_before_stagnation(tmp_path: Path) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=4,
+        stagnation_threshold=3,
+        stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+        phases=[
+            {"id": "run_entry_script", "type": "shell", "command": "${loop_vars.entry_script}", "on_failure": "continue"},
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "condition": "$.script_exit_code != 0",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "condition": "$.script_exit_code != 0",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {"code_adapter": "fix_code"},
+            },
+            {
+                "id": "fix_code",
+                "type": "llm",
+                "condition": "$.script_exit_code != 0",
+                "prompt_template": "repair_code_adapter",
+                "agent": "code_adapter",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="repair_validation_iteration",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "code_adapter": {"role": "code_adapter", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / ".sm-artifacts" / "testrun")
+    artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = [
+        '{"note": "missing repair role"}',
+        '{"note": "still missing repair role"}',
+        '{"repair_role": "code_adapter", "category": "code", "root_cause": "syntax error", "suggested_fix": "fix syntax"}',
+        '{"fixed": true}',
+        '{"note": "validation reran after fix"}',
+    ]
+    prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        experience_store=MagicMock(),
+    )
+
+    entry_cmd = "python -c \"import sys; sys.stderr.write('same syntax error'); sys.exit(1)\""
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": entry_cmd, "project_dir": str(tmp_path)},
+        ),
+        state={},
+        context={},
+    )
+
+    assert result["iterations"] == 4
+    assert result["loop_history"][2]["repair_role"] == "code_adapter"
+    assert result["loop_state"]["fix_code"]["fixed"] is True
+    assert session_mgr.send_command.call_count == 5
+
 def test_operator_fix_communication_error_does_not_trigger_stagnation(tmp_path: Path):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -1456,6 +1548,69 @@ def test_operator_fix_communication_error_does_not_trigger_stagnation(tmp_path: 
     assert called_sessions.count("session:operator_fixer_retry_2") == CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
 
 
+
+
+def test_operator_repair_waits_for_fresh_final_gate_after_stale_report(tmp_path: Path) -> None:
+    from tests.test_validator_engine import _valid_custom_op_contract
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    _write_one_row_custom_op_gate(project_dir, {"unit_identities": ["ScalarFwd2D"], "expanded_operator_instances_count": 1})
+    gate_path = project_dir / "migration_reports" / "custom_op_final_gate.json"
+    gate_payload = json.loads(gate_path.read_text(encoding="utf-8"))
+    gate_payload["runtime_coverage_report"] = {
+        "complete": True,
+        "path": "migration_reports/runtime_coverage.json",
+        "unit_count": 1,
+        "entries": [
+            {
+                "unit_identity": "ScalarFwd2D",
+                "same_run": True,
+                "custom_call_count": 3,
+                "project_api_route": True,
+                "native_custom_op_route_executed": True,
+            }
+        ],
+    }
+    gate_path.write_text(json.dumps(gate_payload), encoding="utf-8")
+    command_started_at = time.time()
+    os.utime(gate_path, (command_started_at - 10, command_started_at - 10))
+    executor = WorkflowExecutor(
+        WorkflowDefinition(name="gate-wait", version="1.0", phases=[], terminals=[]),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(project_dir),
+        output_dir=str(project_dir),
+        framework_config={
+            "custom_op_operator_final_gate_grace_seconds": 2,
+            "custom_op_operator_final_gate_poll_interval_seconds": 0.1,
+        },
+    )
+    state = {
+        "phase_3_entry_script": _valid_custom_op_contract(
+            str(project_dir / "validate_custom_ops_full.py"),
+            str(project_dir),
+        )
+    }
+
+    def refresh_gate(_seconds: float) -> None:
+        os.utime(gate_path, None)
+
+    with patch("time.sleep", side_effect=refresh_gate):
+        recovered = executor._wait_for_operator_repair_current_final_gate(
+            phase_id="fix_operator",
+            state=state,
+            context={},
+            loop_vars=None,
+            command_started_at=command_started_at,
+        )
+
+    assert recovered is not None
+    assert recovered["status"] == "success"
+    assert recovered["custom_op_final_gate_recovered"] is True
+
 def test_custom_op_imp_operator_fix_uses_fresh_session_after_prior_communication_error(tmp_path: Path):
     workflow = WorkflowDefinition(
         name="imp-operator-session-retry",
@@ -1542,6 +1697,69 @@ def test_custom_op_operator_retryable_incomplete_output_keeps_persistent_session
     session_mgr.get_or_create.assert_called_once_with(role="operator_fixer", lifecycle="persistent")
 
 
+def test_custom_op_operator_missing_gate_consumes_long_wait_polls(tmp_path: Path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    reports_dir = project_dir / "migration_reports"
+    reports_dir.mkdir()
+    workflow = WorkflowDefinition(
+        name="operator-long-wait",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={"operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"}},
+    )
+    session_mgr = MagicMock()
+    session_mgr.send_command.side_effect = ["still building", "still integrating", "still probing"]
+    artifact_store = MagicMock()
+    artifact_store.artifact_dir = str(project_dir / ".sm-artifacts" / "testrun")
+    artifact_store.raw_dir = str(project_dir / ".sm-artifacts" / "testrun" / "raw")
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(project_dir),
+        output_dir=str(project_dir),
+        framework_config={
+            "custom_op_operator_full_repair_wait_timeout": 1,
+            "custom_op_operator_max_polls": 3,
+            "custom_op_operator_incomplete_max_continuations": 0,
+            "custom_op_operator_final_gate_grace_seconds": 0,
+        },
+    )
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "run_command": "python validate_custom_ops_full.py",
+            "reports_dir": str(reports_dir),
+            "operator_inventory_schema": {"fine_grained_operator_units": ["op1"]},
+        }
+    }
+
+    raw = executor._send_custom_op_operator_repair_with_gate_polling(
+        phase_id="fix_operator",
+        agent_id="operator_fixer",
+        session_id="session:operator_fixer",
+        prompt_text="initial repair prompt",
+        timeout=None,
+        state=state,
+        context={},
+        loop_vars={"entry_script": "python validate_custom_ops_full.py"},
+        command_started_at=time.time(),
+    )
+
+    assert session_mgr.send_command.call_count == 3
+    prompts = [call.args[1] for call in session_mgr.send_command.call_args_list]
+    assert prompts[0] == "initial repair prompt"
+    assert "long-running custom-op `fix_operator` repair" in prompts[1]
+    assert "remaining_operator_variant_gaps: op1" in prompts[1]
+    result = json.loads(raw)
+    assert result["retryable"] is True
+    assert "did not produce current custom_op_final_gate.json" in result["error"]
+
+
 def test_operator_fix_partial_prose_is_retryable_not_stagnation(tmp_path: Path):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -1597,11 +1815,11 @@ def test_operator_fix_partial_prose_is_retryable_not_stagnation(tmp_path: Path):
     partial_response = "I read this as implementation-continuation for the custom-op repair: I’ll inspect the validator requirements first."
     session_mgr.send_command.side_effect = [
         operator_classification,
-        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)),
         operator_classification,
-        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)),
         operator_classification,
-        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
+        *(partial_response for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
     executor = WorkflowExecutor(
@@ -1715,6 +1933,162 @@ def test_fix_operator_without_explicit_timeout_has_no_phase_deadline_and_logs(tm
     assert "timeout=None" in log_text
     assert "prompt_length=" in log_text
     assert "raw_response_length=" in log_text
+
+
+def test_repair_phase_raw_progress_continues_same_session_before_outer_iteration(tmp_path: Path) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "fix_code",
+                "type": "llm",
+                "prompt_template": "repair_code_adapter",
+                "agent": "code_adapter",
+            }
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="repair_continuation",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={"code_adapter": {"role": "code_adapter", "lifecycle": "persistent"}},
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / ".sm-artifacts" / "testrun")
+    artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = [
+        "I'm applying the NPU-native patch now.",
+        json.dumps({
+            "modified_files": ["app.py"],
+            "summary": "patched CUDA device usage",
+            "verification": ["python validate.py -> still failing later"],
+            "agent_diagnostics": "",
+        }),
+    ]
+    prompt_loader.load_prompt.side_effect = lambda template, _ctx: f"prompt:{template}"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        experience_store=MagicMock(),
+    )
+    step_outputs: dict[str, object] = {
+        "script_stderr": "CUDA device failure",
+        "error_analysis": {
+            "category": "migration logic",
+            "repair_role": "code_adapter",
+            "root_cause": "cuda api",
+            "suggested_fix": "replace cuda api",
+        },
+    }
+
+    result = executor._run_sub_workflow(
+        sub_workflow,
+        loop_vars={"entry_script": "python validate.py"},
+        state={},
+        context={},
+        sub_wf_phases=sub_workflow.phases,
+        step_outputs=step_outputs,
+        loop_history=[],
+        loop_state={},
+    )
+
+    assert result["status"] == "success"
+    assert cast(dict[str, object], step_outputs["fix_code"])["modified_files"] == ["app.py"]
+    assert session_mgr.send_command.call_count == 2
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == [
+        "session:code_adapter",
+        "session:code_adapter",
+    ]
+    continuation_prompt = session_mgr.send_command.call_args_list[1].args[1]
+    assert "not an actionable completed repair result" in continuation_prompt
+    assert "Do not return a plan, progress update" in continuation_prompt
+
+
+def test_repair_phase_status_only_json_is_retryable_without_validated_artifact(tmp_path: Path) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "fix_dependency",
+                "type": "llm",
+                "prompt_template": "repair_dependency_fixer",
+                "agent": "dependency_fixer",
+            }
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="repair_noop",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={"dependency_fixer": {"role": "dependency_fixer", "lifecycle": "persistent"}},
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / ".sm-artifacts" / "testrun")
+    artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = [
+        json.dumps({"status": "working", "message": "installing packages"}),
+        json.dumps({"status": "still working", "message": "checking versions"}),
+    ]
+    prompt_loader.load_prompt.side_effect = lambda template, _ctx: f"prompt:{template}"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        framework_config={"repair_continuation_attempts": 1},
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        experience_store=MagicMock(),
+    )
+    step_outputs: dict[str, object] = {
+        "script_stderr": "ModuleNotFoundError: No module named 'tbe'",
+        "error_analysis": {
+            "category": "dependency",
+            "repair_role": "dependency_fixer",
+            "root_cause": "missing tbe",
+            "suggested_fix": "load CANN env",
+        },
+    }
+
+    result = executor._run_sub_workflow(
+        sub_workflow,
+        loop_vars={"entry_script": "python validate.py"},
+        state={},
+        context={},
+        sub_wf_phases=sub_workflow.phases,
+        step_outputs=step_outputs,
+        loop_history=[],
+        loop_state={},
+    )
+
+    assert result["status"] == "communication_error"
+    fix_output = cast(dict[str, object], step_outputs["fix_dependency"])
+    assert fix_output["communication_error"] is True
+    assert "did not produce an actionable completed repair" in str(fix_output["error"])
+    artifact_store.mark_validated.assert_not_called()
+    artifact_store.save_phase_output.assert_not_called()
 
 
 def test_repair_subphase_ignores_configured_session_timeout_repair(tmp_path: Path):
@@ -1957,7 +2331,7 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
         validator,
         project_dir=str(tmp_path),
         output_dir=str(tmp_path),
-        framework_config={"custom_op_operator_incomplete_max_continuations": 0},
+        framework_config={"custom_op_operator_incomplete_max_continuations": 0, "custom_op_operator_max_polls": 1},
     )
 
     result = executor._run_sub_workflow(
@@ -2364,6 +2738,30 @@ def _write_one_row_custom_op_gate(project_dir: Path, inventory: dict[str, object
     gate = _valid_custom_op_final_gate()
     gate["expanded_variant_inventory"] = inventory
     (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(gate), encoding="utf-8")
+
+
+def test_custom_op_progress_block_reports_strict_remaining_units(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    _write_one_row_custom_op_gate(
+        project_dir,
+        {"variant_axes_detected": True, "unit_identities": ["ScalarFwd2D", "ScalarBwd2D"], "expanded_operator_instances_count": 2},
+    )
+    executor = _workflow_executor_for_custom_op_gate(project_dir)
+
+    text = executor._custom_op_operator_repair_progress_block(
+        state={"phase_3_entry_script": _expanded_variant_contract(project_dir)},
+        context={"PROJECT_DIR": str(project_dir)},
+        loop_vars=None,
+    )
+
+    assert "completed_evidence_count: 1" in text
+    assert "completed_evidence_units: ScalarFwd2D" in text
+    assert "remaining_or_unknown_count: 1" in text
+    assert "remaining_operator_variant_gaps: ScalarBwd2D" in text
+    assert "strict_per_unit_pass_count: 1" in text
+    assert "strict_per_unit_remaining_count: 1" in text
+    assert "remaining_detail[ScalarBwd2D]: missing custom_op_final_gate row" in text
 
 
 def test_workflow_executor_custom_op_final_gate_false_variant_metadata_cannot_bypass_expanded_closure(tmp_path: Path) -> None:
@@ -2790,7 +3188,11 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
 
     assert result["step_outputs"]["repair_dispatch"]["dispatched_to"] == "fix_dependency"
     fix_prompt = session_mgr.send_command.call_args_list[-1][0][1]
-    assert len(fix_prompt.splitlines()) == 3
+    assert "# Repair: Dependency Fixer" in fix_prompt
+    assert "第一轮修复 session 必须持续工作到真实结果" in fix_prompt
+    assert "commands_run" in fix_prompt
+    assert "installed_packages" in fix_prompt
+    assert "environment_changes" in fix_prompt
     assert "## Analyzer-Selected Experience Action Cards" not in fix_prompt
     assert "Read /skills/dependency/SKILL.md" not in fix_prompt
     assert "# unused" not in fix_prompt
@@ -6468,6 +6870,15 @@ def _serving_gate_payload(route: str = "vllm_serving", framework: str = "vllm") 
         "readiness_probe": {"passed": True, "status_code": 200},
         "request_validation": {"passed": True, "project_fixture": "tests/request.json"},
         "npu_execution_evidence": {"passed": True, "device": "npu:0"},
+        "ascend_runtime_evidence": {
+            "serving_backend": "ascend",
+            "cann_env_loaded": True,
+            "torch_npu_imported": True,
+            "tbe_imported": True,
+            "te_imported": True,
+            f"{framework}_imported": True,
+            "forbidden_runtime_markers_absent": True,
+        },
         "project_demo_or_test_executed": True,
         "serving_api_validated": True,
         "npu_execution_observed": True,
@@ -6922,7 +7333,7 @@ def test_operator_full_pass_repair_output_does_not_recover_stale_gate_without_cu
     fix_output = result["loop_state"]["fix_operator"]
     assert fix_output["communication_error"] is True
     assert "stale before strict OPP final gate FULL_PASS" in fix_output["error"]
-    assert session_mgr.send_command.call_count == 3
+    assert session_mgr.send_command.call_count == 1 + CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
 
 
 def test_operator_full_pass_repair_output_does_not_recover_invalid_gate(tmp_path: Path) -> None:
@@ -6945,12 +7356,13 @@ def test_operator_full_pass_repair_output_does_not_recover_invalid_gate(tmp_path
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
-    session_mgr.send_command.side_effect = [
-        json.dumps({"repair_role": "operator_fixer", "category": "operator", "root_cause": "stale gate", "suggested_fix": "regenerate full gate"}),
-        json.dumps({
+    invalid_full_pass_claim = json.dumps({
             "summary": "FULL_PASS: claimed final gate closure.",
             "verification": {"result": {"status": "PASS"}},
-        }),
+        })
+    session_mgr.send_command.side_effect = [
+        json.dumps({"repair_role": "operator_fixer", "category": "operator", "root_cause": "stale gate", "suggested_fix": "regenerate full gate"}),
+        *(invalid_full_pass_claim for _ in range(CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT)),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
     executor = WorkflowExecutor(
@@ -7409,7 +7821,7 @@ def test_custom_op_operator_incomplete_response_is_retryable_not_completed(tmp_p
     assert all(timeout is None for timeout in operator_timeouts)
     assert operator_retries
     assert all(retries == 0 for retries in operator_retries)
-    assert operator_recovery_waits == [CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT] * 2
+    assert operator_recovery_waits == [CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT] * (CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT * 2)
 
 
 def test_custom_op_operator_terminal_fail_closed_reports_continue_same_session_by_default(tmp_path: Path) -> None:
@@ -7585,7 +7997,7 @@ def test_custom_op_operator_terminal_fail_closed_reports_continue_same_session_w
 
     assert result["status"] == "success"
     assert len(operator_prompts) == 2
-    assert operator_prompts[0] == "repair_operator_fixer"
+    assert operator_prompts[0] == "repair_custom_op_variant_service"
     assert "Continue the same custom-op `fix_operator` repair" not in operator_prompts[0]
     continuation = operator_prompts[1]
     assert "Custom-op operator repair progress" in continuation
@@ -7684,7 +8096,11 @@ def test_custom_op_operator_outer_loop_second_attempt_uses_compact_progress_prom
     executor = _operator_recovery_executor(
         tmp_path,
         session_mgr,
-        framework_config={"custom_op_operator_incomplete_max_continuations": 0},
+        framework_config={
+            "custom_op_operator_incomplete_max_continuations": 0,
+            "custom_op_operator_max_polls": 1,
+            "custom_op_operator_final_gate_grace_seconds": 0,
+        },
         max_iterations=2,
     )
     state = {
@@ -7713,15 +8129,16 @@ def test_custom_op_operator_outer_loop_second_attempt_uses_compact_progress_prom
 
     assert result["status"] in {"failure", "success"}
     assert len(operator_prompts) == 2
-    assert operator_prompts[0] == "repair_operator_fixer"
+    assert operator_prompts[0] == "repair_custom_op_variant_service"
     second_prompt = operator_prompts[1]
     assert second_prompt != "repair_operator_fixer"
     assert "later outer repair-loop iteration" in second_prompt
     assert "Previous repair results/history" in second_prompt
     assert "total_target_operator_variant_inventory: 2" in second_prompt
-    assert "completed_evidence_count: 1" in second_prompt
-    assert "completed_evidence_units: op:forward" in second_prompt
-    assert "remaining_operator_variant_gaps: op:backward" in second_prompt
+    assert "completed_evidence_count: 0" in second_prompt
+    assert "completed_evidence_units: none proven by current reports" in second_prompt
+    assert "remaining_operator_variant_gaps: op:forward, op:backward" in second_prompt
+    assert "strict_per_unit_remaining_count: 2" in second_prompt
     assert "op:backward missing same-run runtime coverage" in second_prompt
     assert "repair_operator_fixer prompt" in second_prompt
 
@@ -7777,10 +8194,11 @@ def test_custom_op_operator_continuation_prompt_reports_expanded_variant_progres
     assert "target_inventory_source: Phase 1/Phase 3 expanded_variant_inventory.operator+variant unit_identities" in prompt
     assert "total_target_operator_variant_inventory: 2" in prompt
     assert "all_target_operators_and_variants: op:forward:dtype=float, op:forward:dtype=double" in prompt
-    assert "completed_evidence_count: 1" in prompt
-    assert "completed_evidence_units: op:forward:dtype=float" in prompt
-    assert "remaining_or_unknown_count: 1" in prompt
-    assert "remaining_operator_variant_gaps: op:forward:dtype=double" in prompt
+    assert "completed_evidence_count: 0" in prompt
+    assert "completed_evidence_units: none proven by current reports" in prompt
+    assert "remaining_or_unknown_count: 2" in prompt
+    assert "remaining_operator_variant_gaps: op:forward:dtype=float, op:forward:dtype=double" in prompt
+    assert "remaining_detail[op:forward:dtype=float]" in prompt
     assert "custom_op_final_gate_report: status=FAIL, full_migration_status=INCOMPLETE" in prompt
     assert "op:forward:dtype=double missing runtime coverage" in prompt
     assert "op:forward:dtype=double missing OPP artifact evidence" in prompt
@@ -8017,7 +8435,7 @@ def test_custom_op_operator_prompt_context_includes_phase1_phase3_full_repair_sc
     )
 
     assert result["status"] == "failure"
-    ctx = prompt_contexts["repair_operator_fixer"]
+    ctx = prompt_contexts["repair_custom_op_variant_service"]
     scope = str(ctx["phase1_phase3_repair_scope"])
     acceptance = str(ctx["strict_custom_op_acceptance_contract"])
     assert "workflow_route=custom_op_with_variants" in scope
@@ -8522,3 +8940,55 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         import shutil
 
         shutil.rmtree(skill_repo_root, ignore_errors=True)
+
+
+def test_phase3_normalization_preserves_phase1_serving_route_over_custom_op_response(tmp_path: Path) -> None:
+    workflow = WorkflowDefinition(name="route-normalize", version="1.0", phases=[], terminals=[])
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+    )
+    state = {
+        "phase_1_project_analysis": {
+            "migration_route": "sglang_serving",
+            "entry_script": "glmocr/server.py",
+            "serving_runtime_surface": {
+                "launch_command": "python -m sglang.launch_server --model-path model",
+                "readiness_probe": {"type": "http", "endpoint": "/v1/models"},
+                "request_validation": {"type": "chat_completion"},
+                "project_test_files": ["glmocr/tests/test_integration.py"],
+                "expected_outputs": ["json_result"],
+                "required_runtime_env": ["CANN"],
+            },
+        }
+    }
+    output = {
+        "entry_script_kind": "custom_op_full_validation",
+        "entry_script_path": "validate_custom_ops_full.py",
+        "run_command": "python validate_custom_ops_full.py",
+        "reports_dir": "migration_reports",
+    }
+
+    normalized = executor._normalize_llm_output(phase, output, {"project_dir": str(tmp_path)}, state)
+
+    assert normalized["entry_script_kind"] == "sglang_serving_validation"
+    assert normalized["migration_route"] == "sglang_serving"
+    assert normalized["serving_framework"] == "sglang"
+    assert "reports_dir" not in normalized
+    assert "custom_op" not in str(normalized["entry_script_path"])
+    assert "custom_op" not in str(normalized["run_command"])
+    assert normalized["launch_command"] == "python -m sglang.launch_server --model-path model"
+    assert str(normalized["serving_reports_dir"]).endswith("migration_reports/serving")
+    assert normalized["required_report_paths"] == ["migration_reports/serving/serving_final_gate.json"]

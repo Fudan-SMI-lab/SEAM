@@ -13,7 +13,7 @@ Route repair scope from Phase 1/Phase 3:
 {phase1_phase3_repair_scope}
 ```
 
-For `vllm_serving` and `sglang_serving`, classify serving failures without weakening custom-op routing: dependency failures cover missing/incompatible serving runtime packages or server dependencies; code failures cover project launch, request, model-loading, readiness, and report-generation code; operator failures cover unsupported NPU operators hit during real serving; runtime failures cover NPU environment, CANN/torch_npu/device visibility, stale/missing serving reports, CPU fallback, CUDA fallback, or route/framework mismatch. Do not accept import-only or smoke-only validation as repair success.
+For `vllm_serving` and `sglang_serving`, classify serving failures without weakening custom-op routing: dependency failures cover missing/incompatible Ascend serving runtime packages or server dependencies; code failures cover project launch, request, model-loading, readiness, and report-generation code; operator failures cover unsupported NPU operators hit during real serving; runtime failures cover NPU environment, CANN/torch_npu/TBE/TE/device visibility, stale/missing serving reports, CPU fallback, CUDA fallback, CUDA/NVIDIA/NCCL package paths, or route/framework mismatch. Do not accept import-only or smoke-only validation as repair success. If an SGLang/vLLM failure imports CUDA/NCCL paths such as `pynccl_allocator`, `torch.cuda.memory`, `nvidia-smi`, or `NCCL_`, repair toward the Ascend-compatible vLLM/SGLang ecosystem and CANN env, not a CUDA package or CPU fallback.
 
 Custom-op reference: only when the Phase 3 contract is an active custom-op contract with positive source inventory, diagnosing custom-op/operator failures 时查看 `{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md` 第2、3、5、6点要求；不要内联完整规则文本。For active custom-op contracts, missing per-row `public_api_route_evidence` or `framework_integration_route_evidence` is a custom-op contract failure. These fields may be a single object or a non-empty object list; every object must independently prove the same strict route requirements, and empty lists or any invalid list item must fail closed. If the contract says no custom ops or has zero inventory, ignore custom-op guidance and use ordinary dependency/code/generic-operator routing.
 
@@ -91,7 +91,7 @@ recommended agent.
 
 ## Goal
 - Diagnose why the phase keep failing.
-- Identify the smallest credible fix that resolves the root cause.
+- Identify the narrowest complete fix that resolves the root cause and can be verified in the current repair session.
 - Classify the failure and assign it to the right repair role.
 - Decide whether the phase is ready to retry or should stop.
 
@@ -113,7 +113,7 @@ recommended agent.
 5. **Transformers Attention Backend Boundary**: If the Phase 3 contract or reports say no custom ops (`custom_op_detected=false`, `operator_unit_count=0`, `custom_op_static_required=false`, or `inventory_count=0`) and the failure mentions `FlashAttention2`, `flash_attn`, or `flash-attn`, classify it as dependency or migration logic and route to `dependency_fixer` or `code_adapter`. The fix is to use an NPU-compatible attention backend such as `attn_implementation="sdpa"` or `"eager"`; do not route to `operator_fixer` or propose OPP/custom-op generation.
 6. **Review Feedback Integration**: If the previous review assessment detected CPU fallback and suggested alternatives, consider classifying this as `"operator"` with `"repair_role": "operator_fixer"` to force operator-level fixes.
 7. Decide whether the Phase 3 entry-script command itself is wrong for the contract. If so, request a bounded entry-script revision instead of routing to a repair agent.
-8. Propose the minimum corrective action that lets the workflow continue, prioritizing NPU-native solutions.
+8. Propose a complete corrective action for the first repair session: it must be concrete enough for the assigned repair agent to keep working until it has applied real changes or made verified dependency/environment changes, then rerun validation. Prioritize NPU-native solutions.
 9. If the failure is package or installation related, recommend domestic mirrors first (阿里云镜像 or 清华镜像).
 
 ## Hard Rules
@@ -126,6 +126,11 @@ recommended agent.
 - Use `entry_script_action` only when the command should be regenerated or modified to satisfy the existing Phase 3 contract. Do not use it to weaken required reports, checks, or custom-op evidence.
 - When no entry-script revision is needed, set `entry_script_action.needed=false` and `entry_script_action.action="none"`.
 - When a revision is needed, set `entry_script_action.needed=true`, use `action` `regenerate` or `modify`, and provide a non-empty replacement `run_command`. Include `entry_script_path` only when it should change.
+
+
+## First Repair Session Policy
+
+The first Phase 5 repair session is critical. Do not route a failure to a repair role with a vague plan, investigation-only instruction, or quick retry suggestion. Classify the first actionable failure precisely, include the file/command/runtime surface to inspect, and assign the role that can make a real change in the same session. Progress updates such as "I will inspect" or "I'm applying the patch" are invalid repair results; the repair agent must keep working and return only after actual changes plus verification evidence, or after a verified blocker is recorded.
 
 ## Output Format
 First, provide your reasoning and diagnosis in free text. Then, at the end of your response, append a JSON code block with exactly these keys:

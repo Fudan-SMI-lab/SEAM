@@ -18,6 +18,7 @@ Examine the entry script file at `{entry_script_path}` (resolve from Phase 3 out
 4. **Debug/REPL breakpoints**: `pdb.set_trace()`, `breakpoint()`, `IPython.embed()`, `code.interact()`.
 5. **Blocking waits**: `threading.Event().wait()`, `queue.get()` without timeout in the main execution path.
 6. **Short internal validation timeouts**: generated custom-op validation scripts must not wrap the real project/API/E2E route in a short `subprocess.run(..., timeout=...)` or `communicate(..., timeout=...)`. The framework may monitor long-running phases; a generated-script timeout such as 600 seconds is a blocker for custom-op validation.
+7. **Ascend serving wrappers**: for `vllm_serving_validation` and `sglang_serving_validation`, the selected entry must be the generated `validate_vllm_serving.py` or `validate_sglang_serving.py` wrapper. It must configure CANN/Ascend env, add CANN Python paths for `tbe`/`te`, import-probe `torch_npu`, reject CUDA/NVIDIA/NCCL markers, execute the real project launch/demo command, and write `migration_reports/serving/serving_final_gate.json`. Inline shell env prefixes, CUDA/NCCL allocator paths (`pynccl_allocator`, `torch.cuda.memory`), `nvidia-smi`, CPU fallback, and smoke/import-only checks are blockers.
 
 ## Custom-Op Contract Gate
 

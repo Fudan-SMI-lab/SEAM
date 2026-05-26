@@ -27,6 +27,13 @@ from core.custom_op_variants import (
 )
 from core.paths import resolve_relative_path, workspace_root
 from core.prompt_loader import PromptLoader
+from core.routes import (
+    SERVING_ROUTES,
+    normalize_serving_phase1_surface,
+    normalize_serving_phase3_contract,
+    serving_entry_kind_for_route,
+    serving_framework_for_route,
+)
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition
 from core.validator_engine import ValidationResult, ValidatorEngine
@@ -1413,13 +1420,23 @@ class PhaseRunner:
         if phase.prompt_id == "phase_1_project_analysis":
             normalized["project_dir"] = str(prompt_context["project_dir"])
             normalize_project_analysis_expanded_variants(normalized)
+            normalize_serving_phase1_surface(normalized)
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
+            phase1_route = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "migration_route")
             if "entry_script_path" not in normalized:
                 entry_script = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "entry_script")
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
-            if normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(previous_outputs, context):
+            if isinstance(phase1_route, str) and phase1_route in SERVING_ROUTES:
+                phase1_output = previous_outputs.get("phase_1_project_analysis") if isinstance(previous_outputs, dict) else None
+                normalize_serving_phase3_contract(
+                    normalized,
+                    route=phase1_route,
+                    project_dir=str(prompt_context["project_dir"]),
+                    phase1_output=phase1_output if isinstance(phase1_output, dict) else None,
+                )
+            elif normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(previous_outputs, context):
                 _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
                 normalized["project_dir"] = str(prompt_context["project_dir"])
             variant_overlay = expanded_variant_contract_from_outputs(previous_outputs)

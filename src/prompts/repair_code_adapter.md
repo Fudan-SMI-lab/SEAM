@@ -33,6 +33,10 @@ If the previous review detected CPU fallback in an earlier fix, do NOT repeat th
 ## Goal
 Modify project source code to fix execution failures caused by CUDA-NPU incompatibilities.
 
+## First Repair Session Policy
+
+This Phase 5 repair call is expected to do the work, not report that work will start. Do not return progress prose, a plan, background-task status, or JSON with empty/no-op evidence. Keep working in this same session until you have modified the relevant project files and run verification, then return final JSON only.
+
 ## Required Actions
 1. Analyze the execution failure to identify which code location needs modification.
 2. **Scope Check**: Before making any changes, verify the root cause is actually at the Python level (API calls, device strings, tensor placement).
@@ -60,7 +64,7 @@ The general approach should:
 
 6. Apply the fix directly — do not ask questions or request confirmation.
 7. After applying the fix, you MUST try running the project entry script yourself. Use the project's `.venv/bin/python` interpreter and the entry command provided below.
-8. When running the entry script, you MUST wrap the execution with a timeout so the process does not hang indefinitely.
+8. When running the entry script, you MUST wrap the execution with a timeout so the process does not hang indefinitely. For serving commands, do not use a bare `timeout 120s ...` that can leave detached FastAPI/vLLM/SGLang child processes holding stdout/stderr open; use the generated validation wrapper when available, or run a process-group-aware command that kills the whole process tree and any project-local orphan server processes before returning.
 9. If the script runs successfully (exit code 0), report the success and the output.
 10. If the script fails with an error outside your scope (dependency missing, environment misconfiguration, confirmed C kernel limitation), stop and report the new error.
 11. The entry script (test/run script) is also part of the adaptation target. You may modify it to fix CUDA-NPU incompatibilities, path issues, or device placement. However, **the script's core test logic and the functionality it exercises must NOT be deleted or weakened**. You may only adapt HOW things run (device assignment, API calls, import paths), not WHAT is being tested.
@@ -85,6 +89,8 @@ The general approach should:
 {
   "modified_files": ["path/to/changed_file.py"],
   "summary": "A 1-2 sentence description of what you fixed",
+  "commands_run": ["verification or helper commands actually run"],
+  "verification": ["verification commands and observed result"],
   "agent_diagnostics": ""
 }
 ```

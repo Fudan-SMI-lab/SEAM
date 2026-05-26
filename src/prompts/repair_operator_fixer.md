@@ -5,7 +5,7 @@
 2. 先阅读 {runtime_error_artifact_path} 和 {runtime_card_artifact_path}，结合 {project_dir} 和 {entry_script} 定位当前 operator incompatibility。
 3. 做 Ascend NPU 原生修复，不要加 CPU fallback；普通 CUDA 项目的 operator 修复应使用 torch_npu/PyTorch NPU 支持的算子、参数、后端或局部代码改写，不要生成 OPP/custom-op 产物。
 4. 只有下方 operator_custom_op_guidance 明确说明存在 active custom-op contract 时，才进入严格 Ascend C/CANN OPP custom-op 修复范围；此时必须把 Phase 1 算子/变体发现结果 + Phase 3 entry-script contract/完整验证脚本作为唯一修复源头，在本次 fix 调用内长时间持续修复每个 source-discovered operator 和每个 expanded variant。
-5. 直接修改目标项目文件并运行完整验证；不要启动后台检索/后台 agents 后提前返回，不要把 `modified_files: []`、调研计划、等待后台结果、进度说明或“下一步再修”当作本轮修复结果。
+5. 直接修改目标项目文件并运行完整验证；不要启动后台检索/后台 agents 后提前返回，不要把 `modified_files: []`、调研计划、等待后台结果、进度说明、“我将开始修复”或“下一步再修”当作本轮修复结果。
 6. 普通 Transformers attention backend 问题（例如零 custom-op 项目的 FlashAttention2/flash_attn 缺失）不属于 OPP/custom-op 修复范围；应退回 dependency/code 修复，改用 `attn_implementation="sdpa"` 或 `"eager"` 等 NPU 兼容路径。
 
 ## Phase 1 / Phase 3 Repair Scope
@@ -39,4 +39,6 @@ active custom-op contract 存在时，本轮修复只有在下面合同全部满
 最终响应必须是一个 JSON object，至少包含：
 - `modified_files`: 实际修改过的文件列表；成功时不能是空列表。
 - `summary`: 简短说明修复内容。
+- `commands_run`: 实际执行过的构建/验证命令。
+- `verification`: 每条验证命令的观察结果。
 - `agent_diagnostics`: 包含运行过的 Phase 3 command、report paths、final gate status、remaining gaps。

@@ -31,6 +31,7 @@ COMMON_CONTEXT = {
     "workspace_root": "/workspace",
     "phase1_phase3_repair_scope": "(No active custom-op contract scope in this direct generic prompt test.)",
     "strict_custom_op_acceptance_contract": "(No active custom-op contract; agent may return regular operator repair JSON only.)",
+    "operator_repair_progress_block": "(No active custom-op repair progress in this direct generic prompt test.)",
     "active_custom_op_full_repair_requirements": "",
     "operator_custom_op_guidance": OPERATOR_GENERIC_GUIDANCE(
         project_dir="/tmp/test_project",
@@ -255,25 +256,28 @@ def test_phase_prompts_require_strict_opp_artifacts_and_final_chinese_table() ->
     assert "| row | semantic operator | public entries / aliases | route evidence type | route evidence summary | OPP artifact | adapter callable | coverage key/count | parity | integration/e2e | CPU baseline vs Ascend OPP/custom-op performance | status | next action |" in phase6
 
 
-def test_dependency_fixer_prompt_is_three_line_artifact_pointer() -> None:
+def test_dependency_fixer_prompt_requires_actionable_repair_result() -> None:
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
     prompt = _load_role_prompt(loader, "dependency_fixer")
-    lines = prompt.splitlines()
-    assert len(lines) == 3
     assert "dependency_fixer" in prompt
     assert "环境、包、导入、版本、安装和运行依赖问题" in prompt
-    assert "算子、custom-op实现或CUDA/NPU代码改写问题" in prompt
+    assert "算子、custom-op 实现或 CUDA/NPU 代码改写问题" in prompt
     assert "{workspace_root}" not in prompt
     assert "/workspace/docs/cuda_custom_op_skill_test_prompt.md" in prompt
     assert "第5点要求" in prompt
     assert "只有 active custom-op contract" in prompt
     assert "普通 CUDA 项目不要生成 OPP/custom-op 产物" in prompt
-    assert "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
+    assert "/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md" in prompt
+    assert "/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
+    assert "第一轮修复 session 必须持续工作到真实结果" in prompt
+    assert "不要返回计划" in prompt
+    assert "commands_run" in prompt
+    assert "installed_packages" in prompt
+    assert "environment_changes" in prompt
+    assert "verification" in prompt
+    assert "agent_diagnostics" in prompt
     assert "ModuleNotFoundError: No module named 'torch_npu'" not in prompt
     assert "Rule 1: No CPU fallback" not in prompt
-    assert "Execution Failure" not in prompt
-    assert "Error Classification" not in prompt
-    assert "agent_diagnostics" not in prompt
     assert "runtime_error_artifact_path" not in prompt
     assert "runtime_card_artifact_path" not in prompt
 

@@ -814,10 +814,12 @@ def test_run_phase_6_retries_status_only_response_before_saving(tmp_path: Path) 
     journal = artifact_store.get_journal()
     phase_6_entries = [entry for entry in journal if entry["phase_id"] == "phase_6_report"]
     assert [entry["status"] for entry in phase_6_entries] == ["response_shape_failed", "succeeded"]
-    failed_attempt = json.loads(Path(str(phase_6_entries[0]["raw_path"])).read_text(encoding="utf-8"))
+    failed_raw_path = cast(str, phase_6_entries[0]["raw_path"])
+    failed_attempt = cast(dict[str, object], json.loads(Path(failed_raw_path).read_text(encoding="utf-8")))
     assert failed_attempt["raw_response"] == status_only_response
-    assert failed_attempt["validation_errors"]
-    assert any("status/progress-only JSON" in error for error in failed_attempt["validation_errors"])
+    validation_errors = cast(list[str], failed_attempt["validation_errors"])
+    assert validation_errors
+    assert any("status/progress-only JSON" in error for error in validation_errors)
     assert phase_6_entries[0]["canonical_path"] == ""
 
 
@@ -1654,6 +1656,42 @@ def test_phase1_assisted_report_rejects_wrong_grouped_source_variant_counts() ->
     assert any("does not cover normalized Phase 1 output" in error for error in errors)
 
 
+def test_phase1_assisted_deterministic_report_replaces_alias_only_verifier_mismatch(tmp_path: Path) -> None:
+    from core.assisted_verification import _deterministic_phase1_completion_report_if_safe
+    from core.assisted_verification import validate_phase1_assisted_report
+
+    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
+    phase_output = _runner_generic_template_phase1_output(tmp_path)
+    report = _runner_phase1_report(variant_ids)
+    cast(dict[str, object], report["phase1_inventory"])["fine_grained_operator_units"] = ["scalar_forward_alias", "scalar_forward"]
+    cast(dict[str, object], report["source_evidence_inventory"])["fine_grained_operator_units"] = ["scalar_forward_alias", "scalar_forward"]
+    cast(dict[str, object], report["phase1_inventory"])["expanded_operator_instances_count"] = 4
+    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = [
+        "scalar_forward_alias:dtype=float",
+        "scalar_forward_alias:dtype=double",
+        *variant_ids,
+    ]
+    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = [
+        "scalar_forward_alias:dtype=float",
+        "scalar_forward_alias:dtype=double",
+        *variant_ids,
+    ]
+
+    errors = validate_phase1_assisted_report(report, phase_output)
+    replacement = _deterministic_phase1_completion_report_if_safe(
+        report=report,
+        phase_output=phase_output,
+        errors=errors,
+    )
+
+    assert errors
+    assert replacement is not None
+    assert validate_phase1_assisted_report(replacement, phase_output) == []
+    replacement_inventory = cast(dict[str, object], replacement["phase1_inventory"])
+    assert replacement_inventory["expanded_operator_instances_count"] == 2
+    assert replacement_inventory["expanded_unit_identities"] == variant_ids
+
+
 def test_phase1_assisted_report_accepts_source_axes_without_duplicate_variant_list() -> None:
     from core.assisted_verification import validate_phase1_assisted_report
 
@@ -1907,6 +1945,35 @@ def test_phase_runner_phase1_assisted_uses_deterministic_report_for_stale_groupe
     assert cast(dict[str, object], canonical["source_evidence_inventory"])["expanded_unit_identities"] == variant_ids
 
 
+def test_phase1_assisted_uses_deterministic_report_for_collapsed_summary(tmp_path: Path) -> None:
+    from core.assisted_verification import AssistedVerificationRunner
+
+    phase_output = _runner_generic_template_phase1_output(tmp_path)
+    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
+    stale_report = _runner_phase1_report(variant_ids)
+    phase1_inventory = cast(dict[str, object], stale_report["phase1_inventory"])
+    phase1_inventory["expanded_unit_identities"] = []
+    source_inventory = cast(dict[str, object], stale_report["source_evidence_inventory"])
+    source_inventory["expanded_unit_identities"] = []
+    stale_report["collapsed_or_representative_rows"] = [
+        "Expanded variants verified as source-required Cartesian products: scalar_forward * 2 dtype values; total = 2."
+    ]
+    session_mgr = SequencedAssistedSessionManager([stale_report])
+    artifact_store = ArtifactStore(str(tmp_path), "assisted-collapsed-fallback")
+    runner = AssistedVerificationRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        framework_config={"assisted_verification": {"enabled": True}},
+    )
+
+    result = runner.verify_phase1(phase_output=phase_output, project_dir=str(tmp_path), attempt=1)
+
+    assert result.passed is True
+    canonical = artifact_store.load_phase_output("phase_1_custom_op_completeness_check")
+    assert isinstance(canonical, dict)
+    assert canonical.get("deterministic_completion") is True
+
+
 def test_phase_runner_phase1_assisted_does_not_fallback_on_real_missing_variants(tmp_path: Path) -> None:
     variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
     incomplete_report = _runner_phase1_report(variant_ids, verdict="incomplete")
@@ -2003,6 +2070,146 @@ def test_phase3_assisted_report_rejects_wrong_total_variant_summary(tmp_path: Pa
     contract = cast(dict[str, object], report["phase3_contract_inventory"])
     contract["covered_variant_identities"] = [
         "1 unique identity generated by validate_custom_ops_full.py expanded_variants(), matching expected variant count and axes"
+    ]
+
+    errors = validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output)
+
+    assert any("missing variant coverage" in error for error in errors)
+
+
+def test_phase3_assisted_report_accepts_structured_deepwave_variant_summary(tmp_path: Path) -> None:
+    from core.assisted_verification import validate_phase3_assisted_report
+
+    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
+    variant_ids = [
+        f"scalar:forward_cuda:ndim=1:accuracy={accuracy}:dtype={dtype}:device=cuda"
+        for accuracy in ["2", "4"]
+        for dtype in ["float", "double"]
+    ]
+    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
+    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
+    surface["fine_grained_operator_units"] = ["scalar:forward_cuda"]
+    report = _runner_phase3_report(variant_ids)
+    contract = cast(dict[str, object], report["phase3_contract_inventory"])
+    contract["covered_unit_identities"] = ["scalar:forward_cuda"]
+    contract["covered_variant_identities"] = [
+        {
+            "identity_set": "all_expected_expanded_variants_in_validate_custom_ops_full_EXPECTED_UNIT_IDENTITIES",
+            "count": 4,
+            "unique_count": 4,
+            "base_unit_count": 1,
+            "base_units": ["scalar:forward_cuda"],
+            "axes": {
+                "propagator_cuda": {
+                    "ndim": ["1"],
+                    "accuracy": ["2", "4"],
+                    "dtype": ["float", "double"],
+                    "device": ["cuda"],
+                    "count": 4,
+                }
+            },
+        }
+    ]
+
+    assert validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output) == []
+
+
+def test_phase3_assisted_report_accepts_base_unit_counts_variant_summary(tmp_path: Path) -> None:
+    from core.assisted_verification import validate_phase3_assisted_report
+
+    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
+    variant_ids = [
+        *[f"scalar:forward_cuda:ndim={ndim}:dtype={dtype}:device=cuda" for ndim in ["1", "2"] for dtype in ["float", "double"]],
+        *[f"storage:load_snapshot_gpu:ndim={ndim}:dtype={dtype}:device=gpu" for ndim in ["1", "2"] for dtype in ["float", "double"]],
+    ]
+    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
+    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
+    surface["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
+    report = _runner_phase3_report(variant_ids)
+    contract = cast(dict[str, object], report["phase3_contract_inventory"])
+    contract["covered_unit_identities"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
+    contract["covered_variant_identities"] = [
+        {
+            "source": "validate_custom_ops_full.py EXPECTED_UNIT_IDENTITIES",
+            "count": 8,
+            "unique_count": 8,
+            "base_unit_counts": {
+                "scalar:forward_cuda": 4,
+                "storage:load_snapshot_gpu": 4,
+            },
+            "variant_axis_coverage": {
+                "all_axes_covered": True,
+                "axes": {"ndim": ["1", "2"], "dtype": ["float", "double"], "device": ["cuda", "gpu"]},
+            },
+        }
+    ]
+
+    assert validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output) == []
+
+
+def test_phase3_assisted_report_accepts_axis_grouped_base_unit_summary(tmp_path: Path) -> None:
+    from core.assisted_verification import validate_phase3_assisted_report
+
+    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
+    variant_ids = [
+        *[
+            f"scalar:forward_cuda:ndim={ndim}:accuracy={accuracy}:dtype={dtype}"
+            for ndim in ["1", "2"]
+            for accuracy in ["2", "4"]
+            for dtype in ["float", "double"]
+        ],
+        *[
+            f"storage:load_snapshot_gpu:ndim={ndim}:dtype={dtype}"
+            for ndim in ["1", "2"]
+            for dtype in ["float", "double"]
+        ],
+    ]
+    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
+    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
+    surface["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
+    report = _runner_phase3_report(variant_ids)
+    contract = cast(dict[str, object], report["phase3_contract_inventory"])
+    contract["covered_unit_identities"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
+    contract["covered_variant_identities"] = [
+        {
+            "count": 12,
+            "unique_count": 12,
+            "exact_phase1_set_equality": True,
+            "base_units_with_accuracy_ndim_dtype_axes": ["scalar:forward_cuda"],
+            "base_units_with_ndim_dtype_axes": ["storage:load_snapshot_gpu"],
+            "axes": {
+                "ndim": ["1", "2"],
+                "accuracy": ["2", "4"],
+                "dtype": ["float", "double"],
+            },
+        }
+    ]
+
+    assert validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output) == []
+
+
+def test_phase3_assisted_report_rejects_wrong_structured_variant_summary(tmp_path: Path) -> None:
+    from core.assisted_verification import validate_phase3_assisted_report
+
+    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
+    variant_ids = [
+        "scalar:forward_cuda:ndim=1:dtype=float:device=cuda",
+        "scalar:forward_cuda:ndim=1:dtype=double:device=cuda",
+    ]
+    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
+    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
+    surface["fine_grained_operator_units"] = ["scalar:forward_cuda"]
+    report = _runner_phase3_report(variant_ids)
+    contract = cast(dict[str, object], report["phase3_contract_inventory"])
+    contract["covered_unit_identities"] = ["scalar:forward_cuda"]
+    contract["covered_variant_identities"] = [
+        {
+            "identity_set": "all_expected_expanded_variants_in_validate_custom_ops_full_EXPECTED_UNIT_IDENTITIES",
+            "count": 1,
+            "unique_count": 1,
+            "base_units": ["scalar:forward_cuda"],
+            "axes": {"ndim": ["1"], "dtype": ["float"], "device": ["cuda"]},
+        }
     ]
 
     errors = validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output)
@@ -2657,3 +2864,43 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         import shutil
 
         shutil.rmtree(skill_repo_root, ignore_errors=True)
+
+
+def test_phase_runner_phase3_normalization_preserves_phase1_serving_route(tmp_path: Path) -> None:
+    runner, _ = build_runner(tmp_path)
+    phase = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+    output: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "entry_script_path": "validate_custom_ops_full.py",
+        "run_command": "python validate_custom_ops_full.py",
+        "reports_dir": "migration_reports",
+    }
+    context: dict[str, object] = {
+        "project_dir": str(tmp_path),
+        "previous_outputs": {
+            "phase_1_project_analysis": {
+                "migration_route": "sglang_serving",
+                "entry_script": "glmocr/server.py",
+                "serving_runtime_surface": {
+                    "launch_command": "python -m sglang.launch_server --model-path model",
+                    "readiness_probe": {"type": "http", "endpoint": "/v1/models"},
+                    "request_validation": {"type": "chat_completion"},
+                    "project_test_files": ["glmocr/tests/test_integration.py"],
+                    "expected_outputs": ["json_result"],
+                    "required_runtime_env": ["CANN"],
+                },
+            }
+        },
+    }
+
+    normalized = runner._normalize_output(phase, output, {"project_dir": str(tmp_path)}, context)
+
+    assert normalized["entry_script_kind"] == "sglang_serving_validation"
+    assert normalized["migration_route"] == "sglang_serving"
+    assert normalized["serving_framework"] == "sglang"
+    assert "reports_dir" not in normalized
+    assert "custom_op" not in str(normalized["entry_script_path"])
+    assert "custom_op" not in str(normalized["run_command"])
+    assert normalized["launch_command"] == "python -m sglang.launch_server --model-path model"
+    assert str(normalized["serving_reports_dir"]).endswith("migration_reports/serving")
+    assert normalized["required_report_paths"] == ["migration_reports/serving/serving_final_gate.json"]
