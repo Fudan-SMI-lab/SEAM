@@ -8,9 +8,13 @@ from typing import cast
 
 
 from core.assisted_verification import validate_phase1_assisted_report
+from core.custom_op_variants import normalize_phase1_project_analysis
 from core.custom_op_variants import normalize_project_analysis_expanded_variants
 from core.custom_op_variants import source_template_expanded_variants
 from validators.validate_project_analysis import validate as validate_project_analysis
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 PROPAGATOR_BASES = [
@@ -224,6 +228,50 @@ def test_source_template_expanded_variants_reads_macro_preamble_for_storage_load
     }
     load_rows = [row for row in storage_rows if row.get("base_unit_identity") == "storage:load_snapshot_gpu"]
     assert all("dtype" in cast(dict[str, object], row.get("axis_values", {})) for row in load_rows)
+
+
+def test_normalize_phase1_project_analysis_infers_deepwave_template_axes_without_llm_axes(tmp_path: Path) -> None:
+    project_dir = tmp_path / "deepwave_like_project"
+    surface = _build_deepwave_like_surface(project_dir)
+    surface.pop("variant_axes_detected", None)
+    surface.pop("variant_axes", None)
+    surface.pop("expanded_operator_variants", None)
+    surface.pop("expanded_operator_instances_count", None)
+    output: dict[str, object] = {
+        "project_dir": str(project_dir),
+        "custom_op_surface": surface,
+    }
+
+    normalize_phase1_project_analysis(output, project_dir=str(project_dir))
+
+    normalized_surface = cast(dict[str, object], output["custom_op_surface"])
+    variants = _dict_rows(cast(list[object], normalized_surface["expanded_operator_variants"]))
+    assert output["migration_route"] == "custom_op_with_variants"
+    assert normalized_surface["variant_axes_detected"] is True
+    assert normalized_surface["expanded_operator_instances_count"] == 240
+    assert len(variants) == 240
+    counts = Counter(str(row.get("base_unit_identity", "")) for row in variants)
+    assert counts["scalar:forward_cuda"] == 24
+    assert counts["simple_compress:compress_cuda"] == 6
+    assert counts["storage:save_snapshot_gpu"] == 6
+
+
+def test_normalize_phase1_project_analysis_infers_real_deepwave_240_inventory() -> None:
+    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "04_Deepwave"
+    assert project_dir.is_dir()
+    output: dict[str, object] = {}
+
+    normalize_phase1_project_analysis(output, project_dir=str(project_dir))
+
+    surface = cast(dict[str, object], output["custom_op_surface"])
+    variants = _dict_rows(cast(list[object], surface["expanded_operator_variants"]))
+    assert output["migration_route"] == "custom_op_with_variants"
+    assert surface["expanded_operator_instances_count"] == 240
+    assert len(variants) == 240
+    axes = cast(dict[str, object], surface["variant_axes"])
+    assert axes["ndim"] == ["1d", "2d", "3d"]
+    assert axes["accuracy"] == ["2", "4", "6", "8"]
+    assert axes["dtype"] == ["float", "double"]
 
 
 def test_normalize_project_analysis_expanded_variants_recovers_deepwave_like_240_inventory(tmp_path: Path) -> None:

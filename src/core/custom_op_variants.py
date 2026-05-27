@@ -14,6 +14,48 @@ from typing import cast
 from core.custom_op_source_discovery import discover_required_cuda_native_units_from_project
 
 
+PHASE1_REQUIRED_DISCOVERY_SOURCES = (
+    "source",
+    "bindings",
+    "wrappers",
+    "autograd",
+    "aliases",
+    "launch",
+    "setup",
+    "tests",
+)
+DEPENDENCY_MANIFESTS = (
+    "requirements.txt",
+    "requirements-dev.txt",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "environment.yml",
+    "environment.yaml",
+    "Pipfile",
+    "package.json",
+)
+ENTRY_SCRIPT_CANDIDATES = (
+    "test_data_and_scripts/run.py",
+    "test_data_and_scripts/main.py",
+    "test_data_and_scripts/train.py",
+    "test_data_and_scripts/inference.py",
+    "run.py",
+    "main.py",
+    "train.py",
+    "inference.py",
+    "demo.py",
+    "app.py",
+)
+CUDA_TEXT_PATTERN = re.compile(
+    r"\b(?:CUDAExtension|CppExtension|torch\.utils\.cpp_extension|PYBIND11_MODULE|TORCH_LIBRARY|__global__|cudaLaunchKernel|\.cu\b|\.cuh\b|torch\.ops)\b"
+)
+NON_TARGET_VARIANT_VALUES = frozenset({"cpu", "host", "baseline", "reference", "native", "none", "default"})
+PHASE1_MIGRATION_ROUTES = frozenset(
+    {"ordinary_cuda", "custom_op", "custom_op_with_variants", "vllm_serving", "sglang_serving"}
+)
+
+
 EXPANDED_VARIANT_CONTRACT_FIELDS = frozenset(
     {
         "expanded_variant_inventory",
@@ -88,6 +130,45 @@ def expanded_variant_contract_from_outputs(outputs: object) -> dict[str, object]
     return expanded_variant_contract_from_contract(output_map.get("phase_3_entry_script"))
 
 
+def normalize_phase1_project_analysis(output: dict[str, object], *, project_dir: object) -> None:
+    """Bind and repair Phase 1 project-analysis output from source-backed discovery."""
+    project_dir_text = str(project_dir) if isinstance(project_dir, (str, Path)) else ""
+    output["project_dir"] = project_dir_text
+    root = Path(project_dir_text) if project_dir_text else None
+
+    if not _is_string_list(output.get("dependencies")):
+        output["dependencies"] = _discover_dependencies(root)
+    if not isinstance(output.get("cuda_detected"), bool):
+        output["cuda_detected"] = _discover_cuda_detected(root)
+    if not isinstance(output.get("entry_script"), str) or not str(output.get("entry_script", "")).strip():
+        output["entry_script"] = _discover_entry_script(root)
+
+    units = discover_required_cuda_native_units_from_project(project_dir_text)
+    merged_inventory_axes = False
+    if units:
+        output["cuda_detected"] = True
+        _normalize_phase1_route(output, default_route="custom_op")
+        custom_op_surface = output.get("custom_op_surface")
+        if not isinstance(custom_op_surface, dict):
+            custom_op_surface = {}
+            output["custom_op_surface"] = custom_op_surface
+        surface = cast(dict[str, object], custom_op_surface)
+        _ensure_source_backed_custom_op_surface(surface, units, project_dir_text)
+        _merge_source_template_variant_axes(surface, project_dir_text)
+        merged_inventory_axes = _merge_operator_inventory_variant_axes(output, surface)
+
+    normalize_project_analysis_expanded_variants(output)
+    surface_value = output.get("custom_op_surface")
+    if units and isinstance(surface_value, dict):
+        surface_map = cast(dict[str, object], surface_value)
+        if merged_inventory_axes:
+            _drop_unexpanded_synthesized_variant_axes(surface_map)
+        _normalize_phase1_route(
+            output,
+            default_route="custom_op_with_variants" if _surface_has_active_variant_metadata(surface_map) else "custom_op",
+        )
+
+
 def normalize_project_analysis_expanded_variants(output: dict[str, object]) -> None:
     """Normalize Phase 1 expanded-variant metadata from source-declared templates.
 
@@ -121,6 +202,543 @@ def normalize_project_analysis_expanded_variants(output: dict[str, object]) -> N
     surface["expanded_operator_instances_count"] = len(generated)
     _merge_variant_axes_from_generated_rows(surface, generated)
     _mark_discovery_complete_for_full_generated_inventory(surface, generated)
+
+
+def _is_string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in cast(list[object], value))
+
+
+def _normalize_phase1_route(output: dict[str, object], *, default_route: str) -> None:
+    route = output.get("migration_route")
+    if isinstance(route, str) and route in PHASE1_MIGRATION_ROUTES and route not in {"ordinary_cuda", "custom_op"}:
+        return
+    raw_route = output.get("route")
+    if isinstance(raw_route, str) and raw_route in PHASE1_MIGRATION_ROUTES:
+        route = raw_route
+    if route not in PHASE1_MIGRATION_ROUTES or route in {"ordinary_cuda", "custom_op"}:
+        output["migration_route"] = default_route
+    else:
+        output["migration_route"] = route
+
+
+def _surface_has_active_variant_metadata(surface: dict[str, object]) -> bool:
+    if surface.get("variant_axes_detected") is True:
+        return True
+    axes = surface.get("variant_axes")
+    if isinstance(axes, Mapping) and axes:
+        return True
+    variants = surface.get("expanded_operator_variants")
+    if isinstance(variants, list) and variants:
+        return True
+    count = surface.get("expanded_operator_instances_count")
+    return isinstance(count, int) and not isinstance(count, bool) and count > 0
+
+
+def _surface_has_active_custom_op_inventory(surface: Mapping[object, object]) -> bool:
+    if surface.get("custom_op_detected") is True:
+        return True
+    if surface.get("custom_op_detected") is False:
+        return False
+    return bool(
+        _string_list(surface.get("fine_grained_operator_units"))
+        or _string_list(surface.get("discovered_operator_names"))
+        or _string_list(surface.get("native_operator_symbols"))
+        or _string_list(surface.get("kernel_launch_sites"))
+    )
+
+
+def _discover_dependencies(root: Path | None) -> list[str]:
+    if root is None or not root.is_dir():
+        return []
+    dependencies: list[str] = []
+    for manifest in DEPENDENCY_MANIFESTS:
+        path = root / manifest
+        if not path.is_file():
+            continue
+        dependencies.extend(_dependencies_from_manifest(path))
+    return _ordered_unique(dependencies)
+
+
+def _dependencies_from_manifest(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    name = path.name.lower()
+    if name.startswith("requirements"):
+        return [_clean_dependency_line(line) for line in text.splitlines() if _clean_dependency_line(line)]
+    if name == "pyproject.toml":
+        return _dependencies_from_loose_manifest_text(text)
+    if name in {"environment.yml", "environment.yaml"}:
+        return _dependencies_from_environment_yaml(text)
+    if name == "setup.cfg":
+        return _dependencies_from_setup_cfg(text)
+    if name == "package.json":
+        return _dependencies_from_package_json(text)
+    return _dependencies_from_loose_manifest_text(text)
+
+
+def _clean_dependency_line(line: str) -> str:
+    clean = line.split("#", 1)[0].strip()
+    if not clean or clean.startswith(("-r ", "--")):
+        return ""
+    return clean
+
+
+def _dependencies_from_environment_yaml(text: str) -> list[str]:
+    dependencies: list[str] = []
+    in_dependencies = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "dependencies:":
+            in_dependencies = True
+            continue
+        if not in_dependencies or not stripped.startswith("-"):
+            continue
+        value = stripped[1:].strip()
+        if value and not value.startswith("pip:"):
+            dependencies.append(value)
+    return dependencies
+
+
+def _dependencies_from_setup_cfg(text: str) -> list[str]:
+    dependencies: list[str] = []
+    in_requires = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("install_requires"):
+            in_requires = True
+            _, _, value = stripped.partition("=")
+            if value.strip():
+                dependencies.append(value.strip())
+            continue
+        if in_requires:
+            if line.startswith(" ") or line.startswith("\t"):
+                if stripped:
+                    dependencies.append(stripped)
+            else:
+                in_requires = False
+    return dependencies
+
+
+def _dependencies_from_package_json(text: str) -> list[str]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    dependencies: list[str] = []
+    if isinstance(data, dict):
+        data_map = cast(dict[object, object], data)
+        for key in ("dependencies", "devDependencies"):
+            value = data_map.get(key)
+            if isinstance(value, dict):
+                dependencies.extend(name for name in cast(dict[object, object], value) if isinstance(name, str))
+    return dependencies
+
+
+def _dependencies_from_loose_manifest_text(text: str) -> list[str]:
+    dependencies: list[str] = []
+    for match in re.finditer(r"['\"]([A-Za-z0-9_.-]+(?:[<>=!~]=?[^'\",\]]*)?)['\"]", text):
+        value = match.group(1).strip()
+        if value and value.lower() != "python":
+            dependencies.append(value)
+    return dependencies
+
+
+def _discover_cuda_detected(root: Path | None) -> bool:
+    if root is None or not root.is_dir():
+        return False
+    if discover_required_cuda_native_units_from_project(str(root)):
+        return True
+    for path in _iter_project_source_files(root, suffixes={".py", ".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".h", ".hpp"}):
+        if path.suffix.lower() in {".cu", ".cuh"}:
+            return True
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if CUDA_TEXT_PATTERN.search(text):
+            return True
+    return False
+
+
+def _discover_entry_script(root: Path | None) -> str:
+    if root is None or not root.is_dir():
+        return "entry_script.py"
+    for candidate in ENTRY_SCRIPT_CANDIDATES:
+        if (root / candidate).is_file():
+            return candidate
+    scripts_dir = root / "test_data_and_scripts"
+    if scripts_dir.is_dir():
+        scripts = sorted(path for path in scripts_dir.glob("*.py") if path.is_file())
+        if scripts:
+            return scripts[0].relative_to(root).as_posix()
+    for name in ("run", "main", "train", "inference", "demo", "app"):
+        matches = sorted(path for path in root.rglob(f"{name}.py") if _is_project_local_file(root, path))
+        if matches:
+            return matches[0].relative_to(root).as_posix()
+    return "entry_script.py"
+
+
+def _iter_project_source_files(root: Path, *, suffixes: set[str]) -> list[Path]:
+    files: list[Path] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        if len(files) >= 2000:
+            break
+        if path.is_file() and path.suffix.lower() in suffixes and _is_project_local_file(root, path):
+            files.append(path)
+    return files
+
+
+def _is_project_local_file(root: Path, path: Path) -> bool:
+    try:
+        relative_parts = path.relative_to(root).parts
+    except ValueError:
+        return False
+    return not any(part in {".git", ".sm-artifacts", ".venv", "__pycache__", "build", "dist", "output_projects", "e2e-reports", "site-packages", "venv"} for part in relative_parts)
+
+
+def _ensure_source_backed_custom_op_surface(surface: dict[str, object], units: Sequence[object], project_dir: str) -> None:
+    native_units = [unit for unit in units if hasattr(unit, "identity") and hasattr(unit, "source_path")]
+    unit_identities = _ordered_unique([_native_unit_attr(unit, "identity") for unit in native_units])
+    families = _ordered_unique([_native_unit_attr(unit, "family") for unit in native_units])
+    symbols = _ordered_unique([_native_unit_attr(unit, "symbol") for unit in native_units])
+    source_paths = _ordered_unique([_native_unit_attr(unit, "source_path") for unit in native_units])
+    source_evidence = _ordered_unique(
+        [
+            f"source inspection: {_native_unit_attr(unit, 'source_path')}:{_native_unit_attr(unit, 'line_number')} defines {_native_unit_attr(unit, 'symbol')}"
+            for unit in native_units
+        ]
+    )
+
+    surface["custom_op_detected"] = True
+    surface["discovery_complete"] = True
+    surface["discovery_sources_checked"] = list(PHASE1_REQUIRED_DISCOVERY_SOURCES)
+    surface["searched_source_roots"] = [project_dir]
+    surface["searched_source_paths"] = source_paths
+    surface["operator_families"] = families
+    surface["fine_grained_operator_units"] = unit_identities
+    surface["discovered_operator_names"] = symbols
+    surface["native_operator_symbols"] = symbols
+    surface["kernel_launch_sites"] = source_evidence
+    surface["source_evidence"] = source_evidence
+    surface["negative_evidence"] = [
+        "source inspection only: no runtime custom-op pass/fail evidence claimed in Phase 1 inventory"
+    ]
+    surface["dynamic_loading_checks"] = [
+        "source inspection only: inspect Python/C++ binding and dynamic-loading routes for each discovered native unit"
+    ]
+    surface["build_load_checks"] = [
+        "source inspection only: inspect setup/build manifests for extension build and load routes without claiming execution"
+    ]
+    surface["unresolved_source_groups"] = []
+    surface["out_of_scope_source_groups"] = []
+    surface["fine_grained_operator_unit_evidence"] = [
+        {
+            "unit_identity": _native_unit_attr(unit, "identity"),
+            "source_evidence": [
+                f"source inspection: {_native_unit_attr(unit, 'source_path')}:{_native_unit_attr(unit, 'line_number')} defines {_native_unit_attr(unit, 'symbol')}"
+            ],
+            "candidate_framework_integration_routes": [
+                f"source-backed native binding route for {_native_unit_attr(unit, 'symbol')}",
+                "source-backed Python/C++ extension integration route",
+            ],
+        }
+        for unit in native_units
+    ]
+
+
+def _native_unit_attr(unit: object, attr: str) -> str:
+    return str(getattr(unit, attr, "")).strip()
+
+
+def _merge_operator_inventory_variant_axes(output: Mapping[str, object], surface: dict[str, object]) -> bool:
+    if surface.get("variant_axes_detected") is True and isinstance(surface.get("variant_axes"), Mapping):
+        return False
+    inventory = output.get("operator_inventory")
+    if not isinstance(inventory, Mapping):
+        return False
+    axes = _variant_axes_from_operator_inventory(cast(Mapping[object, object], inventory), surface)
+    if not axes:
+        return False
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = axes
+    return True
+
+
+def _drop_unexpanded_synthesized_variant_axes(surface: dict[str, object]) -> None:
+    variants = surface.get("expanded_operator_variants")
+    if isinstance(variants, list) and variants:
+        return
+    if surface.get("variant_axes_source") == "source_template_scan":
+        return
+    _ = surface.pop("variant_axes_detected", None)
+    _ = surface.pop("variant_axes", None)
+    _ = surface.pop("expanded_operator_variants", None)
+    _ = surface.pop("expanded_operator_instances_count", None)
+
+
+def _merge_source_template_variant_axes(surface: dict[str, object], project_dir: str) -> None:
+    if surface.get("variant_axes_detected") is True and isinstance(surface.get("variant_axes"), Mapping):
+        return
+    axes = _source_template_axes_from_project(surface, project_dir)
+    if not axes:
+        return
+    surface["variant_axes_detected"] = True
+    surface["variant_axes"] = axes
+    surface["variant_axes_source"] = "source_template_scan"
+
+
+def _source_template_axes_from_project(surface: Mapping[str, object], project_dir: str) -> dict[str, object]:
+    root = Path(project_dir).resolve()
+    if not root.is_dir():
+        return {}
+    evidence_by_unit = _fine_grained_evidence_by_unit(surface.get("fine_grained_operator_unit_evidence"))
+    axes_by_unit: dict[str, dict[str, list[str]]] = {}
+    source_cache: dict[Path, str] = {}
+    for base_unit in _string_list(surface.get("fine_grained_operator_units")):
+        source_text = _source_template_text_for_unit(base_unit, surface, evidence_by_unit, root, source_cache)
+        if not source_text:
+            continue
+        axes = _source_template_axes_from_text(source_text)
+        if axes:
+            axes_by_unit[base_unit] = axes
+    if not axes_by_unit:
+        return {}
+    merged: dict[str, list[str]] = {}
+    for axes in axes_by_unit.values():
+        for axis_name, values in axes.items():
+            merged[axis_name] = _ordered_unique([*merged.get(axis_name, []), *values])
+    base_units = _string_list(surface.get("fine_grained_operator_units"))
+    result: dict[str, object] = dict(_canonicalized_template_axes(merged, base_units))
+    for base_unit, axes in axes_by_unit.items():
+        canonical_axes = _canonicalized_template_axes(axes, [base_unit])
+        if canonical_axes:
+            result[base_unit] = canonical_axes
+    return result
+
+
+def _source_template_text_for_unit(
+    base_unit: str,
+    surface: Mapping[str, object],
+    evidence_by_unit: Mapping[str, Mapping[object, object]],
+    project_root: Path,
+    source_cache: dict[Path, str],
+) -> str:
+    project_root = project_root.resolve()
+    evidence_text = "\n".join([
+        base_unit,
+        _flatten_text(evidence_by_unit.get(base_unit, {})),
+        *_source_evidence_for_base(base_unit, evidence_by_unit, {}, surface),
+    ])
+    snippets: list[str] = [evidence_text]
+    for path in _source_paths_from_text(base_unit, evidence_text):
+        resolved = (project_root / path).resolve()
+        if resolved != project_root and project_root not in resolved.parents:
+            continue
+        if not _is_native_source_path(resolved):
+            continue
+        if resolved not in source_cache:
+            try:
+                source_cache[resolved] = resolved.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                source_cache[resolved] = ""
+        if source_cache[resolved]:
+            snippets.append(source_cache[resolved])
+    return "\n".join(snippets)
+
+
+def _source_template_axes_from_text(text: str) -> dict[str, list[str]]:
+    axes: dict[str, list[str]] = {}
+    for row in _template_declaration_rows(text):
+        for axis_name in _declared_template_axis_names(row):
+            axis_values = _template_axis_values_from_text(row, axis_name)
+            if axis_values:
+                canonical = _canonical_template_axis_name(axis_name)
+                axes[canonical] = _ordered_unique([*axes.get(canonical, []), *axis_values])
+    _apply_source_template_axis_formatting(axes, text)
+    return axes
+
+
+def _apply_source_template_axis_formatting(axes: dict[str, list[str]], text: str) -> None:
+    ndim_values = axes.get("ndim")
+    if not ndim_values or not _source_template_uses_dimension_suffix(text):
+        return
+    axes["ndim"] = _canonical_template_axis_values("ndim", [
+        f"{value}d" if value.isdigit() else value
+        for value in ndim_values
+    ])
+
+
+def _source_template_uses_dimension_suffix(text: str) -> bool:
+    return bool(re.search(r"(?:##|\{|_)ndim(?:##|\})?d(?![A-Za-z0-9])", text, flags=re.IGNORECASE))
+
+
+def _template_declaration_rows(text: str) -> list[str]:
+    raw_rows = [_clean_template_comment_line(line) for line in text.splitlines()]
+    rows: list[str] = []
+    for index, row in enumerate(raw_rows):
+        if not row:
+            continue
+        joined = " ".join(part for part in raw_rows[index:index + 3] if part)
+        if _row_has_template_declaration_signal(joined):
+            rows.append(joined)
+    return _ordered_unique(rows)
+
+
+def _clean_template_comment_line(line: str) -> str:
+    stripped = line.strip()
+    is_comment = stripped.startswith(("//", "/*", "*"))
+    stripped = re.sub(r"^/\*+", "", stripped)
+    stripped = re.sub(r"\*/$", "", stripped)
+    stripped = re.sub(r"^//", "", stripped)
+    stripped = re.sub(r"^\*+", "", stripped)
+    cleaned = stripped.strip()
+    if is_comment:
+        return cleaned
+    if re.search(r"(?<![A-Za-z0-9_])(?:generated|variant|template|speciali[sz]e|possible values)\b", cleaned, flags=re.IGNORECASE):
+        return cleaned
+    return ""
+
+
+def _row_has_template_declaration_signal(row: str) -> bool:
+    normalized = row.lower().replace("-", "_")
+    has_macro_axis = bool(re.search(r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]*_(?:NDIM|DIMS?|ACCURACY|DTYPE|TYPE|PRECISION)(?![A-Za-z0-9_])", row))
+    has_template_words = bool(re.search(r"(?:^|\b)(?:generated|variant|template|speciali[sz]e|axis|axes|values?|possible values|compiled multiple times|options are specified)\b", normalized))
+    has_values = bool(re.search(r"\{[^{}]+\}|\[[^\[\]]+\]|range\(|possible values are", row, flags=re.IGNORECASE))
+    return has_values and (has_macro_axis or has_template_words)
+
+
+def _declared_template_axis_names(text: str) -> list[str]:
+    names: list[str] = []
+    for match in re.finditer(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_(?:NDIM|DIMS?|ACCURACY|DTYPE|TYPE|PRECISION))(?![A-Za-z0-9_])", text):
+        names.append(_axis_name_from_macro(match.group(1)))
+    for match in re.finditer(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_-]*)\s*=\s*\{[^{}]+\}", text):
+        names.append(match.group(1))
+    for match in re.finditer(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_-]*)\s*(?:=|:|are|values? are|possible values are)\s*[^\n.;]*[,/{][^\n.;]*", text, flags=re.IGNORECASE):
+        names.append(match.group(1))
+    return [name for name in _ordered_unique([_canonical_template_axis_name(name) for name in names]) if name and not _axis_is_implementation_detail(name) and _valid_source_template_axis_name(name)]
+
+
+def _valid_source_template_axis_name(axis_name: str) -> bool:
+    normalized = axis_name.strip().lower().replace("-", "_")
+    if normalized in {"source", "inspection", "possible", "values", "generated", "variant", "template"}:
+        return False
+    return bool(re.fullmatch(r"[a-z][a-z0-9_]{1,40}", normalized))
+
+
+def _axis_name_from_macro(macro_name: str) -> str:
+    normalized = macro_name.strip().lower().replace("-", "_")
+    for suffix in ("_ndim", "_ndims", "_dim", "_dims", "_accuracy", "_dtype", "_type", "_precision"):
+        if normalized.endswith(suffix):
+            return normalized[len(normalized) - len(suffix) + 1 :]
+    return normalized
+
+
+def _template_axis_values_from_text(text: str, axis_name: str) -> list[str]:
+    values: list[str] = []
+    axis_pattern = re.escape(axis_name)
+    macro_patterns = [re.escape(name.lower()) for name in _macro_names_for_axis(text, axis_name)]
+    exact_patterns = [rf"{axis_pattern}\s*=\s*\{{([^}}]+)\}}"]
+    exact_patterns.extend(rf"{macro_pattern}\s*=\s*\{{([^}}]+)\}}" for macro_pattern in macro_patterns)
+    for pattern in exact_patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            values.extend(_split_axis_value_list(match.group(1)))
+    if values:
+        return _canonical_template_axis_values(axis_name, values)
+
+    patterns = [
+        rf"{axis_pattern}\s*(?:=|:|are|values? are|possible values are)\s*([^\n.;]+)",
+        rf"{axis_pattern}[\s\S]{{0,220}}?possible values are\s*([^.;\n]+)",
+    ]
+    for macro_pattern in macro_patterns:
+        patterns.extend((
+            rf"{macro_pattern}\s*(?:=|:|are|values? are|possible values are)\s*([^\n.;]+)",
+            rf"{macro_pattern}[\s\S]{{0,220}}?possible values are\s*([^.;\n]+)",
+        ))
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            values.extend(_split_axis_value_list(match.group(1)))
+    if not values and axis_name == "dtype" and _row_has_dtype_value_context(text):
+        for value in ("float", "double"):
+            if re.search(rf"(?<![A-Za-z0-9_]){value}(?![A-Za-z0-9_])", text, flags=re.IGNORECASE):
+                values.append(value)
+    return _filter_axis_values(axis_name, _canonical_template_axis_values(axis_name, values))
+
+
+def _row_has_dtype_value_context(text: str) -> bool:
+    return bool(re.search(r"(?:possible values|values? are|generated|variant|template)", text, flags=re.IGNORECASE))
+
+
+def _filter_axis_values(axis_name: str, values: list[str]) -> list[str]:
+    canonical_axis = _canonical_template_axis_name(axis_name)
+    filtered: list[str] = []
+    for value in values:
+        if canonical_axis == "ndim":
+            numeric = value[:-1] if value.endswith("d") and value[:-1].isdigit() else value
+            if not numeric.isdigit():
+                continue
+        elif canonical_axis == "accuracy":
+            if not value.isdigit():
+                continue
+        elif canonical_axis == "dtype":
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", value):
+                continue
+        elif not re.fullmatch(r"[a-z0-9_.+-]+", value):
+            continue
+        filtered.append(value)
+    return _ordered_unique(filtered)
+
+
+def _macro_names_for_axis(text: str, axis_name: str) -> list[str]:
+    names: list[str] = []
+    canonical_axis = _canonical_template_axis_name(axis_name)
+    suffixes = _macro_suffixes_for_axis(canonical_axis)
+    for match in re.finditer(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]+)(?![A-Za-z0-9_])", text):
+        macro_name = match.group(1)
+        normalized = macro_name.lower()
+        if any(normalized.endswith(suffix) for suffix in suffixes):
+            names.append(macro_name)
+    return _ordered_unique(names)
+
+
+def _macro_suffixes_for_axis(axis_name: str) -> tuple[str, ...]:
+    if axis_name == "ndim":
+        return ("_ndim", "_ndims", "_dim", "_dims")
+    if axis_name == "dtype":
+        return ("_dtype", "_type")
+    if axis_name == "accuracy":
+        return ("_accuracy", "_precision")
+    return (f"_{axis_name}",)
+
+
+def _variant_axes_from_operator_inventory(inventory: Mapping[object, object], surface: Mapping[str, object]) -> dict[str, list[str]]:
+    base_units = [unit for unit in _string_sequence(surface.get("fine_grained_operator_units"))]
+    collected: dict[str, list[str]] = {}
+    for family in _operator_inventory_families(inventory.get("families")):
+        raw_axes = family.get("variant_axes")
+        if not isinstance(raw_axes, Mapping):
+            continue
+        axes = _canonicalized_template_axes(_normalized_axis_values(cast(Mapping[object, object], raw_axes)), base_units)
+        for axis_name, values in axes.items():
+            filtered_values = [value for value in values if value.strip().lower() not in NON_TARGET_VARIANT_VALUES]
+            if filtered_values:
+                collected[axis_name] = _ordered_unique([*collected.get(axis_name, []), *filtered_values])
+    return collected
+
+
+def _operator_inventory_families(value: object) -> list[Mapping[object, object]]:
+    if isinstance(value, Mapping):
+        return [cast(Mapping[object, object], item) for item in cast(Mapping[object, object], value).values() if isinstance(item, Mapping)]
+    if isinstance(value, list):
+        return [cast(Mapping[object, object], item) for item in cast(list[object], value) if isinstance(item, Mapping)]
+    return []
+
+
+def _string_sequence(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in cast(list[object], value) if isinstance(item, str) and item.strip()]
 
 
 def _supplement_source_discovered_cuda_units(surface: dict[str, object], project_dir: object) -> None:
@@ -323,7 +941,8 @@ def _source_template_expanded_variants(surface: Mapping[str, object], *, project
     for index, base_unit in enumerate(base_units):
         descriptor_text = _descriptor_text_for_unit(base_unit, index, names, symbols, surface, evidence_by_unit)
         base_unit = _canonical_cuda_base_unit(base_unit, descriptor_text, axes)
-        base_axes = _axes_for_base_from_variant_axes(base_unit, raw_axes_map, axes)
+        descriptor_text = _descriptor_text_with_source_files(base_unit, descriptor_text, project_dir, source_file_cache) if project_dir else descriptor_text
+        base_axes = _axes_for_base_from_variant_axes(base_unit, raw_axes_map, axes, descriptor_text)
         sample = sample_by_base.get(base_unit)
         sample_axis_names = _sample_axis_names_for_base(sample, base_axes)
         source_axis_names = _source_template_axis_names_for_unit(
@@ -626,8 +1245,8 @@ def _axes_with_source_values_for_base(
         return axes
     per_base_values = _source_axis_values_for_base(base_unit, axis_names, axes, surface)
     if not per_base_values:
-        return axes
-    narrowed = dict(axes)
+        return {axis: values for axis, values in axes.items() if axis in axis_names}
+    narrowed = {axis: values for axis, values in axes.items() if axis in axis_names}
     for axis_name, values in per_base_values.items():
         if values:
             narrowed[axis_name] = values
@@ -667,6 +1286,8 @@ def _source_template_axis_values_from_rows(
         return {}
     values_by_axis: dict[str, list[str]] = {axis: [] for axis in allowed_axes}
     for row in rows:
+        if row not in _template_declaration_rows(row):
+            continue
         for axis_name in allowed_axes:
             values_by_axis[axis_name] = _ordered_unique([
                 *values_by_axis[axis_name],
@@ -747,6 +1368,14 @@ def _split_axis_value_list(raw_values: str) -> list[str]:
     values: list[str] = []
     for raw_value in re.split(r"[,/]", raw_values):
         value = raw_value.strip().strip("'\"").lower()
+        value = re.sub(r"^(?:and|or)\s+", "", value)
+        range_match = re.fullmatch(r"([-+]?\d+)\s*-\s*([-+]?\d+)", value)
+        if range_match:
+            start = int(range_match.group(1))
+            stop = int(range_match.group(2))
+            step = 1 if stop >= start else -1
+            values.extend(str(item) for item in range(start, stop + step, step))
+            continue
         if _safe_axis_value_token(value):
             values.append(value)
     return _ordered_unique(values)
@@ -895,6 +1524,18 @@ def _canonical_template_axis_name(axis_name: str) -> str:
     normalized = axis_name.strip().lower().replace("-", "_").replace(" ", "_")
     if normalized in {"dim", "dims", "dimension", "dimensions", "n_dim", "n_dims", "num_dim", "num_dims"}:
         return "ndim"
+    for suffix, canonical in (
+        ("_ndim", "ndim"),
+        ("_ndims", "ndim"),
+        ("_dim", "ndim"),
+        ("_dims", "ndim"),
+        ("_accuracy", "accuracy"),
+        ("_precision", "accuracy"),
+        ("_dtype", "dtype"),
+        ("_type", "dtype"),
+    ):
+        if normalized.endswith(suffix):
+            return canonical
     return normalized
 
 
@@ -958,16 +1599,38 @@ def _axis_values_from_axis_rows(rows: list[object]) -> dict[str, list[str]]:
     return axes
 
 
-def _axes_for_base_from_variant_axes(base_unit: str, raw_axes: Mapping[object, object], default_axes: Mapping[str, list[str]]) -> dict[str, list[str]]:
+def _axes_for_base_from_variant_axes(
+    base_unit: str,
+    raw_axes: Mapping[object, object],
+    default_axes: Mapping[str, list[str]],
+    descriptor_text: str = "",
+) -> dict[str, list[str]]:
     for raw_group, raw_group_axes in raw_axes.items():
         if not isinstance(raw_group, str):
             continue
-        if not _variant_axis_group_matches_base(raw_group, base_unit):
+        if not _variant_axis_group_matches_base(raw_group, base_unit, descriptor_text):
             continue
         group_axes = _normalized_axis_group(raw_group_axes)
         if group_axes:
-            return group_axes
+            return _with_source_mentioned_default_axes(group_axes, default_axes, descriptor_text)
     return dict(default_axes)
+
+
+def _with_source_mentioned_default_axes(
+    group_axes: Mapping[str, list[str]],
+    default_axes: Mapping[str, list[str]],
+    descriptor_text: str,
+) -> dict[str, list[str]]:
+    merged = dict(group_axes)
+    for axis_name in _template_axis_order(default_axes):
+        if axis_name in merged:
+            continue
+        if not _descriptor_mentions_axis(descriptor_text, axis_name):
+            continue
+        values = default_axes.get(axis_name, [])
+        if values:
+            merged[axis_name] = values
+    return merged
 
 
 def _normalized_axis_group(value: object) -> dict[str, list[str]]:
@@ -980,19 +1643,16 @@ def _normalized_axis_group(value: object) -> dict[str, list[str]]:
     return {}
 
 
-def _variant_axis_group_matches_base(group_name: str, base_unit: str) -> bool:
+def _variant_axis_group_matches_base(group_name: str, base_unit: str, descriptor_text: str = "") -> bool:
     normalized_group = group_name.strip().lower().replace("-", "_").replace(":", "_")
     normalized_base = base_unit.strip().lower().replace("-", "_").replace(":", "_")
     if not normalized_group:
         return False
-    if normalized_group in normalized_base:
+    group_tokens = _base_match_tokens(normalized_group)
+    if _line_matches_base(normalized_base, group_tokens):
         return True
-    if normalized_group.endswith("s") and normalized_group[:-1] in normalized_base:
-        return True
-    return normalized_group in {"propagator", "propagators"} and any(
-        family in normalized_base
-        for family in ("scalar", "scalar_born", "elastic", "acoustic")
-    )
+    descriptor_normalized = descriptor_text.lower().replace("-", "_").replace(":", "_")
+    return bool(descriptor_normalized and _line_matches_base(descriptor_normalized, group_tokens))
 
 
 def _template_axis_order(axes: Mapping[str, list[str]]) -> list[str]:
@@ -1045,8 +1705,7 @@ def _descriptor_mentions_axis(text: str, axis_name: str) -> bool:
         rf"\$\{{\s*{escaped}\s*\}}",
         rf"(?<![A-Za-z0-9_]){escaped}(?![A-Za-z0-9_])",
     )
-    macro_axis = _macro_axis_name(axis)
-    if macro_axis:
+    for macro_axis in _macro_names_for_axis(text, axis):
         macro = re.escape(macro_axis)
         patterns = (*patterns, rf"(?<![A-Za-z0-9_]){macro}(?![A-Za-z0-9_])")
     if compact != escaped:
@@ -1151,15 +1810,6 @@ def _numeric_match_is_path_line_reference(text: str, start: int, end: int) -> bo
     prefix = text[max(0, start - 80):start]
     suffix = text[end:end + 20]
     return bool(re.search(r"[A-Za-z0-9_./-]+\.(?:c|cc|cpp|cu|h|hpp|cuh|py):$", prefix)) and not suffix.startswith("d")
-
-
-def _macro_axis_name(axis_name: str) -> str:
-    normalized = axis_name.strip().lower().replace("-", "_").replace(" ", "_")
-    if normalized == "ndim":
-        return "DW_NDIM"
-    if normalized == "dtype":
-        return "DW_DTYPE"
-    return ""
 
 
 def _axis_is_implementation_detail(axis_name: str) -> bool:
@@ -1659,11 +2309,13 @@ def ensure_strict_expanded_variant_validation_script(
     script_path = _phase3_validation_script_path(target, project_root)
     existing_text = _read_text_if_file(script_path)
     if not _strict_expanded_variant_script_is_sufficient(existing_text):
-        script_path.parent.mkdir(parents=True, exist_ok=True)
-        _ = script_path.write_text(
-            _render_strict_expanded_variant_validation_script(unit_identities, overlay),
-            encoding="utf-8",
+        target["entry_script_revision_required"] = True
+        target["entry_script_revision_reason"] = (
+            "selected custom-op validation script must be source-driven and execute project/API custom-op routes; "
+            "report-only generated validators are not acceptable"
         )
+        target["phase5_entry_script_revision_allowed"] = True
+        return
 
     target["entry_script_path"] = str(script_path)
     target["run_command"] = _phase3_hardened_run_command(target.get("run_command"), script_path)
@@ -1742,189 +2394,6 @@ def _phase3_hardened_run_command(raw_command: object, script_path: Path) -> str:
         if parts and Path(parts[0]).name.lower().startswith("python"):
             python_executable = parts[0]
     return f"{shlex.quote(python_executable)} {shlex.quote(str(script_path))}"
-
-
-def _render_strict_expanded_variant_validation_script(
-    unit_identities: Sequence[str],
-    overlay: Mapping[str, object],
-) -> str:
-    raw_axis_coverage = overlay.get("variant_axis_coverage")
-    axis_coverage: Mapping[str, object] = cast(Mapping[str, object], raw_axis_coverage) if isinstance(raw_axis_coverage, Mapping) else {}
-    raw_per_variant_report = overlay.get("per_variant_performance_report")
-    per_variant_report: Mapping[str, object] = (
-        cast(Mapping[str, object], raw_per_variant_report) if isinstance(raw_per_variant_report, Mapping) else {}
-    )
-    unit_payload = json.dumps(list(unit_identities), ensure_ascii=False)
-    axis_payload = json.dumps(axis_coverage, ensure_ascii=False, sort_keys=True)
-    performance_payload = json.dumps(per_variant_report, ensure_ascii=False, sort_keys=True)
-    lines = [
-        "#!/usr/bin/env python3",
-        "\"\"\"Fail-closed expanded custom-op validation contract generated by SEAM Phase 3.\"\"\"",
-        "",
-        "from __future__ import annotations",
-        "",
-        "import json",
-        "from pathlib import Path",
-        "from typing import Any",
-        "",
-        "ROOT = Path(__file__).resolve().parent",
-        "REPORTS_DIR = ROOT / \"migration_reports\"",
-        "REQUIRED_REPORTS = [",
-        "    \"operator_inventory.json\",",
-        "    \"migration_manifest.json\",",
-        "    \"preflight.json\",",
-        "    \"baseline.json\",",
-        "    \"runtime_coverage.json\",",
-        "    \"performance.json\",",
-        "    \"build.json\",",
-        "    \"implementation_resolution.json\",",
-        "    \"custom_op_final_gate.json\",",
-        "    \"evidence_validation.json\",",
-        "    \"summary.json\",",
-        "]",
-        f"EXPECTED_UNIT_IDENTITIES = json.loads({unit_payload!r})",
-        "EXPANDED_VARIANT_INVENTORY = {",
-        "    \"variant_axes_detected\": True,",
-        "    \"unit_identities\": EXPECTED_UNIT_IDENTITIES,",
-        "    \"expanded_operator_instances_count\": len(EXPECTED_UNIT_IDENTITIES),",
-        "    \"target_closure_only\": True,",
-        "}",
-        f"VARIANT_AXIS_COVERAGE = json.loads({axis_payload!r})",
-        f"PER_VARIANT_PERFORMANCE_REPORT = json.loads({performance_payload!r})",
-        "",
-        "def fail(message: str) -> None:",
-        "    raise SystemExit(message)",
-        "",
-        "def load_json(name: str) -> Any:",
-        "    path = REPORTS_DIR / name",
-        "    if not path.is_file():",
-        "        fail(f\"required report missing: {name}\")",
-        "    try:",
-        "        return json.loads(path.read_text(encoding=\"utf-8\"))",
-        "    except json.JSONDecodeError as exc:",
-        "        fail(f\"required report invalid JSON: {name}: {exc}\")",
-        "",
-        "def candidate_rows(report: Any) -> list[Any]:",
-        "    if isinstance(report, list):",
-        "        return report",
-        "    if not isinstance(report, dict):",
-        "        return []",
-        "    for key in (\"rows\", \"entries\", \"items\", \"operator_inventory\", \"manifest\", \"build_rows\", \"runtime_rows\", \"performance_rows\", \"final_gate_rows\"):",
-        "        value = report.get(key)",
-        "        if isinstance(value, list):",
-        "            return value",
-        "    source_inventory = report.get(\"source_inventory\")",
-        "    if isinstance(source_inventory, dict) and isinstance(source_inventory.get(\"entries\"), list):",
-        "        return source_inventory[\"entries\"]",
-        "    return []",
-        "",
-        "def row_identity(row: Any) -> str:",
-        "    if not isinstance(row, dict):",
-        "        return \"\"",
-        "    for key in (\"unit_identity\", \"row_id\", \"manifest_row_id\", \"operator\", \"name\", \"id\"):",
-        "        value = row.get(key)",
-        "        if isinstance(value, str) and value.strip():",
-        "            return value.strip()",
-        "    return \"\"",
-        "",
-        "def rows_by_identity(rows: list[Any], report_name: str) -> dict[str, dict[str, Any]]:",
-        "    row_by_id: dict[str, dict[str, Any]] = {}",
-        "    for index, row in enumerate(rows):",
-        "        if not isinstance(row, dict):",
-        "            fail(f\"{report_name} row {index} must be an object\")",
-        "        identity = row_identity(row)",
-        "        if not identity:",
-        "            fail(f\"{report_name} row {index} missing unit_identity\")",
-        "        if identity in row_by_id:",
-        "            fail(f\"{report_name} duplicate unit_identity: {identity}\")",
-        "        row_by_id[identity] = row",
-        "    return row_by_id",
-        "",
-        "def assert_exact_identity_set(label: str, row_by_id: dict[str, dict[str, Any]]) -> None:",
-        "    expected = EXPECTED_UNIT_IDENTITIES",
-        "    if set(row_by_id) != set(expected):",
-        "        missing = sorted(set(expected) - set(row_by_id))",
-        "        extra = sorted(set(row_by_id) - set(expected))",
-        "        fail(f\"{label} rows do not close over every per-expanded-variant unit_identity; missing={missing[:20]} extra={extra[:20]}\")",
-        "",
-        "def validate_inventory_like(report: Any, report_name: str) -> dict[str, dict[str, Any]]:",
-        "    row_by_id = rows_by_identity(candidate_rows(report), report_name)",
-        "    assert_exact_identity_set(report_name, row_by_id)",
-        "    return row_by_id",
-        "",
-        "def has_any(row: dict[str, Any], keys: tuple[str, ...]) -> bool:",
-        "    return any(bool(row.get(key)) for key in keys)",
-        "",
-        "def validate_build_report(report: Any) -> dict[str, dict[str, Any]]:",
-        "    build_rows = candidate_rows(report)",
-        "    build_by_id = rows_by_identity(build_rows, \"build.json\")",
-        "    expected = EXPECTED_UNIT_IDENTITIES",
-        "    if set(build_by_id) != set(expected):",
-        "        missing = sorted(set(expected) - set(build_by_id))",
-        "        extra = sorted(set(build_by_id) - set(expected))",
-        "        fail(f\"build rows do not close over every per-expanded-variant unit_identity; missing={missing[:20]} extra={extra[:20]}\")",
-        "    for unit_identity, build_row in build_by_id.items():",
-        "        if not has_any(build_row, (\"cann_build_provenance\", \"cann_build_log\", \"cann_build_evidence\")):",
-        "            fail(f\"build row missing CANN build provenance: {unit_identity}\")",
-        "        if not has_any(build_row, (\"opp_install_provenance\", \"opp_install_log\", \"install_provenance\")):",
-        "            fail(f\"build row missing OPP install provenance: {unit_identity}\")",
-        "        if not has_any(build_row, (\"op_host_source\", \"op_host_source_evidence\", \"op_host\")):",
-        "            fail(f\"build row missing op_host source evidence: {unit_identity}\")",
-        "        if not has_any(build_row, (\"op_kernel_source\", \"ascendc_source\", \"op_kernel_source_evidence\", \"op_kernel\")):",
-        "            fail(f\"build row missing op_kernel/AscendC source evidence: {unit_identity}\")",
-        "        if not has_any(build_row, (\"generated_opp_package_artifacts\", \"opp_package\", \"kernel_meta\", \"op_info\")):",
-        "            fail(f\"build row missing generated OPP package artifacts: {unit_identity}\")",
-        "    return build_by_id",
-        "",
-        "def validate_variant_axis_coverage() -> None:",
-        "    if not isinstance(VARIANT_AXIS_COVERAGE, dict) or not VARIANT_AXIS_COVERAGE.get(\"all_axes_covered\"):",
-        "        fail(\"variant_axis_coverage missing all_axes_covered=true\")",
-        "",
-        "def validate_per_variant_performance(report: Any) -> dict[str, dict[str, Any]]:",
-        "    row_by_id = validate_inventory_like(report, \"performance.json\")",
-        "    if not PER_VARIANT_PERFORMANCE_REPORT.get(\"one_entry_per_expanded_variant\", True):",
-        "        fail(\"per_variant performance report must require one entry per expanded variant\")",
-        "    return row_by_id",
-        "",
-        "def main() -> int:",
-        "    for name in REQUIRED_REPORTS:",
-        "        load_json(name)",
-        "    manifest = load_json(\"migration_manifest.json\")",
-        "    runtime = load_json(\"runtime_coverage.json\")",
-        "    performance = load_json(\"performance.json\")",
-        "    build = load_json(\"build.json\")",
-        "    implementation = load_json(\"implementation_resolution.json\")",
-        "    final_gate = load_json(\"custom_op_final_gate.json\")",
-        "    evidence = load_json(\"evidence_validation.json\")",
-        "    validate_inventory_like(manifest, \"migration_manifest.json\")",
-        "    validate_inventory_like(runtime, \"runtime_coverage.json\")",
-        "    validate_per_variant_performance(performance)",
-        "    validate_build_report(build)",
-        "    validate_inventory_like(implementation, \"implementation_resolution.json\")",
-        "    validate_inventory_like(final_gate, \"custom_op_final_gate.json\")",
-        "    validate_inventory_like(evidence, \"evidence_validation.json\")",
-        "    validate_variant_axis_coverage()",
-        "    print(json.dumps({\"status\": \"completed\", \"expanded_variant_inventory\": EXPANDED_VARIANT_INVENTORY, \"variant_axis_coverage\": VARIANT_AXIS_COVERAGE, \"per_variant\": \"per-expanded-variant performance report closed\", \"unit_count\": len(EXPECTED_UNIT_IDENTITIES)}, indent=2, sort_keys=True))",
-        "    return 0",
-        "",
-        "if __name__ == \"__main__\":",
-        "    raise SystemExit(main())",
-        "",
-    ]
-    return "\n".join(lines)
-
-
-def _surface_has_active_custom_op_inventory(surface: Mapping[object, object]) -> bool:
-    if surface.get("custom_op_detected") is True:
-        return True
-    if surface.get("custom_op_detected") is False:
-        return False
-    return bool(
-        _string_list(surface.get("fine_grained_operator_units"))
-        or _string_list(surface.get("discovered_operator_names"))
-        or _string_list(surface.get("native_operator_symbols"))
-        or _string_list(surface.get("kernel_launch_sites"))
-    )
 
 
 def _normalize_inventory(value: object) -> dict[str, object]:
