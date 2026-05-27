@@ -2583,15 +2583,10 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
         step_outputs={},
         state={"error_analysis": {"category": "operator", "repair_role": "operator_fixer"}},
     )
-    assert "| Iter 1 | success |" in formatted
-    assert "dependency | dependency_fixer |" in formatted
-    assert "| Iter 2 | success |" in formatted and "operator | operator_fixer |" in formatted
+    assert "Total previous iterations: 2" in formatted
     assert "Latest error category: operator (repair role: operator_fixer)" in formatted
-    # Verify fixer outputs appear in the formatted table and details section
-    assert "Installed torch_npu" in formatted
+    assert "## Latest Previous Fixer Output (Complete)" in formatted
     assert "Replaced unsupported op" in formatted
-    assert "Previous Fixer Outputs" in formatted
-    assert "requirements.txt" in formatted
     assert "model.py" in formatted
 
     legacy_formatted = executor._format_error_analyzer_history(
@@ -2599,7 +2594,8 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
         step_outputs={},
         state={},
     )
-    assert "| Iter 1 | success | 0.1 | unknown | (none) | (none) | (none) |" in legacy_formatted
+    assert "Total previous iterations: 1" in legacy_formatted
+    assert "Latest error category: unknown" in legacy_formatted
 
 
 def test_collect_fixer_outputs_extracts_summary_modified_files_and_diagnostics():
@@ -2675,12 +2671,10 @@ def test_format_error_analyzer_history_renders_fixer_outputs():
         history, step_outputs={}, state={}
     )
 
-    assert "| Iter 1 | failure | 1.5 | dependency | dependency_fixer |" in formatted
-    assert "| Iter 2 | failure | 2.0 | operator | operator_fixer |" in formatted
-    assert "Installed torch_npu" in formatted
+    assert "Total previous iterations: 2" in formatted
+    assert "Latest error category: operator (repair role: operator_fixer)" in formatted
     assert "Replaced unsupported op with AscendC impl" in formatted
-    assert "## Previous Fixer Outputs" in formatted
-    assert "requirements.txt" in formatted
+    assert "## Latest Previous Fixer Output (Complete)" in formatted
     assert "model.py" in formatted
     assert "ops/custom_ops.cpp" in formatted
 
@@ -3001,6 +2995,195 @@ def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_c
     assert result["applied"] is False
     assert result["blocked_reason"] == "unsafe_run_command"
     assert state["phase_3_entry_script"]["run_command"] == "python old.py"
+
+
+def test_entry_script_action_applies_safe_docker_exec_update_command(tmp_path: Path):
+    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "/workspace/validate_custom_ops_full.py",
+            "run_command": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py",
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
+    loop_vars = {"entry_script": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py"}
+    loop_state: dict[str, object] = {
+        "entry_script_revision_count": 0,
+        "entry_script_revision_requests": [],
+        "max_entry_script_revisions": 2,
+    }
+
+    result = executor._maybe_apply_entry_script_action(
+        {
+            "entry_script_action": {
+                "needed": True,
+                "action": "update_command",
+                "reason": "switch to active container",
+                "entry_script_path": "/workspace/validate_custom_ops_full.py",
+                "run_command": "docker exec -i -w /workspace e3c4a92a5065 /opt/conda/bin/python3 /workspace/validate_custom_ops_full.py",
+            }
+        },
+        loop_vars,
+        state,
+        {},
+        loop_state,
+    )
+
+    assert result is not None
+    assert result["applied"] is True
+    assert result["action"] == "update_command"
+    assert result["revision_number"] == 1
+    assert state["phase_3_entry_script"]["run_command"] == "docker exec -i -w /workspace e3c4a92a5065 /opt/conda/bin/python3 /workspace/validate_custom_ops_full.py"
+
+
+def test_entry_script_action_blocks_docker_run_even_with_update_command(tmp_path: Path):
+    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "/workspace/validate_custom_ops_full.py",
+            "run_command": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py",
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
+    loop_vars = {"entry_script": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py"}
+    loop_state: dict[str, object] = {
+        "entry_script_revision_count": 0,
+        "entry_script_revision_requests": [],
+        "max_entry_script_revisions": 2,
+    }
+
+    result = executor._maybe_apply_entry_script_action(
+        {
+            "entry_script_action": {
+                "needed": True,
+                "action": "update_command",
+                "reason": "new container run",
+                "entry_script_path": "/workspace/validate_custom_ops_full.py",
+                "run_command": "docker run --rm -v /host:/workspace python:3.10 /opt/conda/bin/python3 /workspace/validate_custom_ops_full.py",
+            }
+        },
+        loop_vars,
+        state,
+        {},
+        loop_state,
+    )
+
+    assert result is not None
+    assert result["applied"] is False
+    assert result["blocked_reason"] == "unsafe_run_command"
+
+
+def test_entry_script_action_blocks_docker_exec_with_wrong_entry_script(tmp_path: Path):
+    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "/workspace/validate_custom_ops_full.py",
+            "run_command": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py",
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
+    loop_vars = {"entry_script": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py"}
+    loop_state: dict[str, object] = {
+        "entry_script_revision_count": 0,
+        "entry_script_revision_requests": [],
+        "max_entry_script_revisions": 2,
+    }
+
+    result = executor._maybe_apply_entry_script_action(
+        {
+            "entry_script_action": {
+                "needed": True,
+                "action": "update_command",
+                "reason": "switch to active container with wrong script",
+                "entry_script_path": "/workspace/validate_custom_ops_full.py",
+                "run_command": "docker exec -i -w /workspace e3c4a92a5065 /opt/conda/bin/python3 /workspace/other_script.py",
+            }
+        },
+        loop_vars,
+        state,
+        {},
+        loop_state,
+    )
+
+    assert result is not None
+    assert result["applied"] is False
+    assert result["blocked_reason"] == "unsafe_run_command"
+
+
+def test_entry_script_action_blocks_podman_exec_without_exec_subcommand(tmp_path: Path):
+    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "/workspace/validate.py",
+            "run_command": "/opt/conda/bin/python3 /workspace/validate.py",
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
+    loop_vars = {"entry_script": "/opt/conda/bin/python3 /workspace/validate.py"}
+    loop_state: dict[str, object] = {
+        "entry_script_revision_count": 0,
+        "entry_script_revision_requests": [],
+        "max_entry_script_revisions": 2,
+    }
+
+    result = executor._maybe_apply_entry_script_action(
+        {
+            "entry_script_action": {
+                "needed": True,
+                "action": "update_command",
+                "reason": "podman run not exec",
+                "entry_script_path": "/workspace/validate.py",
+                "run_command": "podman run --rm my-image /opt/conda/bin/python3 /workspace/validate.py",
+            }
+        },
+        loop_vars,
+        state,
+        {},
+        loop_state,
+    )
+
+    assert result is not None
+    assert result["applied"] is False
+    assert result["blocked_reason"] == "unsafe_run_command"
+
+
+def test_entry_script_action_blocks_docker_exec_with_same_basename_wrong_path(tmp_path: Path):
+    """Docker exec must be blocked when using a different path with the same
+    basename (e.g. /malicious/validate.py does NOT match /workspace/validate.py)."""
+    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "/workspace/validate_custom_ops_full.py",
+            "run_command": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py",
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
+    loop_vars = {"entry_script": "/opt/conda/bin/python3 /workspace/validate_custom_ops_full.py"}
+    loop_state: dict[str, object] = {
+        "entry_script_revision_count": 0,
+        "entry_script_revision_requests": [],
+        "max_entry_script_revisions": 2,
+    }
+
+    result = executor._maybe_apply_entry_script_action(
+        {
+            "entry_script_action": {
+                "needed": True,
+                "action": "update_command",
+                "reason": "switch to active container with wrong path",
+                "entry_script_path": "/workspace/validate_custom_ops_full.py",
+                "run_command": "docker exec -i -w /workspace e3c4a92a5065 /opt/conda/bin/python3 /malicious/validate_custom_ops_full.py",
+            }
+        },
+        loop_vars,
+        state,
+        {},
+        loop_state,
+    )
+
+    assert result is not None
+    assert result["applied"] is False
+    assert result["blocked_reason"] == "unsafe_run_command"
 
 
 def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_required(tmp_path: Path) -> None:
@@ -4076,6 +4259,45 @@ def test_non_custom_project_skips_custom_op_final_gate(tmp_path: Path) -> None:
         "passed": True,
     }
     executor.session_mgr.send_command.assert_not_called()
+
+
+def test_record_custom_op_gate_failure_includes_all_errors_and_count():
+    loop_state: dict[str, object] = {"script_stderr": "previous error"}
+    evidence_errors = [
+        "rows[0].opp_custom_op_artifact_evidence must prove a native compiled custom-op artifact",
+        "rows[0].same_run_runtime_coverage must include custom call count > 0",
+        "rows[0].performance_evidence missing positive numeric fields: speedup_vs_baseline",
+        "rows[0].adapter_evidence must contain evidence",
+        "rows[0].parity_evidence must contain evidence",
+        "rows[0].integration_e2e_evidence must prove native compiled custom-op route execution",
+    ]
+    schema_error = "source_inventory must include discovery_complete and discovery_sources_checked metadata"
+    late_errors = evidence_errors + [schema_error]
+    result: dict[str, object] = {"errors": late_errors}
+
+    from core.workflow_executor import WorkflowExecutor
+    WorkflowExecutor._record_custom_op_gate_failure(loop_state, result)
+
+    stderr = str(loop_state["script_stderr"])
+    assert "[7 errors]" in stderr
+    assert schema_error in stderr
+    assert loop_state["script_exit_code"] == 1
+
+
+def test_record_custom_op_gate_failure_has_no_truncation_limit():
+    loop_state: dict[str, object] = {}
+    many_errors = ["error %d: something went wrong" % i for i in range(20)]
+    many_errors.append("performance_report must match manifest rows (missing performance entries: op_5)")
+    result: dict[str, object] = {"errors": many_errors}
+
+    from core.workflow_executor import WorkflowExecutor
+    WorkflowExecutor._record_custom_op_gate_failure(loop_state, result)
+
+    stderr = str(loop_state["script_stderr"])
+    assert "[21 errors]" in stderr
+    assert "error 19" in stderr
+    assert "performance_report must match" in stderr
+    assert loop_state["script_exit_code"] == 1
 
 
 class FakePhase7SessionManager:
@@ -5196,3 +5418,699 @@ class TestProductionWorkflowPlatformPolicy:
         devices = get_performance_baseline_device_values(ppu)
         assert "cpu" not in devices, "Default baseline must NOT include CPU"
         assert "cuda" in devices
+
+
+# ── normal-way isolation: no final_gate_report_fixer in normal workflow ──
+
+
+class TestNormalWayNoReportFixer:
+    def test_normal_workflow_has_no_final_gate_report_fixer_agent(self):
+        from core.config import load_workflow
+        from pathlib import Path
+
+        normal_wf_path = (
+            Path(__file__).resolve().parent.parent
+            / "workflows"
+            / "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml"
+        )
+        if not normal_wf_path.exists():
+            pytest.skip("Normal workflow YAML not found")
+
+        wf = load_workflow(normal_wf_path)
+        agents = getattr(wf, "agents", {}) or {}
+        assert "final_gate_report_fixer" not in agents, (
+            "Normal workflow must NOT include final_gate_report_fixer agent"
+        )
+
+    def test_normal_workflow_sub_workflow_has_no_fix_report(self):
+        from core.config import load_workflow
+        from pathlib import Path
+
+        normal_wf_path = (
+            Path(__file__).resolve().parent.parent
+            / "workflows"
+            / "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml"
+        )
+        if not normal_wf_path.exists():
+            pytest.skip("Normal workflow YAML not found")
+
+        wf = load_workflow(normal_wf_path)
+        sub_workflows = getattr(wf, "sub_workflows", {}) or {}
+        for sw_name, sw in sub_workflows.items():
+            sw_dict = sw if isinstance(sw, dict) else getattr(sw, "__dict__", {})
+            sw_str = str(sw_dict)
+            assert "fix_report" not in sw_str.lower(), (
+                f"Normal workflow sub-workflow '{sw_name}' must NOT contain fix_report"
+            )
+            assert "final_gate_report_fixer" not in sw_str.lower(), (
+                f"Normal workflow sub-workflow '{sw_name}' must NOT contain final_gate_report_fixer"
+            )
+
+    def test_normal_workflow_yaml_text_has_no_report_fixer(self):
+        from pathlib import Path
+
+        normal_wf_path = (
+            Path(__file__).resolve().parent.parent
+            / "workflows"
+            / "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml"
+        )
+        if not normal_wf_path.exists():
+            pytest.skip("Normal workflow YAML not found")
+
+        text = normal_wf_path.read_text(encoding="utf-8")
+        assert "final_gate_report_fixer" not in text, (
+            "Normal workflow YAML must NOT mention final_gate_report_fixer"
+        )
+        assert "fix_report" not in text, (
+            "Normal workflow YAML must NOT mention fix_report"
+        )
+
+    def test_custom_op_workflow_has_report_fixer(self):
+        from core.config import load_workflow
+        from pathlib import Path
+
+        custom_wf_path = (
+            Path(__file__).resolve().parent.parent
+            / "workflows"
+            / "musa_muxi_migration_v2_container_baseaware_entryfix.yaml"
+        )
+        if not custom_wf_path.exists():
+            pytest.skip("Custom-op workflow YAML not found")
+
+        wf = load_workflow(custom_wf_path)
+        agents = getattr(wf, "agents", {}) or {}
+        assert "final_gate_report_fixer" in agents, (
+            "Custom-op workflow must include final_gate_report_fixer agent"
+        )
+
+    def test_custom_op_workflow_yaml_has_fix_report_phase(self):
+        from pathlib import Path
+
+        custom_wf_path = (
+            Path(__file__).resolve().parent.parent
+            / "workflows"
+            / "musa_muxi_migration_v2_container_baseaware_entryfix.yaml"
+        )
+        if not custom_wf_path.exists():
+            pytest.skip("Custom-op workflow YAML not found")
+
+        text = custom_wf_path.read_text(encoding="utf-8")
+        assert "fix_report" in text, (
+            "Custom-op workflow YAML must contain fix_report phase"
+        )
+        assert "final_gate_report_fixer" in text, (
+            "Custom-op workflow YAML must reference final_gate_report_fixer"
+        )
+
+
+# ── WorkflowExecutor _available_repair_role_descriptions_text tests ─────
+
+
+def test_available_repair_role_descriptions_without_fix_report(tmp_path: Path) -> None:
+    """Workflow without fix_report returns only 3 basic roles (no report fixer)."""
+    from unittest.mock import MagicMock
+    from core.types import WorkflowDefinition, SubWorkflowDefinition
+
+    sub_workflows = {
+        "repair_loop": SubWorkflowDefinition(
+            id="repair_loop",
+            phases=[{"id": "analyze_error", "type": "llm"}, {"id": "fix_dependency", "type": "llm"}],
+        ),
+    }
+    workflow = WorkflowDefinition(name="test", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    text = executor._available_repair_role_descriptions_text()
+    assert "final_gate_report_fixer" not in text
+    assert "`dependency_fixer`" in text
+
+
+def test_experience_query_roles_analyze_error_without_fix_report() -> None:
+    """Normal workflow without fix_report: analyze_error excludes final_gate_report_fixer."""
+    from core.types import WorkflowDefinition, SubWorkflowDefinition, PhaseDefinition
+
+    sub_workflows = {
+        "repair_loop": SubWorkflowDefinition(
+            id="repair_loop",
+            phases=[{"id": "analyze_error", "type": "llm"}, {"id": "fix_dependency", "type": "llm"}],
+        ),
+    }
+    workflow = WorkflowDefinition(name="normal", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    roles = executor._experience_query_roles(PhaseDefinition(id="analyze_error", name="a", prompt_template="", output_schema={}))
+    assert "error_analyzer" in roles
+    assert "final_gate_report_fixer" not in roles
+
+
+def test_experience_query_roles_analyze_error_with_fix_report() -> None:
+    """Custom-op workflow with fix_report: analyze_error includes final_gate_report_fixer."""
+    from core.types import WorkflowDefinition, SubWorkflowDefinition, PhaseDefinition
+
+    sub_workflows = {
+        "repair_loop": SubWorkflowDefinition(
+            id="repair_loop",
+            phases=[
+                {"id": "analyze_error", "type": "llm"},
+                {"id": "fix_report", "type": "llm"},
+            ],
+        ),
+    }
+    workflow = WorkflowDefinition(name="custom_op", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    roles = executor._experience_query_roles(PhaseDefinition(id="analyze_error", name="a", prompt_template="", output_schema={}))
+    assert "error_analyzer" in roles
+    assert "final_gate_report_fixer" in roles
+
+
+def test_experience_query_roles_fix_report_returns_only_report_fixer() -> None:
+    """fix_report phase returns only final_gate_report_fixer."""
+    from core.types import WorkflowDefinition, SubWorkflowDefinition, PhaseDefinition
+
+    sub_workflows = {"r": SubWorkflowDefinition(id="r", phases=[])}
+    workflow = WorkflowDefinition(name="test", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    roles = executor._experience_query_roles(PhaseDefinition(id="fix_report", name="a", prompt_template="", output_schema={}))
+    assert roles == ["final_gate_report_fixer"]
+
+
+# ── normalization forced routing with available_roles gate ──────────────
+
+
+def test_normalization_with_report_schema_error_and_no_fix_report_route() -> None:
+    """When no fix_report route exists, forced routing falls through to operator_fixer."""
+    from core.types import WorkflowDefinition, SubWorkflowDefinition
+
+    sub_workflows = {
+        "repair_loop": SubWorkflowDefinition(
+            id="repair_loop",
+            phases=[{"id": "fix_operator", "type": "llm"}],
+        ),
+    }
+    workflow = WorkflowDefinition(name="normal", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+    executor.framework_config = {}
+
+    normalized = {"category": "operator", "repair_role": "operator_fixer", "root_cause": "r", "suggested_fix": "s"}
+    result = executor._normalize_llm_output(
+        PhaseDefinition(id="analyze_error", name="a", prompt_template="", output_schema={}),
+        normalized,
+        {"previous_outputs": "h", "failure_log": "rows must be a non-empty list; source_inventory must include discovery_complete"},
+        {"phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"}},
+    )
+    assert result["repair_role"] == "operator_fixer"
+
+
+def test_normalization_with_report_schema_error_and_fix_report_route() -> None:
+    """When fix_report route exists, forced routing produces final_gate_report_fixer."""
+    from core.types import WorkflowDefinition, SubWorkflowDefinition
+
+    sub_workflows = {
+        "repair_loop": SubWorkflowDefinition(
+            id="repair_loop",
+            phases=[{"id": "fix_report", "type": "llm"}],
+        ),
+    }
+    workflow = WorkflowDefinition(name="custom_op", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+    executor.framework_config = {}
+
+    normalized = {"category": "operator", "repair_role": "operator_fixer", "root_cause": "r", "suggested_fix": "s"}
+    result = executor._normalize_llm_output(
+        PhaseDefinition(id="analyze_error", name="a", prompt_template="", output_schema={}),
+        normalized,
+        {"previous_outputs": "h", "failure_log": "rows must be a non-empty list; source_inventory must include discovery_complete"},
+        {"phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"}},
+    )
+    assert result["repair_role"] == "final_gate_report_fixer"
+
+
+def test_available_repair_role_descriptions_with_fix_report(tmp_path: Path) -> None:
+    """Workflow with fix_report includes final_gate_report_fixer in role descriptions."""
+    from unittest.mock import MagicMock
+    from core.types import WorkflowDefinition, SubWorkflowDefinition
+
+    sub_workflows = {
+        "repair_loop": SubWorkflowDefinition(
+            id="repair_loop",
+            phases=[
+                {"id": "analyze_error", "type": "llm"},
+                {"id": "fix_dependency", "type": "llm"},
+                {"id": "fix_report", "type": "llm"},
+            ],
+        ),
+    }
+    workflow = WorkflowDefinition(name="custom_op", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    text = executor._available_repair_role_descriptions_text()
+    assert "final_gate_report_fixer" in text
+    assert "## Routing Boundary" in text
+
+
+def test_available_repair_role_descriptions_with_imp_fix_report(tmp_path: Path) -> None:
+    """Workflow with imp_fix_report also includes report fixer roles."""
+    from unittest.mock import MagicMock
+    from core.types import WorkflowDefinition, SubWorkflowDefinition
+
+    sub_workflows = {
+        "review_improvement": SubWorkflowDefinition(
+            id="review_improvement",
+            phases=[
+                {"id": "imp_fix_dependency", "type": "llm"},
+                {"id": "imp_fix_report", "type": "llm"},
+            ],
+        ),
+    }
+    workflow = WorkflowDefinition(name="custom_op", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    text = executor._available_repair_role_descriptions_text()
+    assert "final_gate_report_fixer" in text
+
+
+def test_dict_shaped_sub_workflow_detects_fix_report() -> None:
+    """When sub-workflow is a plain dict (not SubWorkflowDefinition dataclass),
+    _has_report_fixer_route still detects fix_report phases."""
+    from core.types import WorkflowDefinition
+
+    sub_workflows = {
+        "repair_loop": {
+            "id": "repair_loop",
+            "type": "loop",
+            "phases": [
+                {"id": "analyze_error", "type": "llm"},
+                {"id": "fix_dependency", "type": "llm"},
+                {"id": "fix_report", "type": "llm"},
+            ],
+        },
+    }
+    workflow = WorkflowDefinition(name="custom_op", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    assert executor._has_report_fixer_route() is True
+    text = executor._available_repair_role_descriptions_text()
+    assert "final_gate_report_fixer" in text
+
+
+def test_dict_shaped_sub_workflow_without_fix_report() -> None:
+    """Dict-shaped sub-workflow without fix_report does not trigger report-fixer routing."""
+    from core.types import WorkflowDefinition
+
+    sub_workflows = {
+        "repair_loop": {
+            "id": "repair_loop",
+            "type": "loop",
+            "phases": [
+                {"id": "analyze_error", "type": "llm"},
+                {"id": "fix_dependency", "type": "llm"},
+            ],
+        },
+    }
+    workflow = WorkflowDefinition(name="normal", version="1.0", phases=[], sub_workflows=sub_workflows, terminals=["complete"])
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    executor.workflow = workflow
+
+    assert executor._has_report_fixer_route() is False
+    text = executor._available_repair_role_descriptions_text()
+    assert "final_gate_report_fixer" not in text
+
+
+# ── final gate validator command injection in sub-workflows ─────────────
+
+
+def test_fix_report_subworkflow_injects_validator_command_and_contract(
+    tmp_path: Path,
+) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {"final_gate_report_fixer": "fix_report"},
+            },
+            {
+                "id": "fix_report",
+                "type": "llm",
+                "prompt_template": "repair_final_gate_report_fixer",
+                "agent": "final_gate_report_fixer",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="fix_report_cmd_test",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "final_gate_report_fixer": {"role": "final_gate_report_fixer", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = [
+        json.dumps({
+            "repair_role": "final_gate_report_fixer",
+            "category": "operator",
+            "root_cause": "report schema wrong",
+            "suggested_fix": "fix report logic",
+        }),
+        '{"modified_files": ["validate.py"], "summary": "Fixed", "fixed": true}',
+    ]
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: (
+        f"{template}\n{ctx.get('final_gate_validator_command', 'NO_CMD')}\n"
+        f"{ctx.get('final_gate_validator_contract_summary', 'NO_SUMMARY')}"
+    )
+    executor = WorkflowExecutor(
+        workflow, session_mgr, artifact_store, prompt_loader, validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    result = executor._run_sub_workflow(
+        sub_workflow,
+        loop_vars={"entry_script": "python validate.py"},
+        state={},
+        context={},
+        sub_wf_phases=sub_workflow.phases,
+        step_outputs={"script_stderr": "rows must be a non-empty list"},
+        loop_history=[],
+        loop_state={},
+    )
+
+    assert result["status"] == "success"
+
+    fix_prompt_call = [
+        call for call in session_mgr.send_command.call_args_list
+        if call.args[0] == "session:final_gate_report_fixer"
+    ]
+    assert len(fix_prompt_call) == 1
+    fix_prompt = fix_prompt_call[0].args[1]
+
+    assert "NO_CMD" not in fix_prompt
+    assert "NO_SUMMARY" not in fix_prompt
+    # Command is now a concise bash invocation, not inline Python heredoc.
+    assert "bash " in fix_prompt
+    assert "finalGateValidator_" in fix_prompt
+    assert "PYTHONPATH" not in fix_prompt  # framework internals stay in runner script
+    assert "{final_gate_validator_command}" not in fix_prompt[:-100]
+    # Runner script exists under artifact runtime dir.
+    runner_dir = Path(artifact_store.artifact_dir) / "runtime"
+    runner_files = list(runner_dir.glob("finalGateValidator_*.sh"))
+    assert len(runner_files) >= 1
+    assert runner_files[0].stat().st_mode & 0o111
+
+
+def test_imp_fix_report_subworkflow_injects_validator_command(
+    tmp_path: Path,
+) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "improvement_dispatch",
+                "type": "dispatch",
+                "route_field": "${improvement_plan.repair_role}",
+                "routes": {"final_gate_report_fixer": "imp_fix_report"},
+            },
+            {
+                "id": "imp_fix_report",
+                "type": "llm",
+                "prompt_template": "repair_final_gate_report_fixer",
+                "agent": "final_gate_report_fixer",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="imp_fix_report_cmd_test",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "final_gate_report_fixer": {"role": "final_gate_report_fixer", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.return_value = '{"modified_files": [], "summary": "Improved", "fixed": true}'
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: (
+        f"{template}\n{ctx.get('final_gate_validator_command', 'NO_CMD')}\n"
+        f"{ctx.get('final_gate_validator_contract_summary', 'NO_SUMMARY')}"
+    )
+    executor = WorkflowExecutor(
+        workflow, session_mgr, artifact_store, prompt_loader, validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    result = executor._run_sub_workflow(
+        sub_workflow,
+        loop_vars={"entry_script": "python validate.py"},
+        state={},
+        context={},
+        sub_wf_phases=sub_workflow.phases,
+        step_outputs={
+            "script_stderr": "report aggregation wrong",
+            "review_verdict": {"reasoning": "report needs fix"},
+            "improvement_plan": {
+                "category": "validation",
+                "repair_role": "final_gate_report_fixer",
+                "suggested_direction": "Fix report generation",
+            },
+        },
+        loop_history=[],
+        loop_state={},
+    )
+
+    assert result["status"] == "success"
+
+    fix_prompt_call = [
+        call for call in session_mgr.send_command.call_args_list
+        if call.args[0] == "session:final_gate_report_fixer"
+    ]
+    assert len(fix_prompt_call) == 1
+    fix_prompt = fix_prompt_call[0].args[1]
+
+    assert "NO_CMD" not in fix_prompt
+    assert "NO_SUMMARY" not in fix_prompt
+    # Command is now a concise bash invocation, not inline Python heredoc.
+    assert "bash " in fix_prompt
+    assert "finalGateValidator_" in fix_prompt
+    assert "PYTHONPATH" not in fix_prompt
+
+
+def test_operator_fixer_subworkflow_excludes_validator_command(
+    tmp_path: Path,
+) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {"operator_fixer": "fix_operator"},
+            },
+            {
+                "id": "fix_operator",
+                "type": "llm",
+                "prompt_template": "repair_operator_fixer",
+                "agent": "operator_fixer",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="operator_no_cmd_test",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = [
+        json.dumps({
+            "repair_role": "operator_fixer",
+            "category": "operator",
+            "root_cause": "unsupported op",
+            "suggested_fix": "port op",
+        }),
+        '{"fixed": true}',
+    ]
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: (
+        f"{template}\n"
+        f"HAS_CMD={'final_gate_validator_command' in ctx}"
+    )
+    executor = WorkflowExecutor(
+        workflow, session_mgr, artifact_store, prompt_loader, validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    result = executor._run_sub_workflow(
+        sub_workflow,
+        loop_vars={"entry_script": "python main.py"},
+        state={},
+        context={},
+        sub_wf_phases=sub_workflow.phases,
+        step_outputs={"script_stderr": "RuntimeError: unsupported custom op"},
+        loop_history=[],
+        loop_state={},
+    )
+
+    assert result["status"] == "success"
+
+    fix_prompt_call = [
+        call for call in session_mgr.send_command.call_args_list
+        if call.args[0] == "session:operator_fixer"
+    ]
+    assert len(fix_prompt_call) == 1
+    fix_prompt = fix_prompt_call[0].args[1]
+
+    assert "HAS_CMD=False" in fix_prompt
+    assert "final_gate_validator_command" not in fix_prompt
+
+
+def test_dependency_fixer_subworkflow_excludes_validator_command(
+    tmp_path: Path,
+) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {"dependency_fixer": "fix_dependency"},
+            },
+            {
+                "id": "fix_dependency",
+                "type": "llm",
+                "prompt_template": "repair_dependency_fixer",
+                "agent": "dependency_fixer",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="dependency_no_cmd_test",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "dependency_fixer": {"role": "dependency_fixer", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = [
+        json.dumps({
+            "repair_role": "dependency_fixer",
+            "category": "dependency",
+            "root_cause": "missing pkg",
+            "suggested_fix": "install",
+        }),
+        '{"fixed": true}',
+    ]
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: (
+        f"{template}\n"
+        f"HAS_CMD={'final_gate_validator_command' in ctx}"
+    )
+    executor = WorkflowExecutor(
+        workflow, session_mgr, artifact_store, prompt_loader, validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    result = executor._run_sub_workflow(
+        sub_workflow,
+        loop_vars={"entry_script": "python main.py"},
+        state={},
+        context={},
+        sub_wf_phases=sub_workflow.phases,
+        step_outputs={"script_stderr": "ModuleNotFoundError: torch_npu"},
+        loop_history=[],
+        loop_state={},
+    )
+
+    assert result["status"] == "success"
+
+    fix_prompt_call = [
+        call for call in session_mgr.send_command.call_args_list
+        if call.args[0] == "session:dependency_fixer"
+    ]
+    assert len(fix_prompt_call) == 1
+    fix_prompt = fix_prompt_call[0].args[1]
+
+    assert "HAS_CMD=False" in fix_prompt
+    assert "final_gate_validator_command" not in fix_prompt

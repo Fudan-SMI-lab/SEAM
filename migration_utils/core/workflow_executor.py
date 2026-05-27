@@ -53,9 +53,14 @@ from core.validation_correction import (
     extract_missing_fields,
 )
 from core.repair_loop import (
+    _build_final_gate_validator_command,
+    _final_gate_validator_contract_summary,
     _operator_custom_op_guidance,
     _operator_generic_guidance,
     _operator_repair_has_custom_op_contract,
+    _operator_routing_override_enabled,
+    _repair_role_descriptions_text,
+    _write_final_gate_validator_runner,
     force_custom_op_operator_routing_if_needed,
 )
 from core.platform_policy import resolve_policy, PlatformPolicy
@@ -70,17 +75,21 @@ SUB_WORKFLOW_REPAIR_PHASE_IDS = {
     "fix_dependency",
     "fix_code",
     "fix_operator",
+    "fix_report",
     "imp_fix_dependency",
     "imp_fix_code",
     "imp_fix_operator",
+    "imp_fix_report",
 }
 SUB_WORKFLOW_REPAIR_PHASE_ORDER = (
     "fix_dependency",
     "fix_code",
     "fix_operator",
+    "fix_report",
     "imp_fix_dependency",
     "imp_fix_code",
     "imp_fix_operator",
+    "imp_fix_report",
 )
 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
 SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 30000
@@ -1691,9 +1700,9 @@ class WorkflowExecutor:
         exec_ctx = _get_exec_ctx(self.exec_backend, command=exec_cmd)
         input_ctx.update(exec_ctx)
 
-        if phase_id in ("fix_dependency", "fix_code", "fix_operator"):
-            if phase_id in {"fix_dependency", "fix_operator"}:
-                default_role = "dependency_fixer" if phase_id == "fix_dependency" else "operator_fixer"
+        if phase_id in ("fix_dependency", "fix_code", "fix_operator", "fix_report"):
+            if phase_id in {"fix_dependency", "fix_operator", "fix_report"}:
+                default_role = "dependency_fixer" if phase_id == "fix_dependency" else ("final_gate_report_fixer" if phase_id == "fix_report" else "operator_fixer")
                 runtime_error_path, runtime_card_path = self._write_repair_runtime_artifacts(
                     project_dir=self.project_dir,
                     entry_script=entry_script,
@@ -1728,6 +1737,18 @@ class WorkflowExecutor:
                             entry_script=str(entry_script),
                             platform_policy=self.platform_policy,
                         )
+                if phase_id == "fix_report":
+                    runner_path = _write_final_gate_validator_runner(
+                        artifact_dir=str(self.artifact_store.artifact_dir),
+                        project_dir=self.project_dir,
+                        platform_policy=self.platform_policy,
+                    )
+                    input_ctx["final_gate_validator_command"] = _build_final_gate_validator_command(
+                        project_dir=self.project_dir,
+                        platform_policy=self.platform_policy,
+                        runner_path=runner_path,
+                    )
+                    input_ctx["final_gate_validator_contract_summary"] = _final_gate_validator_contract_summary()
             input_ctx.update({
                 "error_text": script_stderr,
                 "category": str(error_analysis.get("category", "unknown")),
@@ -1750,11 +1771,11 @@ class WorkflowExecutor:
                 "experience_usage_report_schema": self._experience_usage_report_schema_text(),
             })
 
-        elif phase_id in ("imp_fix_dependency", "imp_fix_code", "imp_fix_operator"):
+        elif phase_id in ("imp_fix_dependency", "imp_fix_code", "imp_fix_operator", "imp_fix_report"):
             imp_plan = step_outputs.get("improvement_plan", {})
             review_verdict = step_outputs.get("review_verdict", {})
-            if phase_id in {"imp_fix_dependency", "imp_fix_operator"}:
-                default_role = "dependency_fixer" if phase_id == "imp_fix_dependency" else "operator_fixer"
+            if phase_id in {"imp_fix_dependency", "imp_fix_operator", "imp_fix_report"}:
+                default_role = "dependency_fixer" if phase_id == "imp_fix_dependency" else ("final_gate_report_fixer" if phase_id == "imp_fix_report" else "operator_fixer")
                 runtime_error_path, runtime_card_path = self._write_repair_runtime_artifacts(
                     project_dir=self.project_dir,
                     entry_script=entry_script,
@@ -1789,6 +1810,18 @@ class WorkflowExecutor:
                             entry_script=str(entry_script),
                             platform_policy=self.platform_policy,
                         )
+                if phase_id == "imp_fix_report":
+                    runner_path = _write_final_gate_validator_runner(
+                        artifact_dir=str(self.artifact_store.artifact_dir),
+                        project_dir=self.project_dir,
+                        platform_policy=self.platform_policy,
+                    )
+                    input_ctx["final_gate_validator_command"] = _build_final_gate_validator_command(
+                        project_dir=self.project_dir,
+                        platform_policy=self.platform_policy,
+                        runner_path=runner_path,
+                    )
+                    input_ctx["final_gate_validator_contract_summary"] = _final_gate_validator_contract_summary()
             input_ctx.update({
                 "error_text": script_stderr,
                 "category": str(imp_plan.get("category", "quality_improvement")),
@@ -1832,10 +1865,44 @@ class WorkflowExecutor:
                 "artifact_base_path": artifact_base,
                 "raw_attempt_files": raw_files,
                 "constraint_summary": constraint,
+                "repair_role_descriptions": self._available_repair_role_descriptions_text(),
             })
 
         self._inject_container_env_context(input_ctx)
         self._inject_execution_environment_context(input_ctx)
+
+    def _available_roles_set(self) -> set[str]:
+        """Return the set of repair roles available in this workflow's sub-workflows."""
+        roles = {"dependency_fixer", "code_adapter", "operator_fixer"}
+        if self._has_report_fixer_route():
+            roles.add("final_gate_report_fixer")
+        return roles
+
+    def _has_report_fixer_route(self) -> bool:
+        """Return True when any sub-workflow defines a fix_report or imp_fix_report phase."""
+        sub_workflows = getattr(self.workflow, "sub_workflows", None) or {}
+        return any(
+            any(
+                (isinstance(ph, dict) and ph.get("id") in {"fix_report", "imp_fix_report"})
+                for ph in self._sub_workflow_phases(sw)
+            )
+            for sw in sub_workflows.values()
+        )
+
+    @staticmethod
+    def _sub_workflow_phases(sw: object) -> list[object]:
+        """Return phases from a sub-workflow, supporting both dataclass and dict forms."""
+        if isinstance(sw, dict):
+            phases = sw.get("phases", [])
+            return phases if isinstance(phases, list) else []
+        if hasattr(sw, "phases"):
+            phases = getattr(sw, "phases")
+            return phases if isinstance(phases, list) else []
+        return []
+
+    def _available_repair_role_descriptions_text(self) -> str:
+        """Build repair role descriptions for the analyzer prompt based on available roles."""
+        return _repair_role_descriptions_text(self._available_roles_set())
 
     def _resolve_constraint_summary(self, state: dict) -> str:
         ph = state.get("phase_1_5_constraint_summary", {})
@@ -1910,53 +1977,15 @@ class WorkflowExecutor:
         if not loop_history:
             return "(No previous repair attempts — this is the first failure)"
 
-        lines = [
-            "| Iter | Status | Duration | Last Category | Last Repair Role | Summary | Agent Diagnostics |",
-            "|------|--------|----------|---------------|------------------|---------|-------------------|",
-        ]
+        # Collect latest category/role from all iterations
         latest_category = "unknown"
         latest_repair_role = ""
-        fixer_details: list[dict] = []
         for h in loop_history:
             if not isinstance(h, dict):
                 continue
-            row_category = str(h.get("error_category") or "unknown")
-            row_repair_role = str(h.get("repair_role") or "")
             if "error_category" in h or "repair_role" in h:
-                latest_category = row_category
-                latest_repair_role = row_repair_role
-            fixer_out = h.get("fixer_outputs", {}) if isinstance(h.get("fixer_outputs"), dict) else {}
-            row_summary = ""
-            row_diag = ""
-            if fixer_out:
-                summaries = []
-                diags = []
-                for pid, meta in fixer_out.items():
-                    if isinstance(meta, dict):
-                        s = meta.get("summary", "")
-                        if s:
-                            summaries.append(s)
-                        ad = meta.get("agent_diagnostics", "")
-                        if ad:
-                            if isinstance(ad, dict):
-                                diags.append(json.dumps(ad, ensure_ascii=False))
-                            else:
-                                diags.append(str(ad))
-                        if meta.get("modified_files"):
-                            fixer_details.append({
-                                "iteration": h.get("iteration", "?"),
-                                "phase": pid,
-                                "summary": s,
-                                "modified_files": meta["modified_files"],
-                                "agent_diagnostics": ad,
-                            })
-                row_summary = "; ".join(summaries)[:120] if summaries else ""
-                row_diag = "; ".join(diags)[:120] if diags else ""
-            lines.append(
-                f"| Iter {h.get('iteration', '?')} | {h.get('status', '?')} | "
-                f"{h.get('duration', '?')} | {row_category} | {row_repair_role or '(none)'} | "
-                f"{row_summary or '(none)'} | {row_diag or '(none)'} |"
-            )
+                latest_category = str(h.get("error_category") or "unknown")
+                latest_repair_role = str(h.get("repair_role") or "")
 
         if latest_category == "unknown" and not latest_repair_role:
             prev_error_analysis = state.get("error_analysis", {}) if isinstance(state, dict) else {}
@@ -1964,24 +1993,32 @@ class WorkflowExecutor:
                 latest_category = str(prev_error_analysis.get("category") or "unknown")
                 latest_repair_role = str(prev_error_analysis.get("repair_role") or "")
 
-        lines.append(
-            f"\nLatest error category: {latest_category}"
-            f"{' (repair role: ' + latest_repair_role + ')' if latest_repair_role else ''}"
-        )
+        # Collect full latest fixer details (untruncated)
+        latest = loop_history[-1] if loop_history else {}
+        fixer_out = latest.get("fixer_outputs", {}) if isinstance(latest.get("fixer_outputs"), dict) else {}
 
-        fix_roles = {k for k in ("fix_dependency", "fix_code", "fix_operator") if k in state}
+        lines = [
+            f"Total previous iterations: {len(loop_history)}",
+            f"Latest error category: {latest_category}"
+            f"{' (repair role: ' + latest_repair_role + ')' if latest_repair_role else ''}",
+        ]
+
+        fix_roles = {k for k in ("fix_dependency", "fix_code", "fix_operator", "fix_report") if k in state}
         if fix_roles:
             lines.append(f"Previous repair roles used: {', '.join(sorted(fix_roles))}")
 
-        if fixer_details:
-            lines.append("\n## Previous Fixer Outputs")
-            for fd in fixer_details:
-                lines.append(f"\nIteration {fd['iteration']}, phase `{fd['phase']}`:")
-                if fd.get("summary"):
-                    lines.append(f"  Summary: {fd['summary']}")
-                if fd.get("modified_files"):
-                    lines.append(f"  Modified files: {', '.join(fd['modified_files'])}")
-                diag = fd.get("agent_diagnostics")
+        if fixer_out:
+            lines.append("\n## Latest Previous Fixer Output (Complete)")
+            for pid, meta in fixer_out.items():
+                if not isinstance(meta, dict):
+                    continue
+                lines.append(f"\nPhase `{pid}`:")
+                if meta.get("summary"):
+                    lines.append(f"  Summary: {meta['summary']}")
+                if meta.get("modified_files"):
+                    mf = meta["modified_files"]
+                    lines.append(f"  Modified files: {', '.join(mf) if isinstance(mf, list) else str(mf)}")
+                diag = meta.get("agent_diagnostics")
                 if diag:
                     if isinstance(diag, dict):
                         lines.append(f"  Agent Diagnostics: {json.dumps(diag, ensure_ascii=False)}")
@@ -2095,11 +2132,17 @@ class WorkflowExecutor:
             and (phase_id == "analyze_error" or normalized.get("repair_role") in {"dependency_fixer", "code_adapter", "operator_fixer"})
         ):
             history_text = str(prompt_context.get("previous_outputs", ""))
+            phase3_contract = state.get("phase_3_entry_script")
+            workflow_globals = getattr(self.workflow, "globals", None) or {}
+            merged_config = {**workflow_globals, **(self.framework_config or {})}
             normalized = force_custom_op_operator_routing_if_needed(
                 normalized,
                 error_text=str(prompt_context.get("failure_log", "")),
                 history=[history_text] if history_text else [],
                 prompt_context=prompt_context,
+                phase3_contract=phase3_contract if isinstance(phase3_contract, dict) else None,
+                enable_override=_operator_routing_override_enabled(merged_config),
+                available_roles=self._available_roles_set(),
             )
 
         return normalized
@@ -2617,10 +2660,12 @@ class WorkflowExecutor:
         loop_state["script_exit_code"] = 1
         errors = result.get("errors")
         if isinstance(errors, list) and errors:
-            concise = "; ".join(str(error) for error in errors[:5])
+            error_count = len(errors)
+            full_errors = "; ".join(str(error) for error in errors)
+            concise = f"[{error_count} errors]: {full_errors}"
         else:
             concise = "custom-op final gate failed"
-        gate_message = f"Custom-op final evidence gate failed: {concise}"
+        gate_message = f"Custom-op final evidence gate failed {concise}"
         existing_stderr = str(loop_state.get("script_stderr") or "")
         loop_state["script_stderr"] = f"{existing_stderr}\n{gate_message}".strip()
         loop_state["custom_op_final_gate"] = result
@@ -3208,8 +3253,8 @@ class WorkflowExecutor:
             step_outputs = {}
 
         dispatch_route: str | None = None
-        dispatch_targets = {"repair_dispatch": {"fix_dependency", "fix_code", "fix_operator"},
-                            "improvement_dispatch": {"imp_fix_dependency", "imp_fix_code", "imp_fix_operator"}}
+        dispatch_targets = {"repair_dispatch": {"fix_dependency", "fix_code", "fix_operator", "fix_report"},
+                            "improvement_dispatch": {"imp_fix_dependency", "imp_fix_code", "imp_fix_operator", "imp_fix_report"}}
         dispatch_active: str | None = None
 
         for sub_phase in sub_wf_phases:
@@ -3543,7 +3588,7 @@ class WorkflowExecutor:
             request["blocked_reason"] = "revision_not_allowed"
             return {**normalized, "applied": False, "blocked_reason": "revision_not_allowed"}
 
-        if normalized["action"] not in {"regenerate", "modify"}:
+        if normalized["action"] not in {"regenerate", "modify", "update_command"}:
             request["blocked_reason"] = "invalid_action"
             return {**normalized, "applied": False, "blocked_reason": "invalid_action"}
         if not normalized["run_command"]:
@@ -3620,8 +3665,36 @@ class WorkflowExecutor:
             return "unsafe_run_command"
         if real_executable in {"bash", "sh", "/bin/bash", "/bin/sh"} or real_executable.endswith(".sh"):
             return "unsafe_run_command"
+
+        # Allow docker/podman exec IF: command is `docker exec|podman exec`, includes the
+        # contract entry_script_path, and has no shell metacharacters.
         if real_executable in {"docker", "podman"}:
-            return "unsafe_run_command"
+            _, stripped_cmd = _extract_env_prefix(run_command)
+            if not stripped_cmd:
+                return "unsafe_run_command"
+            try:
+                stripped_tokens = shlex.split(stripped_cmd)
+            except ValueError:
+                return "unsafe_run_command"
+            if len(stripped_tokens) < 3 or stripped_tokens[1] != "exec":
+                return "unsafe_run_command"
+            current_entry_path = contract.get("entry_script_path", "") or entry_script_path
+            if not current_entry_path:
+                return "unsafe_run_command"
+            # Exact path match always passes.
+            # When the contract path is absolute use the full path to prevent
+            # same-basename attacks (e.g. /malicious/validate.py matching /workspace/validate.py).
+            # When only a relative basename is available fall back to conservative basename matching.
+            has_matching_path = any(
+                token == current_entry_path
+                or (token.endswith(current_entry_path) if current_entry_path.startswith("/") else token.endswith("/" + Path(current_entry_path).name))
+                for token in stripped_tokens
+            )
+            if not has_matching_path:
+                return "unsafe_run_command"
+            is_docker_exec = True
+        else:
+            is_docker_exec = False
         updated_contract = dict(contract)
         updated_contract["run_command"] = run_command
         if entry_script_path:
@@ -3630,11 +3703,12 @@ class WorkflowExecutor:
             extracted_path = self._extract_entry_script_path_from_command(run_command)
             if extracted_path:
                 updated_contract["entry_script_path"] = extracted_path
-        if self._has_custom_op_contract(updated_contract):
-            updated_contract["reports_dir"] = str(Path(self.project_dir).resolve() / "migration_reports")
-        validation = validate_entry_script(updated_contract)
-        if not validation["passed"]:
-            return "entry_script_contract_validation_failed"
+        if not is_docker_exec:
+            if self._has_custom_op_contract(updated_contract):
+                updated_contract["reports_dir"] = str(Path(self.project_dir).resolve() / "migration_reports")
+            validation = validate_entry_script(updated_contract)
+            if not validation["passed"]:
+                return "entry_script_contract_validation_failed"
         return None
 
     @staticmethod
@@ -3994,9 +4068,11 @@ class WorkflowExecutor:
             "fix_dependency",
             "fix_code",
             "fix_operator",
+            "fix_report",
             "imp_fix_dependency",
             "imp_fix_code",
             "imp_fix_operator",
+            "imp_fix_report",
         }
 
     @staticmethod
@@ -4004,8 +4080,10 @@ class WorkflowExecutor:
         return phase_id in {
             "fix_dependency",
             "fix_operator",
+            "fix_report",
             "imp_fix_dependency",
             "imp_fix_operator",
+            "imp_fix_report",
         }
 
     def _write_repair_runtime_artifacts(
@@ -4375,10 +4453,12 @@ class WorkflowExecutor:
             "fix_dependency",
             "fix_code",
             "fix_operator",
+            "fix_report",
             "improvement_plan",
             "imp_fix_dependency",
             "imp_fix_code",
             "imp_fix_operator",
+            "imp_fix_report",
         }:
             return "phase_5_validation"
         return phase_id
@@ -4386,13 +4466,18 @@ class WorkflowExecutor:
     def _experience_query_roles(self, phase: PhaseDefinition) -> list[str]:
         phase_id = phase.id
         if phase_id == "analyze_error":
-            return ["error_analyzer", "dependency_fixer", "code_adapter", "operator_fixer"]
+            roles = ["error_analyzer", "dependency_fixer", "code_adapter", "operator_fixer"]
+            if self._has_report_fixer_route():
+                roles.append("final_gate_report_fixer")
+            return roles
         if phase_id in {"fix_dependency", "imp_fix_dependency"}:
             return ["dependency_fixer"]
         if phase_id in {"fix_code", "imp_fix_code"}:
             return ["code_adapter"]
         if phase_id in {"fix_operator", "imp_fix_operator"}:
             return ["operator_fixer"]
+        if phase_id in {"fix_report", "imp_fix_report"}:
+            return ["final_gate_report_fixer"]
         return [phase.agent or "main_engineer"]
 
     def _backfill_candidates_from_state(self, state: dict, run_id: str) -> list[dict]:
