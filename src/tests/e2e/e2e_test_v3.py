@@ -271,6 +271,27 @@ def build_v3_summary(
     )
 
 
+def _build_project_context(project_dir: Path) -> dict[str, object]:
+    py_files = list(project_dir.rglob("*.py"))
+    file_hints = [str(p.relative_to(project_dir)) for p in py_files[:10]]
+    setup_py = project_dir / "setup.py"
+    setup_cfg = project_dir / "setup.cfg"
+    pyproject_toml = project_dir / "pyproject.toml"
+    build_system = ""
+    if setup_py.exists() or setup_cfg.exists():
+        build_system = "setuptools"
+    elif pyproject_toml.exists():
+        build_system = "pyproject"
+    return {
+        "project_path": str(project_dir),
+        "project_name": project_dir.name,
+        "language": "Python",
+        "file_count": len(py_files),
+        "build_system": build_system,
+        "file_hints": file_hints,
+    }
+
+
 def _install_sqlite_fallback_if_needed() -> None:
     """Install a minimal sqlite3 stub for Python builds missing the _sqlite3 C extension.
 
@@ -349,6 +370,7 @@ def run_e2e_v3(
     from core.telemetry_bridge import TelemetryBridge
     from core.validator_engine import ValidatorEngine
     from core.workflow_executor import WorkflowExecutor
+    from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
     from harness.session.manager import SessionManager
     from tests.e2e.e2e_observer import TelemetryObserver
     from validators.validate_env_detect import validate as validate_env_detect
@@ -381,17 +403,16 @@ def run_e2e_v3(
     telemetry_bridge: TelemetryBridge | None = None
 
     try:
-        if server_auto_start and base_url is None:
-            from harness.server.lifecycle import find_available_port, start_server, stop_server, wait_for_server
-            port = server_port if server_port > 0 else find_available_port()
-            base_url = f"http://127.0.0.1:{port}"
-            server_proc = start_server(work_dir=str(REPO_ROOT), port=port)
-            if not wait_for_server(base_url, timeout=30):
-                _ = stop_server(server_proc)
-                server_proc = None
-                raise RuntimeError(f"Server failed to start on {base_url}")
-        else:
-            base_url = base_url or DEFAULT_SERVER_URL
+        from harness.server.lifecycle import resolve_server_url
+        base_url, server_proc = resolve_server_url(
+            base_url,
+            auto_start=server_auto_start,
+            default_url=DEFAULT_SERVER_URL,
+            work_dir=str(REPO_ROOT),
+            server_port=server_port,
+        )
+        if server_proc is not None:
+            log(f"Auto-started OpenCode server at {base_url}")
         check_server_running(base_url)
         log(f"OpenCode server reachable at {base_url}")
     except Exception as exc:
@@ -422,9 +443,17 @@ def run_e2e_v3(
         log(f"Snapshot: {len(before_snapshot)} .py files")
 
         session_mgr = SessionManager(work_dir=str(temp_dir), base_url=base_url)
-        if agent_name and agent_name != session_mgr.active_agent:
-            session_mgr._detected_agent = agent_name
-        log(f"SessionManager created: detected_agent={session_mgr.active_agent}, overridden={agent_name is not None}")
+        if agent_name:
+            try:
+                canonical = session_mgr.override_agent(agent_name)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Cannot use --agent '{agent_name}': {exc}. "
+                    f"Use one of the canonical names from /agent or ensure the server is running."
+                ) from exc
+        else:
+            canonical = session_mgr.active_agent
+        log(f"SessionManager created: active_agent={canonical}, overridden={agent_name is not None}")
 
         agent_io_logger = AgentIOLogger.from_env(output_dir, run_id)
         observer = TelemetryObserver(session_mgr, output_dir, agent_io_logger=agent_io_logger)
@@ -434,6 +463,30 @@ def run_e2e_v3(
 
         artifact_store = ArtifactStore(str(temp_dir), run_id)
         prompt_loader = PromptLoader()
+
+        # ── Workflow Selector resolution (before load_workflow) ──────────
+        original_workflow_path = effective_workflow_path
+        selector_resolved_path: str | None = None
+        try:
+            if is_selector_file(str(effective_workflow_path)):
+                log(f"Detected selector YAML: {effective_workflow_path}")
+                project_ctx = _build_project_context(temp_dir)
+                materialized = resolve_workflow_from_selector(
+                    str(effective_workflow_path),
+                    session_mgr,
+                    prompt_loader,
+                    project_context=project_ctx,
+                    output_dir=output_dir / "artifacts",
+                )
+                effective_workflow_path = materialized
+                selector_resolved_path = str(materialized)
+                log(f"Selector resolved to: {materialized}")
+                observer.set_metadata("selector_path", str(original_workflow_path))
+                observer.set_metadata("resolved_workflow_path", selector_resolved_path)
+        except Exception:
+            log(f"Selector resolution failed; re-raising to surface the error")
+            raise
+
         validator = ValidatorEngine()
         validator.register_validator("env_detect", validate_env_detect)
         validator.register_validator("project_analysis", validate_project_analysis)
