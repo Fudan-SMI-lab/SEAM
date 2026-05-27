@@ -61,9 +61,9 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
     
     | 硬件 \ 框架 | Torch | vLLM | SGLang |其他框架 |
     | --- | --- | --- | --- |--- |
-    | **阿里 平头哥PPU** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
-    | **华为 昇腾Ascend** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
-    | **沐曦 MetaX** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
+    | **[阿里平头哥PPU](docs/gpu_docs/阿里平头哥PPU.md)** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
+    | **[华为昇腾Ascend NPU](docs/gpu_docs/华为AscendNPU.md)** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
+    | **[沐曦MetaX](docs/gpu_docs/沐曦MetaX.md)** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
     | **其他GPUs** | 🔜 等你提需求 | 🔜 等你提需求 | 🔜 等你提需求 |🔜 等你提需求 |
     
 2.  **自动化端到端迁移**
@@ -93,7 +93,7 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 ### 文档
 
 - [用户手册](docs/User_Guide.md) — 详细的功能介绍、配置方法和使用指南
-- [常见问题解答](docs/FAQ.md) — 用户最常遇到的疑问
+- [常见问题](docs/FAQ.md) — 用户最常遇到的疑问FAQ
 - [贡献指南](docs/CONTRIBUTING.md) — 如何参与贡献
 - [更新日志](docs/CHANGELOG.md) — 版本历史与发布说明
 

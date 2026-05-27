@@ -61,9 +61,9 @@ Execution Results:
 
 | Hardware \ Framework | Torch | vLLM | SGLang |Other Framework |
 | --- | --- | --- | --- | --- |
-| **Alibaba Pingtouge PPU** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
-| **Huawei Ascend** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
-| **MetaX** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
+| **[Alibaba Pingtouge PPU](docs/gpu_docs/阿里平头哥PPU.md)** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
+| **[Huawei Ascend](docs/gpu_docs/华为AscendNPU.md)** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
+| **[MetaX](docs/gpu_docs/沐曦MetaX.md)** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
 | **Other GPUs** | 🔜 Request welcome | 🔜 Request welcome | 🔜 Request welcome | 🔜 Request welcome |
 
 #### 2. End-to-End Automated Migration
