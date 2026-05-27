@@ -522,3 +522,159 @@ def test_wait_for_idle_tolerant_empty_status_no_todos(monkeypatch: pytest.Monkey
     manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
 
     manager._wait_after_hard_error("ses-1", timeout=1, interval_s=0)
+
+
+# ── Agent name resolution tests ───────────────────────────────────────
+
+
+class TestFetchAgentList:
+    def test_returns_sorted_names_from_agent_endpoint(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [
+                    {"name": "Atlas - Plan Executor"},
+                    {"name": "OpenCode-Builder"},
+                    {"name": "build"},
+                ],
+            }
+        })
+        names = manager._fetch_agent_list()
+        assert names == ["Atlas - Plan Executor", "OpenCode-Builder", "build"]
+
+    def test_returns_empty_list_on_non_ok(self) -> None:
+        manager = FakeSessionManager({("GET", "/agent"): {"ok": False}})
+        assert manager._fetch_agent_list() == []
+
+    def test_returns_empty_list_on_non_list_data(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {"ok": True, "data": "not_a_list"}
+        })
+        assert manager._fetch_agent_list() == []
+
+    def test_skips_non_dict_entries(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "Atlas"}, "not_a_dict", {"name": ""}],
+            }
+        })
+        assert manager._fetch_agent_list() == ["Atlas"]
+
+
+class TestResolveAgentName:
+    def test_exact_match(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "Atlas - Plan Executor"}, {"name": "build"}],
+            }
+        })
+        assert manager.resolve_agent_name("Atlas - Plan Executor") == "Atlas - Plan Executor"
+
+    def test_case_insensitive_exact_match(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "Atlas - Plan Executor"}, {"name": "build"}],
+            }
+        })
+        assert manager.resolve_agent_name("atlas - plan executor") == "Atlas - Plan Executor"
+
+    def test_partial_substring_match(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "Atlas - Plan Executor"}, {"name": "OpenCode-Builder"}],
+            }
+        })
+        assert manager.resolve_agent_name("Atlas") == "Atlas - Plan Executor"
+
+    def test_prefers_exact_word_when_ambiguous_partials(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [
+                    {"name": "Atlas - Plan Executor"},
+                    {"name": "Atlas Helper"},
+                    {"name": "Atlas"},
+                ],
+            }
+        })
+        assert manager.resolve_agent_name("Atlas") == "Atlas"
+
+    def test_raises_on_ambiguous_partial(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [
+                    {"name": "Atlas - Plan Executor"},
+                    {"name": "Atlas Helper"},
+                ],
+            }
+        })
+        with pytest.raises(ValueError, match="Ambiguous agent name"):
+            manager.resolve_agent_name("Atlas")
+
+    def test_raises_on_not_found(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "build"}],
+            }
+        })
+        with pytest.raises(ValueError, match="not found"):
+            manager.resolve_agent_name("Atlas")
+
+    def test_raises_on_no_agents_available(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {"ok": False}
+        })
+        with pytest.raises(ValueError, match="no agents available"):
+            manager.resolve_agent_name("anything")
+
+    def test_caches_agent_list(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "Atlas"}],
+            }
+        })
+        first = manager.resolve_agent_name("Atlas")
+        assert first == "Atlas"
+        assert len(manager.calls) == 1  # Only one HTTP call for /agent
+
+
+class TestOverrideAgent:
+    def test_resolves_and_sets_agent(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "Atlas - Plan Executor"}],
+            }
+        })
+        canonical = manager.override_agent("Atlas")
+        assert canonical == "Atlas - Plan Executor"
+        assert manager.active_agent == "Atlas - Plan Executor"
+
+    def test_raises_for_invalid_name(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {"ok": True, "data": [{"name": "build"}]}
+        })
+        with pytest.raises(ValueError, match="not found"):
+            manager.override_agent("Atlas")
+
+
+class TestAvailableAgentsProperty:
+    def test_caches_on_first_access(self) -> None:
+        manager = FakeSessionManager({
+            ("GET", "/agent"): {
+                "ok": True,
+                "data": [{"name": "A"}, {"name": "B"}],
+            }
+        })
+        assert manager.available_agents == ["A", "B"]
+        assert len(manager.calls) == 1
+        # Second access uses cache
+        _ = manager.available_agents
+        assert len(manager.calls) == 1

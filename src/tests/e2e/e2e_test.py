@@ -451,7 +451,12 @@ def run_e2e(
 
         session_mgr = SessionManager(work_dir=str(temp_dir), base_url=base_url)
         if agent_name and agent_name != session_mgr.active_agent:
-            session_mgr._detected_agent = agent_name
+            try:
+                session_mgr.override_agent(agent_name)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Cannot use --agent '{agent_name}': {exc}"
+                ) from exc
         log(f"SessionManager created: detected_agent={session_mgr.active_agent}, overridden={agent_name is not None}")
 
         agent_io_logger = AgentIOLogger.from_env(output_dir, run_id)

@@ -128,8 +128,16 @@ class MigrationSessionManager:
             self._auth_header = "Basic " + base64.b64encode(token).decode()
         self._sessions: dict[str, SessionRecord] = {}
         self._detected_agent: str | None = None
+        self._cached_agent_list: list[str] | None = None
         if auto_detect_agent:
             self._detect_agent()
+
+    @property
+    def available_agents(self) -> list[str]:
+        """Return the cached list of canonical agent names from the OpenCode server."""
+        if self._cached_agent_list is None:
+            self._cached_agent_list = self._fetch_agent_list()
+        return self._cached_agent_list
 
     @property
     def active_agent(self) -> str:
@@ -140,16 +148,7 @@ class MigrationSessionManager:
         return self._work_dir
 
     def _detect_agent(self) -> None:
-        resp = self._http("GET", "/agent")
-        if not resp.get("ok") or not isinstance(resp.get("data"), list):
-            return
-        agent_names: list[str] = []
-        for item in resp["data"]:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", ""))
-            if name:
-                agent_names.append(name)
+        agent_names = self.available_agents
         for name in agent_names:
             if name.lower() == "atlas":
                 self._detected_agent = name
@@ -160,6 +159,99 @@ class MigrationSessionManager:
                 return
         if agent_names:
             self._detected_agent = agent_names[0]
+
+    def _fetch_agent_list(self) -> list[str]:
+        """Query /agent and return canonical agent names.
+
+        Returns an empty list when the endpoint is unreachable or returns
+        unexpected data.  The result is cached via ``available_agents``.
+        """
+        resp = self._http("GET", "/agent")
+        if not resp.get("ok") or not isinstance(resp.get("data"), list):
+            return []
+        names: list[str] = []
+        for item in resp["data"]:
+            if isinstance(item, dict):
+                name = str(item.get("name", ""))
+                if name:
+                    names.append(name)
+        return names
+
+    def resolve_agent_name(self, name: str) -> str:
+        """Resolve a partial or exact agent name to its canonical form.
+
+        Resolution order:
+        1. Exact match against cached available agents.
+        2. Case-insensitive exact match.
+        3. Partial (substring) match — returns the single canonical name
+           when unambiguous.
+        4. If multiple partial matches exist, prefers the one whose
+           lowercased name *equals* the lowercased input.
+        5. Raises ``ValueError`` when no match is found or when the
+           name is ambiguous.
+
+        Args:
+            name: Short alias like ``"Atlas"`` or canonical name like
+                  ``"Atlas - Plan Executor"``.
+
+        Returns:
+            The canonical agent name as reported by the server.
+
+        Raises:
+            ValueError: No agents available or no match found.
+        """
+        agents = self.available_agents
+        if not agents:
+            raise ValueError(
+                "Cannot resolve agent name: no agents available from the server. "
+                "Ensure the OpenCode server is running and /agent is reachable."
+            )
+
+        # 1. Exact match
+        if name in agents:
+            return name
+
+        name_lower = name.lower()
+
+        # 2. Case-insensitive exact match
+        for agent in agents:
+            if agent.lower() == name_lower:
+                return agent
+
+        # 3. Partial (substring) match
+        matching = [a for a in agents if name_lower in a.lower()]
+        if len(matching) == 1:
+            return matching[0]
+        if len(matching) > 1:
+            exact_word = [a for a in matching if name_lower == a.lower()]
+            if exact_word:
+                return exact_word[0]
+            raise ValueError(
+                f"Ambiguous agent name '{name}' matches {len(matching)} agents: "
+                f"{sorted(matching)}. Use a more specific name."
+            )
+
+        raise ValueError(
+            f"Agent name '{name}' not found. Available agents: {sorted(agents)}"
+        )
+
+    def override_agent(self, name: str) -> str:
+        """Validate and set *name* as the active agent after resolving aliases.
+
+        This is the preferred way for external callers (CLI, E2E harness) to
+        override the auto-detected agent.  It resolves partial names like
+        ``"Atlas"`` to their canonical form and stores the result.
+
+        Returns:
+            The canonical agent name that was resolved and stored.
+
+        Raises:
+            ValueError: When *name* cannot be resolved (same as
+                        :meth:`resolve_agent_name`).
+        """
+        canonical = self.resolve_agent_name(name)
+        self._detected_agent = canonical
+        return canonical
 
     def create_session(
         self,
