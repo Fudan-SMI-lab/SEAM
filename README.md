@@ -102,9 +102,7 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 
 ### 联系我们
 
-无论是什么想法或疑问，与SEAM和中国国产GPU相关的，都可以联系我们。
-
-我们思考了很多种联系方式，最后决定第一跳联系放 cfff@fudan.edu.cn ，这是复旦CFFF平台邮箱，多工程师值班，确保您的反馈我们都有处理无遗漏！
+有关 SEAM 与国产 GPU 的咨询、建议，敬请发送邮件至复旦 CFFF 平台邮箱：cfff@fudan.edu.cn ，多人值班，确保每条反馈及时响应。
 
 ---
 
@@ -117,6 +115,5 @@ MIT License
 Copyright (c) 2026 Fudan-SMI-lab
 ```
 
-<p align="center">
-  <sub>❤️本项目由复旦大学、上海创智学院共同构建❤️</sub>
-</p>
+
+本项目由复旦大学人工智能创新与产业研究院-统计机器智能实验室(SMI-lab)、上海创智学院、复旦大学CFFF智能计算平台共同构建。
