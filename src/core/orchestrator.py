@@ -1,4 +1,4 @@
-"""Main workflow orchestrator for src."""
+"""Main workflow orchestrator for migration_utils."""
 
 from __future__ import annotations
 
@@ -10,16 +10,24 @@ from uuid import uuid4
 
 from harness.session.manager import SessionManager
 
+from core.accelerator_context import extract_accelerator_context
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
-from core.custom_op_variants import apply_expanded_variant_contract, expanded_variant_contract_from_outputs
+from core.execution_backend import get_container_prompt_context, get_execution_environment_context
 from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
+from core.platform_policy import PlatformPolicy, resolve_policy
 from core.prompt_loader import PromptLoader
 from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
+from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
 from core.state_machine import StateMachine
 from core.validator_engine import ValidatorEngine
-from migrator.rule_based import RuleBasedMigrator
+from rule_strategies import create_migrator_resolved
+
+# Kept as module-level references for test monkeypatch compatibility.
+# The resolver uses importlib to instantiate migrators by strategy config.
+from migrator.rule_based import RuleBasedMigrator  # noqa: F401
+from migrator.rule_based_ppu import PPURuleBasedMigrator  # noqa: F401
 
 JsonDict = dict[str, object]
 
@@ -111,15 +119,45 @@ class Orchestrator:
         framework_config_path: str | None = None,
     ) -> dict[str, object]:
         active_project_dir = project_dir or self.project_dir
+
+        run_id = f"run-{uuid4().hex}"
+        artifact_store = ArtifactStore(active_project_dir, run_id)
+        prompt_loader = PromptLoader(str(Path(__file__).resolve().parent.parent / "prompts"))
+
+        # ── Workflow Selector resolution (before load_workflow) ──────────
+        try:
+            if is_selector_file(self.workflow_path):
+                project_ctx = {
+                    "project_path": active_project_dir,
+                    "project_name": Path(active_project_dir).name,
+                    "language": "Python",
+                }
+                materialized = resolve_workflow_from_selector(
+                    self.workflow_path,
+                    self.session_mgr,
+                    prompt_loader,
+                    project_context=project_ctx,
+                    output_dir=artifact_store.base_dir,
+                )
+                self._journal(
+                    artifact_store,
+                    phase_id="orchestrator",
+                    status="selector_resolved",
+                    details={
+                        "selector_path": self.workflow_path,
+                        "resolved_workflow_path": str(materialized),
+                    },
+                )
+                self.workflow_path = str(materialized)
+        except FileNotFoundError:
+            pass  # path will be validated by load_workflow below
+
         workflow = load_workflow(self.workflow_path)
         fw_config = load_framework_config(framework_config_path)
         self._fw_config = fw_config
         runner_session_mgr = cast(RunnerSessionManagerLike, cast(object, self.session_mgr))
         repair_session_mgr = cast(RepairSessionManagerLike, self.session_mgr)
 
-        run_id = f"run-{uuid4().hex}"
-        artifact_store = ArtifactStore(active_project_dir, run_id)
-        prompt_loader = PromptLoader(str(Path(__file__).resolve().parent.parent / "prompts"))
         validator = ValidatorEngine()
         state_machine = StateMachine(workflow)
         runner = PhaseRunner(
@@ -130,8 +168,21 @@ class Orchestrator:
             workflow=workflow,
             framework_config=fw_config,
         )
-        repair_engine = RepairLoopEngine(repair_session_mgr, artifact_store, prompt_loader, validator, config=fw_config)
-        migrator = RuleBasedMigrator()
+        exec_backend = self._resolve_execution_backend(workflow, active_project_dir)
+        container_ctx = self._preflight_and_probe(exec_backend)
+        runner.set_container_context(container_ctx)
+        exec_env_ctx = self._build_execution_environment_context(exec_backend, container_ctx)
+        runner.set_execution_environment_context(exec_env_ctx)
+        platform_policy = resolve_policy(
+            getattr(workflow, "target_platform", None),
+            workflow.name,
+        )
+        repair_engine = RepairLoopEngine(
+            repair_session_mgr, artifact_store, prompt_loader, validator,
+            config=fw_config, exec_backend=exec_backend,
+            platform_policy=platform_policy,
+        )
+        migrator = Orchestrator._select_rule_based_migrator(platform_policy, workflow)
         phase_results: dict[str, object] = {}
 
         result: dict[str, object] = {
@@ -293,6 +344,7 @@ class Orchestrator:
             return result
         finally:
             cleaned = self.session_mgr.cleanup_all()
+            self._cleanup_execution_backend(exec_backend)
             self._journal(
                 artifact_store,
                 phase_id="orchestrator",
@@ -305,13 +357,49 @@ class Orchestrator:
         runner: PhaseRunner,
         project_dir: str,
         artifact_store: ArtifactStore,
-        migrator: RuleBasedMigrator,
+        migrator: object,
     ) -> dict[str, object]:
         phase_4_runner = runner.run_phase_4
         phase_4_signature = inspect.signature(phase_4_runner)
         if len(phase_4_signature.parameters) == 3:
             return cast(_Phase4RunnerWithProjectDir, phase_4_runner)(project_dir, artifact_store, migrator)
         return cast(_Phase4RunnerWithoutProjectDir, phase_4_runner)(artifact_store, migrator)
+
+    @staticmethod
+    def _select_rule_based_migrator(platform_policy: PlatformPolicy, workflow: object | None = None) -> object:
+        """Select the appropriate rule-based migrator using configuration-driven resolution.
+
+        Uses the strategy resolver with precedence:
+        1. Workflow YAML ``params.backend`` (legacy)
+        2. Workflow YAML ``rule_migration.strategy`` (new)
+        3. ``PlatformPolicy.default_rule_migration_strategy``
+        4. ``report_only`` safe fallback
+
+        This keeps the legacy Orchestrator path aligned with WorkflowExecutor.
+        """
+        backend = Orchestrator._phase_4_backend_from_workflow(workflow)
+        workflow_rule_migration = getattr(workflow, "rule_migration", None) if workflow is not None else None
+        return create_migrator_resolved(
+            workflow_params_backend=backend,
+            workflow_rule_migration=workflow_rule_migration if isinstance(workflow_rule_migration, dict) else None,
+            platform_policy_strategy=platform_policy.default_rule_migration_strategy,
+        )
+
+    @staticmethod
+    def _phase_4_backend_from_workflow(workflow: object | None) -> str | None:
+        phases = getattr(workflow, "phases", None)
+        if not isinstance(phases, list):
+            return None
+        for phase in phases:
+            operation = getattr(phase, "params", {}).get("operation") if isinstance(getattr(phase, "params", None), dict) else None
+            phase_operation = getattr(phase, "operation", None) or operation
+            is_rule_phase = getattr(phase, "id", "") == "phase_4_rule_migration" or phase_operation == "rule_based_migration"
+            params = getattr(phase, "params", None)
+            if is_rule_phase and isinstance(params, dict):
+                backend = params.get("backend")
+                if isinstance(backend, str) and backend.strip():
+                    return backend.strip()
+        return None
 
     @staticmethod
     def _phase_5_succeeded(phase_5_output: dict[str, object]) -> bool:
@@ -431,11 +519,7 @@ class Orchestrator:
                 phase_3_output = loaded_output
         if not isinstance(phase_3_output, dict):
             return None
-        contract = dict(cast(dict[str, object], phase_3_output))
-        variant_overlay = expanded_variant_contract_from_outputs(phase_outputs)
-        if variant_overlay:
-            apply_expanded_variant_contract(contract, variant_overlay, include_required_checks=True)
-        return contract
+        return dict(cast(dict[str, object], phase_3_output))
 
     def _resolve_entry_script(
         self,
@@ -510,16 +594,198 @@ class Orchestrator:
     ) -> dict[str, object]:
         env = dict(phase_0_output)
         installed = phase_2_output.get("installed_packages", [])
-        if isinstance(installed, list):
-            for pkg in cast(list[object], installed):
-                if isinstance(pkg, str) and pkg.lower().startswith("torch-npu=="):
-                    env["torch_npu_version"] = pkg.split("==", 1)[-1]
-                    break
+        accel_ctx = extract_accelerator_context(installed)
+        env["torch_npu_version"] = accel_ctx["torch_npu_version"]
+        env["accelerator_packages"] = accel_ctx["accelerator_packages"]
+        env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
         return env
 
     @staticmethod
     def _serialize(value: object) -> str:
         return value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+    def _resolve_execution_backend(
+        self,
+        workflow: object,
+        project_dir: str,
+    ) -> object:
+        """Create an execution backend from workflow config, mirroring WorkflowExecutor behavior."""
+        eb_cfg = getattr(workflow, "execution_backend", None)
+        if eb_cfg is None or eb_cfg.mode == "local":
+            return None
+
+        from core.execution_backend import ContainerBackend, auto_select_backend
+
+        if eb_cfg.mode == "auto":
+            eb_cfg = auto_select_backend(eb_cfg)
+            eb_cfg = self._auto_select_image(eb_cfg)
+
+        if eb_cfg.mode != "container":
+            return None
+
+        backend = ContainerBackend(eb_cfg)
+        backend.set_project_dir(project_dir)
+        return backend
+
+    def _auto_select_image(self, config: object) -> object:
+        """Run agent image-selection for ``mode=auto`` before container creation."""
+        from core.execution_backend import ContainerBackend
+        from core.types import ExecutionBackendConfig as _EBC
+
+        if getattr(config, "mode", None) != "container":
+            return config
+
+        candidates: list[str] = []
+        is_discovered = False
+
+        cfg_list = getattr(config, "images", None) or []
+        # Normalize: filter out None/"None" artifacts
+        candidates = [c for c in cfg_list if str(c).strip() and str(c).strip() != "None"]
+
+        if len(candidates) == 1:
+            return config
+
+        if not candidates:
+            try:
+                probe = ContainerBackend(config)
+                discovered = probe._discover_local_images()
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("Auto image discovery failed: %s", exc)
+                discovered = []
+
+            if discovered:
+                candidates = discovered
+                is_discovered = True
+            else:
+                import logging
+                logging.getLogger(__name__).info("Auto mode: no images and no local images discovered; falling back to local")
+                return _EBC(mode="local")
+
+        selected = self._send_image_selection_prompt(candidates, is_discovered)
+        if selected and selected in candidates:
+            config = _EBC(
+                mode=config.mode,
+                source=config.source,
+                runtime=config.runtime,
+                image=selected,
+                images=candidates,
+                container_name=config.container_name,
+                container_name_prefix=config.container_name_prefix,
+                devices=config.devices,
+                volumes=config.volumes,
+                env_vars=config.env_vars,
+                required_env_vars=config.required_env_vars,
+                required_devices=config.required_devices,
+                container_workdir=config.container_workdir,
+                network_mode=config.network_mode,
+                runtime_flags=config.runtime_flags,
+                timeout=config.timeout,
+                cleanup=config.cleanup,
+            )
+            import logging
+            logging.getLogger(__name__).info("Auto image selection chosen: %s", selected)
+        else:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Auto image selection returned invalid value %r; falling back to local",
+                selected,
+            )
+            return _EBC(mode="local")
+
+        return config
+
+    def _send_image_selection_prompt(
+        self,
+        candidates: list[str],
+        is_discovered: bool = False,
+    ) -> str | None:
+        """Ask the main engineer session to select an image from the list."""
+        from core.prompt_loader import PromptLoader
+        from harness.session.manager import extract_json_response as _extract
+
+        prompts_dir = (
+            Path(__file__).resolve().parent.parent / "prompts"
+        )
+        prompt_loader = PromptLoader(prompts_dir)
+
+        candidates_text = "\n".join(f"  {i+1}. {img}" for i, img in enumerate(candidates))
+
+        guidance = (
+            "Select the most appropriate image for running the migration workflow. "
+            "Consider image suitability for Python, PyTorch, and target hardware."
+        )
+        if is_discovered:
+            guidance = (
+                "These are the images already available on the host. "
+                + guidance
+            )
+
+        prompt_text = prompt_loader.load_prompt(
+            "container_image_select",
+            {
+                "candidate_images": candidates_text,
+                "discovered_images_section": (
+                    "## Discovered Local Images\nThe following images were found on this host:\n"
+                    + candidates_text
+                    if is_discovered
+                    else ""
+                ),
+                "selection_guidance": guidance,
+            },
+        )
+
+        sid = self.session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+        try:
+            raw = self.session_mgr.send_command(sid, prompt_text, timeout=120)
+            parsed = _extract(raw)
+            if isinstance(parsed, dict):
+                selected = parsed.get("selected_image")
+                return str(selected) if selected else None
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Image selection prompt failed: %s", exc)
+
+        return None
+
+    @staticmethod
+    def _preflight_and_probe(backend: object) -> dict[str, str]:
+        if backend is None:
+            return {}
+        preflight = getattr(backend, "preflight", None)
+        if callable(preflight):
+            preflight()
+        probe_fn = getattr(backend, "probe_environment", None)
+        probe_facts: dict[str, object] | None = None
+        if callable(probe_fn):
+            probe_facts = probe_fn()
+        return get_container_prompt_context(backend, probe_facts)
+
+    @staticmethod
+    def _build_execution_environment_context(backend: object, container_ctx: dict[str, str] | None = None) -> str:
+        from core.execution_backend import LocalBackend as _LocalBackend
+        probe_facts: dict[str, object] | None = None
+        if container_ctx and "container_env_facts" in container_ctx:
+            import json
+            try:
+                probe_facts = json.loads(container_ctx["container_env_facts"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if backend is None or isinstance(backend, _LocalBackend):
+            return get_execution_environment_context(None, probe_facts)
+        return get_execution_environment_context(backend, probe_facts or {})
+
+    @staticmethod
+    def _cleanup_execution_backend(backend: object) -> None:
+        if backend is None:
+            return
+        try:
+            backend.cleanup()
+        except Exception as exc:
+            # Cleanup failures are logged, never crash the workflow.
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error("Execution backend cleanup failed: %s", exc)
 
     @staticmethod
     def _journal(

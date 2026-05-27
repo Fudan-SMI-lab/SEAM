@@ -7,9 +7,6 @@ import json
 from pathlib import Path
 from typing import cast
 
-from core.custom_op_variants import expanded_variant_contract_from_contract
-from validators.validate_validation_final import custom_op_final_gate_unit_ledger
-
 
 NO_EXPERIENCE_CARDS_NOTE = "(No analyzer-selected experience cards)"
 
@@ -90,7 +87,6 @@ def write_operator_repair_context_artifact(
     project_dir: str,
     entry_script: str,
     phase3_contract: dict[str, object] | None = None,
-    phase1_analysis: dict[str, object] | None = None,
 ) -> str:
     runtime_dir = Path(artifact_dir) / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +99,6 @@ def write_operator_repair_context_artifact(
             project_dir=project_dir,
             entry_script=entry_script,
             contract=contract,
-            phase1_analysis=dict(phase1_analysis or {}),
         ),
         encoding="utf-8",
     )
@@ -168,7 +163,6 @@ def _operator_repair_context_markdown(
     project_dir: str,
     entry_script: str,
     contract: dict[str, object],
-    phase1_analysis: dict[str, object],
 ) -> str:
     project_path = Path(project_dir).resolve()
     reports_dir = _reports_dir(project_path, contract)
@@ -181,41 +175,10 @@ def _operator_repair_context_markdown(
     manifest = _read_json_report(manifest_path, warnings)
     gate = _read_json_report(gate_path, warnings)
 
-    expanded_variant_units = _expanded_variant_units_from_contract(contract)
-    phase3_units = _phase3_contract_operator_units(contract)
-    expanded_variant_count = _expanded_variant_count_from_contract(contract, expanded_variant_units)
-    total_count = _best_effort_total_count(inventory, manifest, gate)
-    units = _operator_units(inventory, manifest, gate)
-    inventory_source = "migration_reports"
-    if not units:
-        fallback_units = expanded_variant_units or phase3_units
-        if fallback_units:
-            units = fallback_units
-            inventory_source = "phase_3_expanded_variant_contract_fallback" if expanded_variant_units else "phase_3_contract_fallback"
-            warnings.append(
-                "Using Phase 3 custom-op inventory fallback because migration_reports inventory/manifest/final gate are not available yet; fallback rows are scope only, not final evidence."
-            )
-    if total_count is None and units:
-        total_count = len(units)
-    if expanded_variant_units and units and not _all_units_present(expanded_variant_units, units):
-        warnings.append(
-            "Current migration_reports do not cover every Phase 3 expanded variant identity; continue repair from the expanded variant scope, not from collapsed report rows."
-        )
-    if expanded_variant_units and total_count is not None and expanded_variant_count is not None and total_count < expanded_variant_count:
-        warnings.append(
-            f"Current report total_count={total_count} is smaller than Phase 3 expanded_variant_count={expanded_variant_count}; treat reports as incomplete closure evidence."
-        )
-    if phase3_units and units and not _all_units_present(phase3_units, units):
-        warnings.append(
-            "Current migration_reports do not cover every Phase 3 operator identity; continue repair from the Phase 3 operator scope."
-        )
+    contract_units = _contract_operator_units(contract)
+    total_count = len(contract_units) if contract_units else _best_effort_total_count(inventory, manifest, gate)
+    units = contract_units or _operator_units(inventory, manifest, gate)
     progress = _progress_summary(gate)
-    ledger_target_units = expanded_variant_units or phase3_units or _operator_unit_identities(inventory, manifest, gate)
-    ledger = custom_op_final_gate_unit_ledger(
-        _object_dict(gate) or {},
-        target_units=ledger_target_units,
-        project_root=project_path,
-    )
 
     required_report_paths = _string_list(contract.get("required_report_paths"))
     required_checks = _string_list(contract.get("required_checks"))
@@ -240,15 +203,6 @@ def _operator_repair_context_markdown(
         f"- Entry Script Kind: {contract.get('entry_script_kind', '(not provided)')}",
         f"- Phase 5 Entry Script Revision Allowed: {contract.get('phase5_entry_script_revision_allowed', False)}",
         f"- Reports Dir: {reports_dir}",
-        "",
-        "## Phase 1 Discovery Summary",
-        *_phase1_discovery_lines(phase1_analysis),
-        "",
-        "## Phase 3 Validation Contract Summary",
-        f"- Run Command: {contract.get('run_command', entry_script or '(not provided)')}",
-        f"- Required Report Paths Count: {len(required_report_paths)}",
-        f"- Required Checks Count: {len(required_checks)}",
-        "- The Phase 3 command is the validation source of truth; run it after repairs and make its emitted reports close the full Phase 1/Phase 3 scope.",
         "",
         "## Inventory / Manifest / Final-Gate Closure",
         "- Inventory is the discovery output: it records fine-grained operator/custom-op units, their variants/signatures, launch sites, public entries, and source evidence.",
@@ -277,23 +231,9 @@ def _operator_repair_context_markdown(
         "## Operator Inventory Summary",
         f"- Total Count: {total_count if total_count is not None else 'unknown'}",
         f"- Unit Count Listed Here: {len(units)}",
-        f"- Inventory Source: {inventory_source}",
-        "",
-        "## Expanded Variant Inventory",
-        f"- Expanded Variant Count: {expanded_variant_count if expanded_variant_count is not None else 'unknown'}",
-        f"- Expanded Variant Units Listed Here: {len(expanded_variant_units)}",
+        f"- Unit Source: {'Phase 3 contract' if contract_units else 'current reports'}",
         "",
     ]
-    if phase3_units:
-        lines.append("## Phase 3 Operator Units")
-        for index, unit in enumerate(phase3_units, start=1):
-            lines.append(f"- Phase3 Unit {index}: {unit}")
-        lines.append("")
-    if expanded_variant_units:
-        lines.append("## Expanded Variant Units")
-        for index, unit in enumerate(expanded_variant_units, start=1):
-            lines.append(f"- Variant {index}: {unit}")
-        lines.append("")
     if units:
         lines.append("## Parallelizable Operator Units")
         for index, unit in enumerate(units, start=1):
@@ -306,15 +246,12 @@ def _operator_repair_context_markdown(
         "## Current Final-Gate Progress",
         *[f"- {item}" for item in progress],
         "",
-        "## Strict Per-Unit Progress Ledger",
-        *_strict_progress_lines(ledger),
-        "",
         "## Bounded Parallelization Guidance",
         "- Repair only the currently failing or assigned operator/custom-op units needed for the final gate.",
         "- Independent operator units may be split into bounded sub-tasks when their source files, build artifacts, and tests do not overlap.",
         "- Merge sub-task results before running the entry command and final-gate checks.",
         "- Treat the discovered inventory, manifest coverage rows, and final gate as the source of truth; do not invent passes for rows that are missing from source_inventory.",
-        "- Do not execute docs/cuda_custom_op_skill_test_prompt.md as a workplan; this artifact is the bounded repair context.",
+        "- Do not execute cuda_custom_op_skill_test_prompt.md as a workplan; this artifact is the bounded repair context.",
         "",
         "## Warnings",
     ])
@@ -323,66 +260,10 @@ def _operator_repair_context_markdown(
     return "\n".join(lines)
 
 
-def _phase1_discovery_lines(phase1_analysis: dict[str, object]) -> list[str]:
-    if not phase1_analysis:
-        return ["- Phase 1 project analysis was not provided in this repair context."]
-    lines: list[str] = []
-    for key in ("project_type", "entry_script", "operator_unit_count", "inventory_count", "expanded_operator_instances_count"):
-        value = phase1_analysis.get(key)
-        if value not in (None, "", []):
-            lines.append(f"- phase1.{key}: {value}")
-    surface = phase1_analysis.get("custom_op_surface")
-    if isinstance(surface, dict):
-        surface_dict = cast(dict[str, object], surface)
-        for key in (
-            "custom_op_detected",
-            "variant_axes_detected",
-            "expanded_operator_instances_count",
-        ):
-            value = surface_dict.get(key)
-            if value not in (None, "", []):
-                lines.append(f"- custom_op_surface.{key}: {value}")
-        for key in (
-            "fine_grained_operator_units",
-            "discovered_operator_names",
-            "native_operator_symbols",
-            "kernel_launch_sites",
-            "source_evidence",
-        ):
-            value = surface_dict.get(key)
-            if isinstance(value, list) and value:
-                sample = ", ".join(str(item) for item in cast(list[object], value)[:20])
-                lines.append(f"- custom_op_surface.{key}: count={len(value)} sample={sample}")
-        axes = surface_dict.get("variant_axes")
-        if isinstance(axes, dict) and axes:
-            lines.append("- custom_op_surface.variant_axes: " + json.dumps(axes, ensure_ascii=False, default=str))
-        variants = surface_dict.get("expanded_operator_variants")
-        if isinstance(variants, list) and variants:
-            unit_ids: list[str] = []
-            for item in cast(list[object], variants)[:50]:
-                if isinstance(item, dict) and item.get("unit_identity"):
-                    unit_ids.append(str(item["unit_identity"]))
-                else:
-                    unit_ids.append(str(item)[:200])
-            lines.append(f"- custom_op_surface.expanded_operator_variants: count={len(variants)}")
-            lines.extend(f"  - {unit_id}" for unit_id in unit_ids)
-    if not lines:
-        lines.append("- Phase 1 analysis is present but has no custom-op discovery summary fields.")
-    return lines
-
-
 def _reports_dir(project_path: Path, contract: dict[str, object]) -> Path:
     raw = contract.get("reports_dir")
     if isinstance(raw, str) and raw.strip():
-        candidate = Path(raw).expanduser()
-        if not candidate.is_absolute():
-            candidate = project_path / candidate
-        try:
-            resolved = candidate.resolve()
-            resolved.relative_to(project_path)
-        except (OSError, ValueError):
-            return (project_path / "migration_reports").resolve()
-        return resolved
+        return Path(raw).expanduser().resolve()
     return (project_path / "migration_reports").resolve()
 
 
@@ -404,6 +285,27 @@ def _string_list(value: object) -> list[str]:
         items = cast(list[object], value)
         return [str(item) for item in items if str(item).strip()]
     return []
+
+
+def _contract_operator_units(contract: dict[str, object]) -> list[str]:
+    schema = contract.get("operator_inventory_schema")
+    if not isinstance(schema, dict):
+        return []
+    schema_dict = cast(dict[str, object], schema)
+    raw_units = schema_dict.get("fine_grained_operator_units")
+    if not isinstance(raw_units, list):
+        return []
+    units: list[str] = []
+    for item in cast(list[object], raw_units):
+        if isinstance(item, str) and item.strip() and item.strip() not in units:
+            units.append(item.strip())
+        elif isinstance(item, dict):
+            summary = _entry_summary(item)
+            if summary and summary not in units:
+                units.append(summary)
+        if len(units) >= 50:
+            break
+    return units
 
 
 def _candidate_entries(data: object) -> list[object]:
@@ -463,88 +365,6 @@ def _operator_units(inventory: object, manifest: object, gate: object) -> list[s
     return units
 
 
-def _operator_unit_identities(inventory: object, manifest: object, gate: object) -> list[str]:
-    units: list[str] = []
-    for data in (inventory, manifest, gate):
-        for entry in _candidate_entries(data):
-            if not isinstance(entry, dict):
-                continue
-            entry_dict = cast(dict[str, object], entry)
-            value = entry_dict.get("unit_identity") or entry_dict.get("name") or entry_dict.get("operator") or entry_dict.get("op_name")
-            if isinstance(value, str) and value.strip() and value.strip() not in units:
-                units.append(value.strip())
-            if len(units) >= 500:
-                return units
-    return units
-
-
-def _phase3_contract_operator_units(contract: dict[str, object]) -> list[str]:
-    candidates: list[object] = []
-
-    schema = contract.get("operator_inventory_schema")
-    if isinstance(schema, dict):
-        schema_dict = cast(dict[str, object], schema)
-        for key in ("fine_grained_operator_units", "operator_units", "operators", "rows"):
-            value = schema_dict.get(key)
-            if isinstance(value, list):
-                candidates.extend(cast(list[object], value))
-                break
-
-    if not candidates:
-        surface = contract.get("custom_op_surface")
-        if isinstance(surface, dict):
-            surface_dict = cast(dict[str, object], surface)
-            for key in ("fine_grained_operator_units", "operator_units", "native_operator_symbols", "discovered_operator_names"):
-                value = surface_dict.get(key)
-                if isinstance(value, list):
-                    candidates.extend(cast(list[object], value))
-                    break
-
-    if not candidates:
-        source_inventory = contract.get("source_inventory")
-        if isinstance(source_inventory, dict):
-            entries = cast(dict[str, object], source_inventory).get("entries")
-            if isinstance(entries, list):
-                candidates.extend(cast(list[object], entries))
-
-    units: list[str] = []
-    for item in candidates:
-        if isinstance(item, dict):
-            summary = _entry_summary(cast(dict[str, object], item))
-        else:
-            summary = str(item).strip()
-        if summary and summary not in units:
-            units.append(summary[:300])
-        if len(units) >= 50:
-            break
-    return units
-
-
-def _expanded_variant_units_from_contract(contract: dict[str, object]) -> list[str]:
-    overlay = expanded_variant_contract_from_contract(contract)
-    inventory = overlay.get("expanded_variant_inventory")
-    if not isinstance(inventory, dict):
-        return []
-    return _string_list(cast(dict[str, object], inventory).get("unit_identities"))[:50]
-
-
-def _expanded_variant_count_from_contract(contract: dict[str, object], units: list[str]) -> int | None:
-    overlay = expanded_variant_contract_from_contract(contract)
-    inventory = overlay.get("expanded_variant_inventory")
-    if isinstance(inventory, dict):
-        count = cast(dict[str, object], inventory).get("expanded_operator_instances_count")
-        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
-            return count
-    if units:
-        return len(units)
-    return None
-
-
-def _all_units_present(required_units: list[str], candidate_units: list[str]) -> bool:
-    normalized_candidates = "\n".join(candidate_units).lower()
-    return all(str(unit).lower() in normalized_candidates for unit in required_units)
-
-
 def _entry_summary(entry: object) -> str:
     if not isinstance(entry, dict):
         return str(entry)[:300]
@@ -598,33 +418,3 @@ def _progress_summary(gate: object) -> list[str]:
         "report_parity_passed",
     )
     return [f"{field}: {gate_dict.get(field, '(missing)')}" for field in fields]
-
-
-def _strict_progress_lines(ledger: dict[str, object]) -> list[str]:
-    lines = [
-        f"Total Target Units: {ledger.get('total_count', 0)}",
-        f"Strict Pass Units: {ledger.get('strict_pass_count', 0)}",
-        f"Remaining Units: {ledger.get('remaining_count', 0)}",
-    ]
-    strict_units = ledger.get("strict_pass_units")
-    if isinstance(strict_units, list) and strict_units:
-        lines.append("Strict Pass Unit Identities: " + ", ".join(str(unit) for unit in strict_units[:50]))
-    remaining_units = ledger.get("remaining_units")
-    if isinstance(remaining_units, list) and remaining_units:
-        lines.append("Remaining Unit Identities: " + ", ".join(str(unit) for unit in remaining_units[:50]))
-    raw_units = ledger.get("units")
-    detail_count = 0
-    if isinstance(raw_units, list):
-        for item in raw_units:
-            if not isinstance(item, dict) or item.get("status") == "strict_pass":
-                continue
-            unit = str(item.get("unit_identity") or "").strip()
-            missing = item.get("missing_evidence")
-            missing_items = [str(value) for value in missing[:6]] if isinstance(missing, list) else []
-            detail = "; ".join(missing_items) if missing_items else "strict evidence incomplete"
-            lines.append(f"Remaining Detail [{unit}]: {detail}")
-            detail_count += 1
-            if detail_count >= 20:
-                lines.append("Remaining Detail: truncated; inspect final-gate/unit ledger for the full list")
-                break
-    return lines

@@ -69,7 +69,7 @@ class MockSessionManager:
             self._sessions[key] = f"{role}-{lifecycle}-session"
         return self._sessions[key]
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = None, **kwargs: object) -> str:
         self.send_command_calls.append((session_id, command, timeout))
         if command.startswith("# Phase 0 - Environment Detection") or command.startswith(
             "Your previous response for phase_0_env_detect"
@@ -268,7 +268,7 @@ def verify_run(
 
 def run_smoke_test() -> None:
     check_server_running()
-    temp_root = Path(tempfile.mkdtemp(prefix="src-e2e-"))
+    temp_root = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-"))
     try:
         project_dir, source_file = create_test_project(temp_root)
         artifact_store = ArtifactStore(str(temp_root), RUN_ID)
@@ -303,7 +303,7 @@ def run_smoke_test() -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the local src E2E smoke test.",
+        description="Run the local migration_utils E2E smoke test.",
     )
     return parser.parse_args(argv)
 

@@ -7,7 +7,7 @@ Tests the complete flow:
 Run 1: Migration → Phase 7 extracts skill → auto-promotes → index updated
 Run 2: Migration → Phase 5 retrieves skill → injects into prompt
 
-Can run with real OpenCode server (--server_type/--server_url) or mocked (--mock) mode.
+Can run with real OpenCode server (--server-url) or mocked (--mock) mode.
 """
 from __future__ import annotations
 

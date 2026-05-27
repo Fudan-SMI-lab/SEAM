@@ -13,36 +13,24 @@ from typing import Protocol, cast, runtime_checkable
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
-from core.assisted_verification import (
-    AssistedVerificationResult,
-    AssistedVerificationRunner,
-    attach_assisted_summary,
-)
-from core.custom_op_opp_preflight import has_custom_op_contract, has_explicit_no_custom_op_contract
-from core.custom_op_variants import (
-    apply_expanded_variant_contract,
-    ensure_strict_expanded_variant_validation_script,
-    expanded_variant_contract_from_outputs,
-    normalize_project_analysis_expanded_variants,
-)
+from core.execution_backend import get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_env_ctx
 from core.paths import resolve_relative_path, workspace_root
+from core.phase_boundary import inject_phase_boundary
+from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, resolve_phase6_timeout
 from core.prompt_loader import PromptLoader
-from core.routes import (
-    SERVING_ROUTES,
-    normalize_serving_phase1_surface,
-    normalize_serving_phase3_contract,
-    serving_entry_kind_for_route,
-    serving_framework_for_route,
-)
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition
+from core.validation_correction import (
+    build_phase_correction_prompt,
+    build_validation_correction_prompt,
+    extract_output_format_from_prompt,
+)
 from core.validator_engine import ValidationResult, ValidatorEngine
 from migrator.rule_based import RuleBasedMigrator
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
 from validators.validate_project_analysis import validate as validate_project_analysis
-from validators.validate_reports import validate as validate_reports
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
 
@@ -72,64 +60,52 @@ CUSTOM_OP_NEGATIVE_PATTERNS = (
 
 CUSTOM_OP_CONTRACT_KEYS = frozenset(
     {
+        "entry_script_kind",
         "reports_dir",
         "required_report_paths",
         "required_checks",
         "operator_discovery_sources",
         "operator_inventory_schema",
+        "performance_report_schema",
         "validation_obligations",
         "phase5_entry_script_revision_allowed",
     }
 )
 
+def _rewrite_container_to_host_path(
+    path_str: str,
+    project_dir: str,
+    container_workdir: str,
+) -> str:
+    """Convert a container-visible path to its host-visible equivalent.
+
+    When a model returns a path under ``container_workdir`` (e.g.
+    ``/workspace/validate_fwi.py``), return the corresponding path under
+    ``project_dir`` (e.g. ``{project_dir}/validate_fwi.py``).
+
+    Boundary-safe: ``/workspace2/x`` does NOT match container workdir ``/workspace``.
+    """
+    if not path_str:
+        return path_str
+    safe = container_workdir.rstrip("/")
+    if not safe:
+        return path_str
+    if not (path_str == safe or path_str.startswith(safe + "/")):
+        return path_str
+    rel = path_str[len(safe):].lstrip("/")
+    if not rel:
+        return project_dir
+    return str(Path(project_dir) / rel)
+
 
 logger = logging.getLogger(__name__)
-TOP_LEVEL_LLM_TIMEOUT_DEFAULT = 30000
-STATUS_ONLY_RESPONSE_KEYS = frozenset(
-    {
-        "ok",
-        "status",
-        "state",
-        "phase",
-        "phase_id",
-        "message",
-        "note",
-        "notes",
-        "summary",
-        "progress",
-        "current_step",
-        "next_step",
-        "todo",
-        "todos",
-        "task",
-        "tasks",
-    }
-)
-PHASE_RESPONSE_REQUIRED_KEYS = {
-    "phase_2_venv_create": ("venv_path", "python_path", "installed_packages"),
-    "phase_3_entry_script": ("entry_script_path", "run_command"),
-    "phase_35_static_validate": ("validation_passed", "issues", "fix_plan"),
-}
-REVIEW_RESPONSE_REQUIRED_KEYS = (
-    "verdict",
-    "cpu_fallback_detected",
-    "cpu_fallback_necessary",
-    "alternative_suggestions",
-    "reasoning",
-)
 
 
 class SessionManagerLike(Protocol):
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+    def get_or_create(self, role: str, lifecycle: str) -> str:
         ...
 
     def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str:
-        ...
-
-
-@runtime_checkable
-class AgentSessionManagerLike(Protocol):
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         ...
 
 
@@ -209,6 +185,14 @@ class PhaseRunner:
         }
         self._runtime_phase_index = self._build_runtime_phase_index(workflow)
         self._register_default_validators()
+        self._container_context: dict[str, str] = {}
+        self._exec_env_context: str = ""
+
+    def set_container_context(self, ctx: dict[str, str]) -> None:
+        self._container_context = dict(ctx)
+
+    def set_execution_environment_context(self, ctx: str) -> None:
+        self._exec_env_context = ctx
 
     @staticmethod
     def _session_error_from_response(response: str | None) -> str | None:
@@ -243,28 +227,6 @@ class PhaseRunner:
             artifact_store=self.artifact_store,
         )
 
-    def _get_main_session(self, session_mgr: SessionManagerLike) -> str:
-        agent = self._configured_backend_agent("main_engineer")
-        if agent:
-            try:
-                return session_mgr.get_or_create(
-                    role="main_engineer",
-                    lifecycle="persistent",
-                    agent=agent,
-                )
-            except TypeError:
-                pass
-        return session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
-
-    def _configured_backend_agent(self, agent_id: str) -> str:
-        if self.workflow is None or not isinstance(self.workflow.agents, dict):
-            return ""
-        config = self.workflow.agents.get(agent_id)
-        if not isinstance(config, dict):
-            return ""
-        value = config.get("agent") or config.get("backend_agent")
-        return value.strip() if isinstance(value, str) else ""
-
     def run_phase_0_to_3(
         self,
         project_dir: str,
@@ -273,7 +235,7 @@ class PhaseRunner:
     ) -> dict[str, JsonObject]:
         active_session_mgr = session_mgr or self.session_mgr
         active_artifact_store = artifact_store or self.artifact_store
-        session_id = self._get_main_session(active_session_mgr)
+        session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
 
         outputs: dict[str, JsonObject] = {}
         for phase_id in self.PHASE_ORDER:
@@ -312,7 +274,7 @@ class PhaseRunner:
         """
         active_session_mgr = session_mgr or self.session_mgr
         active_artifact_store = artifact_store or self.artifact_store
-        session_id = self._get_main_session(active_session_mgr)
+        session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
 
         outputs: dict[str, JsonObject] = {}
         for phase_id in ("phase_0", "phase_1"):
@@ -354,7 +316,7 @@ class PhaseRunner:
         """
         active_session_mgr = session_mgr or self.session_mgr
         active_artifact_store = artifact_store or self.artifact_store
-        session_id = self._get_main_session(active_session_mgr)
+        session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
 
         outputs: dict[str, JsonObject] = dict(prior_outputs)
         phase_2_context: JsonObject = {
@@ -456,15 +418,16 @@ class PhaseRunner:
                 "project_dir": project_dir,
                 "phase_1_context": phase_1_context,
                 "user_constraints": user_constraints,
+                **self._container_context,
             },
         )
         prompt = self._append_explicit_runtime_skill_markdown(
             prompt,
             "phase_1_5_constraint_summary",
         )
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
-        timeout = self._resolve_direct_llm_timeout("phase_1_5_constraint_summary")
-        raw_response = session_mgr.send_command(main_session_id, prompt, timeout=timeout)
+        raw_response = session_mgr.send_command(main_session_id, prompt, timeout=None)
         parsed: JsonObject = dict(extract_json_response(raw_response))
         constraint_summary = str(parsed.get("constraint_summary", ""))
 
@@ -529,13 +492,13 @@ class PhaseRunner:
             },
         )
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_5_review")
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
         active_prompt = prompt
         parsed: JsonObject = {}
 
         for attempt in range(1, max_retry + 1):
-            timeout = self._resolve_direct_llm_timeout("phase_5_review")
-            raw_response = session_mgr.send_command(review_session_id, active_prompt, timeout=timeout)
+            raw_response = session_mgr.send_command(review_session_id, active_prompt, timeout=None)
             session_error = self._session_error_from_response(raw_response)
             if session_error:
                 return {
@@ -547,22 +510,7 @@ class PhaseRunner:
                     "session_error": session_error,
                     "raw_response": raw_response,
                 }
-            parsed_response = extract_json_response(raw_response)
-            parsed = dict(parsed_response) if isinstance(parsed_response, dict) else {}
-
-            response_shape_errors = self._review_response_shape_errors(parsed, raw_response)
-            if response_shape_errors:
-                if attempt < max_retry:
-                    active_prompt = self._build_review_correction_prompt(response_shape_errors)
-                    continue
-                parsed = {
-                    "verdict": "unknown",
-                    "cpu_fallback_detected": False,
-                    "cpu_fallback_necessary": False,
-                    "alternative_suggestions": "",
-                    "reasoning": "Review response failed validation: " + "; ".join(response_shape_errors),
-                }
-                break
+            parsed = dict(extract_json_response(raw_response))
 
             verdict = str(parsed.get("verdict", "")).lower()
             if verdict in ("accept", "reject"):
@@ -688,20 +636,11 @@ class PhaseRunner:
         """
         active_session_mgr = session_mgr or self.session_mgr
 
-        session_id = self._get_main_session(active_session_mgr)
+        session_id = active_session_mgr.get_or_create(
+            role="main_engineer", lifecycle="persistent"
+        )
 
-        prior_artifacts: dict[str, object] = {}
-        for candidate in (
-            "phase_0_env_detect",
-            "phase_1_project_analysis",
-            "phase_2_venv_create",
-            "phase_3_entry_script",
-            "phase_4_rule_migration",
-            "phase_5_validation",
-        ):
-            output = artifact_store.load_phase_output(candidate)
-            if output is not None:
-                prior_artifacts[candidate] = output
+        prior_artifacts = collect_phase6_prior_artifacts(artifact_store)
 
         report_dir = os.path.join(artifact_store.artifact_dir, "reports")
         os.makedirs(report_dir, exist_ok=True)
@@ -712,57 +651,75 @@ class PhaseRunner:
             "previous_outputs": self._serialize_context(prior_artifacts),
             "report_dir": report_dir,
         }
+        for k, v in self._container_context.items():
+            prompt_context.setdefault(k, v)
+        for k, v in _get_exec_ctx(None).items():
+            prompt_context.setdefault(k, v)
+        prompt_context.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
 
         prompt = self.prompt_loader.load_prompt("phase_6_report", prompt_context)
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_6_report")
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
-        timeout = self._resolve_direct_llm_timeout("phase_6_report")
-        active_prompt = prompt
-        max_retry = 2
-        last_validation = ValidationResult(passed=False, errors=["phase_6_report did not execute"], warnings=[])
-        for attempt in range(1, max_retry + 1):
-            raw_response = active_session_mgr.send_command(session_id, active_prompt, timeout=timeout)
-            parsed_response = extract_json_response(raw_response)
-            parsed: dict[str, object] = dict(parsed_response) if isinstance(parsed_response, dict) else {}
-            validation = self._validate_phase6_report_shape(parsed, raw_response)
-            last_validation = validation
-            if validation.passed:
-                report = self._phase6_report_from_parsed(parsed, str(project_dir))
-                validation = self.validator.validate("reports", report)
-                last_validation = validation
-                if validation.passed:
-                    raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=attempt)
-                    canonical_path = artifact_store.mark_validated("phase_6_report", report)
-                    _ = artifact_store.write_journal({
-                        "phase_id": "phase_6_report",
-                        "attempt": attempt,
-                        "status": "succeeded",
-                        "session_ref": session_id,
-                        "raw_path": raw_path,
-                        "canonical_path": canonical_path,
-                        "errors": [],
-                        "warnings": [],
-                    })
+        fallback_reason = ""
+        try:
+            raw_response = active_session_mgr.send_command(
+                session_id, prompt, timeout=self._phase_6_timeout(), retries=0
+            )
+            fallback_reason = self._session_error_from_response(raw_response) or ""
+        except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
+            raw_response = ""
+            fallback_reason = str(exc)
 
-                    return report
+        if fallback_reason:
+            report = build_phase6_fallback_report(
+                project_dir=str(project_dir),
+                report_dir=report_dir,
+                prior_outputs=prior_artifacts,
+                reason=fallback_reason,
+            )
+        else:
+            parsed: dict[str, object] = dict(extract_json_response(raw_response))
+            if not self._phase_6_output_complete(parsed):
+                report = build_phase6_fallback_report(
+                    project_dir=str(project_dir),
+                    report_dir=report_dir,
+                    prior_outputs=prior_artifacts,
+                    reason="Phase 6 LLM response omitted required report fields",
+                )
+            else:
+                report = {
+                    "phase_id": "phase_6_report",
+                    "report_paths": parsed.get("report_paths", []),
+                    "migration_summary": parsed.get("migration_summary", {}),
+                    "project_dir": str(project_dir),
+                }
 
-            invalid_report = self._invalid_phase6_report(parsed, raw_response, validation.errors, str(project_dir))
-            raw_path = artifact_store.save_phase_output("phase_6_report", invalid_report, attempt=attempt)
-            _ = artifact_store.write_journal({
-                "phase_id": "phase_6_report",
-                "attempt": attempt,
-                "status": "response_shape_failed",
-                "session_ref": session_id,
-                "raw_path": raw_path,
-                "canonical_path": "",
-                "errors": validation.errors,
-                "warnings": validation.warnings,
-            })
-            if attempt < max_retry:
-                active_prompt = self._build_phase6_correction_prompt(validation)
+        raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=1)
+        canonical_path = artifact_store.mark_validated("phase_6_report", report)
+        _ = artifact_store.write_journal({
+            "phase_id": "phase_6_report",
+            "attempt": 1,
+            "status": "fallback" if report.get("fallback") else "succeeded",
+            "session_ref": session_id,
+            "raw_path": raw_path,
+            "canonical_path": canonical_path,
+            "errors": [],
+            "warnings": [],
+        })
 
-        error_text = "; ".join(last_validation.errors) or "unknown validation failure"
-        raise ValueError(f"phase_6_report failed validation after {max_retry} attempts: {error_text}")
+        return report
+
+    def _phase_6_timeout(self) -> int:
+        runtime_phase = self._runtime_phase_index.get("phase_6_report")
+        phase_timeout = runtime_phase.timeout if runtime_phase else None
+        return resolve_phase6_timeout(self.framework_config, phase_timeout, logger)
+
+    @staticmethod
+    def _phase_6_output_complete(output: dict[str, object]) -> bool:
+        report_paths = output.get("report_paths")
+        migration_summary = output.get("migration_summary")
+        return isinstance(report_paths, list) and isinstance(migration_summary, dict)
 
     def _run_single_phase(
         self,
@@ -777,6 +734,7 @@ class PhaseRunner:
         prompt_context = self._build_prompt_context(phase, normalized_context)
         prompt = self.prompt_loader.load_prompt(phase.prompt_id, prompt_context)
         prompt = self._append_explicit_runtime_skill_markdown(prompt, phase.prompt_id)
+        prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
         max_retry = self._resolve_max_retry(normalized_context)
         timeout = self._resolve_timeout(phase, normalized_context)
         session_ref = self._session_reference(session)
@@ -785,13 +743,19 @@ class PhaseRunner:
         active_prompt = prompt
         for attempt in range(1, max_retry + 1):
             raw_response = self._send_prompt(session, active_prompt, timeout, session_mgr)
-            parsed_response = extract_json_response(raw_response)
-            parsed_output: JsonObject = dict(parsed_response) if isinstance(parsed_response, dict) else {}
-            response_shape_validation = self._validate_phase_response_shape(
-                phase,
-                parsed_output,
-                raw_response,
-            )
+            parsed_output: JsonObject = dict(extract_json_response(raw_response))
+            output_format = self._extract_output_format_from_prompt(active_prompt)
+            parse_attempt = 0
+            while not parsed_output and parse_attempt < 2:
+                parse_attempt += 1
+                parse_prompt = build_validation_correction_prompt(
+                    "Your response did not contain a valid JSON object.",
+                    output_format_example=output_format,
+                    is_parse_failure=True,
+                    phase_name=phase.prompt_id,
+                )
+                raw_response = self._send_prompt(session, parse_prompt, timeout, session_mgr)
+                parsed_output = dict(extract_json_response(raw_response))
             normalized_output = self._normalize_output(phase, parsed_output, prompt_context, normalized_context)
 
             # Attach raw prompt and response for end-to-end verification.
@@ -803,66 +767,9 @@ class PhaseRunner:
 
             raw_path = artifact_store.save_phase_output(phase.artifact_id, normalized_output, attempt=attempt)
 
-            if not response_shape_validation.passed:
-                last_validation = response_shape_validation
-                _ = artifact_store.write_journal(
-                    self._build_journal_entry(
-                        phase=phase,
-                        attempt=attempt,
-                        status="response_shape_failed",
-                        session_ref=session_ref,
-                        raw_path=raw_path,
-                        canonical_path="",
-                        validation=response_shape_validation,
-                    )
-                )
-                if attempt < max_retry:
-                    active_prompt = self._build_correction_prompt(
-                        phase=phase,
-                        validation=response_shape_validation,
-                        previous_prompt=prompt,
-                    )
-                    continue
-                break
-
             validation = self.validator.validate(phase.validator_name, normalized_output)
             last_validation = validation
             if validation.passed:
-                assisted_result = self._run_assisted_verification(
-                    phase=phase,
-                    output=normalized_output,
-                    context=normalized_context,
-                    session_mgr=session_mgr,
-                    artifact_store=artifact_store,
-                    attempt=attempt,
-                )
-                if assisted_result is not None:
-                    normalized_output = attach_assisted_summary(normalized_output, assisted_result)
-                    if not assisted_result.passed:
-                        last_validation = ValidationResult(
-                            passed=False,
-                            errors=assisted_result.errors or ["assisted verification failed"],
-                            warnings=assisted_result.warnings,
-                        )
-                        _ = artifact_store.write_journal(
-                            self._build_journal_entry(
-                                phase=phase,
-                                attempt=attempt,
-                                status="assisted_verification_failed",
-                                session_ref=session_ref,
-                                raw_path=raw_path,
-                                canonical_path="",
-                                validation=last_validation,
-                            )
-                        )
-                        if attempt < max_retry:
-                            active_prompt = assisted_result.correction_prompt or self._build_correction_prompt(
-                                phase=phase,
-                                validation=last_validation,
-                                previous_prompt=prompt,
-                            )
-                            continue
-                        break
                 validated_output = dict(normalized_output)
                 _ = validated_output.pop("_meta", None)
                 canonical_path = artifact_store.mark_validated(phase.artifact_id, validated_output)
@@ -901,194 +808,6 @@ class PhaseRunner:
         error_text = "; ".join(last_validation.errors) or "unknown validation failure"
         raise ValueError(f"{phase.prompt_id} failed validation after {max_retry} attempts: {error_text}")
 
-    @classmethod
-    def _validate_phase_response_shape(
-        cls,
-        phase: PhaseSpec,
-        output: JsonObject,
-        raw_response: str,
-    ) -> ValidationResult:
-        errors: list[str] = []
-        required_keys = PHASE_RESPONSE_REQUIRED_KEYS.get(phase.prompt_id, ())
-        if not required_keys:
-            return ValidationResult(passed=True, errors=[], warnings=[])
-        if not output:
-            if raw_response.strip():
-                errors.append("response contained no parseable JSON object")
-            else:
-                errors.append("response was empty")
-        elif cls._is_status_only_response(output):
-            errors.append(
-                f"{phase.prompt_id} returned status/progress-only JSON instead of the complete phase schema"
-            )
-
-        missing_keys = [key for key in required_keys if key not in output]
-        if missing_keys:
-            errors.append("Missing required phase JSON keys: " + ", ".join(missing_keys))
-        return ValidationResult(passed=not errors, errors=errors, warnings=[])
-
-    @staticmethod
-    def _is_status_only_response(output: JsonObject) -> bool:
-        keys = {str(key) for key in output if not str(key).startswith("_")}
-        return bool(keys) and keys.issubset(STATUS_ONLY_RESPONSE_KEYS)
-
-    @classmethod
-    def _validate_phase6_report_shape(
-        cls,
-        parsed: dict[str, object],
-        raw_response: str,
-    ) -> ValidationResult:
-        errors: list[str] = []
-        if not parsed:
-            if raw_response.strip():
-                errors.append("response contained no parseable JSON object")
-            else:
-                errors.append("response was empty")
-        elif cls._is_status_only_response(parsed):
-            errors.append("phase_6_report returned status/progress-only JSON instead of the complete report schema")
-
-        report_paths = parsed.get("report_paths")
-        if not isinstance(report_paths, list):
-            errors.append("report_paths must be a list")
-        elif not all(isinstance(path, str) for path in report_paths):
-            errors.append("report_paths must contain only strings")
-
-        if not isinstance(parsed.get("migration_summary"), dict):
-            errors.append("migration_summary must be an object")
-        return ValidationResult(passed=not errors, errors=errors, warnings=[])
-
-    @staticmethod
-    def _phase6_report_from_parsed(parsed: dict[str, object], project_dir: str) -> dict[str, object]:
-        report_paths_value = parsed.get("report_paths")
-        report_paths: list[str] = []
-        if isinstance(report_paths_value, list) and all(isinstance(path, str) for path in report_paths_value):
-            report_paths = [path for path in report_paths_value if isinstance(path, str)]
-
-        summary_value = parsed.get("migration_summary")
-        migration_summary: dict[str, object] = {}
-        if isinstance(summary_value, dict):
-            migration_summary = {str(key): value for key, value in summary_value.items()}
-
-        return {
-            "phase_id": "phase_6_report",
-            "report_paths": report_paths,
-            "migration_summary": migration_summary,
-            "project_dir": project_dir,
-        }
-
-    @classmethod
-    def _invalid_phase6_report(
-        cls,
-        parsed: dict[str, object],
-        raw_response: str,
-        errors: list[str],
-        project_dir: str,
-    ) -> dict[str, object]:
-        report = cls._phase6_report_from_parsed(parsed, project_dir)
-        report["raw_response"] = raw_response
-        report["validation_errors"] = list(errors)
-        return report
-
-    @staticmethod
-    def _build_phase6_correction_prompt(validation: ValidationResult) -> str:
-        error_lines = "\n".join(f"- {error}" for error in validation.errors)
-        return (
-            "Your previous response for phase_6_report failed validation:\n"
-            f"{error_lines}\n\n"
-            "Return one complete replacement JSON object for phase_6_report only. "
-            "It must include `report_paths` as a list of strings and `migration_summary` as an object. "
-            "Do not return a patch, commentary, acknowledgement, or status/progress-only JSON. "
-            "Return only the corrected JSON object."
-        )
-
-    @classmethod
-    def _review_response_shape_errors(cls, parsed: dict[str, object], raw_response: str) -> list[str]:
-        errors: list[str] = []
-        if not parsed:
-            if raw_response.strip():
-                errors.append("response contained no parseable JSON object")
-            else:
-                errors.append("response was empty")
-            return errors
-        if cls._is_status_only_response(parsed):
-            errors.append("review response returned status/progress-only JSON instead of the complete review schema")
-        missing_keys = [key for key in REVIEW_RESPONSE_REQUIRED_KEYS if key not in parsed]
-        if missing_keys:
-            errors.append("Missing required review JSON keys: " + ", ".join(missing_keys))
-        return errors
-
-    @staticmethod
-    def _build_review_correction_prompt(errors: list[str]) -> str:
-        error_lines = "\n".join(f"- {error}" for error in errors)
-        return (
-            "Your previous review response failed validation:\n"
-            f"{error_lines}\n\n"
-            "Return one complete replacement JSON object for phase_5_review only. "
-            "It must include verdict, cpu_fallback_detected, cpu_fallback_necessary, alternative_suggestions, and reasoning. "
-            "Do not return a patch, commentary, acknowledgement, or status/progress-only JSON. "
-            "Return only the corrected JSON object."
-        )
-
-    def _run_assisted_verification(
-        self,
-        *,
-        phase: PhaseSpec,
-        output: JsonObject,
-        context: JsonObject,
-        session_mgr: SessionManagerLike,
-        artifact_store: ArtifactStore,
-        attempt: int,
-    ) -> AssistedVerificationResult | None:
-        if phase.prompt_id not in {"phase_1_project_analysis", "phase_3_entry_script"}:
-            return None
-        runner = AssistedVerificationRunner(
-            session_mgr=session_mgr,
-            artifact_store=artifact_store,
-            framework_config=self.framework_config,
-        )
-        if not runner.config.enabled:
-            return None
-        project_dir = self._assisted_project_dir(context)
-        phase_output = self._without_meta(output)
-        if phase.prompt_id == "phase_1_project_analysis":
-            return runner.verify_phase1(
-                phase_output=phase_output,
-                project_dir=project_dir,
-                attempt=attempt,
-            )
-
-        return runner.verify_phase3(
-            phase_output=phase_output,
-            phase1_output=self._phase1_output_from_context(context),
-            project_dir=project_dir,
-            attempt=attempt,
-        )
-
-    def _assisted_project_dir(self, context: JsonObject) -> str:
-        for key in ("project_dir", "PROJECT_DIR"):
-            value = context.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-        return "."
-
-    @classmethod
-    def _phase1_output_from_context(cls, context: JsonObject) -> dict[str, object] | None:
-        previous_outputs = context.get("previous_outputs")
-        if not isinstance(previous_outputs, dict):
-            return None
-        outputs = cast(dict[str, object], previous_outputs)
-        for key in ("phase_1_project_analysis", "phase_1"):
-            phase_output = outputs.get(key)
-            if isinstance(phase_output, dict):
-                return cls._without_meta(cast(dict[str, object], phase_output))
-        return None
-
-    @staticmethod
-    def _without_meta(output: dict[str, object]) -> dict[str, object]:
-        clean = dict(output)
-        _ = clean.pop("_meta", None)
-        return clean
-
     @staticmethod
     def _build_correction_prompt(
         *,
@@ -1096,36 +815,15 @@ class PhaseRunner:
         validation: ValidationResult,
         previous_prompt: str,
     ) -> str:
-        del previous_prompt
-
-        error_lines = "\n".join(f"- {error}" for error in validation.errors)
-        missing_fields: list[str] = []
-        for error_msg in validation.errors:
-            match = re.search(r"field\s+['\"](\w+)['\"]", error_msg, flags=re.IGNORECASE)
-            if match:
-                missing_fields.append(match.group(1))
-
-        field_hint = ""
-        if missing_fields:
-            field_hint = f"\n\nRequired keys missing: {', '.join(missing_fields)}."
-
-        action_hint = ""
-        if any("existing file for custom-op contracts" in error_msg for error_msg in validation.errors):
-            action_hint = (
-                "\n\nBefore returning corrected JSON, create or select the referenced "
-                + "custom-op validation script so entry_script_path points to a real file."
-            )
-
-        return (
-            f"Your previous response for {phase.prompt_id} failed validation:\n"
-            f"{error_lines}"
-            f"{field_hint}"
-            f"{action_hint}"
-            f"\n\nReturn one complete replacement JSON object for {phase.prompt_id} only. "
-            "The replacement must include every required top-level key for this phase, not a patch, diff, acknowledgement, commentary-only JSON, or partial update. "
-            "Do not return meta/status-only fields such as `status`, `note`, `message`, or `progress` instead of the phase schema. "
-            "Return only the corrected JSON object."
+        return build_phase_correction_prompt(
+            phase_name=phase.prompt_id,
+            validation_errors=[str(error) for error in validation.errors],
+            output_format_example=PhaseRunner._extract_output_format_from_prompt(previous_prompt),
         )
+
+    @staticmethod
+    def _extract_output_format_from_prompt(prompt_text: str) -> str | None:
+        return extract_output_format_from_prompt(prompt_text)
 
     def _register_default_validators(self) -> None:
         registrations = {
@@ -1134,7 +832,6 @@ class PhaseRunner:
             "venv": validate_venv,
             "entry_script": validate_entry_script,
             "entry_static": validate_entry_static,
-            "reports": validate_reports,
         }
         for name, validator_fn in registrations.items():
             self.validator.register_validator(name, validator_fn)
@@ -1354,6 +1051,24 @@ class PhaseRunner:
         )
         return f"{prompt_text}{separator}{bundle.markdown}"
 
+    # Phase-aware previous_outputs whitelist (shared with WorkflowExecutor strategy).
+    _PREVIOUS_OUTPUTS_WHITELIST: dict[str, list[str]] = {
+        "phase_0_env_detect": [],
+        "phase_1_project_analysis": [],
+        "phase_2_venv_create": [],
+        "phase_1_5_constraint_summary": [],
+        "phase_3_entry_script": [],
+        "phase_35_static_validate": ["phase_3_entry_script"],
+    }
+
+    def _filter_previous_outputs(self, prompt_id: str, previous_outputs: JsonObject) -> JsonObject:
+        allowed = self._PREVIOUS_OUTPUTS_WHITELIST.get(prompt_id)
+        if allowed is None:
+            return previous_outputs  # no whitelist → legacy "all" behaviour
+        if not allowed:
+            return {}
+        return {k: v for k, v in previous_outputs.items() if k in allowed}
+
     def _build_prompt_context(self, phase: PhaseSpec, context: JsonObject) -> dict[str, str]:
         previous_outputs = context.get("previous_outputs", {})
         prompt_ctx: dict[str, str] = {
@@ -1363,11 +1078,18 @@ class PhaseRunner:
             "user_constraints": str(context.get("user_constraints", "")),
         }
         if phase.prompt_id not in self._SHARED_SESSION_PHASES:
-            prompt_ctx["previous_outputs"] = self._serialize_context(previous_outputs)
+            filtered = self._filter_previous_outputs(phase.prompt_id, previous_outputs)
+            prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
         if phase.prompt_id == "phase_35_static_validate":
-            prompt_ctx["previous_outputs"] = self._serialize_context(previous_outputs)
-            entry_script = self._lookup_previous_output(previous_outputs, "phase_3_entry_script", "entry_script_path")
+            filtered = self._filter_previous_outputs(phase.prompt_id, previous_outputs)
+            prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
+            entry_script = self._lookup_previous_output(filtered, "phase_3_entry_script", "entry_script_path")
             prompt_ctx["entry_script_path"] = str(entry_script) if entry_script else "(not available)"
+        for k, v in self._container_context.items():
+            prompt_ctx.setdefault(k, v)
+        for k, v in _get_exec_ctx(None).items():
+            prompt_ctx.setdefault(k, v)
+        prompt_ctx.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
         return prompt_ctx
 
     @staticmethod
@@ -1390,11 +1112,18 @@ class PhaseRunner:
             raise ValueError("max_retry must be >= 1")
         return max_retry
 
-    def _resolve_timeout(self, phase: PhaseSpec, context: JsonObject) -> int | None:
-        return None
-
-    def _resolve_direct_llm_timeout(self, phase_id: str) -> int | None:
-        return None
+    @staticmethod
+    def _resolve_timeout(phase: PhaseSpec, context: JsonObject) -> int | None:
+        raw_timeout = context.get("timeout", phase.timeout)
+        if raw_timeout is None:
+            return None
+        if isinstance(raw_timeout, bool):
+            return int(raw_timeout)
+        if isinstance(raw_timeout, int):
+            return raw_timeout
+        if isinstance(raw_timeout, str):
+            return int(raw_timeout)
+        raise ValueError("timeout must be an integer or null")
 
     def _send_prompt(
         self,
@@ -1417,36 +1146,23 @@ class PhaseRunner:
         normalized = dict(output)
         if phase.prompt_id == "phase_0_env_detect" and "python_version" not in normalized:
             normalized["python_version"] = self._current_python_version()
-        if phase.prompt_id == "phase_1_project_analysis":
+        if phase.prompt_id == "phase_1_project_analysis" and "project_dir" not in normalized:
             normalized["project_dir"] = str(prompt_context["project_dir"])
-            normalize_project_analysis_expanded_variants(normalized)
-            normalize_serving_phase1_surface(normalized)
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
-            phase1_route = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "migration_route")
             if "entry_script_path" not in normalized:
                 entry_script = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "entry_script")
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
-            if isinstance(phase1_route, str) and phase1_route in SERVING_ROUTES:
-                phase1_output = previous_outputs.get("phase_1_project_analysis") if isinstance(previous_outputs, dict) else None
-                normalize_serving_phase3_contract(
-                    normalized,
-                    route=phase1_route,
-                    project_dir=str(prompt_context["project_dir"]),
-                    phase1_output=phase1_output if isinstance(phase1_output, dict) else None,
-                )
-            elif normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(previous_outputs, context):
-                _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
-                normalized["project_dir"] = str(prompt_context["project_dir"])
-            variant_overlay = expanded_variant_contract_from_outputs(previous_outputs)
-            if variant_overlay:
-                apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
-                ensure_strict_expanded_variant_validation_script(
-                    normalized,
-                    variant_overlay,
-                    project_dir=str(prompt_context["project_dir"]),
-                )
+            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            if self._custom_op_route_disabled(workflow_globals):
+                normalized = self._strip_custom_op_contract_fields(normalized)
+            else:
+                if self._custom_op_required_signal(previous_outputs, context):
+                    _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+            normalized = self._normalize_phase3_container_paths(
+                normalized, prompt_context,
+            )
         if phase.prompt_id == "phase_35_static_validate":
             previous_outputs = context.get("previous_outputs", {})
             entry_script_kind = self._lookup_previous_output(
@@ -1454,18 +1170,68 @@ class PhaseRunner:
                 "phase_3_entry_script",
                 "entry_script_kind",
             )
-            if entry_script_kind == "custom_op_full_validation":
+            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            if not self._custom_op_route_disabled(workflow_globals) and entry_script_kind == "custom_op_full_validation":
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
-                entry_script_path = self._lookup_previous_output(
-                    previous_outputs,
-                    "phase_3_entry_script",
-                    "entry_script_path",
-                )
-                if isinstance(entry_script_path, str) and entry_script_path.strip():
-                    normalized.setdefault("entry_script_path", entry_script_path)
-            if expanded_variant_contract_from_outputs(previous_outputs):
-                normalized["expanded_variant_static_required"] = True
+        return normalized
+
+    @staticmethod
+    def _custom_op_route_disabled(workflow_globals: dict[str, object]) -> bool:
+        if workflow_globals.get("custom_op_route_enabled") is False:
+            return True
+        return workflow_globals.get("disable_custom_op_contract_injection") is True
+
+    @staticmethod
+    def _strip_custom_op_contract_fields(output: JsonObject) -> JsonObject:
+        stripped = dict(output)
+        for field in CUSTOM_OP_CONTRACT_KEYS:
+            stripped.pop(field, None)
+        return stripped
+
+    @staticmethod
+    def _normalize_phase3_container_paths(
+        output: JsonObject,
+        prompt_context: dict[str, str],
+    ) -> JsonObject:
+        """Rewrite host-visible path fields when the model returns container paths.
+
+        Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
+        is NOT rewritten here — the Phase 5 execution backend already handles
+        host-to-container path mapping for command execution.
+
+        When the model returns a path that starts with the container workdir (e.g.
+        ``/workspace/...`` or the value of ``{container_project_dir}``), convert it
+        to the corresponding host-visible path under ``{project_dir}``.
+        """
+        project_dir = prompt_context.get("project_dir")
+        container_workdir = (
+            prompt_context.get("container_workdir")
+            or prompt_context.get("container_project_dir")
+        )
+        if not project_dir or not container_workdir:
+            return output
+
+        if not project_dir.startswith("/"):
+            try:
+                project_dir = str(Path(project_dir).resolve())
+            except OSError:
+                return output
+
+        normalized = dict(output)
+
+        entry = normalized.get("entry_script_path")
+        if isinstance(entry, str) and entry.strip():
+            normalized["entry_script_path"] = _rewrite_container_to_host_path(
+                entry, project_dir, container_workdir,
+            )
+
+        reports = normalized.get("reports_dir")
+        if isinstance(reports, str) and reports.strip():
+            normalized["reports_dir"] = _rewrite_container_to_host_path(
+                reports, project_dir, container_workdir,
+            )
+
         return normalized
 
     @classmethod
@@ -1484,17 +1250,28 @@ class PhaseRunner:
     def _custom_op_signal(cls, value: object) -> bool | None:
         if isinstance(value, str):
             if any(pattern.search(value) for pattern in CUSTOM_OP_NEGATIVE_PATTERNS):
-                return False
+                return None
+            lowered = value.lower()
+            if any(term.lower() in lowered for term in CUSTOM_OP_REQUIRED_TERMS):
+                return True
             return None
         if isinstance(value, dict):
             value_dict = cast(dict[object, object], value)
-            contract_dict = cast(dict[str, object], value)
-            if has_custom_op_contract(contract_dict):
+            if value_dict.get("entry_script_kind") == "custom_op_full_validation":
                 return True
-            if has_explicit_no_custom_op_contract(contract_dict):
+            if value_dict.get("custom_op_detected") is True:
+                return True
+            if value_dict.get("custom_op_detected") is False:
                 return False
+            if any(key in value_dict for key in CUSTOM_OP_CONTRACT_KEYS):
+                return True
             custom_op_surface = value_dict.get("custom_op_surface")
             if isinstance(custom_op_surface, dict):
+                surface = cast(dict[object, object], custom_op_surface)
+                if surface.get("custom_op_detected") is True:
+                    return True
+                if surface.get("custom_op_detected") is False:
+                    return False
                 return cls._custom_op_signal_from_iterable(
                     item for key, item in value_dict.items() if key not in {"_meta", "custom_op_surface"}
                 )
@@ -1511,15 +1288,10 @@ class PhaseRunner:
 
     @classmethod
     def _custom_op_signal_from_iterable(cls, values: Iterable[object]) -> bool | None:
-        saw_negative = False
         for item in values:
             signal = cls._custom_op_signal(item)
-            if signal is True:
-                return True
-            if signal is False:
-                saw_negative = True
-        if saw_negative:
-            return False
+            if signal is not None:
+                return signal
         return None
 
     @staticmethod
@@ -1559,7 +1331,6 @@ class PhaseRunner:
             "attempt": attempt,
             "status": status,
             "session_id": session_ref,
-            "session_ref": session_ref,
             "raw_path": raw_path,
             "canonical_path": canonical_path,
             "errors": validation.errors,

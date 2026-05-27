@@ -243,7 +243,7 @@ def test_relative_workflow_path_resolves_against_execution_root():
         encoding="utf-8",
     )
     old_cwd = os.getcwd()
-    temp_cwd = tempfile.mkdtemp(prefix="src-cwd-")
+    temp_cwd = tempfile.mkdtemp(prefix="migration-utils-cwd-")
     try:
         os.chdir(temp_cwd)
         wf = load_workflow(workflow_name)

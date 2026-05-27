@@ -8,22 +8,17 @@ framework:
     gate_on_cpu_fallback: true        # trigger on CPU fallback detection
     max_review_iterations: 3          # max improvement cycles
 
-  assisted_verification:
-    enabled: true                     # server-assisted custom-op inventory/script review
-    phase1_custom_op: true
-    phase3_contract_coverage: true
-    skip_when_no_custom_op_signals: true
-    max_attempts: 2
-    timeout_seconds: 30000
-    verifier_role: "custom_op_verifier"
-    verifier_lifecycle: "persistent"
-    verifier_agent: "Sisyphus-Junior"
-
   server:
-    hostname: "127.0.0.1"             # default server hostname
-    port: 4098                        # default server port
-    server_type: "opencode"           # backend server adapter
-    auto_start: true                  # auto-start OpenCode server when allowed
+    url: ""                           # empty = auto-start
+    auto_start: true                  # auto-start OpenCode server
+    port_preference: 0                # 0 = find available port
 
   artifacts:
     key_prefix: "phase"               # consistent artifact key format
+
+  phase_boundary_guidance:
+    enabled: true                     # scopes TODOs/tools/sub-agents to current phase
+
+  omo_mode_directives:
+    enabled: true                     # OMO-style mode directives
+    scope: current_phase              # scoped to current phase only

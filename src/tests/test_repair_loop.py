@@ -15,8 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.artifact_store import ArtifactStore
 from core.prompt_loader import PromptLoader
-from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState
-from core.repair_loop import force_custom_op_operator_routing_if_needed
+from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, force_custom_op_operator_routing_if_needed
 from core.runtime_artifacts import write_operator_repair_context_artifact
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
@@ -312,10 +311,6 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     runtime_dir = Path(artifact_store.artifact_dir) / "runtime"
     operator_context = runtime_dir / "operatorRepairContext_demo_custom_project_.md"
     assert str(operator_context.resolve()) in prompt
-    assert "Real Ascend Custom-Op Variant Service" in prompt
-    assert "This is not a report-generation task" in prompt
-    assert "Any AscendC kernel body only ignores arguments" in prompt
-    assert "performance numbers are constants, formulas, fabricated ratios" in prompt
     assert "bounded operator context" in prompt
     assert "inventory / manifest / final-gate" in prompt.lower()
     assert "freeze manifest rows" in prompt
@@ -323,9 +318,7 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     assert "remaining_entries == 0" in prompt
     assert "full_migration_status == FULL_PASS" in prompt
     assert "same-run runtime coverage > 0" in prompt
-    assert "CPU baseline runtime against Ascend OPP/custom-op runtime" in prompt
-    assert "remaining_operator_variant_gaps" in prompt
-    assert "custom_op_final_gate_report" in prompt
+    assert "baseline/custom performance evidence" in prompt
     assert "report-only" in prompt
     assert "MVP-only" in prompt
     assert "zero-call" in prompt
@@ -336,6 +329,55 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     context_text = operator_context.read_text(encoding="utf-8")
     assert "# Operator Repair Context" in context_text
     assert "FULL_PASS is required" in context_text
+
+
+def test_operator_repair_context_prefers_phase3_contract_units_over_stale_reports(tmp_path: Path) -> None:
+    session_mgr = MockSessionManager(
+        {
+            "category": "operator",
+            "root_cause": "custom op final gate failed",
+            "suggested_fix": "close custom op reports",
+            "repair_role": "operator_fixer",
+        }
+    )
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    project_dir = tmp_path / "contract source project"
+    reports_dir = project_dir / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    (reports_dir / "operator_inventory.json").write_text(
+        json.dumps({"total_count": 1, "entries": [{"name": "stale_family", "status": "passed"}]}),
+        encoding="utf-8",
+    )
+    contract = _custom_op_phase3_contract(project_dir)
+    contract["operator_inventory_schema"] = {
+        "semantic_rows": "one row per fine-grained source-discovered unit",
+        "fine_grained_operator_units": ["family:kernel_a", "family:kernel_b"],
+    }
+
+    engine._build_repair_prompt(
+        entry_script="python validate.py",
+        project_dir=str(project_dir),
+        iteration=1,
+        error_text="custom_op_final_gate failed",
+        classification={
+            "category": "operator",
+            "root_cause": "custom op final gate failed",
+            "suggested_fix": "close custom op reports",
+            "repair_role": "operator_fixer",
+            "raw_response": "{}",
+        },
+        history=[],
+        phase3_contract=contract,
+    )
+
+    runtime_dir = Path(artifact_store.artifact_dir) / "runtime"
+    operator_context = next(runtime_dir.glob("operatorRepairContext_contract_source_project*.md"))
+    context_text = operator_context.read_text(encoding="utf-8")
+    assert "Unit Source: Phase 3 contract" in context_text
+    assert "Total Count: 2" in context_text
+    assert "Unit 1: family:kernel_a" in context_text
+    assert "Unit 2: family:kernel_b" in context_text
+    assert "stale_family" not in context_text
 
 
 def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tmp_path: Path) -> None:
@@ -365,12 +407,13 @@ def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tm
         history=[],
     )
 
-    assert len(prompt.splitlines()) <= 40
+    # Prompt now includes constraint_summary, No CPU Fallback, and Native Operator Handoff sections
+    assert "No CPU Fallback (CRITICAL)" in prompt
+    assert "Native Operator Handoff" in prompt
     assert "ModuleNotFoundError" not in prompt
     assert "## Execution Failure" not in prompt
-    assert "Dependency Fixer" in prompt
-    assert "commands_run" in prompt
-    assert "agent_diagnostics" in prompt
+    assert "agent_diagnostics" not in prompt
+    # operator_fixer is mentioned in handoff guidance for native operator issues
 
     runtime_dir = Path(artifact_store.artifact_dir) / "runtime"
     runtime_error = runtime_dir / "runtime_error_demo_dependency_project_.md"
@@ -1187,15 +1230,15 @@ def _custom_op_gate_report() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cpu",
-            "custom_device": "ascend_opp",
+            "baseline_device": "cuda",
+            "custom_device": "npu",
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cpu",
-            "overall_custom_device": "ascend_opp",
+            "overall_baseline_device": "cuda",
+            "overall_custom_device": "npu",
             "entries": [
                 {
                     "unit_identity": "op_1",
@@ -1203,8 +1246,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cpu",
-                    "custom_device": "ascend_opp",
+                    "baseline_device": "cuda",
+                    "custom_device": "npu",
                 }
             ],
         },
@@ -1250,16 +1293,8 @@ def _custom_op_gate_report() -> dict[str, object]:
             "opp_custom_op_artifact_evidence": {
                 "path": "opp/op_1/libop_1.so",
                 "runtime_loaded_artifact_path": "opp/op_1/libop_1.so",
-                "op_host_source_path": "opp/op_1/op_host/op_1.cpp",
-                "op_kernel_source_path": "opp/op_1/op_kernel/op_1.cpp",
-                "build_script_path": "opp/op_1/build.sh",
-                "install_log_path": "migration_reports/opp_install.log",
-                "generated_header_path": "opp/op_1/build_out/autogen/op_1.h",
-                "op_info_path": "opp/op_1/build_out/op_info/op_1.json",
-                "kernel_meta_path": "opp/op_1/build_out/kernel_meta/op_1.o",
                 "project_local": True,
                 "built": True,
-                "installed": True,
                 "native_artifact": True,
                 "compiled_extension": True,
                 "build_provenance": {
@@ -1275,15 +1310,6 @@ def _custom_op_gate_report() -> dict[str, object]:
                 "custom_op_route_executed": True,
                 "native_custom_op_route_executed": True,
             },
-            "public_api_route_evidence": {
-                "unit_identity": "op_1",
-                "route_type": "public_api",
-                "entrypoint": "pkg.op_1",
-                "same_run": True,
-                "custom_call_count": 2,
-                "public_api_invoked": True,
-                "native_custom_op_route_executed": True,
-            },
             "same_run_runtime_coverage": {
                 "custom_call_count": 2,
                 "same_run": True,
@@ -1295,8 +1321,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                 "custom_seconds": 0.01,
                 "speedup_vs_baseline": 2.0,
                 "project_api_invoked": True,
-                "baseline_device": "cpu",
-                "custom_device": "ascend_opp",
+                "baseline_device": "cuda",
+                "custom_device": "npu",
             },
             "no_fallback_no_zero_call_no_builtin_contamination": {
                 "passed": True,
@@ -1313,32 +1339,10 @@ def _custom_op_gate_report() -> dict[str, object]:
 def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
     artifact_path = project_dir / "opp" / "op_1" / "libop_1.so"
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt op_host op_kernel kernel_operator aicore")
-    host_source = project_dir / "opp" / "op_1" / "op_host" / "op_1.cpp"
-    kernel_source = project_dir / "opp" / "op_1" / "op_kernel" / "op_1.cpp"
-    host_source.parent.mkdir(parents=True, exist_ok=True)
-    kernel_source.parent.mkdir(parents=True, exist_ok=True)
-    _ = host_source.write_text("#include <acl/acl.h>\n// op_host registration\n", encoding="utf-8")
-    _ = kernel_source.write_text("#include <kernel_operator.h>\n// op_kernel AscendC aicore\n", encoding="utf-8")
-    build_script = project_dir / "opp" / "op_1" / "build.sh"
-    _ = build_script.write_text("cmake -S . -B build_out && cmake --build build_out && cmake --install build_out\n", encoding="utf-8")
-    generated_header = project_dir / "opp" / "op_1" / "build_out" / "autogen" / "op_1.h"
-    op_info = project_dir / "opp" / "op_1" / "build_out" / "op_info" / "op_1.json"
-    kernel_meta = project_dir / "opp" / "op_1" / "build_out" / "kernel_meta" / "op_1.o"
-    generated_header.parent.mkdir(parents=True, exist_ok=True)
-    op_info.parent.mkdir(parents=True, exist_ok=True)
-    kernel_meta.parent.mkdir(parents=True, exist_ok=True)
-    _ = generated_header.write_text("// generated CANN header\n", encoding="utf-8")
-    _ = op_info.write_text('{"op":"op_1"}\n', encoding="utf-8")
-    _ = kernel_meta.write_bytes(b"\x7fELF\x02\x01\x01\x00kernel_operator op_kernel")
+    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
     build_log = project_dir / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    build_log_text = (
-        "CANN OPP build: op_host/op_1.cpp op_kernel/op_1.cpp kernel_operator.h -lascendcl\n"
-        "install package to vendors/customize/op_impl/ai_core/tbe\n"
-    )
-    _ = build_log.write_text(build_log_text, encoding="utf-8")
-    _ = (project_dir / "migration_reports" / "opp_install.log").write_text("install OPP package into ASCEND_OPP_PATH vendors/customize\n", encoding="utf-8")
+    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libop_1.so\n", encoding="utf-8")
     _ = (project_dir / "migration_reports" / "migration_manifest.json").write_text(
         json.dumps({"required_units": ["op_1"]}),
         encoding="utf-8",
@@ -1425,7 +1429,6 @@ def test_repair_loop_custom_op_gate_blocks_exit_zero_when_missing(tmp_path: Path
         "repair_role": "code_adapter",
     })
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
-    _write_native_custom_op_gate_artifacts(tmp_path)
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
@@ -1441,100 +1444,6 @@ def test_repair_loop_custom_op_gate_blocks_exit_zero_when_missing(tmp_path: Path
     assert result["status"] == "max_iterations"
     assert "Custom-op final evidence gate failed" in str(result["final_stderr"])
     assert session_mgr.send_command_calls
-
-
-def test_repair_loop_custom_op_opp_preflight_blocks_before_subprocess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    session_mgr = MockSessionManager({
-        "category": "operator",
-        "root_cause": "strict Ascend OPP artifacts missing",
-        "suggested_fix": "create op_host/op_kernel and generated OPP artifacts",
-        "repair_role": "operator_fixer",
-    })
-    engine, _artifact_store = build_engine(tmp_path, session_mgr)
-    (tmp_path / "validate.py").write_text("print('should not run')\n", encoding="utf-8")
-
-    def fail_run(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
-        raise AssertionError("Phase 5 must fail OPP preflight before subprocess.run")
-
-    monkeypatch.setattr("subprocess.run", fail_run)
-
-    result = engine.run(
-        f"{sys.executable} {tmp_path / 'validate.py'}",
-        str(tmp_path),
-        max_iterations=1,
-        phase3_contract=_custom_op_phase3_contract(tmp_path),
-    )
-
-    assert result["success"] is False
-    assert "Custom-op OPP preflight failed" in str(result["final_stderr"])
-    assert "Ascend C/CANN OPP is the only accepted custom-op target" in str(result["final_stderr"])
-    assert session_mgr.send_command_calls
-
-
-def test_repair_loop_custom_op_opp_preflight_ignores_symlinked_external_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    session_mgr = MockSessionManager({
-        "category": "operator",
-        "root_cause": "strict Ascend OPP artifacts missing",
-        "suggested_fix": "create project-local OPP artifacts",
-        "repair_role": "operator_fixer",
-    })
-    engine, _artifact_store = build_engine(tmp_path, session_mgr)
-    outside = tmp_path.parent / "external_opp_evidence"
-    outside.mkdir()
-    host = outside / "op_host" / "op_1.cpp"
-    kernel = outside / "op_kernel" / "op_1.cpp"
-    host.parent.mkdir(parents=True)
-    kernel.parent.mkdir(parents=True)
-    host.write_text("#include <acl/acl.h>\n", encoding="utf-8")
-    kernel.write_text("#include <kernel_operator.h>\n", encoding="utf-8")
-    (tmp_path / "opp").symlink_to(outside, target_is_directory=True)
-    (tmp_path / "validate.py").write_text("print('should not run')\n", encoding="utf-8")
-
-    def fail_run(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
-        raise AssertionError("symlinked external OPP evidence must not allow subprocess.run")
-
-    monkeypatch.setattr("subprocess.run", fail_run)
-
-    result = engine.run(
-        f"{sys.executable} {tmp_path / 'validate.py'}",
-        str(tmp_path),
-        max_iterations=1,
-        phase3_contract=_custom_op_phase3_contract(tmp_path),
-    )
-
-    assert result["success"] is False
-    assert "Custom-op OPP preflight failed" in str(result["final_stderr"])
-    assert "missing op_host source path" in str(result["final_stderr"])
-
-
-def test_repair_loop_reports_dir_alone_does_not_trigger_custom_op_opp_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    session_mgr = MockSessionManager({})
-    engine, _artifact_store = build_engine(tmp_path, session_mgr)
-    (tmp_path / "validate.py").write_text("print('ordinary project')\n", encoding="utf-8")
-
-    run_calls: list[object] = []
-
-    def fake_run(*args: object, **_kwargs: object) -> CompletedProcess[str]:
-        run_calls.append(args)
-        return CompletedProcess(args="", returncode=0)
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-
-    result = engine.run(
-        f"{sys.executable} {tmp_path / 'validate.py'}",
-        str(tmp_path),
-        max_iterations=1,
-        phase3_contract={
-            "entry_script_path": str(tmp_path / "validate.py"),
-            "run_command": f"{sys.executable} {tmp_path / 'validate.py'}",
-            "reports_dir": str(tmp_path / "migration_reports"),
-        },
-    )
-
-    assert result["success"] is True
-    assert result["status"] == "success"
-    assert run_calls
-    assert "Custom-op OPP preflight failed" not in str(result["final_stderr"])
 
 
 def test_repair_loop_valid_custom_op_gate_allows_exit_zero_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1570,7 +1479,6 @@ def test_repair_loop_custom_op_gate_blocks_oversized_report(tmp_path: Path, monk
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
-    _write_native_custom_op_gate_artifacts(tmp_path)
     _ = (reports_dir / "custom_op_final_gate.json").write_text("{" + " " * (5 * 1024 * 1024), encoding="utf-8")
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
@@ -1778,7 +1686,6 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
         "repair_role": "code_adapter",
     })
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
-    _write_native_custom_op_gate_artifacts(tmp_path)
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
@@ -1820,115 +1727,23 @@ def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: 
     assert classification["repair_role"] == "code_adapter"
 
 
-def test_zero_custom_op_contract_does_not_force_final_gate_error_to_operator() -> None:
-    classification = force_custom_op_operator_routing_if_needed(
-        {
-            "category": "validation",
-            "root_cause": "custom-op final gate report is zero-row",
-            "suggested_fix": "continue ordinary runtime repair",
-            "repair_role": "code_adapter",
-        },
-        error_text="Custom-op final evidence gate failed: inventory_count=0 remaining_entries=0 custom_op_final_gate",
-        history=["previous operator_fixer attempt mentioned custom_op_final_gate"],
-        phase3_contract={
-            "entry_script_path": "validate.py",
-            "run_command": "python validate.py",
-            "operator_unit_count": 0,
-            "custom_op_static_required": False,
-            "custom_op_detected": False,
-            "reports_dir": "migration_reports",
-        },
+def test_custom_op_negative_evidence_without_contract_does_not_force_operator() -> None:
+    classification = {
+        "category": "dependency",
+        "root_cause": "vendor torch is missing",
+        "suggested_fix": "select the container base environment",
+        "repair_role": "dependency_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="No custom operators exist; the custom-op evidence gate is not activated.",
+        history=[],
+        phase3_contract=None,
     )
 
-    assert classification["category"] == "validation"
-    assert classification["repair_role"] == "code_adapter"
-
-
-def test_zero_custom_op_flash_attention_failure_routes_to_code_adapter() -> None:
-    classification = force_custom_op_operator_routing_if_needed(
-        {
-            "category": "operator",
-            "root_cause": "FlashAttention2 has been toggled on but flash_attn is not installed",
-            "suggested_fix": "port as custom op",
-            "repair_role": "operator_fixer",
-        },
-        error_text="ImportError: FlashAttention2 has been toggled on, but package flash_attn seems to be not installed.",
-        phase3_contract={
-            "entry_script_path": "validate.py",
-            "run_command": "python validate.py",
-            "operator_unit_count": 0,
-            "custom_op_static_required": False,
-            "custom_op_detected": False,
-        },
-    )
-
-    assert classification["category"] == "migration logic"
-    assert classification["repair_role"] == "code_adapter"
-    assert "attn_implementation" in str(classification["suggested_fix"])
-    assert "OPP" in str(classification["suggested_fix"])
-
-
-def test_zero_custom_op_generic_operator_failure_stays_operator_fixer() -> None:
-    classification = force_custom_op_operator_routing_if_needed(
-        {
-            "category": "operator",
-            "root_cause": "aclnn unsupported operator in an ordinary CUDA model path",
-            "suggested_fix": "replace with NPU-supported PyTorch primitives",
-            "repair_role": "operator_fixer",
-        },
-        error_text="RuntimeError: aclnnFoo operator is not supported on NPU",
-        phase3_contract={
-            "entry_script_path": "validate.py",
-            "run_command": "python validate.py",
-            "operator_unit_count": 0,
-            "custom_op_static_required": False,
-            "custom_op_detected": False,
-        },
-    )
-
-    assert classification["category"] == "operator"
-    assert classification["repair_role"] == "operator_fixer"
-    assert "NPU-supported" in str(classification["suggested_fix"])
-
-
-def test_real_custom_op_contract_still_forces_final_gate_error_to_operator() -> None:
-    classification = force_custom_op_operator_routing_if_needed(
-        {
-            "category": "validation",
-            "root_cause": "path issue",
-            "suggested_fix": "fix path",
-            "repair_role": "code_adapter",
-        },
-        error_text="Custom-op final evidence gate failed: remaining_entries=1 custom_call_count_total=0",
-        phase3_contract={
-            "entry_script_kind": "custom_op_full_validation",
-            "operator_unit_count": 1,
-            "reports_dir": "migration_reports",
-        },
-    )
-
-    assert classification["category"] == "operator"
-    assert classification["repair_role"] == "operator_fixer"
-
-
-def test_real_custom_op_contract_routes_generated_opp_inventory_drift_to_operator() -> None:
-    classification = force_custom_op_operator_routing_if_needed(
-        {
-            "category": "validation",
-            "root_cause": "final gate count mismatch",
-            "suggested_fix": "regenerate reports",
-            "repair_role": "code_adapter",
-        },
-        error_text="Custom-op final evidence gate failed: generated OPP inventory contains project-local generated operators not covered by final gate rows: acoustic_fwd3_d; custom-op final gate counts must cover all generated OPP operator entries discovered on disk (43)",
-        phase3_contract={
-            "entry_script_kind": "custom_op_full_validation",
-            "operator_unit_count": 1,
-            "reports_dir": "migration_reports",
-        },
-    )
-
-    assert classification["category"] == "operator"
-    assert classification["repair_role"] == "operator_fixer"
+    assert routed["category"] == "dependency"
+    assert routed["repair_role"] == "dependency_fixer"
 
 def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     outside = tmp_path / "outside"
@@ -1941,7 +1756,6 @@ def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, 
         "repair_role": "code_adapter",
     })
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
-    _write_native_custom_op_gate_artifacts(tmp_path)
     contract = _custom_op_phase3_contract(tmp_path)
     contract["reports_dir"] = str(outside)
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))

@@ -4,7 +4,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import cast, final
 
 import pytest
 from typing_extensions import override
@@ -37,8 +36,7 @@ class MockSession:
 
 
 class NoopSessionManager:
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-        del agent
+    def get_or_create(self, role: str, lifecycle: str) -> str:
         return f"{role}-{lifecycle}"
 
     def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -49,15 +47,14 @@ class RecordingSessionManager:
     def __init__(self, response: str) -> None:
         self.response: str = response
         self.get_or_create_calls: list[dict[str, str]] = []
-        self.send_calls: list[tuple[str, str, int | None]] = []
+        self.send_calls: list[tuple[str, str, int | None, int | None]] = []
 
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-        del agent
+    def get_or_create(self, role: str, lifecycle: str) -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-        self.send_calls.append((session_id, command, timeout))
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+        self.send_calls.append((session_id, command, timeout, retries))
         return self.response
 
 
@@ -71,8 +68,7 @@ class MockSessionManager:
         self.get_or_create_calls = []
         self.send_calls = []
 
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-        del agent
+    def get_or_create(self, role: str, lifecycle: str) -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
@@ -110,7 +106,7 @@ def build_runner(base_dir: Path, session_mgr: SessionManagerLike | None = None) 
 
 
 def write_runtime_skill(root: Path, name: str, content: str) -> Path:
-    skill_dir = root / ".memory" / "skills" / name
+    skill_dir = root / "skills" / name
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
     _ = skill_path.write_text(content, encoding="utf-8")
@@ -268,29 +264,6 @@ def test_run_phase_1_5_appends_runtime_skills(tmp_path: Path) -> None:
     assert "### agent-skill" in sent_prompt
     assert "### constraint-skill" in sent_prompt
     assert "Constraint guidance" in sent_prompt
-    assert session_mgr.send_calls[0][2] is None
-
-
-def test_phase_runner_direct_llm_paths_ignore_configured_phase_timeout(tmp_path: Path) -> None:
-    artifact_store = ArtifactStore(str(tmp_path), "testrun")
-    session_mgr = RecordingSessionManager(json.dumps({"constraint_summary": "ok"}))
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        framework_config={"session_timeout_phase": "42"},
-    )
-
-    _ = runner.run_phase_1_5(
-        "persistent-main",
-        session_mgr,
-        artifact_store,
-        project_dir=str(tmp_path),
-        user_constraints="",
-    )
-
-    assert session_mgr.send_calls[0][2] is None
 
 
 def test_run_review_check_maps_subworkflow_runtime_skills(tmp_path: Path) -> None:
@@ -412,49 +385,7 @@ def test_run_review_check_json_example_text_not_session_error(tmp_path: Path) ->
 
     assert result["verdict"] == "accept"
     assert "session_error" not in result
-    assert len(session_mgr.send_calls) == 2
-
-
-def test_run_review_check_retries_status_only_response(tmp_path: Path) -> None:
-    artifact_store = ArtifactStore(str(tmp_path), "testrun")
-
-    class SequentialReviewSessionManager(NoopSessionManager):
-        def __init__(self) -> None:
-            self.responses: list[str] = [
-                json.dumps({"status": "in_progress", "message": "reviewing"}),
-                json.dumps({
-                    "verdict": "accept",
-                    "cpu_fallback_detected": False,
-                    "cpu_fallback_necessary": False,
-                    "alternative_suggestions": "",
-                    "reasoning": "ok",
-                }),
-            ]
-            self.send_calls: list[tuple[str, str, int | None]] = []
-
-        @override
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-            self.send_calls.append((session_id, command, timeout))
-            return self.responses.pop(0)
-
-    session_mgr = SequentialReviewSessionManager()
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-    )
-
-    result = runner.run_review_check(
-        "review-session",
-        session_mgr,
-        str(tmp_path),
-        repair_history="| Iteration | Status |",
-    )
-
-    assert result["verdict"] == "accept"
-    assert len(session_mgr.send_calls) == 2
-    assert "status/progress-only JSON" in session_mgr.send_calls[1][1]
+    assert len(session_mgr.send_calls) == 1
 
 
 def test_validation_failure_retries_are_written_to_journal(tmp_path: Path) -> None:
@@ -499,43 +430,7 @@ def test_retry_sends_correction_prompt_not_full_prompt(tmp_path: Path) -> None:
     assert second_prompt != first_prompt
     assert "failed validation" in second_prompt
     assert "Missing required field 'platform'" in second_prompt
-    assert "Required keys missing: platform." in second_prompt
-
-
-def test_phase2_progress_text_retries_to_complete_json(tmp_path: Path) -> None:
-    runner, _ = build_runner(tmp_path)
-    session = MockSession([
-        "I am creating the virtual environment now and will report back shortly.",
-        json.dumps(
-            {
-                "venv_path": str(tmp_path / ".venv"),
-                "python_path": str(tmp_path / ".venv" / "bin" / "python"),
-                "installed_packages": ["torch", "torch_npu"],
-            }
-        ),
-    ])
-
-    result = runner.run_single_phase(session, "phase_2", {"max_retry": 2})
-
-    assert result["venv_path"] == str(tmp_path / ".venv")
-    assert result["installed_packages"] == ["torch", "torch_npu"]
-    assert len(session.calls) == 2
-    assert "response contained no parseable JSON object" in session.calls[1][0]
-
-
-def test_phase3_status_only_json_retries_to_complete_schema(tmp_path: Path) -> None:
-    runner, _ = build_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"status": "in_progress", "message": "selecting entry script"}),
-        json.dumps({"entry_script_path": "train.py", "run_command": "python train.py"}),
-    ])
-
-    result = runner.run_single_phase(session, "phase_3", {"max_retry": 2})
-
-    assert result["entry_script_path"] == "train.py"
-    assert result["run_command"] == "python train.py"
-    assert len(session.calls) == 2
-    assert "status/progress-only JSON" in session.calls[1][0]
+    assert "Required or invalid fields called out by validation: platform." in second_prompt
 
 
 def test_correction_prompt_includes_error_details(tmp_path: Path) -> None:
@@ -560,7 +455,7 @@ def test_correction_prompt_includes_error_details(tmp_path: Path) -> None:
     correction_prompt, _ = session.calls[1]
     assert "Missing required field 'platform'" in correction_prompt
     assert "field 'npu_detected' must be a boolean" in correction_prompt
-    assert "Required keys missing: platform, npu_detected." in correction_prompt
+    assert "Required or invalid fields called out by validation: platform, npu_detected." in correction_prompt
 
 
 def test_correction_prompt_tells_custom_op_agent_to_create_missing_script(tmp_path: Path) -> None:
@@ -639,92 +534,38 @@ def test_run_phase_0_to_3_uses_persistent_main_engineer_session(tmp_path: Path) 
     ]
 
 
-def test_phase_runner_uses_configured_backend_agent_for_main_engineer(tmp_path: Path) -> None:
-    class AgentRecordingSessionManager:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
-        def get_or_create(
-            self,
-            role: str,
-            lifecycle: str,
-            agent: str = "",
-            title: str = "",
-            working_dir: str = "",
-            initial_prompt: str = "",
-        ) -> str:
-            self.calls.append({
-                "role": role,
-                "lifecycle": lifecycle,
-                "agent": agent,
-                "title": title,
-                "working_dir": working_dir,
-                "initial_prompt": initial_prompt,
-            })
-            return "main-session"
-
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-            del session_id, command, timeout
-            return json.dumps(valid_phase_0_output())
-
-    workflow = runtime_workflow(
-        phases=[
-            PhaseDefinition(
-                id="phase_0_env_detect",
-                name="Phase 0",
-                prompt_template="phase_0_env_detect",
-                output_schema={},
-                validator="env_detect",
-                agent="main_engineer",
-            )
-        ]
-    )
-    assert workflow.agents is not None
-    workflow.agents["main_engineer"]["agent"] = "Sisyphus-Junior"
-    session_mgr = AgentRecordingSessionManager()
-    artifact_store = ArtifactStore(str(tmp_path), "agent-config")
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        workflow=workflow,
-    )
-
-    _ = runner._get_main_session(session_mgr)
-
-    assert session_mgr.calls[0]["agent"] == "Sisyphus-Junior"
-
-
 class Phase6SessionManager:
     responses: dict[str, list[str]]
-    phase_6_responses: list[str]
+    phase_6_response: str
 
     def __init__(
         self,
         phase_responses: dict[str, list[str]] | None = None,
-        phase_6_response: str | list[str] = "",
+        phase_6_response: str = "",
     ) -> None:
         self.responses = {k: list(v) for k, v in (phase_responses or {}).items()}
-        self.phase_6_responses = list(phase_6_response) if isinstance(phase_6_response, list) else [phase_6_response]
+        self.phase_6_response = phase_6_response
         self.get_or_create_calls: list[dict[str, str]] = []
-        self.send_calls: list[tuple[str, str, int | None]] = []
+        self.send_calls: list[tuple[str, str, int | None, int | None]] = []
 
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-        del agent
+    def get_or_create(self, role: str, lifecycle: str) -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-        self.send_calls.append((session_id, command, timeout))
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+        self.send_calls.append((session_id, command, timeout, retries))
         if "Phase 6" in command or "phase_6" in command:
-            if len(self.phase_6_responses) > 1:
-                return self.phase_6_responses.pop(0)
-            return self.phase_6_responses[0]
+            return self.phase_6_response
         for phase_key in ("phase_3", "phase_2", "phase_1", "phase_0"):
             if f"Phase {phase_key[-1]}" in command:
                 return self.responses[phase_key].pop(0)
         raise AssertionError(f"Unexpected prompt: {command}")
+
+
+class Phase6TimeoutSessionManager(Phase6SessionManager):
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+        self.send_calls.append((session_id, command, timeout, retries))
+        raise TimeoutError("phase 6 timed out")
 
 
 def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
@@ -789,15 +630,20 @@ def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
     assert len(phase_6_entries) == 1
 
 
-def test_run_phase_6_retries_status_only_response_before_saving(tmp_path: Path) -> None:
+def test_run_phase_6_fallback_on_session_error(tmp_path: Path) -> None:
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
-    status_only_response = json.dumps({"status": "in_progress", "message": "writing reports"})
-    phase_6_json = json.dumps({"report_paths": [], "migration_summary": {}})
+    artifact_store.save_phase_output(
+        "phase_5_validation",
+        {"status": "success", "script_exit_code": 0},
+        attempt=1,
+    )
+    artifact_store.mark_validated(
+        "phase_5_validation",
+        {"status": "success", "script_exit_code": 0},
+    )
+
     session_mgr = Phase6SessionManager(
-        phase_6_response=[
-            status_only_response,
-            phase_6_json,
-        ]
+        phase_6_response=json.dumps({"ok": False, "error": "Session still running"})
     )
     runner = PhaseRunner(
         session_mgr=session_mgr,
@@ -808,19 +654,57 @@ def test_run_phase_6_retries_status_only_response_before_saving(tmp_path: Path) 
 
     result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
 
-    assert result["phase_id"] == "phase_6_report"
-    assert len(session_mgr.send_calls) == 2
-    assert "status/progress-only JSON" in session_mgr.send_calls[1][1]
-    journal = artifact_store.get_journal()
-    phase_6_entries = [entry for entry in journal if entry["phase_id"] == "phase_6_report"]
-    assert [entry["status"] for entry in phase_6_entries] == ["response_shape_failed", "succeeded"]
-    failed_raw_path = cast(str, phase_6_entries[0]["raw_path"])
-    failed_attempt = cast(dict[str, object], json.loads(Path(failed_raw_path).read_text(encoding="utf-8")))
-    assert failed_attempt["raw_response"] == status_only_response
-    validation_errors = cast(list[str], failed_attempt["validation_errors"])
-    assert validation_errors
-    assert any("status/progress-only JSON" in error for error in validation_errors)
-    assert phase_6_entries[0]["canonical_path"] == ""
+    assert result["fallback"] is True
+    assert result["migration_summary"]["overall_status"] == "partial"
+    assert result["migration_summary"]["files_migrated"] == 0
+    assert result["migration_summary"]["files_skipped"] == 0
+    assert result["migration_summary"]["phase5_status"] == "success"
+    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][3] == 0
+    assert all(Path(path).exists() for path in result["report_paths"])
+
+    saved = artifact_store.load_phase_output("phase_6_report")
+    assert saved is not None
+    assert saved["fallback"] is True
+
+    phase_6_entries = [e for e in artifact_store.get_journal() if e["phase_id"] == "phase_6_report"]
+    assert phase_6_entries[-1]["status"] == "fallback"
+
+
+def test_run_phase_6_fallback_on_timeout_exception(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    session_mgr = Phase6TimeoutSessionManager()
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+
+    assert result["fallback"] is True
+    assert result["fallback_reason"] == "phase 6 timed out"
+    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][3] == 0
+    assert all(Path(path).exists() for path in result["report_paths"])
+
+
+def test_run_phase_6_fallback_on_incomplete_response(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    session_mgr = Phase6SessionManager(phase_6_response=json.dumps({"raw_response": "no reports"}))
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+
+    assert result["fallback"] is True
+    assert result["migration_summary"]["overall_status"] == "partial"
+    assert all(Path(path).exists() for path in result["report_paths"])
 
 
 def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
@@ -866,8 +750,7 @@ def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
 
 def test_run_phase_0_to_1_returns_outputs(tmp_path: Path) -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-            del agent
+        def get_or_create(self, role: str, lifecycle: str) -> str:
             return "sess"
 
         def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -907,8 +790,7 @@ def test_run_phase_2_to_3_accepts_constraint_summary() -> None:
 
 def test_build_prompt_context_has_constraint_keys() -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-            del agent
+        def get_or_create(self, role: str, lifecycle: str) -> str:
             return "x"
 
         def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -928,28 +810,7 @@ def test_build_prompt_context_has_constraint_keys() -> None:
     assert result["user_constraints"] == "UC"
 
 
-def test_phase_runner_phase1_normalization_uses_prompt_context_project_dir(tmp_path: Path) -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore(str(tmp_path), "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis")
-    trusted_project = tmp_path / "trusted_project"
-    untrusted_project = tmp_path / "untrusted_project"
-
-    normalized = runner._normalize_output(
-        spec,
-        {
-            "project_dir": str(untrusted_project),
-            "dependencies": ["torch"],
-            "cuda_detected": False,
-            "entry_script": "train.py",
-        },
-        {"project_dir": str(trusted_project)},
-        {},
-    )
-
-    assert normalized["project_dir"] == str(trusted_project)
-
-
-def test_phase_runner_phase3_legacy_text_mentions_do_not_force_custom_op_context() -> None:
+def test_phase_runner_phase3_legacy_output_fails_when_custom_op_context_required() -> None:
     runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
@@ -966,9 +827,10 @@ def test_phase_runner_phase3_legacy_text_mentions_do_not_force_custom_op_context
         },
     )
 
-    assert "entry_script_kind" not in normalized
+    assert normalized["entry_script_kind"] == "custom_op_full_validation"
     validation = runner.validator.validate("entry_script", normalized)
-    assert validation.passed is True
+    assert validation.passed is False
+    assert any("required_report_paths" in error for error in validation.errors)
 
 
 def test_phase_runner_phase3_legacy_output_passes_without_custom_op_context() -> None:
@@ -1033,24 +895,6 @@ def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_con
     validation = runner.validator.validate("entry_script", false_surface)
     assert validation.passed is True
 
-    zero_surface_with_stale_text = runner._normalize_output(
-        spec,
-        {"entry_script_path": "train.py", "run_command": "python train.py"},
-        {"project_dir": "/tmp/project"},
-        {
-            "previous_outputs": {
-                "phase_1_project_analysis": {
-                    "custom_op_surface": {"custom_op_detected": False},
-                    "operator_unit_count": 0,
-                    "notes": "custom_op_final_gate and torch.ops were checked; no custom operators found",
-                },
-                "phase_35_static_validate": {"custom_op_static_required": False},
-            },
-            "previous_outputs_text": "custom_op_final_gate mentioned in logs",
-        },
-    )
-    assert "entry_script_kind" not in zero_surface_with_stale_text
-
     true_surface = runner._normalize_output(
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
@@ -1084,1261 +928,9 @@ def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_con
     assert contract_output["entry_script_kind"] == "custom_op_full_validation"
 
 
-def test_phase_runner_propagates_phase1_expanded_variant_contract() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
-
-    normalized = runner._normalize_output(
-        spec,
-        {"entry_script_path": "validate_custom_ops_full.py", "run_command": "python validate_custom_ops_full.py", "required_checks": []},
-        {"project_dir": "/tmp/project"},
-        {
-            "previous_outputs": {
-                "phase_1_project_analysis": {
-                    "custom_op_surface": {
-                        "custom_op_detected": True,
-                        "variant_axes_detected": True,
-                        "variant_axes": {"ndim": [1, 2]},
-                        "expanded_operator_instances_count": 2,
-                        "expanded_operator_variants": [
-                            {"unit_identity": "op:ndim=1"},
-                            {"unit_identity": "op:ndim=2"},
-                        ],
-                    }
-                }
-            }
-        },
-    )
-
-    assert normalized["entry_script_kind"] == "custom_op_full_validation"
-    assert normalized["expanded_variant_inventory"] == {
-        "variant_axes_detected": True,
-        "unit_identities": ["op:ndim=1", "op:ndim=2"],
-        "expanded_operator_instances_count": 2,
-    }
-    assert normalized["variant_axis_coverage"] == {"all_axes_covered": True, "axes": {"ndim": [1, 2]}}
-    assert normalized["per_variant_performance_report"] == {"required": True, "one_entry_per_expanded_variant": True}
-    required_checks = normalized["required_checks"]
-    assert isinstance(required_checks, list)
-    assert set(required_checks) >= {
-        "expanded_variant_inventory",
-        "variant_axis_coverage",
-        "per_variant_performance_report",
-    }
-
-
-def test_phase_runner_phase3_expanded_variant_subset_is_overwritten_from_phase1() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
-
-    normalized = runner._normalize_output(
-        spec,
-        {
-            "entry_script_path": "validate_custom_ops_full.py",
-            "run_command": "python validate_custom_ops_full.py",
-            "required_checks": [],
-            "expanded_variant_inventory": {
-                "variant_axes_detected": False,
-                "unit_identities": ["op:ndim=1"],
-                "expanded_operator_instances_count": 1,
-            },
-            "variant_axis_coverage": {"all_axes_covered": False, "axes": {"ndim": [1]}},
-        },
-        {"project_dir": "/tmp/project"},
-        {
-            "previous_outputs": {
-                "phase_1_project_analysis": {
-                    "custom_op_surface": {
-                        "custom_op_detected": True,
-                        "variant_axes_detected": True,
-                        "variant_axes": {"ndim": [1, 2]},
-                        "expanded_operator_instances_count": 2,
-                        "expanded_operator_variants": [
-                            {"unit_identity": "op:ndim=1"},
-                            {"unit_identity": "op:ndim=2"},
-                        ],
-                    }
-                }
-            }
-        },
-    )
-
-    assert normalized["expanded_variant_inventory"] == {
-        "variant_axes_detected": True,
-        "unit_identities": ["op:ndim=1", "op:ndim=2"],
-        "expanded_operator_instances_count": 2,
-    }
-    assert normalized["variant_axis_coverage"] == {"all_axes_covered": True, "axes": {"ndim": [1, 2]}}
-
-
-def test_phase_runner_phase1_synthesizes_expanded_variants_from_sample_axis_keys() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis")
-
-    normalized = runner._normalize_output(
-        spec,
-        {
-            "project_dir": "/untrusted",
-            "dependencies": ["torch"],
-            "cuda_detected": True,
-            "entry_script": "validate_custom_ops_full.py",
-            "custom_op_surface": {
-                "custom_op_detected": True,
-                "variant_axes_detected": True,
-                "variant_axes": {
-                    "rank": ["one", "two"],
-                    "precision": ["fp16", "fp32"],
-                    "block_size": [64, 128],
-                },
-                "fine_grained_operator_units": ["generic_kernel_forward", "generic_kernel_backward"],
-                "native_operator_symbols": ["generic_kernel_forward", "generic_kernel_backward"],
-                "expanded_operator_variants": [
-                    {
-                        "unit_identity": "generic_kernel_forward:rank=one:precision=fp16",
-                        "base_unit_identity": "generic_kernel_forward",
-                        "axis_values": {"rank": "one", "precision": "fp16"},
-                    },
-                    {
-                        "unit_identity": "generic_kernel_backward:rank=one",
-                        "base_unit_identity": "generic_kernel_backward",
-                        "axis_values": {"rank": "one"},
-                    },
-                ],
-            },
-        },
-        {"project_dir": "/trusted"},
-        {},
-    )
-
-    surface = normalized["custom_op_surface"]
-    assert isinstance(surface, dict)
-    surface_dict = cast(dict[str, object], surface)
-    raw_variants = surface_dict["expanded_operator_variants"]
-    assert isinstance(raw_variants, list)
-    variants = cast(list[object], raw_variants)
-    variant_rows = [cast(dict[str, object], item) for item in variants if isinstance(item, dict)]
-    identities = {str(item["unit_identity"]) for item in variant_rows}
-    assert identities == {
-        "generic_kernel_forward:rank=one:precision=fp16",
-        "generic_kernel_forward:rank=one:precision=fp32",
-        "generic_kernel_forward:rank=two:precision=fp16",
-        "generic_kernel_forward:rank=two:precision=fp32",
-        "generic_kernel_backward:rank=one",
-        "generic_kernel_backward:rank=two",
-    }
-    assert surface_dict["expanded_operator_instances_count"] == 6
-    assert all("block_size" not in str(identity) for identity in identities)
-
-
-def test_phase_runner_phase1_preserves_larger_declared_variant_count_when_synthesis_unavailable() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis")
-
-    normalized = runner._normalize_output(
-        spec,
-        {
-            "project_dir": "/untrusted",
-            "dependencies": ["torch"],
-            "cuda_detected": True,
-            "entry_script": "validate_custom_ops_full.py",
-            "custom_op_surface": {
-                "custom_op_detected": True,
-                "variant_axes_detected": True,
-                "variant_axes": {"shape": ["small", "large", "wide"]},
-                "fine_grained_operator_units": ["generic_kernel"],
-                "native_operator_symbols": ["generic_kernel"],
-                "expanded_operator_instances_count": 3,
-                "expanded_operator_variants": [
-                    {"unit_identity": "generic_kernel:shape=small"},
-                    {"unit_identity": "generic_kernel:shape=large"},
-                ],
-            },
-        },
-        {"project_dir": "/trusted"},
-        {},
-    )
-
-    surface = normalized["custom_op_surface"]
-    assert isinstance(surface, dict)
-    surface_dict = cast(dict[str, object], surface)
-    raw_variants = surface_dict["expanded_operator_variants"]
-    assert isinstance(raw_variants, list)
-    assert len(raw_variants) == 2
-    assert surface_dict["expanded_operator_instances_count"] == 3
-
-
-def _runner_variant_phase1_output(project_dir: Path, variant_ids: list[str]) -> dict[str, object]:
-    return {
-        "project_dir": str(project_dir),
-        "dependencies": ["torch"],
-        "cuda_detected": True,
-        "entry_script": "train.py",
-        "custom_op_surface": {
-            "custom_op_detected": True,
-            "fine_grained_operator_units": ["scalar_forward"],
-            "variant_axes_detected": True,
-            "expanded_operator_instances_count": len(variant_ids),
-            "expanded_operator_variants": [
-                {"unit_identity": variant_id, "base_unit_identity": "scalar_forward", "axis_values": {}}
-                for variant_id in variant_ids
-            ],
-        },
-    }
-
-
-def _runner_phase1_report(variant_ids: list[str], *, verdict: str = "complete") -> dict[str, object]:
-    return {
-        "phase_id": "phase_1_project_analysis",
-        "track": "custom_op_variant",
-        "verdict": verdict,
-        "phase1_inventory": {
-            "fine_grained_operator_units": ["scalar_forward"],
-            "variant_axes_detected": True,
-            "expanded_operator_instances_count": len(variant_ids),
-            "expanded_unit_identities": variant_ids,
-        },
-        "source_evidence_inventory": {
-            "fine_grained_operator_units": ["scalar_forward"],
-            "variant_axes": {"dtype": ["float", "double"]},
-            "expanded_unit_identities": variant_ids,
-        },
-        "missing_units": [],
-        "extra_units": [],
-        "missing_variants": [] if verdict == "complete" else [variant_ids[-1]],
-        "extra_variants": [],
-        "collapsed_or_representative_rows": [],
-        "unresolved_source_groups": [],
-        "evidence": ["ops/scalar.cu:1"],
-    }
-
-
-def _runner_phase3_report(variant_ids: list[str], *, verdict: str = "complete") -> dict[str, object]:
-    return {
-        "phase_id": "phase_3_entry_script",
-        "track": "custom_op_variant",
-        "verdict": verdict,
-        "phase1_verified_inventory": {
-            "fine_grained_operator_units": ["scalar_forward"],
-            "expanded_unit_identities": variant_ids,
-        },
-        "phase3_contract_inventory": {
-            "covered_unit_identities": ["scalar_forward"],
-            "covered_variant_identities": variant_ids if verdict == "complete" else variant_ids[:1],
-            "entry_script_path": "validate_custom_ops_full.py",
-        },
-        "validation_script_evidence": ["validate_custom_ops_full.py enumerates variants"],
-        "missing_units": [],
-        "missing_variants": [] if verdict == "complete" else variant_ids[1:],
-        "representative_only_coverage": [] if verdict == "complete" else ["only first variant covered"],
-        "non_executable_or_missing_checks": [],
-    }
-
-
-def _runner_generic_template_phase1_output(project_dir: Path) -> dict[str, object]:
-    source_dir = project_dir / "src"
-    source_dir.mkdir(parents=True, exist_ok=True)
-    _ = (source_dir / "kernels.cu").write_text(
-        """#define KERNEL_CAT_I(name, dtype) name##_##dtype
-#define KERNEL_CAT(name, dtype) KERNEL_CAT_I(name, dtype)
-#define DISPATCH_DTYPE(dtype) KERNEL_CAT(scalar_forward, dtype)()
-void DISPATCH_DTYPE(float) {}
-void DISPATCH_DTYPE(double) {}
-""",
-        encoding="utf-8",
-    )
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    return {
-        "project_dir": str(project_dir),
-        "dependencies": ["torch"],
-        "cuda_detected": True,
-        "entry_script": "train.py",
-        "custom_op_surface": {
-            "custom_op_detected": True,
-            "fine_grained_operator_units": ["scalar_forward"],
-            "variant_axes_detected": True,
-            "variant_axes": {"dtype": ["float", "double"]},
-            "discovered_operator_names": ["scalar_forward_${dtype}"],
-            "native_operator_symbols": ["KERNEL_CAT(scalar_forward, dtype)"],
-            "source_evidence": ["src/kernels.cu:KERNEL_CAT(scalar_forward, dtype)"],
-            "expanded_operator_instances_count": len(variant_ids),
-            "expanded_operator_variants": [
-                {
-                    "unit_identity": variant_id,
-                    "base_unit_identity": "scalar_forward",
-                    "axis_values": {"dtype": variant_id.rsplit("=", 1)[-1]},
-                    "source_evidence": ["src/kernels.cu:KERNEL_CAT(scalar_forward, dtype)"],
-                }
-                for variant_id in variant_ids
-            ],
-        },
-    }
-
-
-def test_phase1_assisted_report_accepts_grouped_source_variant_counts() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = ["scalar_forward:*2"]
-    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = ["scalar_forward:*2"]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_grouped_axis_pattern_variant_counts() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar_forward:ndim=1:dtype=float:device=cuda",
-        "scalar_forward:ndim=1:dtype=double:device=cuda",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    grouped = "scalar_forward:ndim={1}:dtype={float,double}:device=cuda:*2"
-    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = [grouped]
-    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = [grouped]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_leading_grouped_count_variant_tokens() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar_forward:ndim=1:dtype=float:device=cuda",
-        "scalar_forward:ndim=1:dtype=double:device=cuda",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    grouped = "scalar_forward:*2:ndim={1}:dtype={float,double}:device=cuda"
-    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = [grouped]
-    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = [grouped]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_brace_grouped_count_variant_tokens() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar_forward:ndim=1:dtype=float:device=cuda",
-        "scalar_forward:ndim=1:dtype=double:device=cuda",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    grouped = "scalar_forward:*2{ndim=[1];dtype=[float,double];device=cuda}"
-    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = [grouped]
-    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = [grouped]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_parenthesized_grouped_count_variant_tokens() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar_forward:ndim=1:dtype=float:device=cuda",
-        "scalar_forward:ndim=1:dtype=double:device=cuda",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    grouped = "scalar_forward:*2(ndim=1;dtype=float,double;device=cuda)"
-    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = [grouped]
-    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = [grouped]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_slash_grouped_axis_variant_rows() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        *[
-            f"scalar:forward_cuda:ndim={ndim}:accuracy={accuracy}:dtype={dtype}:device=cuda"
-            for ndim in ["1d", "2d", "3d"]
-            for accuracy in ["2", "4"]
-            for dtype in ["float", "double"]
-        ],
-        *[
-            f"storage:save_snapshot_gpu:ndim={ndim}:dtype={dtype}:device=gpu"
-            for ndim in ["1d", "2d", "3d"]
-            for dtype in ["float", "double"]
-        ],
-        *[
-            f"storage:load_snapshot_gpu:ndim={ndim}:dtype={dtype}:device=gpu"
-            for ndim in ["1d", "2d", "3d"]
-            for dtype in ["float", "double"]
-        ],
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:save_snapshot_gpu", "storage:load_snapshot_gpu"]
-    report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], report["phase1_inventory"])
-    phase1_inventory["fine_grained_operator_units"] = list(cast(list[object], surface["fine_grained_operator_units"]))
-    phase1_inventory["expanded_unit_identities"] = [
-        "scalar:forward_cuda:ndim=1d/2d/3d:accuracy=2/4:dtype=float/double:device=cuda",
-        "storage:save_snapshot_gpu:ndim=1d/2d/3d:dtype=float/double:device=gpu",
-        "storage:load_snapshot_gpu:ndim=1d/2d/3d:dtype=float/double:device=gpu",
-    ]
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = list(cast(list[object], surface["fine_grained_operator_units"]))
-    source_inventory["expanded_unit_identities"] = list(cast(list[object], phase1_inventory["expanded_unit_identities"]))
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_range_and_comma_grouped_axis_variant_rows() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        *[
-            f"scalar:forward_cuda:ndim={ndim}:accuracy={accuracy}:dtype={dtype}:device=cuda"
-            for ndim in ["1", "2", "3"]
-            for accuracy in ["2", "4", "6", "8"]
-            for dtype in ["float", "double"]
-        ],
-        *[
-            f"storage_snapshot:save_snapshot_gpu:ndim={ndim}:dtype={dtype}:device=gpu"
-            for ndim in ["1", "2", "3"]
-            for dtype in ["float", "double"]
-        ],
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage_snapshot:save_snapshot_gpu"]
-    report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], report["phase1_inventory"])
-    phase1_inventory["fine_grained_operator_units"] = list(cast(list[object], surface["fine_grained_operator_units"]))
-    phase1_inventory["expanded_unit_identities"] = [
-        "scalar:forward_cuda:ndim=1..3:accuracy=2,4,6,8:dtype=float,double:device=cuda",
-        "storage_snapshot:save_snapshot_gpu:ndim=1..3:dtype=float,double:device=gpu",
-    ]
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = list(cast(list[object], surface["fine_grained_operator_units"]))
-    source_inventory["expanded_unit_identities"] = list(cast(list[object], phase1_inventory["expanded_unit_identities"]))
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_summary_count_variant_rows() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar_forward:ndim=1:dtype=float:device=cuda",
-        "scalar_forward:ndim=1:dtype=double:device=cuda",
-        "storage:load_snapshot_gpu:ndim=1:dtype=float",
-        "storage:load_snapshot_gpu:ndim=1:dtype=double",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], report["phase1_inventory"])
-    phase1_inventory["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    phase1_inventory["expanded_unit_identities"] = [
-        "1 scalar unit expanded over ndim={1} x dtype={float,double} x device={cuda} = 2 concrete identities",
-        "1 storage unit expanded over ndim={1} x dtype={float,double} = 2 concrete identities",
-    ]
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    source_inventory["expanded_unit_identities"] = list(cast(list[object], phase1_inventory["expanded_unit_identities"]))
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_total_variants_summary_rows() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar_forward:ndim=1:dtype=float:device=cuda",
-        "scalar_forward:ndim=1:dtype=double:device=cuda",
-        "storage:load_snapshot_gpu:ndim=1:dtype=float",
-        "storage:load_snapshot_gpu:ndim=1:dtype=double",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], report["phase1_inventory"])
-    phase1_inventory["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    phase1_inventory["expanded_unit_identities"] = [
-        "1 scalar unit expands over 2 dtype values = 2 variants",
-        "1 storage unit expands over 2 dtype values = 2 variants",
-    ]
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    source_inventory["expanded_unit_identities"] = [
-        "scalar/storage summarized source evidence",
-        "total concrete source-required variants = 4",
-    ]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_arithmetic_total_summary_rows() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar_forward:ndim=1:dtype=float:device=cuda",
-        "scalar_forward:ndim=1:dtype=double:device=cuda",
-        "storage:load_snapshot_gpu:ndim=1:dtype=float",
-        "storage:load_snapshot_gpu:ndim=1:dtype=double",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], report["phase1_inventory"])
-    phase1_inventory["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    phase1_inventory["expanded_unit_identities"] = [
-        "scalar_forward:*2(ndim=1,dtype=float|double,device=cuda)",
-        "storage:load_snapshot_gpu:*2(ndim=1,dtype=float|double)",
-    ]
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = ["scalar_forward", "storage:load_snapshot_gpu"]
-    source_inventory["expanded_unit_identities"] = [
-        "scalar source expands scalar_forward:*2 = 2",
-        "storage source expands storage:load_snapshot_gpu:*2 = 2",
-        "total expanded variants covered by source evidence = 2 + 2 = 4",
-    ]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_accepts_brace_expanded_base_and_axis_patterns() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar:forward_cuda:ndim=1:dtype=float:device=cuda",
-        "scalar:forward_cuda:ndim=1:dtype=double:device=cuda",
-        "scalar:backward_cuda:ndim=1:dtype=float:device=cuda",
-        "scalar:backward_cuda:ndim=1:dtype=double:device=cuda",
-        "storage:save_snapshot_gpu:ndim=1:dtype=float",
-        "storage:save_snapshot_gpu:ndim=1:dtype=double",
-        "storage:load_snapshot_gpu:ndim=1:dtype=float",
-        "storage:load_snapshot_gpu:ndim=1:dtype=double",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = [
-        "scalar:forward_cuda",
-        "scalar:backward_cuda",
-        "storage:save_snapshot_gpu",
-        "storage:load_snapshot_gpu",
-    ]
-    report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], report["phase1_inventory"])
-    phase1_inventory["fine_grained_operator_units"] = list(cast(list[object], surface["fine_grained_operator_units"]))
-    phase1_inventory["expanded_unit_identities"] = [
-        "scalar:{forward_cuda,backward_cuda}:ndim={1}:dtype={float,double}:device=cuda",
-        "storage:{save_snapshot_gpu,load_snapshot_gpu}:ndim={1}:dtype={float,double}",
-    ]
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = list(cast(list[object], surface["fine_grained_operator_units"]))
-    source_inventory["expanded_unit_identities"] = list(cast(list[object], phase1_inventory["expanded_unit_identities"]))
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_rejects_wrong_grouped_source_variant_counts() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = ["scalar_forward:*1"]
-    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = ["scalar_forward:*1"]
-
-    errors = validate_phase1_assisted_report(report, phase_output)
-
-    assert any("does not cover normalized Phase 1 output" in error for error in errors)
-
-
-def test_phase1_assisted_deterministic_report_replaces_alias_only_verifier_mismatch(tmp_path: Path) -> None:
-    from core.assisted_verification import _deterministic_phase1_completion_report_if_safe
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    phase_output = _runner_generic_template_phase1_output(tmp_path)
-    report = _runner_phase1_report(variant_ids)
-    cast(dict[str, object], report["phase1_inventory"])["fine_grained_operator_units"] = ["scalar_forward_alias", "scalar_forward"]
-    cast(dict[str, object], report["source_evidence_inventory"])["fine_grained_operator_units"] = ["scalar_forward_alias", "scalar_forward"]
-    cast(dict[str, object], report["phase1_inventory"])["expanded_operator_instances_count"] = 4
-    cast(dict[str, object], report["phase1_inventory"])["expanded_unit_identities"] = [
-        "scalar_forward_alias:dtype=float",
-        "scalar_forward_alias:dtype=double",
-        *variant_ids,
-    ]
-    cast(dict[str, object], report["source_evidence_inventory"])["expanded_unit_identities"] = [
-        "scalar_forward_alias:dtype=float",
-        "scalar_forward_alias:dtype=double",
-        *variant_ids,
-    ]
-
-    errors = validate_phase1_assisted_report(report, phase_output)
-    replacement = _deterministic_phase1_completion_report_if_safe(
-        report=report,
-        phase_output=phase_output,
-        errors=errors,
-    )
-
-    assert errors
-    assert replacement is not None
-    assert validate_phase1_assisted_report(replacement, phase_output) == []
-    replacement_inventory = cast(dict[str, object], replacement["phase1_inventory"])
-    assert replacement_inventory["expanded_operator_instances_count"] == 2
-    assert replacement_inventory["expanded_unit_identities"] == variant_ids
-
-
-def test_phase1_assisted_report_accepts_source_axes_without_duplicate_variant_list() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["expanded_unit_identities"] = []
-    source_inventory["variant_axes"] = {"scalar_forward": {"dtype": ["float", "double"], "ndim": ["1"]}}
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase1_assisted_report_rejects_placeholder_source_variant_alias_even_with_axes() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    report = _runner_phase1_report(variant_ids)
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["expanded_unit_identities"] = ["same_as_phase1_inventory_expanded_unit_identities"]
-    source_inventory["variant_axes"] = {"scalar_forward": {"dtype": ["float", "double"], "ndim": ["1"]}}
-
-    errors = validate_phase1_assisted_report(report, phase_output)
-
-    assert any("placeholder aliases" in error for error in errors)
-    assert any("does not cover normalized Phase 1 output" in error for error in errors)
-
-
-def test_phase1_inventory_uses_deterministic_variant_count_when_declared_count_is_stale(tmp_path: Path) -> None:
-    from core.assisted_verification import phase1_inventory
-
-    variant_ids = ["solver:apply_cuda:ndim=1:dtype=float:device=cuda"]
-    phase_output = _runner_variant_phase1_output(tmp_path, variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["solver:apply_cuda"]
-    surface["variant_axes"] = {"ndim": ["1", "2"], "dtype": ["float", "double"], "device": ["cuda"]}
-    surface["expanded_operator_instances_count"] = 1
-    surface["discovered_operator_names"] = ["solver_${ndim}_${dtype}_apply_cuda"]
-    surface["native_operator_symbols"] = ["solver_${ndim}_${dtype}_apply_cuda"]
-    surface["source_evidence"] = ["src/solver.cu:generated symbols use ${ndim} and ${dtype}"]
-
-    inventory = phase1_inventory(phase_output)
-
-    assert inventory.expanded_operator_instances_count == 4
-    assert len(inventory.expanded_unit_identities) == 4
-
-
-def test_phase1_assisted_report_accepts_count_and_grouped_source_evidence_without_duplicate_phase1_list() -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    variant_ids = [
-        "scalar:forward_cuda:ndim=1:dtype=float:device=cuda",
-        "scalar:forward_cuda:ndim=1:dtype=double:device=cuda",
-        "storage:load_snapshot_gpu:ndim=1:dtype=float",
-        "storage:load_snapshot_gpu:ndim=1:dtype=double",
-    ]
-    phase_output = _runner_variant_phase1_output(Path("/tmp/project"), variant_ids)
-    surface = cast(dict[str, object], phase_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
-    report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], report["phase1_inventory"])
-    phase1_inventory["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
-    phase1_inventory["expanded_unit_identities"] = []
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
-    source_inventory["variant_axes"] = {"ndim": ["1"], "dtype": ["float", "double"], "device": ["cuda"]}
-    source_inventory["expanded_unit_identities"] = [
-        "scalar family: 1 base unit x ndim={1} x dtype={float,double} x device=cuda = 2 concrete instances",
-        "storage family: 1 base unit x ndim={1} x dtype={float,double} = 2 concrete instances",
-    ]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-@final
-class SequencedAssistedSessionManager:
-    def __init__(self, responses: list[object]) -> None:
-        self._responses = list(responses)
-        self._prompts: list[str] = []
-        self._get_or_create_calls: list[dict[str, str]] = []
-
-    @property
-    def prompts(self) -> list[str]:
-        return self._prompts
-
-    @property
-    def get_or_create_calls(self) -> list[dict[str, str]]:
-        return self._get_or_create_calls
-
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-        self._get_or_create_calls.append({"role": role, "lifecycle": lifecycle, "agent": agent})
-        return f"{role}-{lifecycle}-{agent or 'default'}"
-
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-        del session_id, timeout
-        self._prompts.append(command)
-        if not self._responses:
-            raise AssertionError("SequencedAssistedSessionManager exhausted responses")
-        return json.dumps(self._responses.pop(0))
-
-
-def test_phase_runner_phase1_assisted_mismatch_retries_with_corrected_json(tmp_path: Path) -> None:
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    session_mgr = SequencedAssistedSessionManager([
-        _runner_variant_phase1_output(tmp_path, variant_ids[:1]),
-        _runner_phase1_report(variant_ids, verdict="incomplete"),
-        _runner_variant_phase1_output(tmp_path, variant_ids),
-        _runner_phase1_report(variant_ids),
-    ])
-    artifact_store = ArtifactStore(str(tmp_path), "assisted-phase1")
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        framework_config={"assisted_verification": {"enabled": True}},
-    )
-    runner.validator.register_validator("project_analysis", lambda _data: {"passed": True, "errors": [], "warnings": []})
-
-    result = runner.run_single_phase("main-session", "phase_1", {"project_dir": str(tmp_path)})
-
-    surface = cast(dict[str, object], result["custom_op_surface"])
-    assert surface["expanded_operator_instances_count"] == 2
-    assert "failed the assisted custom-op completeness verifier" in session_mgr.prompts[2]
-    assert session_mgr.get_or_create_calls[0] == {
-        "role": "custom_op_verifier",
-        "lifecycle": "persistent",
-        "agent": "Sisyphus-Junior",
-    }
-    assisted = cast(dict[str, object], result["assisted_verification"])
-    assert cast(dict[str, object], assisted["phase_1_custom_op_completeness_check"])["status"] == "complete"
-    assert artifact_store.load_phase_output("1_project_analysis") is not None
-
-
-def test_phase_runner_phase1_assisted_verifier_repairs_false_negative_report(tmp_path: Path) -> None:
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    false_negative = _runner_phase1_report(variant_ids, verdict="incomplete")
-    cast(dict[str, object], false_negative["phase1_inventory"])["expanded_operator_instances_count"] = 1
-    cast(dict[str, object], false_negative["phase1_inventory"])["expanded_unit_identities"] = ["scalar_forward"]
-    cast(dict[str, object], false_negative["source_evidence_inventory"])["expanded_unit_identities"] = ["scalar_forward"]
-    false_negative["missing_variants"] = ["1 variant unaccounted for relative to normalized count"]
-    repaired = _runner_phase1_report(variant_ids)
-    session_mgr = SequencedAssistedSessionManager([
-        _runner_variant_phase1_output(tmp_path, variant_ids),
-        false_negative,
-        repaired,
-    ])
-    artifact_store = ArtifactStore(str(tmp_path), "assisted-report-repair")
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        framework_config={"assisted_verification": {"enabled": True}},
-    )
-    runner.validator.register_validator("project_analysis", lambda _data: {"passed": True, "errors": [], "warnings": []})
-
-    result = runner.run_single_phase("main-session", "phase_1", {"project_dir": str(tmp_path)})
-
-    assert len(session_mgr.prompts) == 3
-    assert "previous assisted-verification JSON report failed semantic validation" in session_mgr.prompts[2]
-    assert "failed the assisted custom-op completeness verifier" not in session_mgr.prompts[2]
-    assisted = cast(dict[str, object], result["assisted_verification"])
-    assert cast(dict[str, object], assisted["phase_1_custom_op_completeness_check"])["status"] == "complete"
-
-
-def test_phase_runner_phase1_assisted_verifier_repairs_placeholder_source_inventory_report(tmp_path: Path) -> None:
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    placeholder_report = _runner_phase1_report(variant_ids)
-    source_inventory = cast(dict[str, object], placeholder_report["source_evidence_inventory"])
-    source_inventory["expanded_unit_identities"] = ["same_as_phase1_inventory_expanded_unit_identities"]
-    source_inventory["variant_axes"] = {"scalar_forward": {"dtype": ["float", "double"], "ndim": ["1"]}}
-    repaired = _runner_phase1_report(variant_ids)
-    session_mgr = SequencedAssistedSessionManager([
-        _runner_variant_phase1_output(tmp_path, variant_ids),
-        placeholder_report,
-        repaired,
-    ])
-    artifact_store = ArtifactStore(str(tmp_path), "assisted-placeholder-repair")
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        framework_config={"assisted_verification": {"enabled": True}},
-    )
-    runner.validator.register_validator("project_analysis", lambda _data: {"passed": True, "errors": [], "warnings": []})
-
-    result = runner.run_single_phase("main-session", "phase_1", {"project_dir": str(tmp_path)})
-
-    assert len(session_mgr.prompts) == 3
-    assert "previous assisted-verification JSON report failed semantic validation" in session_mgr.prompts[2]
-    assert "same_as_* placeholder aliases" in session_mgr.prompts[2]
-    assisted = cast(dict[str, object], result["assisted_verification"])
-    assert cast(dict[str, object], assisted["phase_1_custom_op_completeness_check"])["status"] == "complete"
-
-
-def test_phase1_assisted_report_accepts_structured_source_inventory(tmp_path: Path) -> None:
-    from core.assisted_verification import validate_phase1_assisted_report
-
-    phase_output = _runner_variant_phase1_output(tmp_path, ["scalar_forward:dtype=float", "scalar_forward:dtype=double"])
-    report = _runner_phase1_report(["scalar_forward:dtype=float", "scalar_forward:dtype=double"])
-    source_inventory = cast(dict[str, object], report["source_evidence_inventory"])
-    source_inventory["fine_grained_operator_units"] = [
-        {
-            "unit_identity": "scalar_forward",
-            "source_evidence": ["scalar.cu:FUNC(forward)"],
-        }
-    ]
-
-    assert validate_phase1_assisted_report(report, phase_output) == []
-
-
-def test_phase_runner_phase1_assisted_uses_deterministic_report_for_stale_grouped_verifier(tmp_path: Path) -> None:
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    stale_report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], stale_report["phase1_inventory"])
-    phase1_inventory["expanded_operator_instances_count"] = 1
-    phase1_inventory["expanded_unit_identities"] = ["scalar_forward"]
-    source_inventory = cast(dict[str, object], stale_report["source_evidence_inventory"])
-    source_inventory["expanded_operator_instances_count"] = 1
-    source_inventory["expanded_unit_identities"] = ["scalar_forward"]
-    session_mgr = SequencedAssistedSessionManager([
-        _runner_generic_template_phase1_output(tmp_path),
-        stale_report,
-        stale_report,
-    ])
-    artifact_store = ArtifactStore(str(tmp_path), "assisted-deterministic-fallback")
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        framework_config={"assisted_verification": {"enabled": True}},
-    )
-    runner.validator.register_validator("project_analysis", lambda _data: {"passed": True, "errors": [], "warnings": []})
-
-    result = runner.run_single_phase("main-session", "phase_1", {"project_dir": str(tmp_path)})
-
-    assert len(session_mgr.prompts) == 3
-    assert "previous assisted-verification JSON report failed semantic validation" in session_mgr.prompts[2]
-    assisted = cast(dict[str, object], result["assisted_verification"])
-    summary = cast(dict[str, object], assisted["phase_1_custom_op_completeness_check"])
-    assert summary["status"] == "complete"
-    canonical_obj = artifact_store.load_phase_output("phase_1_custom_op_completeness_check")
-    assert isinstance(canonical_obj, dict)
-    canonical = cast(dict[str, object], canonical_obj)
-    assert canonical["deterministic_completion"] is True
-    assert cast(dict[str, object], canonical["phase1_inventory"])["expanded_unit_identities"] == variant_ids
-    assert cast(dict[str, object], canonical["source_evidence_inventory"])["expanded_unit_identities"] == variant_ids
-
-
-def test_phase1_assisted_uses_deterministic_report_for_collapsed_summary(tmp_path: Path) -> None:
-    from core.assisted_verification import AssistedVerificationRunner
-
-    phase_output = _runner_generic_template_phase1_output(tmp_path)
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    stale_report = _runner_phase1_report(variant_ids)
-    phase1_inventory = cast(dict[str, object], stale_report["phase1_inventory"])
-    phase1_inventory["expanded_unit_identities"] = []
-    source_inventory = cast(dict[str, object], stale_report["source_evidence_inventory"])
-    source_inventory["expanded_unit_identities"] = []
-    stale_report["collapsed_or_representative_rows"] = [
-        "Expanded variants verified as source-required Cartesian products: scalar_forward * 2 dtype values; total = 2."
-    ]
-    session_mgr = SequencedAssistedSessionManager([stale_report])
-    artifact_store = ArtifactStore(str(tmp_path), "assisted-collapsed-fallback")
-    runner = AssistedVerificationRunner(
-        session_mgr=session_mgr,
-        artifact_store=artifact_store,
-        framework_config={"assisted_verification": {"enabled": True}},
-    )
-
-    result = runner.verify_phase1(phase_output=phase_output, project_dir=str(tmp_path), attempt=1)
-
-    assert result.passed is True
-    canonical = artifact_store.load_phase_output("phase_1_custom_op_completeness_check")
-    assert isinstance(canonical, dict)
-    assert canonical.get("deterministic_completion") is True
-
-
-def test_phase_runner_phase1_assisted_does_not_fallback_on_real_missing_variants(tmp_path: Path) -> None:
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    incomplete_report = _runner_phase1_report(variant_ids, verdict="incomplete")
-    cast(dict[str, object], incomplete_report["phase1_inventory"])["expanded_unit_identities"] = [variant_ids[0]]
-    cast(dict[str, object], incomplete_report["source_evidence_inventory"])["expanded_unit_identities"] = [variant_ids[0]]
-    session_mgr = SequencedAssistedSessionManager([
-        _runner_generic_template_phase1_output(tmp_path),
-        incomplete_report,
-    ])
-    artifact_store = ArtifactStore(str(tmp_path), "assisted-real-missing-no-fallback")
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        framework_config={"assisted_verification": {"enabled": True}},
-    )
-    runner.validator.register_validator("project_analysis", lambda _data: {"passed": True, "errors": [], "warnings": []})
-    runner.max_retry = 1
-
-    with pytest.raises(ValueError, match="failed validation"):
-        _ = runner.run_single_phase("main-session", "phase_1", {"project_dir": str(tmp_path)})
-
-    assert len(session_mgr.prompts) == 2
-    canonical_obj = artifact_store.load_phase_output("phase_1_custom_op_completeness_check")
-    assert canonical_obj is None
-
-
-def test_phase_runner_phase3_assisted_variant_mismatch_retries_with_corrected_json(tmp_path: Path) -> None:
-    script = tmp_path / "validate_custom_ops_full.py"
-    _ = script.write_text("print('validate')\n", encoding="utf-8")
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    initial_phase3 = {"entry_script_path": str(script), "run_command": f"python {script}"}
-    corrected_phase3 = {**initial_phase3, "required_checks": ["all-expanded-variants"]}
-    session_mgr = SequencedAssistedSessionManager([
-        initial_phase3,
-        _runner_phase3_report(variant_ids, verdict="incomplete"),
-        corrected_phase3,
-        _runner_phase3_report(variant_ids),
-    ])
-    artifact_store = ArtifactStore(str(tmp_path), "assisted-phase3")
-    runner = PhaseRunner(
-        session_mgr,
-        artifact_store,
-        StaticPromptLoader(),
-        ValidatorEngine(),
-        framework_config={"assisted_verification": {"enabled": True}},
-    )
-    runner.validator.register_validator("entry_script", lambda _data: {"passed": True, "errors": [], "warnings": []})
-
-    result = runner.run_single_phase(
-        "main-session",
-        "phase_3",
-        {
-            "project_dir": str(tmp_path),
-            "previous_outputs": {"phase_1_project_analysis": _runner_variant_phase1_output(tmp_path, variant_ids)},
-        },
-    )
-
-    assert "all-expanded-variants" in cast(list[object], result["required_checks"])
-    assert "failed the assisted custom-op validation-coverage verifier" in session_mgr.prompts[2]
-    assert session_mgr.get_or_create_calls[0] == {
-        "role": "custom_op_verifier",
-        "lifecycle": "persistent",
-        "agent": "Sisyphus-Junior",
-    }
-    assisted = cast(dict[str, object], result["assisted_verification"])
-    assert cast(dict[str, object], assisted["phase_3_custom_op_contract_coverage_check"])["status"] == "complete"
-    assert artifact_store.load_phase_output("3_entry_script") is not None
-
-
-def test_phase3_assisted_report_accepts_total_variant_summary_with_unit_coverage(tmp_path: Path) -> None:
-    from core.assisted_verification import validate_phase3_assisted_report
-
-    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
-    report = _runner_phase3_report(variant_ids)
-    contract = cast(dict[str, object], report["phase3_contract_inventory"])
-    contract["covered_variant_identities"] = [
-        "2 unique identities generated by validate_custom_ops_full.py expanded_variants(), matching expected variant count and axes"
-    ]
-
-    assert validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output) == []
-
-
-def test_phase3_assisted_report_rejects_wrong_total_variant_summary(tmp_path: Path) -> None:
-    from core.assisted_verification import validate_phase3_assisted_report
-
-    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
-    report = _runner_phase3_report(variant_ids)
-    contract = cast(dict[str, object], report["phase3_contract_inventory"])
-    contract["covered_variant_identities"] = [
-        "1 unique identity generated by validate_custom_ops_full.py expanded_variants(), matching expected variant count and axes"
-    ]
-
-    errors = validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output)
-
-    assert any("missing variant coverage" in error for error in errors)
-
-
-def test_phase3_assisted_report_accepts_structured_deepwave_variant_summary(tmp_path: Path) -> None:
-    from core.assisted_verification import validate_phase3_assisted_report
-
-    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
-    variant_ids = [
-        f"scalar:forward_cuda:ndim=1:accuracy={accuracy}:dtype={dtype}:device=cuda"
-        for accuracy in ["2", "4"]
-        for dtype in ["float", "double"]
-    ]
-    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
-    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar:forward_cuda"]
-    report = _runner_phase3_report(variant_ids)
-    contract = cast(dict[str, object], report["phase3_contract_inventory"])
-    contract["covered_unit_identities"] = ["scalar:forward_cuda"]
-    contract["covered_variant_identities"] = [
-        {
-            "identity_set": "all_expected_expanded_variants_in_validate_custom_ops_full_EXPECTED_UNIT_IDENTITIES",
-            "count": 4,
-            "unique_count": 4,
-            "base_unit_count": 1,
-            "base_units": ["scalar:forward_cuda"],
-            "axes": {
-                "propagator_cuda": {
-                    "ndim": ["1"],
-                    "accuracy": ["2", "4"],
-                    "dtype": ["float", "double"],
-                    "device": ["cuda"],
-                    "count": 4,
-                }
-            },
-        }
-    ]
-
-    assert validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output) == []
-
-
-def test_phase3_assisted_report_accepts_base_unit_counts_variant_summary(tmp_path: Path) -> None:
-    from core.assisted_verification import validate_phase3_assisted_report
-
-    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
-    variant_ids = [
-        *[f"scalar:forward_cuda:ndim={ndim}:dtype={dtype}:device=cuda" for ndim in ["1", "2"] for dtype in ["float", "double"]],
-        *[f"storage:load_snapshot_gpu:ndim={ndim}:dtype={dtype}:device=gpu" for ndim in ["1", "2"] for dtype in ["float", "double"]],
-    ]
-    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
-    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
-    report = _runner_phase3_report(variant_ids)
-    contract = cast(dict[str, object], report["phase3_contract_inventory"])
-    contract["covered_unit_identities"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
-    contract["covered_variant_identities"] = [
-        {
-            "source": "validate_custom_ops_full.py EXPECTED_UNIT_IDENTITIES",
-            "count": 8,
-            "unique_count": 8,
-            "base_unit_counts": {
-                "scalar:forward_cuda": 4,
-                "storage:load_snapshot_gpu": 4,
-            },
-            "variant_axis_coverage": {
-                "all_axes_covered": True,
-                "axes": {"ndim": ["1", "2"], "dtype": ["float", "double"], "device": ["cuda", "gpu"]},
-            },
-        }
-    ]
-
-    assert validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output) == []
-
-
-def test_phase3_assisted_report_accepts_axis_grouped_base_unit_summary(tmp_path: Path) -> None:
-    from core.assisted_verification import validate_phase3_assisted_report
-
-    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
-    variant_ids = [
-        *[
-            f"scalar:forward_cuda:ndim={ndim}:accuracy={accuracy}:dtype={dtype}"
-            for ndim in ["1", "2"]
-            for accuracy in ["2", "4"]
-            for dtype in ["float", "double"]
-        ],
-        *[
-            f"storage:load_snapshot_gpu:ndim={ndim}:dtype={dtype}"
-            for ndim in ["1", "2"]
-            for dtype in ["float", "double"]
-        ],
-    ]
-    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
-    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
-    report = _runner_phase3_report(variant_ids)
-    contract = cast(dict[str, object], report["phase3_contract_inventory"])
-    contract["covered_unit_identities"] = ["scalar:forward_cuda", "storage:load_snapshot_gpu"]
-    contract["covered_variant_identities"] = [
-        {
-            "count": 12,
-            "unique_count": 12,
-            "exact_phase1_set_equality": True,
-            "base_units_with_accuracy_ndim_dtype_axes": ["scalar:forward_cuda"],
-            "base_units_with_ndim_dtype_axes": ["storage:load_snapshot_gpu"],
-            "axes": {
-                "ndim": ["1", "2"],
-                "accuracy": ["2", "4"],
-                "dtype": ["float", "double"],
-            },
-        }
-    ]
-
-    assert validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output) == []
-
-
-def test_phase3_assisted_report_rejects_wrong_structured_variant_summary(tmp_path: Path) -> None:
-    from core.assisted_verification import validate_phase3_assisted_report
-
-    _ = (tmp_path / "validate_custom_ops_full.py").write_text("print('ok')\n", encoding="utf-8")
-    variant_ids = [
-        "scalar:forward_cuda:ndim=1:dtype=float:device=cuda",
-        "scalar:forward_cuda:ndim=1:dtype=double:device=cuda",
-    ]
-    phase1_output = _runner_variant_phase1_output(tmp_path, variant_ids)
-    surface = cast(dict[str, object], phase1_output["custom_op_surface"])
-    surface["fine_grained_operator_units"] = ["scalar:forward_cuda"]
-    report = _runner_phase3_report(variant_ids)
-    contract = cast(dict[str, object], report["phase3_contract_inventory"])
-    contract["covered_unit_identities"] = ["scalar:forward_cuda"]
-    contract["covered_variant_identities"] = [
-        {
-            "identity_set": "all_expected_expanded_variants_in_validate_custom_ops_full_EXPECTED_UNIT_IDENTITIES",
-            "count": 1,
-            "unique_count": 1,
-            "base_units": ["scalar:forward_cuda"],
-            "axes": {"ndim": ["1"], "dtype": ["float"], "device": ["cuda"]},
-        }
-    ]
-
-    errors = validate_phase3_assisted_report(report, {"entry_script_path": "validate_custom_ops_full.py"}, phase1_output)
-
-    assert any("missing variant coverage" in error for error in errors)
-
-
-def test_phase_runner_does_not_propagate_collapsed_phase1_variant_contract() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
-
-    normalized = runner._normalize_output(
-        spec,
-        {"entry_script_path": "validate_custom_ops_full.py", "run_command": "python validate_custom_ops_full.py", "required_checks": []},
-        {"project_dir": "/tmp/project"},
-        {
-            "previous_outputs": {
-                "phase_1_project_analysis": {
-                    "custom_op_surface": {
-                        "custom_op_detected": True,
-                        "variant_axes_detected": True,
-                        "variant_axes": {"ndim": ["1d|2d|3d"], "dtype": ["float|double"]},
-                        "expanded_operator_instances_count": 1,
-                        "expanded_operator_variants": [
-                            {"unit_identity": "deepwave_scalar:forward_cuda:{ndim=1d|2d|3d,dtype=float|double}"},
-                        ],
-                    }
-                }
-            }
-        },
-    )
-
-    assert normalized["entry_script_kind"] == "custom_op_full_validation"
-    assert "expanded_variant_inventory" not in normalized
-    assert "variant_axis_coverage" not in normalized
-    assert "per_variant_performance_report" not in normalized
-
-
-def test_phase_runner_phase3_hardens_shallow_variant_validation_script(tmp_path: Path) -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore(str(tmp_path), "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
-    script = tmp_path / "validate_custom_ops_full.py"
-    _ = script.write_text("print('shallow')\n", encoding="utf-8")
-    variant_ids = ["scalar_forward:dtype=float", "scalar_forward:dtype=double"]
-
-    normalized = runner._normalize_output(
-        spec,
-        {"entry_script_path": "validate_custom_ops_full.py", "run_command": "python validate_custom_ops_full.py", "required_checks": []},
-        {"project_dir": str(tmp_path)},
-        {"previous_outputs": {"phase_1_project_analysis": _runner_variant_phase1_output(tmp_path, variant_ids)}},
-    )
-
-    assert normalized["entry_script_kind"] == "custom_op_full_validation"
-    assert normalized["expanded_variant_inventory"] == {
-        "variant_axes_detected": True,
-        "unit_identities": variant_ids,
-        "expanded_operator_instances_count": 2,
-    }
-    assert normalized["entry_script_path"] == str(script)
-    assert str(script) in str(normalized["run_command"])
-    hardened_text = script.read_text(encoding="utf-8")
-    assert "migration_manifest.json" in hardened_text
-    assert "runtime_coverage.json" in hardened_text
-    assert "performance.json" in hardened_text
-    assert "build rows do not close over every per-expanded-variant unit_identity" in hardened_text
-    assert "CANN build provenance" in hardened_text
-    assert "OPP install provenance" in hardened_text
-    assert "op_kernel/AscendC source evidence" in hardened_text
-    assert "scalar_forward:dtype=float" in hardened_text
-    assert "scalar_forward:dtype=double" in hardened_text
-
-
-def test_phase_runner_phase3_non_custom_entry_script_is_not_hardened(tmp_path: Path) -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore(str(tmp_path), "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
-    script = tmp_path / "train.py"
-    _ = script.write_text("print('ordinary')\n", encoding="utf-8")
-
-    normalized = runner._normalize_output(
-        spec,
-        {"entry_script_path": "train.py", "run_command": "python train.py"},
-        {"project_dir": str(tmp_path)},
-        {
-            "previous_outputs": {
-                "phase_1_project_analysis": {
-                    "project_dir": str(tmp_path),
-                    "custom_op_surface": {"custom_op_detected": False},
-                    "entry_script": "train.py",
-                }
-            }
-        },
-    )
-
-    assert normalized["entry_script_path"] == "train.py"
-    assert normalized["run_command"] == "python train.py"
-    assert "entry_script_kind" not in normalized
-    assert script.read_text(encoding="utf-8") == "print('ordinary')\n"
-
-
-def test_phase_runner_phase35_requires_expanded_variant_static_context() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_35", "phase_35_static_validate", "entry_static")
-
-    normalized = runner._normalize_output(
-        spec,
-        {"validation_passed": True, "issues": [], "fix_plan": "Static pass."},
-        {"project_dir": "/tmp/project"},
-        {
-            "previous_outputs": {
-                "phase_3_entry_script": {
-                    "entry_script_kind": "custom_op_full_validation",
-                    "expanded_variant_inventory": {
-                        "variant_axes_detected": True,
-                        "unit_identities": ["op:ndim=1"],
-                        "expanded_operator_instances_count": 1,
-                    },
-                }
-            }
-        },
-    )
-
-    assert normalized["custom_op_static_required"] is True
-    assert normalized["expanded_variant_static_required"] is True
-
-
 def test_phase_35_prompt_context_includes_previous_outputs() -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-            del agent
+        def get_or_create(self, role: str, lifecycle: str) -> str:
             return "x"
 
         def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
@@ -2429,8 +1021,7 @@ def test_run_phase_2_to_3_retries_phase_3_after_phase_35_failure(tmp_path: Path)
                 },
             ]
 
-        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-            del agent
+        def get_or_create(self, role: str, lifecycle: str) -> str:
             del role, lifecycle
             return "persistent-main"
 
@@ -2506,9 +1097,6 @@ def custom_op_phase3_output(tmp_path: Path, *, create_script: bool = True) -> di
             "kernel_functions": "CUDA/Ascend kernel functions per row",
             "kernel_launch_sites": "kernel launch sites per row",
             "public_entry_mapping": "public API to unit mapping per row",
-            "candidate_public_api_routes": "candidate public API routes per row",
-            "candidate_framework_integration_routes": "candidate framework integration routes per row",
-            "route_evidence_fields": "final rows include public_api_route_evidence or framework_integration_route_evidence",
             "source_evidence": "source files/functions per row",
             "inventory_granularity": "fine_grained",
             "out_of_scope_source_groups": "excluded source families with reason",
@@ -2539,40 +1127,19 @@ def custom_op_phase3_output(tmp_path: Path, *, create_script: bool = True) -> di
             "per_entry_adapter_evidence",
             "per_entry_parity_evidence",
             "integration_e2e_evidence",
-            "per_entry_public_api_or_framework_integration_route_evidence",
-            "correlate_route_evidence_to_manifest_rows",
-            "reject_direct_or_builtin_only_routes",
             "same_run_runtime_coverage",
             "performance_evidence",
             "complete_performance_report",
             "overall_speedup_report",
-            "strict_ascend_c_cann_opp_artifacts",
-            "op_host_op_kernel_source_evidence",
-            "cann_opp_build_install_provenance",
-            "generated_opp_package_artifacts",
-            "reject_npuextension_aten_only_as_opp_evidence",
-            "reject_non_opp_producer_evidence",
-            "project_root_artifact_existence",
-            "final_chinese_per_row_table_parity",
             "no_fallback_no_zero_call_no_builtin_contamination",
             "native_operator_symbol_inventory",
         ],
         "validation_obligations": [
             "project_local_artifact",
-            "strict_opp_artifact",
-            "op_host_op_kernel_source",
-            "cann_opp_build_install",
-            "generated_opp_package_artifacts",
-            "reject_npuextension_aten_only",
-            "reject_non_opp_producer_evidence",
-            "project_root_artifact_existence",
             "runtime_project_api",
-            "per_row_public_or_framework_route_evidence",
-            "reject_direct_builtin_only_routes",
             "numeric_performance",
             "complete_speedup_report",
             "overall_speedup_report",
-            "final_chinese_per_row_table",
             "no_fallback",
         ],
         "phase5_entry_script_revision_allowed": True,
@@ -2590,15 +1157,9 @@ def custom_op_phase35_output() -> dict[str, object]:
         "script_maps_public_api_to_units": True,
         "script_discovers_full_inventory": True,
         "script_records_native_operator_symbols": True,
-        "script_requires_strict_opp_producer_evidence": True,
-        "script_rejects_non_opp_producer_success": True,
         "script_runs_project_api_custom_ops": True,
-        "script_requires_per_row_route_evidence": True,
-        "script_correlates_route_evidence_to_manifest_rows": True,
-        "script_rejects_direct_or_builtin_only_routes": True,
         "script_rejects_report_only_success": True,
         "script_requires_project_local_artifacts": True,
-        "script_requires_project_root_artifact_existence": True,
         "script_requires_numeric_performance": True,
         "script_checks_no_fallback": True,
     }
@@ -2614,8 +1175,7 @@ class CustomOpPhase35SessionManager:
         self.phase35_prompts = []
         self.phase35_outputs = list(phase35_outputs)
 
-    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-        del agent
+    def get_or_create(self, role: str, lifecycle: str) -> str:
         del role, lifecycle
         return "persistent-main"
 
@@ -2644,8 +1204,7 @@ def test_run_phase_2_to_3_rejects_missing_custom_op_entry_script_before_phase35(
         def __init__(self) -> None:
             self.phase35_prompts = []
 
-        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-            del agent
+        def get_or_create(self, role: str, lifecycle: str) -> str:
             del role, lifecycle
             return "persistent-main"
 
@@ -2704,8 +1263,7 @@ def test_run_phase_2_to_3_accepts_relative_custom_op_entry_script(tmp_path: Path
         def __init__(self) -> None:
             self.phase35_prompts = []
 
-        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
-            del agent
+        def get_or_create(self, role: str, lifecycle: str) -> str:
             del role, lifecycle
             return "persistent-main"
 
@@ -2866,41 +1424,426 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         shutil.rmtree(skill_repo_root, ignore_errors=True)
 
 
-def test_phase_runner_phase3_normalization_preserves_phase1_serving_route(tmp_path: Path) -> None:
-    runner, _ = build_runner(tmp_path)
-    phase = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
-    output: dict[str, object] = {
-        "entry_script_kind": "custom_op_full_validation",
-        "entry_script_path": "validate_custom_ops_full.py",
-        "run_command": "python validate_custom_ops_full.py",
-        "reports_dir": "migration_reports",
-    }
-    context: dict[str, object] = {
-        "project_dir": str(tmp_path),
+# ── PhaseRunner container context injection ──────────────────────────
+
+
+class TestPhaseRunnerContainerContext:
+    def test_set_container_context_stores_dict(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        ctx = {"execution_backend_mode": "container", "container_name_or_id": "c1"}
+        runner.set_container_context(ctx)
+        assert runner._container_context == ctx
+        ctx["mutated"] = "x"
+        assert "mutated" not in runner._container_context
+
+    def test_build_prompt_context_includes_container_keys(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        runner.set_container_context({
+            "execution_backend_mode": "container",
+            "container_name_or_id": "c1",
+            "container_env_facts": '{"status":"ok"}',
+            "container_python_version": "3.10.0",
+        })
+        phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
+        context = {"project_dir": "/tmp/proj", "user_constraints": ""}
+        result = runner._build_prompt_context(phase_spec, context)
+        assert result["execution_backend_mode"] == "container"
+        assert result["container_name_or_id"] == "c1"
+        assert result["container_env_facts"] == '{"status":"ok"}'
+        assert result["container_python_version"] == "3.10.0"
+
+    def test_container_context_setdefault_preserves_existing(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        runner.set_container_context({"project_dir": "/container/dir"})
+        phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
+        context = {"project_dir": "/host/proj"}
+        result = runner._build_prompt_context(phase_spec, context)
+        assert result["project_dir"] == "/host/proj"
+
+    def test_empty_container_context_adds_local_execution_defaults(self):
+        runner = PhaseRunner(
+            _make_session_mgr(),
+            _make_artifact_store(),
+            PromptLoader(str(PROJECT_ROOT / "prompts")),
+            ValidatorEngine(),
+        )
+        assert runner._container_context == {}
+        phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
+        result = runner._build_prompt_context(phase_spec, {"project_dir": "/tmp"})
+        assert result["execution_backend_mode"] == "local"
+        assert "local" in result["execution_environment_context"]
+
+
+def _make_session_mgr() -> SessionManagerLike:
+    def _noop():
+        return "s1"
+    class M:
+        def get_or_create(self, *a, **kw): return "s1"
+        def send_command(self, *a, **kw): return '{"ok": true}'
+    return M()
+
+
+def _make_artifact_store():
+    class S:
+        def __init__(self):
+            self.artifact_dir = "/tmp/test-artifacts"
+            self.saved = {}
+        def save_phase_output(self, *a, **kw): return "raw"
+        def mark_validated(self, *a, **kw): return "v"
+        def write_journal(self, *a, **kw): return "j"
+        def load_phase_output(self, *a, **kw): return None
+    return S()
+
+
+# ── Phase-aware previous_outputs filtering ────────────────────────
+
+
+def test_phase_35_previous_outputs_excludes_early_phases() -> None:
+    """Phase 3.5 should receive only phase_3_entry_script, not Phase 0/1/2."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    spec = PhaseSpec("phase_35", "phase_35_static_validate", "entry_static")
+    ctx: dict[str, object] = {
+        "project_dir": "/tmp/project",
         "previous_outputs": {
-            "phase_1_project_analysis": {
-                "migration_route": "sglang_serving",
-                "entry_script": "glmocr/server.py",
-                "serving_runtime_surface": {
-                    "launch_command": "python -m sglang.launch_server --model-path model",
-                    "readiness_probe": {"type": "http", "endpoint": "/v1/models"},
-                    "request_validation": {"type": "chat_completion"},
-                    "project_test_files": ["glmocr/tests/test_integration.py"],
-                    "expected_outputs": ["json_result"],
-                    "required_runtime_env": ["CANN"],
-                },
-            }
+            "phase_0_env_detect": {"platform": "npu", "npu_detected": True},
+            "phase_1_project_analysis": {"entry_script": "train.py", "dependencies": ["torch"]},
+            "phase_2_venv_create": {"venv_path": "/tmp/.venv"},
+            "phase_3_entry_script": {
+                "entry_script_path": "/tmp/project/train.py",
+                "entry_script_kind": "custom_op_full_validation",
+            },
         },
     }
+    result = runner._build_prompt_context(spec, ctx)
+    parsed_previous = json.loads(result["previous_outputs"])
+    assert "phase_3_entry_script" in parsed_previous
+    assert "phase_0_env_detect" not in parsed_previous
+    assert "phase_1_project_analysis" not in parsed_previous
+    assert "phase_2_venv_create" not in parsed_previous
+    assert result["entry_script_path"] == "/tmp/project/train.py"
 
-    normalized = runner._normalize_output(phase, output, {"project_dir": str(tmp_path)}, context)
 
-    assert normalized["entry_script_kind"] == "sglang_serving_validation"
-    assert normalized["migration_route"] == "sglang_serving"
-    assert normalized["serving_framework"] == "sglang"
-    assert "reports_dir" not in normalized
-    assert "custom_op" not in str(normalized["entry_script_path"])
-    assert "custom_op" not in str(normalized["run_command"])
-    assert normalized["launch_command"] == "python -m sglang.launch_server --model-path model"
-    assert str(normalized["serving_reports_dir"]).endswith("migration_reports/serving")
-    assert normalized["required_report_paths"] == ["migration_reports/serving/serving_final_gate.json"]
+def test_phase_1_5_does_not_get_duplicated_previous_outputs() -> None:
+    """Phase 1.5 context should receive empty previous_outputs (no duplication of Phase 0/1)."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    spec = PhaseSpec("phase_1_5", "phase_1_5_constraint_summary", "constraint_summary")
+    ctx: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "previous_outputs": {
+            "phase_0_env_detect": {"platform": "npu"},
+            "phase_1_project_analysis": {"entry_script": "train.py"},
+        },
+    }
+    result = runner._build_prompt_context(spec, ctx)
+    parsed = json.loads(result["previous_outputs"])
+    assert parsed == {}
+    assert "phase_0_env_detect" not in parsed
+    assert "phase_1_project_analysis" not in parsed
+
+
+def test_early_phases_get_empty_previous_outputs() -> None:
+    """Phase 0/1/2/3 receive empty previous_outputs; _SHARED_SESSION_PHASES omit the key."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    ctx_with_noise: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "previous_outputs": {
+            "phase_0_env_detect": {"platform": "npu"},
+            "phase_1_project_analysis": {"entry_script": "train.py"},
+        },
+    }
+    for prompt_id in ("phase_0_env_detect", "phase_1_project_analysis", "phase_2_venv_create", "phase_3_entry_script"):
+        spec = PhaseSpec(prompt_id.rsplit("_", 1)[0], prompt_id, prompt_id.split("_", 1)[-1])
+        result = runner._build_prompt_context(spec, ctx_with_noise)
+        if prompt_id in PhaseRunner._SHARED_SESSION_PHASES:
+            assert "previous_outputs" not in result, f"{prompt_id} is shared-session and should omit key"
+        else:
+            assert result.get("previous_outputs") == "{}", f"{prompt_id} should get empty previous_outputs"
+
+
+def test_phase_6_still_receives_all_previous_outputs() -> None:
+    """Phase 6/report should still receive the full previous_outputs (no whitelist entry)."""
+    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    spec = PhaseSpec("phase_6", "phase_6_report", "report")
+    ctx: dict[str, object] = {
+        "project_dir": "/tmp/project",
+        "previous_outputs": {
+            "phase_0_env_detect": {"platform": "npu"},
+            "phase_1_project_analysis": {"entry_script": "train.py"},
+            "phase_3_entry_script": {"entry_script_path": "/tmp/train.py"},
+            "phase_4_rule_migration": {"files_migrated": 10},
+        },
+    }
+    result = runner._build_prompt_context(spec, ctx)
+    parsed = json.loads(result["previous_outputs"])
+    assert "phase_0_env_detect" in parsed
+    assert "phase_1_project_analysis" in parsed
+    assert "phase_3_entry_script" in parsed
+    assert "phase_4_rule_migration" in parsed
+
+
+# ── disable_custom_op_contract_injection flag regression ──────────────────
+
+
+def test_phase_runner_disable_custom_op_injection_prevents_injection() -> None:
+    """When PhaseRunner is given a workflow with disable_custom_op_contract_injection=True,
+    custom-op signals do NOT trigger entry_script_kind injection."""
+    wf = WorkflowDefinition(
+        name="no-custom-injection",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        globals={"disable_custom_op_contract_injection": True},
+    )
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=wf,
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "notes": "project uses custom operator bindings via torch.ops",
+                }
+            }
+        },
+    )
+
+    assert "entry_script_kind" not in normalized
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is True
+
+
+def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
+    wf = WorkflowDefinition(
+        name="normal-entry-route",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        globals={"custom_op_route_enabled": False},
+    )
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=wf,
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {
+            "entry_script_path": "train.py",
+            "run_command": "python train.py",
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": "/tmp/project/migration_reports",
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            "required_checks": ["same_run_runtime_coverage"],
+            "operator_discovery_sources": ["source"],
+            "operator_inventory_schema": {"semantic_rows": "one row per operator"},
+            "performance_report_schema": {"entries": "per unit"},
+            "validation_obligations": ["no_fallback"],
+            "phase5_entry_script_revision_allowed": True,
+        },
+        {"project_dir": "/tmp/project"},
+        {"previous_outputs": {"phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}}},
+    )
+
+    for field in (
+        "entry_script_kind",
+        "reports_dir",
+        "required_report_paths",
+        "required_checks",
+        "operator_discovery_sources",
+        "operator_inventory_schema",
+        "performance_report_schema",
+        "validation_obligations",
+        "phase5_entry_script_revision_allowed",
+    ):
+        assert field not in normalized
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is True
+
+
+def test_phase_runner_without_flag_injects_as_before() -> None:
+    """Without any workflow globals (backward-compatible path), custom-op signals
+    still trigger entry_script_kind: custom_op_full_validation injection."""
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=WorkflowDefinition(name="legacy", version="1.0", phases=[], terminals=["complete"]),
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "notes": "project uses custom operator bindings via torch.ops",
+                }
+            }
+        },
+    )
+
+    assert normalized["entry_script_kind"] == "custom_op_full_validation"
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is False
+    assert any("required_report_paths" in error for error in validation.errors)
+
+
+def test_phase_runner_no_workflow_still_injects() -> None:
+    """Backward compatibility: PhaseRunner without any WorkflowDefinition
+    (self.workflow is None) still injects custom-op contract fields."""
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=None,  # explicit None — old constructor style
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {"entry_script_path": "train.py", "run_command": "python train.py"},
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "notes": "project uses custom operator bindings via torch.ops",
+                }
+            }
+        },
+    )
+
+    assert normalized["entry_script_kind"] == "custom_op_full_validation"
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is False
+
+
+# ── Phase boundary injection tests ─────────────────────────────────────
+
+from core.phase_boundary import inject_phase_boundary  # noqa: E402
+
+
+class BoundaryTestPromptLoader(PromptLoader):
+    """Captures the prompt context for boundary presence checks."""
+    def __init__(self):
+        super().__init__()
+        self.last_prompt_id = ""
+        self.last_context: dict[str, str] = {}
+
+    def load_prompt(self, phase_id: str, context: dict[str, str] | None = None) -> str:
+        self.last_prompt_id = phase_id
+        self.last_context = dict(context or {})
+        return f"# {phase_id} prompt\n\nSome instructions."
+
+
+def test_boundary_injected_in_run_single_phase(tmp_path: Path) -> None:
+    """PhaseRunner._run_single_phase injects boundary guidance."""
+    artifact_store = ArtifactStore(str(tmp_path), "test-boundary")
+    prompt_loader = BoundaryTestPromptLoader()
+    runner = PhaseRunner(
+        RecordingSessionManager(
+            json.dumps({"ok": True, "result": "valid"})
+        ),
+        artifact_store,
+        prompt_loader,
+        ValidatorEngine(),
+    )
+    from validators.validate_env_detect import validate as v_env
+    runner.validator.register_validator("env_detect", v_env)
+
+    session = MockSession([
+        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
+                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
+    ])
+    result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
+    assert result.get("platform") == "npu"
+
+    first_prompt = session.calls[0][0]
+    assert "## Phase Boundary" in first_prompt
+    assert "current phase" in first_prompt.lower()
+    assert "later phases" in first_prompt.lower()
+
+
+def test_boundary_not_injected_when_disabled(tmp_path: Path) -> None:
+    """Boundary is omitted when phase_boundary_guidance_enabled is False."""
+    artifact_store = ArtifactStore(str(tmp_path), "test-boundary-off")
+    prompt_loader = BoundaryTestPromptLoader()
+    runner = PhaseRunner(
+        RecordingSessionManager(
+            json.dumps({"ok": True, "result": "valid"})
+        ),
+        artifact_store,
+        prompt_loader,
+        ValidatorEngine(),
+        framework_config={"phase_boundary_guidance_enabled": False},
+    )
+    from validators.validate_env_detect import validate as v_env
+    runner.validator.register_validator("env_detect", v_env)
+
+    session = MockSession([
+        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
+                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
+    ])
+    result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
+    assert result.get("platform") == "npu"
+
+    first_prompt = session.calls[0][0]
+    assert "## Phase Boundary" not in first_prompt
+
+
+def test_boundary_avoids_framework_name_in_phase_prompts(tmp_path: Path) -> None:
+    """Phase prompts with boundary do not leak the framework name."""
+    artifact_store = ArtifactStore(str(tmp_path), "test-nofw")
+    prompt_loader = BoundaryTestPromptLoader()
+    runner = PhaseRunner(
+        RecordingSessionManager(
+            json.dumps({"ok": True, "result": "valid"})
+        ),
+        artifact_store,
+        prompt_loader,
+        ValidatorEngine(),
+    )
+    from validators.validate_env_detect import validate as v_env
+    runner.validator.register_validator("env_detect", v_env)
+
+    session = MockSession([
+        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
+                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
+    ])
+    result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
+    assert result.get("platform") == "npu"
+
+    first_prompt = session.calls[0][0]
+    assert "OpenCode" not in first_prompt
+    assert "SEAM" not in first_prompt

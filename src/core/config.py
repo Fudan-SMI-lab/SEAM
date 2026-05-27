@@ -6,7 +6,10 @@ from typing import Any
 import yaml
 
 from .paths import resolve_relative_path
+from .platform_policy import parse_target_platform
 from .types import (
+    ExecutionBackendConfig,
+    ExperienceConfig,
     PhaseDefinition,
     RuntimeSkillsConfig,
     WorkflowDefinition,
@@ -51,6 +54,10 @@ def load_workflow(path: str) -> WorkflowDefinition:
     agents = _parse_agents(raw.get("agents", {}))
     sub_workflows = _parse_sub_workflows(raw.get("sub_workflows", {}))
     hooks = _parse_hooks(raw.get("hooks", {}))
+    execution_backend = _parse_execution_backend(raw.get("execution_backend"))
+    experience = _parse_experience(raw.get("experience"))
+    target_platform = parse_target_platform(raw.get("target_platform"))
+    rule_migration = _parse_rule_migration(raw.get("rule_migration"))
 
     return WorkflowDefinition(
         name=raw["name"],
@@ -62,6 +69,10 @@ def load_workflow(path: str) -> WorkflowDefinition:
         agents=agents,
         sub_workflows=sub_workflows,
         hooks=hooks,
+        execution_backend=execution_backend,
+        experience=experience,
+        target_platform=target_platform,
+        rule_migration=rule_migration,
     )
 
 
@@ -222,6 +233,8 @@ def _parse_transition_def(raw: dict[str, Any]) -> TransitionDefinition | None:
           on_success: next_phase
           on_failure: failed
           on_skip: skipped
+          on_stagnation: error_recovery
+          on_reject_exhausted: cleanup
     """
     if not raw:
         return None
@@ -229,14 +242,18 @@ def _parse_transition_def(raw: dict[str, Any]) -> TransitionDefinition | None:
     on_success = raw.get("on_success")
     on_failure = raw.get("on_failure")
     on_skip = raw.get("on_skip")
+    on_stagnation = raw.get("on_stagnation")
+    on_reject_exhausted = raw.get("on_reject_exhausted")
 
-    if on_success is None and on_failure is None and on_skip is None:
+    if on_success is None and on_failure is None and on_skip is None and on_stagnation is None and on_reject_exhausted is None:
         return None
 
     return TransitionDefinition(
         on_success=str(on_success) if on_success is not None else None,
         on_failure=str(on_failure) if on_failure is not None else None,
         on_skip=str(on_skip) if on_skip is not None else None,
+        on_stagnation=str(on_stagnation) if on_stagnation is not None else None,
+        on_reject_exhausted=str(on_reject_exhausted) if on_reject_exhausted is not None else None,
     )
 
 
@@ -430,6 +447,39 @@ def _parse_sub_workflows(raw_sub_wfs: dict[str, dict[str, Any]]) -> dict[str, Su
     return result
 
 
+def _parse_execution_backend(raw: Any) -> ExecutionBackendConfig | None:
+    """Parse optional top-level ``execution_backend`` YAML key.
+
+    Returns ``None`` when the key is absent (backward-compatible default that
+    results in local-mode execution).  Any parsing errors from
+    :meth:`ExecutionBackendConfig.from_dict` propagate to the caller.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return ExecutionBackendConfig.from_dict(raw)
+    raise ValueError(
+        f"execution_backend must be a mapping or absent, got {type(raw).__name__}"
+    )
+
+
+def _parse_experience(raw: Any) -> ExperienceConfig:
+    """Parse optional top-level ``experience`` YAML key.
+
+    Returns defaults (enabled=True, phase7_enabled=True) when absent.
+    """
+    if raw is None:
+        return ExperienceConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"experience must be a mapping or absent, got {type(raw).__name__}"
+        )
+    return ExperienceConfig(
+        enabled=bool(raw.get("enabled", True)),
+        phase7_enabled=bool(raw.get("phase7_enabled", True)),
+    )
+
+
 def _validate_phase_types(phases: list[PhaseDefinition]) -> None:
     """Ensure all phase types are in the set of valid types."""
     for phase in phases:
@@ -444,7 +494,7 @@ def _validate_transitions(phases: list[PhaseDefinition], terminals: list[str]) -
 
     Validates both:
     1. The flat `transitions` dict (e.g. {"on_success": "next"})
-    2. The new `transition` object (TransitionDefinition with on_success/on_failure/on_skip)
+    2. The new `transition` object (TransitionDefinition with on_success/on_failure/on_skip/on_stagnation/on_reject_exhausted)
     """
     valid_targets = set(terminals) | {p.id for p in phases}
 
@@ -463,9 +513,27 @@ def _validate_transitions(phases: list[PhaseDefinition], terminals: list[str]) -
         # Validate TransitionDefinition object
         if phase.transition is not None:
             td = phase.transition
-            for field_name in ("on_success", "on_failure", "on_skip"):
+            for field_name in ("on_success", "on_failure", "on_skip", "on_stagnation", "on_reject_exhausted"):
                 target = getattr(td, field_name, None)
                 if target is not None and target not in valid_targets:
                     raise ValueError(
                         f"Phase '{phase.id}': transition.{field_name} references unknown target '{target}'. "
                         f"Valid targets: {sorted(valid_targets)}")
+
+
+def _parse_rule_migration(raw: Any) -> dict[str, Any] | None:
+    """Parse an optional top-level ``rule_migration`` YAML key.
+
+    Expected YAML shape:
+        rule_migration:
+          strategy: cuda_to_npu
+
+    Returns ``None`` when absent or not a dict.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return dict(raw)
+    raise ValueError(
+        f"rule_migration must be a mapping or absent, got {type(raw).__name__}"
+    )

@@ -1,12 +1,12 @@
 # V2 Full Agent I/O Logging Design
 
-> 目标: 在不影响 `src` 现有 YAML 工作流、验证 schema、Phase 输出和报告生成逻辑的前提下，确保每一次 OpenCode Agent 调用的完整输入和完整返回都可审计、可回放、可定位。
+> 目标: 在不影响 `migration_utils` 现有 YAML 工作流、验证 schema、Phase 输出和报告生成逻辑的前提下，确保每一次 OpenCode Agent 调用的完整输入和完整返回都可审计、可回放、可定位。
 
 ---
 
 ## 1. 背景与现状
 
-`src` 目前存在多条执行路径，Agent 输入输出的持久化能力不一致：
+`migration_utils` 目前存在多条执行路径，Agent 输入输出的持久化能力不一致：
 
 | 执行路径 | 当前保存情况 | 主要问题 |
 |---|---|---|
@@ -458,8 +458,9 @@ SM_ADAPT_FULL_AGENT_IO=1 bash scripts/run_e2e.sh 05_InsectID --dry-run
 
 ```bash
 SM_ADAPT_FULL_AGENT_IO=1 python -m tests.e2e.e2e_test_v2 \
-  --server_type opencode --server_url http://127.0.0.1:4098 \
+  --server-url http://127.0.0.1:4098 \
   --project-dir src/test_project_template \
+  --max-phase5-iter 1 \
   --keep-temp-dir
 ```
 

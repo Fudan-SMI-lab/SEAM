@@ -1,0 +1,44 @@
+# ---------------------------------------------------------------------------
+# cuda_to_npu — active CUDA-to-NPU code migration
+#
+# Applies regex rules to convert torch.cuda to torch.npu, .cuda() to .npu(),
+# "nccl"/'nccl' to "hccl"/'hccl', and injects `import torch_npu`.
+# This is a DESTRUCTIVE strategy — modified files are written back to disk.
+# ---------------------------------------------------------------------------
+
+id: cuda_to_npu
+display_name: "CUDA to NPU Migration"
+mode: rewrite
+description: >
+  Active regex-based migration that converts CUDA-specific PyTorch code
+  to NPU (Ascend) equivalents.  Modified files are written back to disk.
+migrator_class: YamlRuleBasedMigrator
+migrator_module: migrator.yaml_rule_based
+destructive: true
+rewrite:
+  enabled: true
+  inject_imports:
+    - import torch_npu
+  inject_when_regex: "torch\\.cuda|\\.cuda\\(|[\"']cuda[\"']"
+rules:
+  - id: torch_cuda_amp
+    pattern: "torch\\.cuda\\.amp"
+    replacement: "torch.npu.amp"
+  - id: torch_cuda
+    pattern: "torch\\.cuda"
+    replacement: "torch.npu"
+  - id: cuda_method
+    pattern: "\\.cuda\\("
+    replacement: ".npu("
+  - id: cuda_string_literal_double
+    pattern: "(?<=[\\s(,=\\[])\"cuda\"(?=[\\s)\\],;])"
+    replacement: "\"npu\""
+  - id: cuda_string_literal_single
+    pattern: "(?<=[\\s(,=\\[])'cuda'(?=[\\s)\\],;])"
+    replacement: "'npu'"
+  - id: nccl_string_literal_double
+    pattern: "(?<=[\\s(,=\\[])\"nccl\"(?=[\\s)\\],;])"
+    replacement: "\"hccl\""
+  - id: nccl_string_literal_single
+    pattern: "(?<=[\\s(,=\\[])'nccl'(?=[\\s)\\],;])"
+    replacement: "'hccl'"

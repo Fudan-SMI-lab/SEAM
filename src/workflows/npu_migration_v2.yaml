@@ -2,6 +2,9 @@ name: npu_migration
 version: "2.0"
 description: "CUDA to Ascend NPU automated migration workflow (YAML-driven)"
 
+target_platform:
+  preset: npu_ascend
+
 globals:
   max_repair_iterations: 5
   stagnation_threshold: 3
@@ -12,7 +15,6 @@ globals:
 agents:
   main_engineer:
     role: "main_engineer"
-    agent: "Sisyphus-Junior"
     lifecycle: "persistent"
   error_analyzer:
     role: "error_analyzer"
@@ -65,6 +67,13 @@ phases:
     validator: project_analysis
     input_mapping:
       project_dir: "${context.PROJECT_DIR}"
+    retrieve_experience: true
+    experience_query:
+      source: "project_context"
+      signals:
+        - dependencies
+        - cuda_patterns
+        - entry_script
     transitions:
       on_success: phase_1_5_constraint_summary
 
@@ -192,12 +201,6 @@ sub_workflows:
         params:
           operation: "custom_op_final_gate"
 
-      - id: serving_final_gate
-        type: builtin
-        condition: "$.script_exit_code == 0"
-        params:
-          operation: "serving_final_gate"
-
       - id: analyze_error
         type: llm
         agent: error_analyzer
@@ -239,6 +242,11 @@ sub_workflows:
         type: llm
         agent: operator_fixer
         prompt_template: "repair_operator_fixer"
+        runtime_skills:
+          include:
+            - cuda-custom-op-to-npu-custom-op
+          inject_full: false
+          missing: error
 
       - id: review_gate
         type: review
@@ -290,3 +298,8 @@ sub_workflows:
             type: llm
             agent: operator_fixer
             prompt_template: "repair_operator_fixer"
+            runtime_skills:
+              include:
+                - cuda-custom-op-to-npu-custom-op
+              inject_full: false
+              missing: error

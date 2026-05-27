@@ -1,47 +1,15 @@
-"""Server lifecycle management for SEAM E2E tests."""
+"""OpenCode server lifecycle management - auto start/stop for E2E tests."""
 
-from dataclasses import dataclass
 import http.client
 import os
 import shutil
 import socket
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.parse
-from typing import Literal
 
 ServerProcess = subprocess.Popen[bytes]
-ServerType = Literal["opencode"]
-ServerState = Literal["free", "matching", "conflict"]
-ServerConflictAction = Literal["prompt", "start", "error"]
-
-
-DEFAULT_SERVER_TYPE: ServerType = "opencode"
-
-
-@dataclass(frozen=True)
-class ServerSpec:
-    server_url: str
-    hostname: str
-    port: int
-
-
-@dataclass(frozen=True)
-class ServerProbe:
-    state: ServerState
-    base_url: str
-    detail: str = ""
-
-
-@dataclass(frozen=True)
-class ManagedServer:
-    base_url: str
-    port: int
-    process: ServerProcess | None
-    reused: bool
-    started: bool
 
 
 def find_available_port(start: int = 4096, end: int = 4099) -> int:
@@ -56,80 +24,96 @@ def find_available_port(start: int = 4096, end: int = 4099) -> int:
     raise RuntimeError(f"No available ports in range [{start}, {end}]")
 
 
-def parse_server_url(server_url: str) -> ServerSpec:
-    raw_url = server_url.strip()
-    if not raw_url:
-        raise ValueError("server_url must not be empty")
-    parsed = urllib.parse.urlsplit(raw_url)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("server_url must start with http:// or https://")
-    if not parsed.hostname:
-        raise ValueError("server_url must include a hostname")
+def is_local_url(url: str) -> bool:
+    """Return True if the URL host resolves to a loopback address."""
     try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("server_url includes an invalid port") from exc
-    if port is None:
-        raise ValueError("server_url must include an explicit port")
-    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ValueError("server_url must be a base URL like http://127.0.0.1:4098")
-    host = parsed.hostname
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-    return ServerSpec(server_url=f"{parsed.scheme}://{netloc}", hostname=host, port=port)
-
-
-def server_url_with_port(spec: ServerSpec, port: int) -> str:
-    host = spec.hostname
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-    parsed = urllib.parse.urlsplit(spec.server_url)
-    return f"{parsed.scheme}://{netloc}"
-
-
-def validate_server_type(server_type: str) -> ServerType:
-    normalized = server_type.strip().lower()
-    if normalized != DEFAULT_SERVER_TYPE:
-        raise ValueError(f"Unsupported server_type: {server_type!r}; supported values: {DEFAULT_SERVER_TYPE}")
-    return DEFAULT_SERVER_TYPE
-
-
-def is_port_open(hostname: str, port: int, timeout: float = 1.0) -> bool:
-    host = hostname.strip() or "127.0.0.1"
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
+        parsed = urllib.parse.urlsplit(url)
+    except (ValueError, AttributeError):
         return False
+    hostname = (parsed.hostname or "").lower()
+    return hostname in {"127.0.0.1", "localhost", "::1"}
 
 
-def probe_server(server_url: str, server_type: str) -> ServerProbe:
-    """Classify server_url as free, matching server_type, or occupied by something else."""
-    normalized_type = validate_server_type(server_type)
-    spec = parse_server_url(server_url)
-    base_url = spec.server_url
-    if normalized_type == "opencode" and health_check(f"{base_url}/agent"):
-        return ServerProbe(state="matching", base_url=base_url, detail="OpenCode /agent endpoint responded")
-    if is_port_open(spec.hostname, spec.port):
-        return ServerProbe(
-            state="conflict",
-            base_url=base_url,
-            detail=f"{spec.hostname}:{spec.port} accepts TCP connections but does not expose {normalized_type} health checks",
-        )
-    return ServerProbe(state="free", base_url=base_url, detail=f"{spec.hostname}:{spec.port} is available")
+def parse_host_port(url: str, default_port: int = 4096) -> tuple[str, int]:
+    """Extract (hostname, port) from a server URL.
+
+    Uses the scheme-default port (80/443) when no explicit port is given
+    and the scheme is recognised.  Falls back to ``default_port`` for URLs
+    without a known scheme.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    hostname = parsed.hostname or "127.0.0.1"
+    if parsed.port is not None:
+        port: int = parsed.port
+    elif parsed.scheme == "https":
+        port = 443
+    elif parsed.scheme == "http":
+        port = 80
+    else:
+        port = default_port
+    return hostname, port
 
 
-def start_server(
+def resolve_server_url(
+    base_url: str | None,
+    *,
+    auto_start: bool,
+    default_url: str = "http://127.0.0.1:4096",
     work_dir: str,
-    server_url: str,
-    auth_header: str = "",
-    server_type: str = DEFAULT_SERVER_TYPE,
-) -> ServerProcess:
-    """Launch a supported server as a subprocess."""
-    _ = validate_server_type(server_type)
-    spec = parse_server_url(server_url)
+    server_port: int = 0,
+) -> tuple[str, ServerProcess | None]:
+    """Resolve *base_url* and auto-start a local server when needed.
+
+    Returns ``(resolved_url, server_proc)``.  *server_proc* is non-None
+    when a new child process was started; the caller is responsible for
+    stopping it later via :func:`stop_server`.
+
+    Raises :exc:`RuntimeError` when the server is unreachable and
+    auto-start is not possible (disabled, remote URL, or startup failure).
+    """
+    server_proc: ServerProcess | None = None
+
+    if auto_start and base_url is None:
+        port = server_port if server_port > 0 else find_available_port()
+        resolved = f"http://127.0.0.1:{port}"
+        server_proc = start_server(work_dir=work_dir, port=port)
+        if not wait_for_server(resolved, timeout=30):
+            _ = stop_server(server_proc)
+            raise RuntimeError(f"Server failed to start on {resolved}")
+        return resolved, server_proc
+
+    if auto_start and base_url is not None:
+        health_url = f"{base_url.rstrip('/')}/agent"
+        if not health_check(health_url):
+            if is_local_url(base_url):
+                host, port = parse_host_port(base_url)
+                server_proc = start_server(work_dir=work_dir, port=port, hostname=host)
+                if not wait_for_server(base_url, timeout=30):
+                    _ = stop_server(server_proc)
+                    raise RuntimeError(f"Server failed to start on {base_url}")
+                return base_url, server_proc
+            else:
+                raise RuntimeError(
+                    f"OpenCode server is not reachable at {base_url}. "
+                    f"Auto-start is only supported for local addresses "
+                    f"(127.0.0.1 / localhost / ::1).  Ensure the remote "
+                    f"server is running, or disable auto-start."
+                )
+        # Server is already reachable — nothing to do.
+        return base_url, None
+
+    # auto_start is False — caller must provide a reachable URL.
+    resolved = base_url or default_url
+    return resolved, None
+
+
+def start_server(work_dir: str, port: int, auth_header: str = "",
+                 hostname: str = "127.0.0.1") -> ServerProcess:
+    """Launch opencode server as a subprocess."""
     if shutil.which("opencode") is None:
         raise FileNotFoundError("opencode not found in PATH")
 
-    cmd = ["opencode", "serve", "--port", str(spec.port), "--hostname", spec.hostname]
+    cmd = ["opencode", "serve", "--port", str(port), "--hostname", hostname]
     env: dict[str, str] | None = None
     if auth_header:
         env = {**os.environ, "AUTH_HEADER": auth_header}
@@ -142,76 +126,6 @@ def start_server(
         env=env,
     )
     return proc
-
-
-def replacement_port_for_conflict(requested_port: int) -> int:
-    start = requested_port + 1 if requested_port < 65535 else 4096
-    end = min(start + 99, 65535)
-    try:
-        return find_available_port(start, end)
-    except RuntimeError:
-        return find_available_port(4096, 65535)
-
-
-def should_start_after_conflict(hostname: str, port: int, server_type: str) -> bool:
-    if not sys.stdin.isatty():
-        message = (
-            f"Port {hostname}:{port} is occupied by a non-{server_type} service. Non-interactive runs cannot prompt; "
-            + "free the port or pass --server-conflict-action start."
-        )
-        raise RuntimeError(message)
-    question = (
-        f"端口 {hostname}:{port} 已被非 {server_type} 服务占用。"
-        + f"要不要由 SEAM 在其他可用端口建立 {server_type} server? [yes/no]: "
-    )
-    answer = input(question).strip().lower()
-    return answer in {"y", "yes"}
-
-
-def ensure_server(
-    *,
-    work_dir: str,
-    server_url: str,
-    server_type: str,
-    auto_start: bool = True,
-    conflict_action: str = "prompt",
-    auth_header: str = "",
-    startup_timeout: int = 30,
-) -> ManagedServer:
-    """Reuse a compatible server or start one according to the requested server spec."""
-    normalized_type = validate_server_type(server_type)
-    spec = parse_server_url(server_url)
-    probe = probe_server(spec.server_url, normalized_type)
-    if probe.state == "matching":
-        return ManagedServer(base_url=probe.base_url, port=spec.port, process=None, reused=True, started=False)
-
-    if not auto_start:
-        raise RuntimeError(
-            f"No reusable {normalized_type} server at {probe.base_url}: {probe.detail}. Auto-start is disabled."
-        )
-
-    selected_url = spec.server_url
-    selected_port = spec.port
-    if probe.state == "conflict":
-        if conflict_action not in {"prompt", "start", "error"}:
-            raise ValueError("server conflict action must be one of: prompt, start, error")
-        if conflict_action == "error":
-            raise RuntimeError(f"Port conflict for {normalized_type} server at {probe.base_url}: {probe.detail}")
-        if conflict_action == "prompt" and not should_start_after_conflict(spec.hostname, spec.port, normalized_type):
-            raise RuntimeError(f"Port conflict for {normalized_type} server at {probe.base_url}: {probe.detail}")
-        selected_port = replacement_port_for_conflict(spec.port)
-        selected_url = server_url_with_port(spec, selected_port)
-
-    proc = start_server(
-        work_dir=work_dir,
-        server_url=selected_url,
-        auth_header=auth_header,
-        server_type=normalized_type,
-    )
-    if not wait_for_server(selected_url, timeout=startup_timeout):
-        _ = stop_server(proc)
-        raise RuntimeError(f"{normalized_type} server failed to start on {selected_url}")
-    return ManagedServer(base_url=selected_url, port=selected_port, process=proc, reused=False, started=True)
 
 
 def wait_for_server(url: str, timeout: int = 30) -> bool:

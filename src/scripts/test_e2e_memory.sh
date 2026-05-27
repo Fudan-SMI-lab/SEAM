@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
-OUTPUT_PROJECTS_DIR="$REPO_ROOT/output_projects"
+OUTPUT_PROJECTS_DIR="${MIGRATION_OUTPUT_PROJECTS_ROOT:-$(dirname "$REPO_ROOT")/output_projects}"
 PROJECT_SEARCH_DIRS=(
     "$REPO_ROOT/original_projects"
     "$REPO_ROOT/cuda_projects"
@@ -23,9 +23,8 @@ PROJECT_SEARCH_DIRS=(
 )
 
 # ── Defaults ──
-SERVER_TYPE="opencode"
 SERVER_URL="http://127.0.0.1:4098"
-MAX_ITER=""
+MAX_ITER=8
 REVIEW_GATE=false
 KEEP_TEMP=true
 PROJECT_NAME=""
@@ -44,9 +43,8 @@ usage() {
 Usage: test_e2e_memory.sh <PROJECT_NAME> [OPTIONS]
 
 Options:
-  --server_type TYPE  Server backend type (default: opencode)
-  --server_url URL    Server base URL (default: http://127.0.0.1:4098)
-  --max-iter N        Max Phase 5 repair iterations (default: 10)
+  --server-url URL    OpenCode server URL (default: http://127.0.0.1:4098)
+  --max-iter N        Max Phase 5 repair iterations (default: 8)
   --run-only N        Run only 1 (extract) or 2 (retrieve), or 'both' (default)
   --no-review         Disable Review Gate (default)
   --no-keep-temp      Don't keep temp output directory
@@ -58,8 +56,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage ;;
-        --server_type|--server-type) SERVER_TYPE="$2"; shift 2 ;;
-        --server_url) SERVER_URL="$2"; shift 2 ;;
+        --server-url) SERVER_URL="$2"; shift 2 ;;
         --max-iter) MAX_ITER="$2"; shift 2 ;;
         --run-only) RUN_ONLY="$2"; shift 2 ;;
         --no-review) REVIEW_GATE=false; shift ;;
@@ -107,19 +104,9 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
 echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
-if [[ "$SERVER_TYPE" != "opencode" ]]; then
-    echo -e "${RED}Unsupported server_type: $SERVER_TYPE${NC}" >&2
-    exit 1
-fi
-echo -e "${GREEN}Server:${NC}    $SERVER_TYPE at $SERVER_URL"
+echo -e "${GREEN}Server:${NC}    $SERVER_URL"
 echo -e "${GREEN}Run:${NC}       $RUN_ONLY"
-echo -e "${GREEN}Max iter:${NC}  ${MAX_ITER:-10 (default)}"
 echo ""
-
-MAX_ITER_FLAG=""
-if [[ -n "$MAX_ITER" ]]; then
-    MAX_ITER_FLAG="--max-phase5-iter $MAX_ITER"
-fi
 
 if [[ -z "$PROJECT_DIR" || ! -d "$PROJECT_DIR" ]]; then
     echo -e "${RED}✗ Project directory not found: $PROJECT_NAME${NC}"
@@ -130,8 +117,13 @@ if [[ -z "$PROJECT_DIR" || ! -d "$PROJECT_DIR" ]]; then
     exit 1
 fi
 
+if ! curl -fsS -o /dev/null --max-time 5 "$SERVER_URL/agent" 2>/dev/null; then
+    echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
+    exit 1
+fi
+
 echo -e "${GREEN}✓${NC} Project exists"
-echo -e "${GREEN}✓${NC} Server configuration accepted"
+echo -e "${GREEN}✓${NC} Server reachable"
 echo ""
 
 # ── Run unit tests first ──
@@ -154,34 +146,33 @@ if [[ "$RUN_ONLY" == "1" || "$RUN_ONLY" == "both" ]]; then
 
     cd "$REPO_ROOT"
     python -m tests.e2e.e2e_test_v2 \
-        --server_type "$SERVER_TYPE" \
-        --server_url "$SERVER_URL" \
+        --server-url "$SERVER_URL" \
         --project-dir "$PROJECT_DIR" \
-        --output_dir "$OUTPUT_PROJECTS_DIR" \
-        $MAX_ITER_FLAG \
+        --output-dir "$OUTPUT_PROJECTS_DIR" \
+        --max-phase5-iter "$MAX_ITER" \
         $KEEP_FLAG \
         $REVIEW_FLAG \
-        || true
+        --verbose || true
 
     echo ""
     echo -e "${YELLOW}── Checking extracted experiences ──${NC}"
-    if [[ -d "$REPO_ROOT/.memory/memory/index" ]]; then
-        INDEX_COUNT=$(wc -l < "$REPO_ROOT/.memory/memory/index/cases.jsonl" 2>/dev/null || echo 0)
+    if [[ -d "$REPO_ROOT/memory/index" ]]; then
+        INDEX_COUNT=$(wc -l < "$REPO_ROOT/memory/index/cases.jsonl" 2>/dev/null || echo 0)
         echo -e "Index entries: ${CYAN}$INDEX_COUNT${NC}"
         if [[ $INDEX_COUNT -gt 0 ]]; then
-            head -3 "$REPO_ROOT/.memory/memory/index/cases.jsonl"
+            head -3 "$REPO_ROOT/memory/index/cases.jsonl"
         fi
     else
         echo -e "${RED}✗ Index directory not found${NC}"
     fi
 
-    if [[ -d "$REPO_ROOT/.memory/memory/staging" ]]; then
-        STAGING_RUNS=$(find "$REPO_ROOT/.memory/memory/staging" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
+    if [[ -d "$REPO_ROOT/memory/staging" ]]; then
+        STAGING_RUNS=$(find "$REPO_ROOT/memory/staging" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)
         echo -e "Staging runs: ${CYAN}$STAGING_RUNS${NC}"
     fi
 
-    if [[ -d "$REPO_ROOT/.memory/skills" ]]; then
-        SKILL_COUNT=$(find "$REPO_ROOT/.memory/skills" -name "SKILL.md" 2>/dev/null | wc -l)
+    if [[ -d "$REPO_ROOT/skills" ]]; then
+        SKILL_COUNT=$(find "$REPO_ROOT/skills" -name "SKILL.md" 2>/dev/null | wc -l)
         echo -e "Promoted skills: ${CYAN}$SKILL_COUNT${NC}"
     fi
     echo ""
@@ -203,31 +194,30 @@ if [[ "$RUN_ONLY" == "2" || "$RUN_ONLY" == "both" ]]; then
 
     cd "$REPO_ROOT"
     python -m tests.e2e.e2e_test_v2 \
-        --server_type "$SERVER_TYPE" \
-        --server_url "$SERVER_URL" \
+        --server-url "$SERVER_URL" \
         --project-dir "$PROJECT_DIR" \
-        --output_dir "$OUTPUT_PROJECTS_DIR" \
-        $MAX_ITER_FLAG \
+        --output-dir "$OUTPUT_PROJECTS_DIR" \
+        --max-phase5-iter "$MAX_ITER" \
         $KEEP_FLAG \
         $REVIEW_FLAG \
-        || true
+        --verbose || true
 
     echo ""
     echo -e "${YELLOW}── Checking index after Run 2 ──${NC}"
-    if [[ -f "$REPO_ROOT/.memory/memory/index/cases.jsonl" ]]; then
-        INDEX_COUNT=$(wc -l < "$REPO_ROOT/.memory/memory/index/cases.jsonl")
-        CONSUMED=$(grep -c '"consumed"' "$REPO_ROOT/.memory/memory/index/cases.jsonl" 2>/dev/null || echo 0)
-        PROMOTED=$(grep -c '"promoted"' "$REPO_ROOT/.memory/memory/index/cases.jsonl" 2>/dev/null || echo 0)
+    if [[ -f "$REPO_ROOT/memory/index/cases.jsonl" ]]; then
+        INDEX_COUNT=$(wc -l < "$REPO_ROOT/memory/index/cases.jsonl")
+        CONSUMED=$(grep -c '"consumed"' "$REPO_ROOT/memory/index/cases.jsonl" 2>/dev/null || echo 0)
+        PROMOTED=$(grep -c '"promoted"' "$REPO_ROOT/memory/index/cases.jsonl" 2>/dev/null || echo 0)
         echo -e "Total entries: ${CYAN}$INDEX_COUNT${NC}"
         echo -e "Consumed: ${CYAN}$CONSUMED${NC}"
         echo -e "Promoted: ${CYAN}$PROMOTED${NC}"
     fi
 
-    if [[ -d "$REPO_ROOT/.memory/skills" ]]; then
-        SKILL_COUNT=$(find "$REPO_ROOT/.memory/skills" -name "SKILL.md" 2>/dev/null | wc -l)
+    if [[ -d "$REPO_ROOT/skills" ]]; then
+        SKILL_COUNT=$(find "$REPO_ROOT/skills" -name "SKILL.md" 2>/dev/null | wc -l)
         echo -e "Promoted skills: ${CYAN}$SKILL_COUNT${NC}"
         if [[ $SKILL_COUNT -gt 0 ]]; then
-            find "$REPO_ROOT/.memory/skills" -name "SKILL.md" -exec echo "  - {}" \;
+            find "$REPO_ROOT/skills" -name "SKILL.md" -exec echo "  - {}" \;
         fi
     fi
 fi

@@ -155,7 +155,7 @@ def test_skill_solidifier_writes_package_assets(tmp_path):
         "references": ["phase_5_validation"],
     }, "run-1", {})
 
-    refined_dir = tmp_path / ".memory" / "memory" / "staging" / "run-1" / "refined"
+    refined_dir = tmp_path / "memory" / "staging" / "run-1" / "refined"
     assert refined["type"] == "skill"
     assert (refined_dir / "skill_data.json").is_file()
     assert (refined_dir / "SKILL.md").is_file()
@@ -181,7 +181,7 @@ def test_dispatcher_classifies_before_refining_without_llm(tmp_path):
     assert results[0]["type"] == "document"
     assert results[0]["classifier"]["type"] == "document"
     assert "target_roles" in results[0]
-    refined_dir = tmp_path / ".memory" / "memory" / "staging" / "run-1" / "refined"
+    refined_dir = tmp_path / "memory" / "staging" / "run-1" / "refined"
     assert (refined_dir / "document.md").is_file()
 
 
@@ -193,7 +193,7 @@ def test_nested_asset_writes_are_safe(tmp_path):
         "examples/data.json": {"ok": True},
     })
 
-    refined_dir = tmp_path / ".memory" / "memory" / "staging" / "run-1" / "refined"
+    refined_dir = tmp_path / "memory" / "staging" / "run-1" / "refined"
     assert (refined_dir / "references" / "source.md").read_text(encoding="utf-8") == "nested text\n"
     assert json.loads((refined_dir / "examples" / "data.json").read_text(encoding="utf-8")) == {"ok": True}
 
@@ -205,7 +205,7 @@ def test_list_json_assets_round_trip_as_valid_json_in_staging_and_promotion(tmp_
     store.write_refined_experience("run-1", {"title": "List Asset"}, {
         "examples/code_changes.json": code_changes,
     })
-    refined_asset = tmp_path / ".memory" / "memory" / "staging" / "run-1" / "refined" / "examples" / "code_changes.json"
+    refined_asset = tmp_path / "memory" / "staging" / "run-1" / "refined" / "examples" / "code_changes.json"
     assert json.loads(refined_asset.read_text(encoding="utf-8")) == code_changes
 
     promoted_path = store.promote_from_staging("run-1", "skill", {
@@ -217,7 +217,7 @@ def test_list_json_assets_round_trip_as_valid_json_in_staging_and_promotion(tmp_
         "_asset_contents": {"examples/code_changes.json": code_changes},
     })
     promoted_asset = tmp_path / ".memory" / "skills" / "list-json-skill" / "examples" / "code_changes.json"
-    assert promoted_path.endswith(os.path.join("skills", "list-json-skill", "skill_data.json"))
+    assert promoted_path.endswith(os.path.join(".memory", "skills", "list-json-skill", "skill_data.json"))
     assert json.loads(promoted_asset.read_text(encoding="utf-8")) == code_changes
 
 
@@ -292,7 +292,7 @@ def test_legacy_skill_promotion_still_writes_expected_files(tmp_path):
         "steps": ["Install CPU torch before torch-npu"],
     })
 
-    assert path.endswith(os.path.join("skills", "legacy-skill", "skill_data.json"))
+    assert path.endswith(os.path.join(".memory", "skills", "legacy-skill", "skill_data.json"))
     assert (tmp_path / ".memory" / "skills" / "legacy-skill" / "SKILL.md").is_file()
     assert store.read_index()[0]["id"] == "promoted-legacy-skill"
     assert store.read_catalog()[0]["type"] == "skill"
@@ -400,44 +400,3 @@ def test_prefilter_index_keeps_role_match_and_filters_role_mismatch(tmp_path):
     })
 
     assert [entry["id"] for entry in filtered] == ["dep-exp"]
-
-
-def test_prefilter_index_keeps_generic_operator_and_excludes_custom_op_experience_for_ordinary_projects(tmp_path):
-    from core.experience_query import ExperienceQuerier
-
-    store = ExperienceStore(str(tmp_path))
-    generic_asset = tmp_path / "generic_operator.md"
-    custom_asset = tmp_path / "custom_operator.md"
-    generic_asset.write_text("Use supported torch_npu primitives for unsupported aclnn operator.", encoding="utf-8")
-    custom_asset.write_text("Create op_host/op_kernel and satisfy custom_op_final_gate.", encoding="utf-8")
-    entries = [
-        {
-            "id": "generic-op-exp",
-            "type": "document",
-            "status": "promoted",
-            "title": "Generic NPU Operator Fix",
-            "target_roles": ["operator_fixer"],
-            "target_phases": ["phase_5_validation"],
-            "confidence": 0.8,
-            "asset_paths": [str(generic_asset)],
-        },
-        {
-            "id": "custom-op-exp",
-            "type": "document",
-            "status": "promoted",
-            "title": "Custom-op OPP Final Gate Fix",
-            "target_roles": ["operator_fixer"],
-            "target_phases": ["phase_5_validation"],
-            "tags": ["custom-op", "opp"],
-            "confidence": 0.95,
-            "asset_paths": [str(custom_asset)],
-        },
-    ]
-
-    filtered = ExperienceQuerier(store, None)._prefilter_index(entries, {
-        "role": "operator_fixer",
-        "parent_phase": "phase_5_validation",
-        "exclude_custom_op_experiences": "true",
-    })
-
-    assert [entry["id"] for entry in filtered] == ["generic-op-exp"]

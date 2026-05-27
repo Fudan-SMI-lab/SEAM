@@ -1,7 +1,0 @@
-title: Create model-internal tensors on the NPU input device
-pattern: \btorch\.(tensor|arange|zeros|ones|full|empty)\((?![^\n]*\bdevice\s*=)[^\n]*\)
-replacement: torch.<factory>(<original_args>, device=<reference_tensor>.device[, dtype=<target_dtype>])
-file_patterns: ["**/*.py", ".venv/lib/python*/site-packages/**/*.py"]
-target_roles: ["cuda_to_npu_migration_agent", "code_adaptation_agent", "model_serving_agent", "validation_agent"]
-target_phases: ["analyze_error", "fix_code", "validate"]
-trigger_fingerprint: NPU inference fails with device mismatch in model forward or post-processing while CUDA/CPU paths appear to work; stack trace points near fallback, sentinel, mask, box, index, or coordinate tensor creation; code contains bare torch tensor factories without device=input.device or dtype=input.dtype; model inputs, masks, logits, or boxes are on npu or npu:<id> but newly created tensors default to CPU.

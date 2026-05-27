@@ -52,7 +52,7 @@ def _lines_changed(old: str, new: str) -> tuple[int, int]:
 
 def _build_overview(summary: dict) -> list[str]:
     lines: list[str] = []
-    lines.append("# src E2E Migration Test Report")
+    lines.append("# migration_utils E2E Migration Test Report")
     lines.append("")
     lines.append("## Run Overview")
     lines.append("")
@@ -270,7 +270,7 @@ def build_report(output_dir: Path, report_path: Path | None = None) -> Path:
         all_lines.extend(_build_overview(summary))
         all_lines.extend(_build_phase_table(summary))
     else:
-        all_lines.append("# src E2E Migration Test Report")
+        all_lines.append("# migration_utils E2E Migration Test Report")
         all_lines.append("")
         all_lines.append("## Run Overview")
         all_lines.append("")

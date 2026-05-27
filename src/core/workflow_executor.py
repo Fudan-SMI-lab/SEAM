@@ -35,51 +35,33 @@ from core.types import (
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.variable_resolver import VariableResolver
 from core.session_registry import SessionRegistry
+from core.accelerator_context import extract_accelerator_context
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
-from core.custom_op_opp_preflight import (
-    format_custom_op_opp_preflight_failure,
-    has_explicit_no_custom_op_contract,
-    has_custom_op_contract,
-    validate_custom_op_opp_preflight,
-)
-from core.custom_op_variants import (
-    apply_expanded_variant_contract,
-    ensure_strict_expanded_variant_validation_script,
-    expanded_variant_contract_from_outputs,
-    normalize_project_analysis_expanded_variants,
-)
-from core.routes import (
-    CUSTOM_OP,
-    CUSTOM_OP_WITH_VARIANTS,
-    ORDINARY_CUDA,
-    SERVING_ROUTES,
-    serving_entry_kind_for_route,
-    serving_framework_for_route,
-    normalize_serving_phase1_surface,
-    normalize_serving_phase3_contract,
-    serving_route_from_contract,
-)
-from core.assisted_verification import (
-    AssistedVerificationResult,
-    AssistedVerificationRunner,
-    attach_assisted_summary,
-)
+from core.phase_boundary import inject_phase_boundary
+from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_exec_env_ctx
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
+from migrator.rule_based_ppu import PPURuleBasedMigrator
+from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
+from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, collect_phase6_prior_state, resolve_phase6_timeout
+from core.validation_correction import (
+    build_validation_correction_prompt,
+    expected_output_format,
+    extract_output_format_from_prompt,
+    extract_missing_fields,
+)
 from core.repair_loop import (
     _operator_custom_op_guidance,
     _operator_generic_guidance,
     _operator_repair_has_custom_op_contract,
     force_custom_op_operator_routing_if_needed,
 )
-from validators.validate_entry_script import validate as validate_entry_script
-from validators.validate_validation_final import (
-    custom_op_final_gate_unit_ledger,
-    validate_custom_op_final_gate,
-    validate_serving_final_gate,
-)
+from core.platform_policy import resolve_policy, PlatformPolicy
+from validators.validate_entry_script import validate as validate_entry_script, _extract_env_prefix
+from validators.validate_validation_final import validate_custom_op_final_gate
+from rule_strategies import create_migrator_resolved, resolve_rule_migration_strategy
 
 logger = logging.getLogger(__name__)
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
@@ -92,83 +74,40 @@ SUB_WORKFLOW_REPAIR_PHASE_IDS = {
     "imp_fix_code",
     "imp_fix_operator",
 }
+SUB_WORKFLOW_REPAIR_PHASE_ORDER = (
+    "fix_dependency",
+    "fix_code",
+    "fix_operator",
+    "imp_fix_dependency",
+    "imp_fix_code",
+    "imp_fix_operator",
+)
 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
 SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 30000
-TOP_LEVEL_LLM_TIMEOUT_DEFAULT = 30000
-TOP_LEVEL_LLM_FRESH_RETRIES_DEFAULT = 2
-CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT = 6 * 60 * 60
-CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT = 3
-CUSTOM_OP_OPERATOR_INCOMPLETE_MAX_CONTINUATIONS_DEFAULT = 1
-SUB_WORKFLOW_REPAIR_CONTINUATION_ATTEMPTS_DEFAULT = 3
-CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_DEFAULT = 0
-CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_DEFAULT = 5.0
-CUSTOM_OP_FAIL_CLOSED_STATUS = "fail_closed_missing_strict_opp_evidence"
-CUSTOM_OP_STAGNATION_FAIL_CLOSED_STATUS = "stagnation_fail_closed_missing_strict_opp_evidence"
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",
-    "unknownerror",
-    "stream_read_error",
-    "stream read error",
-    "upstream_error",
-    "unexpected server error",
-    "timed out",
-    "timeout",
-    "no response",
-    "session still running",
-    "still running",
-    "remote end closed connection without response",
-    "connection closed without response",
-    "partial/progress response",
 }
-STATUS_ONLY_LLM_RESPONSE_KEYS = frozenset(
-    {
-        "ok",
-        "status",
-        "state",
-        "phase",
-        "phase_id",
-        "message",
-        "note",
-        "notes",
-        "summary",
-        "progress",
-        "current_step",
-        "next_step",
-        "todo",
-        "todos",
-        "task",
-        "tasks",
-    }
-)
-TOP_LEVEL_LLM_REQUIRED_KEYS = {
-    "phase_1_project_analysis": ("project_dir", "dependencies", "cuda_detected", "entry_script"),
-    "project_analysis": ("project_dir", "dependencies", "cuda_detected", "entry_script"),
-    "phase_2_venv_create": ("venv_path", "python_path", "installed_packages"),
-    "phase_3_entry_script": ("entry_script_path", "run_command"),
-    "phase_35_static_validate": ("validation_passed", "issues", "fix_plan"),
-    "phase_6_report": ("report_paths", "migration_summary"),
-}
-REVIEW_PHASE_REQUIRED_KEYS = (
-    "verdict",
-    "cpu_fallback_detected",
-    "cpu_fallback_necessary",
-    "alternative_suggestions",
-    "reasoning",
-)
-TOP_LEVEL_FRESH_RETRY_BLOCKING_SESSION_ERRORS = {
-    "empty session response",
-    "unknownerror",
-    "stream_read_error",
-    "stream read error",
-    "upstream_error",
-    "unexpected server error",
-    "timed out",
-    "timeout",
-    "no response",
-    "session still running",
-    "still running",
-}
+
+
+def _rewrite_container_to_host_path(
+    path_str: str,
+    project_dir: str,
+    container_workdir: str,
+) -> str:
+    """Convert a container-visible path to its host-visible equivalent."""
+    if not path_str:
+        return path_str
+    safe = container_workdir.rstrip("/")
+    if not safe:
+        return path_str
+    if not (path_str == safe or path_str.startswith(safe + "/")):
+        return path_str
+    rel = path_str[len(safe):].lstrip("/")
+    if not rel:
+        return project_dir
+    return str(Path(project_dir) / rel)
+
 
 CUSTOM_OP_REQUIRED_TERMS = (
     "custom_op",
@@ -193,11 +132,13 @@ CUSTOM_OP_NEGATIVE_PATTERNS = (
 
 CUSTOM_OP_CONTRACT_KEYS = frozenset(
     {
+        "entry_script_kind",
         "reports_dir",
         "required_report_paths",
         "required_checks",
         "operator_discovery_sources",
         "operator_inventory_schema",
+        "performance_report_schema",
         "validation_obligations",
         "phase5_entry_script_revision_allowed",
     }
@@ -208,19 +149,6 @@ class SessionCommandError(RuntimeError):
     def __init__(self, message: str, payload: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.payload = payload or {"ok": False, "error": message}
-
-
-def _positive_int(value: object) -> bool:
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, (int, float)):
-        return value > 0
-    if isinstance(value, str):
-        try:
-            return int(value.strip()) > 0
-        except ValueError:
-            return False
-    return False
 
 # ---------------------------------------------------------------------------
 # Safe boolean-expression evaluator (no exec/eval of untrusted code)
@@ -411,6 +339,7 @@ class WorkflowExecutor:
         telemetry_bridge: Any = None,
         hook_manager: HookManager | None = None,
         experience_store=None,
+        exec_backend: Any = None,
     ) -> None:
         self.workflow = workflow
         self.session_mgr = session_mgr
@@ -429,7 +358,16 @@ class WorkflowExecutor:
         self.telemetry_bridge = telemetry_bridge
         self.telemetry_observer = telemetry_observer
         self.experience_store = experience_store
+        self.exec_backend = exec_backend
+        self._initialize_execution_backend()
+        self._container_env_probe = getattr(self, "_container_env_probe", None)
         self._runtime_skill_resolver: RuntimeSkillResolver | None = None
+
+        # Resolve platform policy from workflow definition
+        self.platform_policy: PlatformPolicy = resolve_policy(
+            getattr(workflow, "target_platform", None),
+            workflow.name,
+        )
 
         # Execution state
         self.phase_results: dict[str, dict[str, Any]] = {}   # phase_id -> {status, duration, ...}
@@ -439,70 +377,172 @@ class WorkflowExecutor:
         for i, p in enumerate(self.workflow.phases or []):
             self.phase_index[p.id] = i
 
+    def _initialize_execution_backend(self) -> None:
+        """Create execution backend from workflow config when needed."""
+        if self.exec_backend is not None:
+            return
+        eb = getattr(self.workflow, "execution_backend", None)
+        if eb is None or eb.mode == "local":
+            return
+
+        from core.execution_backend import (
+            ContainerBackend,
+            auto_select_backend,
+        )
+
+        if eb.mode == "auto":
+            eb = auto_select_backend(eb)
+            # Auto image selection before container creation
+            eb = self._auto_select_image(eb)
+
+        if eb.mode != "container":
+            return
+
+        backend = ContainerBackend(eb)
+        backend.set_project_dir(self.project_dir)
+        backend.preflight()
+        self._container_env_probe = backend.probe_environment()
+        self.exec_backend = backend
+
+    def _auto_select_image(
+        self, config: "ExecutionBackendConfig",
+    ) -> "ExecutionBackendConfig":
+        """Run agent image-selection for ``mode=auto`` before container creation."""
+        from core.types import ExecutionBackendConfig as _EBC
+
+        if config.mode != "container":
+            return config
+
+        candidates: list[str] = []
+        is_discovered = False
+        cfg_list = getattr(config, "images", None) or []
+
+        # Normalize: filter out None/"None" artifacts
+        candidates = [c for c in cfg_list if str(c).strip() and str(c).strip() != "None"]
+
+        # Multiple configured candidates → always do agent selection
+        # Single configured candidate → no selection needed
+        if len(candidates) == 1:
+            return config
+
+        if not candidates:
+            try:
+                probe = ContainerBackend(config)
+                discovered = probe._discover_local_images()
+            except Exception as exc:
+                logger.warning("Auto image discovery failed: %s", exc)
+                discovered = []
+
+            if discovered:
+                candidates = discovered
+                is_discovered = True
+            else:
+                logger.info("Auto mode: no configured images and no local images discovered; falling back to local")
+                return _EBC(mode="local")
+
+        # Send selection prompt to agent
+        selected = self._send_image_selection_prompt(candidates, is_discovered)
+        if selected and selected in candidates:
+            config = _EBC(
+                mode=config.mode,
+                source=config.source,
+                runtime=config.runtime,
+                image=selected,
+                images=candidates,
+                container_name=config.container_name,
+                container_name_prefix=config.container_name_prefix,
+                devices=config.devices,
+                volumes=config.volumes,
+                env_vars=config.env_vars,
+                required_env_vars=config.required_env_vars,
+                required_devices=config.required_devices,
+                container_workdir=config.container_workdir,
+                network_mode=config.network_mode,
+                runtime_flags=config.runtime_flags,
+                timeout=config.timeout,
+                cleanup=config.cleanup,
+            )
+            logger.info("Auto image selection chosen: %s", selected)
+        else:
+            logger.warning(
+                "Auto image selection returned invalid value %r; falling back to local",
+                selected,
+            )
+            return _EBC(mode="local")
+
+        return config
+
+    def _send_image_selection_prompt(
+        self,
+        candidates: list[str],
+        is_discovered: bool = False,
+    ) -> str | None:
+        """Ask an agent to select an image from the given list."""
+        from harness.session.manager import extract_json_response as _extract
+
+        candidates_text = "\n".join(f"  {i+1}. {img}" for i, img in enumerate(candidates))
+
+        guidance = (
+            "Select the most appropriate image for running the migration workflow. "
+            "Consider image suitability for Python, PyTorch, and target hardware."
+        )
+        if is_discovered:
+            guidance = (
+                "These are the images already available on the host. "
+                + guidance
+            )
+
+        prompt_text = self.prompt_loader.load_prompt(
+            "container_image_select",
+            {
+                "candidate_images": candidates_text,
+                "discovered_images_section": (
+                    "## Discovered Local Images\nThe following images were found on this host:\n"
+                    + candidates_text
+                    if is_discovered
+                    else ""
+                ),
+                "selection_guidance": guidance,
+            },
+        )
+
+        # Determine which session to use
+        agent_id = "main_engineer"
+        try:
+            if self.session_registry:
+                sid = self.session_registry.resolve(agent_id)
+            else:
+                sid = self.session_mgr.get_or_create(
+                    role="image_selector", lifecycle="ephemeral"
+                )
+        except KeyError:
+            sid = self.session_mgr.get_or_create(
+                role="image_selector", lifecycle="ephemeral"
+            )
+
+        try:
+            raw = self.session_mgr.send_command(sid, prompt_text, timeout=120)
+            parsed = _extract(raw)
+            if isinstance(parsed, dict):
+                selected = parsed.get("selected_image")
+                return str(selected) if selected else None
+        except Exception as exc:
+            logger.warning("Image selection prompt failed: %s", exc)
+
+        return None
+
+    def _cleanup_execution_backend(self) -> None:
+        if self.exec_backend is None:
+            return
+        try:
+            self.exec_backend.cleanup()
+        except Exception as exc:
+            logger.error("Execution backend cleanup failed: %s", exc)
+
     def _set_telemetry_active_phase(self, phase_id: str | None) -> None:
         setter = getattr(self.telemetry_observer, "set_active_phase", None)
         if callable(setter):
             setter(phase_id)
-
-    def _record_phase_event(self, event_type: str, phase_id: str, **details: Any) -> None:
-        for target in (self.telemetry_observer, self.telemetry_bridge):
-            recorder = getattr(target, "record_event", None)
-            if not callable(recorder):
-                recorder = getattr(target, "on_event", None)
-            if not callable(recorder):
-                continue
-            try:
-                recorder(event_type, phase_id=phase_id, **details)
-            except Exception as exc:
-                logger.warning("Phase telemetry event failed for %s: %s", phase_id, exc)
-
-    def _mark_observer_phase_status(self, phase_id: str, status: str, error: str | None = None) -> None:
-        marker = getattr(self.telemetry_observer, "mark_phase_status", None)
-        if callable(marker):
-            try:
-                marker(phase_id, status, error)
-            except Exception as exc:
-                logger.warning("Phase telemetry status update failed for %s: %s", phase_id, exc)
-
-    def _flush_live_phase_telemetry(self) -> None:
-        for target in (self.telemetry_observer, self.telemetry_bridge):
-            saver = getattr(target, "save_metrics", None)
-            if not callable(saver):
-                continue
-            try:
-                saver()
-            except Exception as exc:
-                logger.warning("Live phase telemetry save failed: %s", exc)
-
-    def _phase_started(self, phase_id: str) -> None:
-        self._set_telemetry_active_phase(phase_id)
-        starter = getattr(self.telemetry_bridge, "on_phase_start", None)
-        if callable(starter):
-            try:
-                starter(phase_id)
-            except Exception as exc:
-                logger.warning("Phase telemetry start failed for %s: %s", phase_id, exc)
-        self._mark_observer_phase_status(phase_id, "running")
-        self._record_phase_event("phase_start", phase_id)
-        self._flush_live_phase_telemetry()
-
-    def _phase_finished(self, phase_id: str, status: str, duration: float, error: str | None = None) -> None:
-        finisher = getattr(self.telemetry_bridge, "on_phase_end", None)
-        if callable(finisher):
-            try:
-                finisher(phase_id, status, duration)
-            except Exception as exc:
-                logger.warning("Phase telemetry end failed for %s: %s", phase_id, exc)
-        self._mark_observer_phase_status(phase_id, status, error)
-        self._record_phase_event(
-            "phase_end",
-            phase_id,
-            status=status,
-            duration_seconds=round(duration, 3),
-            error=error,
-        )
-        self._set_telemetry_active_phase(None)
-        self._flush_live_phase_telemetry()
 
     # ── Main entry point ────────────────────────────────────────────────
 
@@ -541,6 +581,24 @@ class WorkflowExecutor:
 
             logger.info(">>> Executing phase: %s (%s)", phase.id, phase.type)
 
+            # Skip Phase 7 when experience.phase7_enabled is false
+            if phase.id in ("phase_7a_evaluate", "phase_7b_refine"):
+                p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                if not p7_cfg:
+                    logger.info("Phase '%s' skipped (phase7_enabled=false)", phase.id)
+                    self.phase_results[phase.id] = {
+                        "status": "skipped",
+                        "duration": 0,
+                        "reason": "phase7_disabled",
+                    }
+                    idx = self.phase_index.get(phase.id, -1)
+                    phases_list = self.workflow.phases or []
+                    if idx >= 0 and idx + 1 < len(phases_list):
+                        current_phase_id = phases_list[idx + 1].id
+                    else:
+                        current_phase_id = "complete"
+                    continue
+
             # Evaluate condition
             if phase.condition:
                 cond_met = self._evaluate_condition(
@@ -553,8 +611,6 @@ class WorkflowExecutor:
                         "duration": 0,
                         "reason": "condition_false",
                     }
-                    self._phase_started(phase.id)
-                    self._phase_finished(phase.id, "skipped", 0.0, "condition_false")
                     next_id = self._get_next_phase_id(phase, "skipped", self.state, ctx)
                     current_phase_id = next_id
                     continue
@@ -564,7 +620,7 @@ class WorkflowExecutor:
             start_t = time.time()
             status: str = "success"
             output: Any = {}
-            self._phase_started(phase.id)
+            self._set_telemetry_active_phase(phase.id)
 
             try:
                 if phase_type == "llm":
@@ -595,7 +651,7 @@ class WorkflowExecutor:
                             "duration": time.time() - start_t,
                             "target": next_id,
                         }
-                        self._phase_finished(phase.id, "dispatched", time.time() - start_t)
+                        self._set_telemetry_active_phase(None)
                         continue
                     status = "success"
                     output = {"dispatched_to": None}
@@ -641,27 +697,18 @@ class WorkflowExecutor:
 
             # Journal entry
             try:
-                if isinstance(output, dict) and output.get("_journal_written") is True:
-                    pass
-                else:
-                    self.artifact_store.write_journal({
-                        "phase_id": phase.id,
-                        "status": status,
-                        "duration": duration,
-                        "timestamp": time.time(),
-                        **self._journal_failure_fields(output),
-                    })
+                self.artifact_store.write_journal({
+                    "phase_id": phase.id,
+                    "status": status,
+                    "duration": duration,
+                    "timestamp": time.time(),
+                })
             except Exception:
                 pass
 
             # Determine next phase
             next_id = self._get_next_phase_id(phase, status, self.state, ctx)
-            telemetry_error = None
-            if status != "success":
-                telemetry_error = self.phase_results[phase.id].get("output_summary")
-                if telemetry_error is not None:
-                    telemetry_error = str(telemetry_error)
-            self._phase_finished(phase.id, status, duration, telemetry_error)
+            self._set_telemetry_active_phase(None)
             current_phase_id = next_id
 
         self._set_telemetry_active_phase(None)
@@ -673,7 +720,10 @@ class WorkflowExecutor:
         except Exception as exc:
             logger.error("workflow_end hook failed: %s", exc)
 
-        # 5. Return final result
+        # 6. Cleanup container execution backend (if configured)
+        self._cleanup_execution_backend()
+
+        # 7. Return final result
         return {
             "state": self.state,
             "phase_results": self.phase_results,
@@ -828,6 +878,10 @@ class WorkflowExecutor:
         log_phase_id: str | None = None,
     ) -> str:
         if not getattr(phase, 'retrieve_experience', False) or not self.experience_store:
+            return prompt_text
+
+        exp_cfg = getattr(getattr(self.workflow, 'experience', None), 'enabled', True)
+        if not exp_cfg:
             return prompt_text
 
         phase_id = log_phase_id or phase.id
@@ -1061,54 +1115,6 @@ class WorkflowExecutor:
 
     # ── Condition evaluation ────────────────────────────────────────────
 
-    def _resolve_condition_template(
-        self,
-        condition: str,
-        *,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None = None,
-        loop_state: dict[str, Any] | None = None,
-        step_outputs: dict[str, Any] | None = None,
-    ) -> Any:
-        if "${" not in condition:
-            return self.resolver.resolve(
-                condition,
-                state=state,
-                globals=self.workflow.globals,
-                context=context,
-                loop_vars=loop_vars,
-                loop_state=loop_state,
-                step_outputs=step_outputs,
-            )
-
-        if re.fullmatch(r"\$\{[^}]+\}", condition):
-            return self.resolver.resolve(
-                condition,
-                state=state,
-                globals=self.workflow.globals,
-                context=context,
-                loop_vars=loop_vars,
-                loop_state=loop_state,
-                step_outputs=step_outputs,
-            )
-
-        def replace(match: re.Match[str]) -> str:
-            value = self.resolver.resolve(
-                match.group(0),
-                state=state,
-                globals=self.workflow.globals,
-                context=context,
-                loop_vars=loop_vars,
-                loop_state=loop_state,
-                step_outputs=step_outputs,
-            )
-            if value is None or isinstance(value, (str, bool, int, float)):
-                return json.dumps(value)
-            return repr(value)
-
-        return re.sub(r"\$\{[^}]+\}", replace, condition)
-
     def _evaluate_condition(
         self,
         condition: str,
@@ -1125,12 +1131,11 @@ class WorkflowExecutor:
           - $.field_name shorthand for loop_state / step_outputs lookup
           - Boolean operators: ==, !=, >, <, >=, <=, and, or, not, in
         """
-        # Step 1: Resolve ${...} templates. When a template is embedded inside
-        # a comparison expression, quote string values so empty strings remain
-        # valid boolean expressions instead of becoming ` != ''`.
-        resolved = self._resolve_condition_template(
+        # Step 1: Resolve ${...} templates
+        resolved = self.resolver.resolve(
             condition,
             state=state,
+            globals=self.workflow.globals,
             context=context,
             loop_vars=loop_vars,
             loop_state=loop_state,
@@ -1249,164 +1254,102 @@ class WorkflowExecutor:
         self._inject_llm_baseline_context(input_ctx, phase, state)
         self._inject_llm_phase_specific_context(input_ctx, phase, state)
 
-        prompt_template = self._prompt_template_for_llm_phase(
-            phase_id=phase.id,
-            default_template=phase.prompt_template,
-            state=state,
-        )
-        prompt_text = self.prompt_loader.load_prompt(prompt_template, input_ctx)
+        prompt_text = self.prompt_loader.load_prompt(phase.prompt_template, input_ctx)
         prompt_text, explicit_skill_bundle = self._append_explicit_runtime_skill_markdown(
             prompt_text, phase, agent_id
         )
         prompt_text = self._append_dynamic_experience_markdown(
             prompt_text, phase, state, context, explicit_skill_bundle
         )
-
-        # 3. Server-backed LLM phases are not bounded by phase-duration deadlines.
-        timeout = self._resolve_top_level_llm_timeout(phase)
+        prompt_text = inject_phase_boundary(prompt_text, framework_config=self.framework_config)
+        timeout = self._llm_timeout_for_phase(phase)
 
         # 4. Send command
         try:
-            raw_response, sid = self._send_top_level_llm_command_with_empty_retry(
-                phase_id=phase.id,
-                agent_id=agent_id,
-                session_id=sid,
-                prompt_text=prompt_text,
-                timeout=timeout,
+            send_kwargs = {"timeout": timeout}
+            if phase.id == "phase_6_report":
+                send_kwargs["retries"] = 0
+            raw_response = self.session_mgr.send_command(sid, prompt_text, **send_kwargs)
+        except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
+            if phase.id == "phase_6_report":
+                output = self._phase_6_fallback_output(input_ctx, state, str(exc))
+                return "success", output
+            raise
+
+        # 5. Parse JSON
+        output = extract_json_response(raw_response)
+        if phase.id == "phase_6_report" and self._is_session_error_response(output):
+            reason = str(output.get("error") or "Phase 6 LLM call failed")
+            output = self._phase_6_fallback_output(input_ctx, state, reason)
+            return "success", output
+        self._raise_for_session_error_output(output, phase.id)
+
+        output_format = expected_output_format(phase.output_schema, prompt_text)
+
+        parse_attempt = 0
+        max_parse_retries = 2
+        while not output and parse_attempt < max_parse_retries:
+            if phase.id == "phase_6_report":
+                output = self._phase_6_fallback_output(
+                    input_ctx, state, "Phase 6 LLM response was empty or malformed",
+                )
+                return "success", output
+            parse_attempt += 1
+            parse_correction = self._build_validation_correction_prompt(
+                "Your response did not contain a valid JSON object.",
+                output_format_example=output_format,
+                is_parse_failure=True,
+                phase_name=phase.id,
             )
+            raw_response = self.session_mgr.send_command(sid, parse_correction, timeout=timeout)
+            output = extract_json_response(raw_response)
+            self._raise_for_session_error_output(output, phase.id)
+        if not output:
+            output = {"raw_response": raw_response}
+        elif phase.id == "phase_6_report" and not self._phase_6_output_complete(output):
+            output = self._phase_6_fallback_output(
+                input_ctx, state, "Phase 6 LLM response omitted required report fields",
+            )
+            return "success", output
 
-            # 5. Parse JSON
-            parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
-        except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
-            return self._record_llm_phase_failure(phase, sid, timeout, exc)
-
-        # 6. Normalize, validate, and run assisted verification with retries.
-        current_raw_response = raw_response
-        response_shape_output = dict(parsed_output)
-        output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
+        # 6. Normalize and validate with retries
+        output = self._normalize_llm_output(phase, output, input_ctx, state)
         max_retries = 3
-        needs_retry_gate = bool(
-            phase.validator
-            or phase.validate_only
-            or self._is_assisted_verification_phase(phase)
-            or self._top_level_llm_required_keys(phase)
-        )
-        if needs_retry_gate:
+        if phase.validator or phase.validate_only:
             validation_passed = False
             validation_errors: list[str] = []
             for attempt in range(1, max_retries + 1):
-                response_shape_errors = self._top_level_llm_response_shape_errors(
-                    phase,
-                    response_shape_output,
-                    current_raw_response,
+                validation_result = self.validator_engine.validate(
+                    phase.validator or phase.id, output
                 )
-                if response_shape_errors:
-                    validation_errors = response_shape_errors
-                    if attempt >= max_retries:
-                        break
-                    correction_prompt = self._build_validation_correction_prompt(
-                        "; ".join(response_shape_errors),
-                        phase_id=phase.id,
-                        validator_name=str(phase.validator or phase.id),
-                    )
-                    try:
-                        raw_response, sid = self._send_top_level_llm_command_with_empty_retry(
-                            phase_id=phase.id,
-                            agent_id=agent_id,
-                            session_id=sid,
-                            prompt_text=correction_prompt,
-                            timeout=timeout,
-                        )
-                        current_raw_response = raw_response
-                        parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
-                    except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
-                        return self._record_llm_phase_failure(phase, sid, timeout, exc)
-                    response_shape_output = dict(parsed_output)
-                    output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
-                    continue
-
-                if phase.validator or phase.validate_only:
-                    validation_result = self.validator_engine.validate(
-                        phase.validator or phase.id, output
-                    )
-                    if not getattr(validation_result, "passed", True):
-                        validation_errors = [str(error) for error in getattr(validation_result, "errors", ["unknown"])]
-                        if attempt >= max_retries:
-                            break
-                        error_msg = "; ".join(validation_errors)
-                        correction_prompt = self._build_validation_correction_prompt(
-                            error_msg,
-                            phase_id=phase.id,
-                            validator_name=str(phase.validator or phase.id),
-                        )
-                        try:
-                            raw_response, sid = self._send_top_level_llm_command_with_empty_retry(
-                                phase_id=phase.id,
-                                agent_id=agent_id,
-                                session_id=sid,
-                                prompt_text=correction_prompt,
-                                timeout=timeout,
-                            )
-                            current_raw_response = raw_response
-                            parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
-                        except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
-                            validation_errors = [
-                                *validation_errors,
-                                f"assisted verifier session failed during correction retry: {exc}",
-                            ]
-                            try:
-                                self.artifact_store.save_phase_output(
-                                    phase.id,
-                                    {**output, "validation_errors": validation_errors},
-                                )
-                            except Exception as save_exc:
-                                logger.warning("Artifact save failed for invalid %s: %s", phase.id, save_exc)
-                            return "failure", {**output, "validation_errors": validation_errors}
-                        response_shape_output = dict(parsed_output)
-                        output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
-                        continue
-
-                assisted_result = self._run_assisted_verification_for_llm_phase(
-                    phase=phase,
-                    output=output,
-                    state=state,
-                    context=context,
-                    attempt=attempt,
+                if getattr(validation_result, "passed", True):
+                    validation_passed = True
+                    break
+                validation_errors = [str(error) for error in getattr(validation_result, "errors", ["unknown"])]
+                if attempt >= max_retries:
+                    break
+                error_msg = "; ".join(validation_errors)
+                correction_prompt = self._build_validation_correction_prompt(
+                    error_msg,
+                    output_format_example=output_format,
+                    phase_name=phase.id,
                 )
-                if assisted_result is not None:
-                    assisted_result = self._maybe_accept_assisted_session_failure(
-                        phase=phase,
-                        output=output,
-                        result=assisted_result,
+                raw_response = self.session_mgr.send_command(sid, correction_prompt, timeout=timeout)
+                output = extract_json_response(raw_response)
+                self._raise_for_session_error_output(output, phase.id)
+                if not output:
+                    parse_correction = self._build_validation_correction_prompt(
+                        "Your response did not contain a valid JSON object.",
+                        output_format_example=output_format,
+                        is_parse_failure=True,
+                        phase_name=phase.id,
                     )
-                    output = attach_assisted_summary(output, assisted_result)
-                    if not assisted_result.passed:
-                        validation_errors = assisted_result.errors or ["assisted verification failed"]
-                        if attempt >= max_retries:
-                            break
-                        correction_prompt = assisted_result.correction_prompt or self._build_validation_correction_prompt(
-                            "; ".join(validation_errors),
-                            phase_id=phase.id,
-                            validator_name="assisted_verification",
-                        )
-                        try:
-                            raw_response, sid = self._send_top_level_llm_command_with_empty_retry(
-                                phase_id=phase.id,
-                                agent_id=agent_id,
-                                session_id=sid,
-                                prompt_text=correction_prompt,
-                                timeout=timeout,
-                            )
-                            current_raw_response = raw_response
-                            parsed_output = self._parse_llm_phase_response(raw_response, phase.id)
-                        except (TimeoutError, SessionCommandError, RuntimeError, ConnectionError) as exc:
-                            return self._record_llm_phase_failure(phase, sid, timeout, exc)
-                        response_shape_output = dict(parsed_output)
-                        output = self._normalize_llm_output(phase, parsed_output, input_ctx, state)
-                        continue
-
-                validation_passed = True
-                break
+                    raw_response = self.session_mgr.send_command(sid, parse_correction, timeout=timeout)
+                    output = extract_json_response(raw_response)
+                    self._raise_for_session_error_output(output, phase.id)
+                    if not output:
+                        output = {"raw_response": raw_response}
+                output = self._normalize_llm_output(phase, output, input_ctx, state)
             if not validation_passed:
                 try:
                     self.artifact_store.save_phase_output(
@@ -1428,630 +1371,93 @@ class WorkflowExecutor:
         status = "success"
         return status, output
 
-    def _run_assisted_verification_for_llm_phase(
-        self,
-        *,
-        phase: PhaseDefinition,
-        output: dict[str, Any],
-        state: dict[str, Any],
-        context: dict[str, Any],
-        attempt: int,
-    ) -> AssistedVerificationResult | None:
-        if not self._is_assisted_verification_phase(phase):
-            return None
-        runner = AssistedVerificationRunner(
-            session_mgr=self.session_mgr,
-            artifact_store=self.artifact_store,
-            framework_config=self.framework_config,
-        )
-        if not runner.config.enabled:
-            return None
-        project_dir = self._assisted_project_dir(context)
-        phase_output = self._without_meta(output)
-        if self._is_assisted_phase1(phase):
-            return runner.verify_phase1(
-                phase_output=phase_output,
-                project_dir=project_dir,
-                attempt=attempt,
-            )
-        if self._is_assisted_phase3(phase):
-            return runner.verify_phase3(
-                phase_output=phase_output,
-                phase1_output=self._assisted_phase1_output(state),
-                project_dir=project_dir,
-                attempt=attempt,
-        )
-        return None
-
-    def _maybe_accept_assisted_session_failure(
-        self,
-        *,
-        phase: PhaseDefinition,
-        output: dict[str, Any],
-        result: AssistedVerificationResult,
-    ) -> AssistedVerificationResult:
-        if result.passed or result.skipped:
-            return result
-        if not self._assisted_result_is_session_failure(result):
-            return result
-        validation = self.validator_engine.validate(phase.validator or phase.id, output)
-        if not getattr(validation, "passed", True):
-            return result
-        if self._is_assisted_phase1(phase):
-            if not self._phase1_has_deterministic_custom_op_inventory(output):
-                return result
-            warning = "assisted verifier session failed; accepted deterministic Phase 1 custom-op inventory after local validation"
-        elif self._is_assisted_phase3(phase):
-            if not self._phase3_has_deterministic_contract(output):
-                return result
-            warning = "assisted verifier session failed; accepted deterministic Phase 3 validation contract after local validation"
-        else:
-            return result
-
-        accepted = AssistedVerificationResult(
-            phase_id=result.phase_id,
-            skipped=False,
-            passed=True,
-            errors=[],
-            warnings=[warning],
-            report=dict(result.report),
-            raw_path=result.raw_path,
-            canonical_path=result.canonical_path,
-            correction_prompt=result.correction_prompt,
-        )
-        if self._is_assisted_phase1(phase):
-            accepted.report.setdefault("track", "custom_op_variant")
-        logger.warning(
-            "Assisted verifier session failed for %s but local deterministic phase contract passed; continuing fail-open for verifier availability only",
-            phase.id,
-        )
-        return accepted
-
-    @staticmethod
-    def _assisted_result_is_session_failure(result: AssistedVerificationResult) -> bool:
-        values = [*result.errors]
-        for key in ("error", "session_error"):
-            value = result.report.get(key)
-            if isinstance(value, str):
-                values.append(value)
-        return any("assisted verifier session failed" in value or "上游" in value for value in values)
-
-    @staticmethod
-    def _phase1_has_deterministic_custom_op_inventory(output: dict[str, Any]) -> bool:
-        surface = output.get("custom_op_surface")
-        if not isinstance(surface, dict):
-            return False
-        if surface.get("custom_op_detected") is not True:
-            return False
-        units = surface.get("fine_grained_operator_units")
-        if not isinstance(units, list) or not units:
-            return False
-        if surface.get("variant_axes_detected") is True:
-            variants = surface.get("expanded_operator_variants")
-            count = surface.get("expanded_operator_instances_count")
-            if not isinstance(variants, list) or not variants:
-                return False
-            if not isinstance(count, int) or count != len(variants):
-                return False
-        return True
-
-    @staticmethod
-    def _phase3_has_deterministic_contract(output: dict[str, Any]) -> bool:
-        entry_kind = output.get("entry_script_kind")
-        if entry_kind == "custom_op_full_validation":
-            inventory = output.get("expanded_variant_inventory")
-            if isinstance(inventory, dict):
-                units = inventory.get("unit_identities")
-                count = inventory.get("expanded_operator_instances_count")
-                if inventory.get("variant_axes_detected") is True:
-                    if not isinstance(units, list) or not units:
-                        return False
-                    if not isinstance(count, int) or count != len(units):
-                        return False
-            return True
-        if entry_kind in {"vllm_serving_validation", "sglang_serving_validation"}:
-            return True
-        return "entry_script_path" in output and "run_command" in output
-
-    @classmethod
-    def _parse_llm_phase_response(cls, raw_response: str, phase_id: str) -> dict[str, Any]:
-        output = extract_json_response(raw_response)
-        cls._raise_for_session_error_output(output, phase_id)
-        if isinstance(output, dict) and output:
-            return dict(output)
-        return {"raw_response": raw_response}
-
-    @staticmethod
-    def _top_level_llm_required_keys(phase: PhaseDefinition) -> tuple[str, ...]:
-        phase_keys = {
-            str(phase.id or ""),
-            str(phase.prompt_template or ""),
-            str(phase.validator or ""),
-        }
-        for key in phase_keys:
-            required = TOP_LEVEL_LLM_REQUIRED_KEYS.get(key)
-            if required:
-                return required
-        return ()
-
-    @classmethod
-    def _top_level_llm_response_shape_errors(
-        cls,
-        phase: PhaseDefinition,
-        output: dict[str, Any],
-        raw_response: str,
-    ) -> list[str]:
-        errors: list[str] = []
-        if "raw_response" in output and len(output) == 1:
-            if str(raw_response or "").strip():
-                errors.append("response contained no parseable JSON object")
-            else:
-                errors.append("response was empty")
-        elif cls._is_status_only_llm_response(output):
-            errors.append(
-                f"{phase.id} returned status/progress-only JSON instead of the complete phase schema"
-            )
-        required_keys = cls._top_level_llm_required_keys(phase)
-        missing_keys = [key for key in required_keys if key not in output]
-        if missing_keys:
-            errors.append("Missing required phase JSON keys: " + ", ".join(missing_keys))
-        if cls._is_project_analysis_phase(phase):
-            errors.extend(cls._project_analysis_response_shape_errors(output))
-        if cls._is_phase6_report_phase(phase):
-            errors.extend(cls._phase6_report_response_shape_errors(output))
-        return errors
-
-    @staticmethod
-    def _is_project_analysis_phase(phase: PhaseDefinition) -> bool:
-        identifiers = {
-            str(phase.id or ""),
-            str(phase.prompt_template or ""),
-            str(phase.validator or ""),
-        }
-        return bool({"phase_1_project_analysis", "project_analysis"} & identifiers)
-
-    @staticmethod
-    def _project_analysis_response_shape_errors(output: dict[str, Any]) -> list[str]:
-        errors: list[str] = []
-        project_dir = output.get("project_dir")
-        if "project_dir" in output and not isinstance(project_dir, str):
-            errors.append("project_dir must be a string")
-        dependencies = output.get("dependencies")
-        if "dependencies" in output:
-            if not isinstance(dependencies, list):
-                errors.append("dependencies must be a list")
-            elif not all(isinstance(item, str) for item in dependencies):
-                errors.append("dependencies must contain only strings")
-        cuda_detected = output.get("cuda_detected")
-        if "cuda_detected" in output and not isinstance(cuda_detected, bool):
-            errors.append("cuda_detected must be a boolean")
-        entry_script = output.get("entry_script")
-        if "entry_script" in output and not isinstance(entry_script, str):
-            errors.append("entry_script must be a string")
-        return errors
-
-    @staticmethod
-    def _is_phase6_report_phase(phase: PhaseDefinition) -> bool:
-        identifiers = {
-            str(phase.id or ""),
-            str(phase.prompt_template or ""),
-            str(phase.validator or ""),
-        }
-        return "phase_6_report" in identifiers
-
-    @staticmethod
-    def _phase6_report_response_shape_errors(output: dict[str, Any]) -> list[str]:
-        errors: list[str] = []
-        report_paths = output.get("report_paths")
-        if "report_paths" in output:
-            if not isinstance(report_paths, list):
-                errors.append("report_paths must be a list")
-            elif not all(isinstance(path, str) for path in report_paths):
-                errors.append("report_paths must contain only strings")
-        migration_summary = output.get("migration_summary")
-        if "migration_summary" in output and not isinstance(migration_summary, dict):
-            errors.append("migration_summary must be an object")
-        return errors
-
-    @staticmethod
-    def _is_status_only_llm_response(output: dict[str, Any]) -> bool:
-        keys = {str(key) for key in output if not str(key).startswith("_")}
-        return bool(keys) and keys.issubset(STATUS_ONLY_LLM_RESPONSE_KEYS)
-
-    def _is_assisted_verification_phase(self, phase: PhaseDefinition) -> bool:
-        return self._is_assisted_phase1(phase) or self._is_assisted_phase3(phase)
-
-    @staticmethod
-    def _is_assisted_phase1(phase: PhaseDefinition) -> bool:
-        identifiers = {
-            str(phase.id or ""),
-            str(phase.prompt_template or ""),
-            str(phase.validator or ""),
-        }
-        return any("phase_1_project_analysis" in identifier or identifier == "phase_1" for identifier in identifiers)
-
-    @staticmethod
-    def _is_assisted_phase3(phase: PhaseDefinition) -> bool:
-        identifiers = {
-            str(phase.id or ""),
-            str(phase.prompt_template or ""),
-            str(phase.validator or ""),
-        }
-        return any("phase_3_entry_script" in identifier or identifier == "phase_3" for identifier in identifiers)
-
-    def _assisted_project_dir(self, context: dict[str, Any]) -> str:
-        for key in ("PROJECT_DIR", "project_dir"):
-            value = context.get(key)
-            if isinstance(value, str) and value.strip():
-                return value
-        return self.project_dir
-
-    @staticmethod
-    def _assisted_phase1_output(state: dict[str, Any]) -> dict[str, object] | None:
-        for key in ("phase_1_project_analysis", "phase_1"):
-            value = state.get(key)
-            if isinstance(value, dict):
-                return WorkflowExecutor._without_meta(value)
-        return None
-
-    @staticmethod
-    def _without_meta(output: Mapping[str, Any]) -> dict[str, object]:
-        clean = dict(output)
-        clean.pop("_meta", None)
-        return clean
-
-    def _send_top_level_llm_command_with_empty_retry(
-        self,
-        *,
-        phase_id: str,
-        agent_id: str,
-        session_id: str,
-        prompt_text: str,
-        timeout: int | None,
-    ) -> tuple[str, str]:
-        fresh_retry_budget = self._resolve_top_level_llm_fresh_retry_budget()
-        active_session_id = session_id
-        for attempt_index in range(fresh_retry_budget + 1):
-            try:
-                raw_response = self.session_mgr.send_command(active_session_id, prompt_text, timeout=timeout)
-            except (TimeoutError, RuntimeError, ConnectionError) as exc:
-                error_text = str(exc)
-                if not self._is_retryable_session_error_text(error_text):
-                    raise
-                if (
-                    not self._should_fresh_retry_top_level_session_error(error_text)
-                    or attempt_index >= fresh_retry_budget
-                ):
-                    return json.dumps({"ok": False, "error": error_text}), active_session_id
-                retry_session_id = self._create_top_level_retry_session(agent_id, phase_id)
-                logger.warning(
-                    "Retrying top-level LLM phase in fresh session after retryable session error: phase_id=%s agent_id=%s old_session_id=%s retry_session_id=%s retry=%s/%s error=%s",
-                    phase_id,
-                    agent_id,
-                    active_session_id,
-                    retry_session_id,
-                    attempt_index + 1,
-                    fresh_retry_budget,
-                    exc,
-                )
-                active_session_id = retry_session_id
-                continue
-
-            retry_error = self._retryable_top_level_empty_session_error(raw_response)
-            if not retry_error:
-                return raw_response, active_session_id
-            if (
-                not self._should_fresh_retry_top_level_session_error(retry_error)
-                or attempt_index >= fresh_retry_budget
-            ):
-                if not extract_json_response(raw_response):
-                    return json.dumps({"ok": False, "error": retry_error}), active_session_id
-                return raw_response, active_session_id
-            retry_session_id = self._create_top_level_retry_session(agent_id, phase_id)
-            logger.warning(
-                "Retrying top-level LLM phase in fresh session after retryable session error: phase_id=%s agent_id=%s old_session_id=%s retry_session_id=%s retry=%s/%s error=%s",
-                phase_id,
-                agent_id,
-                active_session_id,
-                retry_session_id,
-                attempt_index + 1,
-                fresh_retry_budget,
-                retry_error,
-            )
-            active_session_id = retry_session_id
-        raise RuntimeError("unreachable top-level LLM retry state")
-
-    def _retryable_top_level_empty_session_error(self, raw_response: str) -> str:
-        output = extract_json_response(raw_response)
-        if not output:
-            error = raw_response.strip()
-            if self._partial_progress_text(error):
-                return "partial/progress response before complete phase JSON"
-            if self._is_retryable_session_error_text(error):
-                return error
-            return ""
-        if not self._is_session_error_response(output):
-            return ""
-        assert isinstance(output, dict)
-        error = self._session_error_text(output)
-        if self._is_retryable_session_error_text(error):
-            return error
-        return ""
-
-    @staticmethod
-    def _should_fresh_retry_top_level_session_error(error_text: str) -> bool:
-        if not WorkflowExecutor._is_retryable_session_error_text(error_text):
-            return False
-        normalized = error_text.strip().lower()
-        return not any(
-            token in normalized for token in TOP_LEVEL_FRESH_RETRY_BLOCKING_SESSION_ERRORS
-        )
-
-    @staticmethod
-    def _is_retryable_empty_session_error_text(error_text: str) -> bool:
-        return WorkflowExecutor._is_retryable_session_error_text(error_text)
-
-    def _create_top_level_retry_session(self, agent_id: str, phase_id: str) -> str:
-        return self._create_sub_workflow_retry_session(agent_id, phase_id)
-
-    def _resolve_top_level_llm_fresh_retry_budget(self) -> int:
-        for config_key in (
-            "top_level_llm_fresh_retries",
-            "session_retry_fresh_attempts",
-            "session_retry_budget",
-        ):
-            raw_budget = self.framework_config.get(config_key)
-            if raw_budget is None:
-                continue
-            try:
-                if not isinstance(raw_budget, (str, int)) or isinstance(raw_budget, bool):
-                    raise ValueError
-                return max(0, min(5, int(raw_budget)))
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid %s=%r for top-level LLM retry budget; using default %s",
-                    config_key,
-                    raw_budget,
-                    TOP_LEVEL_LLM_FRESH_RETRIES_DEFAULT,
-                )
-                return TOP_LEVEL_LLM_FRESH_RETRIES_DEFAULT
-        return TOP_LEVEL_LLM_FRESH_RETRIES_DEFAULT
-
-    def _resolve_top_level_llm_timeout(self, phase: PhaseDefinition) -> int | None:
-        phase_timeout = getattr(phase, "timeout", None)
-        if phase_timeout is not None:
-            try:
-                if not isinstance(phase_timeout, (str, int)) or isinstance(phase_timeout, bool):
-                    raise ValueError
-                timeout = int(phase_timeout)
-                if timeout < 1:
-                    raise ValueError
-                return timeout
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid timeout=%r for top-level LLM phase '%s'; using default %s",
-                    phase_timeout,
-                    phase.id,
-                    TOP_LEVEL_LLM_TIMEOUT_DEFAULT,
-                )
-                return TOP_LEVEL_LLM_TIMEOUT_DEFAULT
-
-        return self._resolve_configured_phase_timeout(
-            phase,
-            ("session_timeout_phase", "top_level_llm_timeout", "llm_timeout"),
-            TOP_LEVEL_LLM_TIMEOUT_DEFAULT,
-        )
-
-    def _resolve_configured_phase_timeout(
-        self,
-        phase: PhaseDefinition,
-        config_keys: tuple[str, ...],
-        default_timeout: int,
-    ) -> int:
-        for config_key in config_keys:
-            raw_timeout = self.framework_config.get(config_key)
-            if raw_timeout is None:
-                continue
-            try:
-                if not isinstance(raw_timeout, (str, int)) or isinstance(raw_timeout, bool):
-                    raise ValueError
-                timeout = int(raw_timeout)
-                if timeout < 1:
-                    raise ValueError
-                return timeout
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid %s=%r for LLM phase '%s'; using default %s",
-                    config_key,
-                    raw_timeout,
-                    phase.id,
-                    default_timeout,
-                )
-                return default_timeout
-        return default_timeout
-
-    def _record_llm_phase_failure(
-        self,
-        phase: PhaseDefinition,
-        session_ref: str,
-        timeout_seconds: int | None,
-        exc: BaseException,
-    ) -> tuple[str, dict[str, Any]]:
-        failure_kind = self._llm_failure_kind(exc)
-        error = str(exc)
-        if isinstance(exc, SessionCommandError):
-            error = str(exc.payload.get("error") or error)
-        output: dict[str, Any] = {
-            "phase_id": phase.id,
-            "status": "failure",
-            "failure_kind": failure_kind,
-            "timeout_seconds": timeout_seconds,
-            "session_ref": session_ref,
-            "error": error,
-        }
-        raw_path = ""
-        try:
-            raw_path = self.artifact_store.save_phase_output(phase.id, output, attempt=1)
-        except Exception as save_exc:
-            logger.warning("Artifact save failed for failed %s: %s", phase.id, save_exc)
-        journal_entry = {
-            "phase_id": phase.id,
-            "status": "failure",
-            "failure_kind": failure_kind,
-            "timeout_seconds": timeout_seconds,
-            "session_ref": session_ref,
-            "error": error,
-            "raw_path": raw_path,
-            "canonical_path": "",
-            "timestamp": time.time(),
-        }
-        try:
-            self.artifact_store.write_journal(journal_entry)
-            output["_journal_written"] = True
-        except Exception as journal_exc:
-            logger.warning("Journal write failed for failed %s: %s", phase.id, journal_exc)
-        return "failure", output
-
-    @staticmethod
-    def _llm_failure_kind(exc: BaseException) -> str:
-        if isinstance(exc, TimeoutError):
-            return "timeout"
-        text = str(exc).lower()
-        if "timeout" in text or "timed out" in text:
-            return "timeout"
-        return "session_error"
-
-    @staticmethod
-    def _journal_failure_fields(output: Any) -> dict[str, Any]:
-        if not isinstance(output, dict):
-            return {}
-        keys = ("failure_kind", "timeout_seconds", "session_ref", "error")
-        return {key: output[key] for key in keys if key in output}
-
-    @staticmethod
-    def _session_error_text(output: Any) -> str:
-        if not isinstance(output, dict):
-            return ""
-
-        if output.get("ok") is False:
-            error = WorkflowExecutor._stringify_session_error(output.get("error"))
-            if error:
-                return error
-
-        if str(output.get("type") or "").strip().lower() == "error":
-            error = WorkflowExecutor._stringify_session_error(output.get("error"))
-            if error:
-                return error
-
-        return ""
-
-    @staticmethod
-    def _stringify_session_error(error: Any) -> str:
-        if error is None:
-            return ""
-        if isinstance(error, str):
-            return error.strip()
-        if isinstance(error, dict):
-            for key in ("message", "code", "type"):
-                value = error.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-            return json.dumps(error, default=str)
-        return str(error).strip()
-
     @staticmethod
     def _is_session_error_response(output: Any) -> bool:
-        return bool(WorkflowExecutor._session_error_text(output))
+        if not isinstance(output, dict):
+            return False
+        return output.get("ok") is False and bool(output.get("error"))
 
     @staticmethod
     def _raise_for_session_error_output(output: Any, phase_id: str) -> None:
         if not WorkflowExecutor._is_session_error_response(output):
             return
         assert isinstance(output, dict)
-        error = WorkflowExecutor._session_error_text(output) or "session command failed"
+        error = str(output.get("error") or "session command failed")
         raise SessionCommandError(f"Session command failed for {phase_id}: {error}", dict(output))
+
+    def _phase_6_fallback_output(
+        self,
+        input_ctx: dict[str, Any],
+        state: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        prior_outputs = collect_phase6_prior_artifacts(self.artifact_store)
+        prior_outputs.update(collect_phase6_prior_state(state))
+        report_dir = str(
+            input_ctx.get("report_dir")
+            or os.path.join(self.artifact_store.artifact_dir, "reports")
+        )
+        return build_phase6_fallback_report(
+            project_dir=self.project_dir,
+            report_dir=report_dir,
+            prior_outputs=prior_outputs,
+            reason=reason,
+        )
+
+    def _llm_timeout_for_phase(self, phase: PhaseDefinition) -> int | None:
+        if phase.timeout is not None:
+            return phase.timeout
+        if phase.id != "phase_6_report":
+            return None
+        return resolve_phase6_timeout(self.framework_config, phase.timeout, logger)
+
+    @staticmethod
+    def _phase_6_output_complete(output: dict[str, Any]) -> bool:
+        report_paths = output.get("report_paths")
+        migration_summary = output.get("migration_summary")
+        return isinstance(report_paths, list) and isinstance(migration_summary, dict)
+
+    @staticmethod
+    def _extract_output_format_from_prompt(prompt_text: str) -> str | None:
+        return extract_output_format_from_prompt(prompt_text)
 
     @staticmethod
     def _build_validation_correction_prompt(
         error_msg: str,
         *,
-        phase_id: str = "this phase",
-        validator_name: str = "unknown",
+        output_format_example: str | None = None,
+        is_parse_failure: bool = False,
+        phase_name: str = "",
     ) -> str:
-        action_hint = ""
-        if "existing file for custom-op contracts" in error_msg:
-            action_hint = (
-                " Before returning corrected JSON, create or select the referenced "
-                + "custom-op validation script so entry_script_path points to a real file."
-            )
-        schema_hint = WorkflowExecutor._validation_correction_schema_hint(
-            phase_id,
-            validator_name,
+        return build_validation_correction_prompt(
             error_msg,
+            output_format_example=output_format_example,
+            is_parse_failure=is_parse_failure,
+            phase_name=phase_name,
+            missing_fields=extract_missing_fields([error_msg]),
         )
-        return (
-            f"Your previous output for phase '{phase_id}' failed validation with validator '{validator_name}'. "
-            f"Validation errors: {error_msg}."
-            f"{action_hint}\n\n"
-            f"Return one complete replacement JSON object for phase '{phase_id}' only. "
-            "The replacement must include the full corrected schema for that same phase, not a patch, diff, delta, acknowledgement, commentary-only JSON, or partial update. "
-            "Do not return meta/status-only fields such as `status`, `note`, `no_action_required`, `already_corrected`, or `message` instead of the phase schema. "
-            "If you believe no change is needed, still return the complete valid phase JSON object."
-            f"{schema_hint}\n"
-            "Return only the corrected JSON object."
-        )
-
-    @staticmethod
-    def _validation_correction_schema_hint(
-        phase_id: str,
-        validator_name: str,
-        error_msg: str,
-    ) -> str:
-        phase_key = phase_id.strip().lower()
-        validator_key = validator_name.strip().lower()
-        if phase_key in {"phase_1_project_analysis", "phase_1"} or validator_key == "project_analysis":
-            hint = (
-                "\n\nFor phase_1_project_analysis, the complete replacement JSON must include these top-level keys: "
-                "`project_dir`, `dependencies`, `cuda_detected`, and `entry_script`."
-            )
-            if WorkflowExecutor._project_analysis_custom_op_surface_required(error_msg):
-                hint += (
-                    " Because validation reports source-discovered CUDA/native custom-op units, it must also include "
-                    "`custom_op_surface` with `custom_op_detected: true` and the complete custom-op discovery fields required by the validator. "
-                    "Set `discovery_sources_checked` to the canonical category tokens exactly: "
-                    "`source`, `bindings`, `wrappers`, `autograd`, `aliases`, `launch`, `setup`, and `tests`; put descriptive evidence in the evidence fields, not in this token list."
-                )
-            if WorkflowExecutor._project_analysis_expanded_variant_guidance_required(error_msg):
-                hint += (
-                    " Because validation reports expanded variant errors, return a full replacement Phase 1 JSON with the complete corrected `custom_op_surface`. "
-                    "Set `expanded_operator_instances_count` exactly to the number of objects listed in `expanded_operator_variants`; do not claim a Cartesian-product count unless every concrete row is actually present. "
-                    "Ensure `variant_axes` includes every source-enumerated target value from the validation errors, such as missing `ndim`, `accuracy`, or `dtype` values, and expand `expanded_operator_variants` into separate concrete rows until those values are represented in row `axis_values`; do not keep only the common sample like `ndim=2d`, `accuracy=4`, `dtype=float` when other values are source-enumerated. "
-                    "Ensure the replacement observes every source-enumerated `variant_axes` value at least once by concrete `expanded_operator_variants` rows. "
-                    "If the validator says the variant count must expand beyond the distinct base-unit count, add concrete variant rows beyond one row per base unit until the source-enumerated axis values are covered. "
-                    "If the validator reports missing source-required per-base axis combinations, enumerate the full concrete combination set for each affected `base_unit_identity` over the source-required axes that apply to that base; do not satisfy the error with representative samples that merely cover each axis value globally. "
-                    "Give every expanded row concrete `source_evidence` plus public or framework route evidence. "
-                    "For heterogeneous base units, each row may include only the axes relevant to that base unit, but do not omit a source-required axis from rows that use that axis."
-                )
-            return hint
-        return "\n\nInclude every required top-level key for this phase's validator schema in the replacement JSON."
-
-    @staticmethod
-    def _project_analysis_custom_op_surface_required(error_msg: str) -> bool:
-        normalized = error_msg.lower()
-        return (
-            "custom_op_surface must be present" in normalized
-            or "source-discovered" in normalized
-            or "cuda/native custom-op units" in normalized
-            or "cuda/native helper units" in normalized
-        )
-
-    @staticmethod
-    def _project_analysis_expanded_variant_guidance_required(error_msg: str) -> bool:
-        normalized = error_msg.lower()
-        return "expanded_operator_variants" in normalized or "expanded_operator_instances_count" in normalized or "variant_axes" in normalized
 
     def _resolve_sub_workflow_llm_timeout(self, phase: PhaseDefinition) -> int | None:
-        return None
+        if phase.timeout is not None:
+            return phase.timeout
+        if phase.id == "analyze_error":
+            return self._resolve_configured_sub_workflow_timeout(
+                phase,
+                (
+                    "session_timeout_analyze_error",
+                    "session_timeout_analyzer",
+                    "session_timeout_repair",
+                ),
+                SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT,
+            )
+        if phase.id not in SUB_WORKFLOW_REPAIR_PHASE_IDS:
+            return None
+
+        return self._resolve_configured_sub_workflow_timeout(
+            phase,
+            ("session_timeout_repair",),
+            SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT,
+        )
 
     def _resolve_configured_sub_workflow_timeout(
         self,
@@ -2096,14 +1502,17 @@ class WorkflowExecutor:
         raw_response = self.session_mgr.send_command(session_id, prompt_text, timeout=timeout)
         retry_error = self._retryable_sub_workflow_session_error(raw_response)
         if retry_error:
+            retry_session_id = self._create_sub_workflow_retry_session(agent_id, phase_id)
             logger.warning(
-                "Sub-phase LLM command returned retryable session error without fresh-session repost: "
-                "phase_id=%s agent_id=%s session_id=%s error=%s",
+                "Retrying sub-phase LLM command in fresh session after session error: "
+                "phase_id=%s agent_id=%s old_session_id=%s retry_session_id=%s error=%s",
                 phase_id,
                 agent_id,
                 session_id,
+                retry_session_id,
                 retry_error,
             )
+            raw_response = self.session_mgr.send_command(retry_session_id, prompt_text, timeout=timeout)
         logger.info(
             "Received sub-phase LLM response: phase_id=%s raw_response_length=%s",
             phase_id,
@@ -2113,1371 +1522,12 @@ class WorkflowExecutor:
 
     def _retryable_sub_workflow_session_error(self, raw_response: str) -> str:
         output = extract_json_response(raw_response)
-        if not output:
-            error = raw_response.strip()
-            if self._is_retryable_session_error_text(error):
-                return error
-            return ""
         if not self._is_session_error_response(output):
             return ""
-        assert isinstance(output, dict)
-        error = self._session_error_text(output)
-        if self._is_retryable_session_error_text(error):
+        error = str(output.get("error") or "").strip()
+        if error.lower() in RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS:
             return error
         return ""
-
-    @staticmethod
-    def _custom_op_operator_incomplete_response_error(raw_response: str) -> str:
-        output = extract_json_response(raw_response)
-        if not isinstance(output, dict) or WorkflowExecutor._is_session_error_response(output):
-            return ""
-        status_values: list[str] = []
-        error_signal = False
-
-        def visit(value: object, key_hint: str = "") -> None:
-            nonlocal error_signal
-            normalized_key = key_hint.strip().lower()
-            if isinstance(value, dict):
-                for key, nested in value.items():
-                    visit(nested, str(key))
-                return
-            if isinstance(value, list):
-                if normalized_key in {"errors", "validation_errors", "remaining_errors", "missing_reports", "missing_files"} and value:
-                    error_signal = True
-                for nested in value:
-                    visit(nested, normalized_key)
-                return
-            if isinstance(value, bool):
-                if normalized_key in {"fixed", "passed", "ok", "success", "report_generation_succeeded"} and value is False:
-                    status_values.append(f"{normalized_key}_false")
-                return
-            if not isinstance(value, str):
-                return
-
-            text = value.strip().lower()
-            if not text:
-                return
-            if normalized_key in {
-                "status",
-                "repair_status",
-                "full_migration_status",
-                "custom_op_migration_status",
-                "result",
-                "outcome",
-                "summary",
-                "current_runtime_blocker",
-                "blocker",
-            }:
-                status_values.append(text)
-            if normalized_key in {"errors", "validation_errors", "remaining_errors"}:
-                error_signal = True
-
-        for key in (
-            "status",
-            "repair_status",
-            "full_migration_status",
-            "custom_op_migration_status",
-            "result",
-            "outcome",
-        ):
-            value = output.get(key)
-            if isinstance(value, str):
-                status_values.append(value.strip().lower())
-
-        if output.get("fixed") is False:
-            status_values.append("fixed_false")
-        if output.get("passed") is False:
-            status_values.append("passed_false")
-        visit(output)
-
-        if any(
-            marker in value
-            for value in status_values
-            for marker in (
-                "failed",
-                "failure",
-                "fail",
-                "incomplete",
-                "partial",
-                "not_fixed",
-                "fixed_false",
-                "passed_false",
-                "ok_false",
-                "success_false",
-                "report_generation_succeeded_false",
-                "module not found",
-                "modulenotfounderror",
-                "no module named",
-                "missing report",
-                "missing_reports",
-                "opp artifacts are still missing",
-                "strict contract still fails",
-            )
-        ):
-            return "custom-op operator repair returned incomplete before strict OPP final gate FULL_PASS"
-
-        errors = output.get("errors") or output.get("validation_errors") or output.get("remaining_errors")
-        if isinstance(errors, list) and errors:
-            return "custom-op operator repair returned errors before strict OPP final gate FULL_PASS"
-        if isinstance(errors, str) and errors.strip():
-            return "custom-op operator repair returned errors before strict OPP final gate FULL_PASS"
-        if error_signal:
-            return "custom-op operator repair returned errors before strict OPP final gate FULL_PASS"
-        return ""
-
-    def _send_custom_op_operator_repair_with_gate_polling(
-        self,
-        *,
-        phase_id: str,
-        agent_id: str,
-        session_id: str,
-        prompt_text: str,
-        timeout: int | None,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-        command_started_at: float | None,
-        require_current_run: bool = True,
-    ) -> str:
-        poll_timeout = self._custom_op_operator_poll_timeout(timeout)
-        max_polls = self._custom_op_operator_max_polls(timeout, poll_timeout)
-        max_incomplete_continuations = self._custom_op_operator_incomplete_max_continuations()
-        last_error = "custom-op operator repair did not return a response"
-        last_raw = ""
-        prompt_for_attempt = prompt_text
-        incomplete_continuations = 0
-        for poll_index in range(1, max_polls + 1):
-            while True:
-                logger.info(
-                    "Sending custom-op operator repair command as full Phase 5 attempt: phase_id=%s agent_id=%s session_id=%s poll=%s/%s continuation=%s/%s timeout=%s full_repair_wait=%s prompt_length=%s",
-                    phase_id,
-                    agent_id,
-                    session_id,
-                    poll_index,
-                    max_polls,
-                    incomplete_continuations,
-                    max_incomplete_continuations,
-                    None,
-                    poll_timeout,
-                    len(prompt_for_attempt),
-                )
-                try:
-                    raw_response = self.session_mgr.send_command(
-                        session_id,
-                        prompt_for_attempt,
-                        timeout=None,
-                        retries=0,
-                        recovery_wait_timeout=poll_timeout,
-                    )
-                except TimeoutError as exc:
-                    raw_response = json.dumps({"ok": False, "error": f"Timeout waiting for custom-op operator repair response: {exc}"})
-                except RuntimeError as exc:
-                    error_text = str(exc)
-                    if not self._is_retryable_session_error_text(error_text):
-                        raise
-                    raw_response = json.dumps({"ok": False, "error": error_text})
-                except ConnectionError as exc:
-                    error_text = str(exc)
-                    if not self._is_retryable_session_error_text(error_text):
-                        raise
-                    raw_response = json.dumps({"ok": False, "error": error_text})
-
-                retry_error = self._retryable_sub_workflow_session_error(raw_response)
-                if not retry_error:
-                    incomplete_error = self._custom_op_operator_incomplete_response_error(raw_response)
-                    if incomplete_error:
-                        recovered_output = self._recover_operator_repair_from_current_final_gate(
-                            phase_id=phase_id,
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                            command_started_at=command_started_at,
-                        )
-                        if recovered_output is not None:
-                            return json.dumps(recovered_output)
-                        report_summary = self._custom_op_operator_fail_closed_report_summary(
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                        )
-                        last_error = incomplete_error
-                        last_raw = json.dumps({"ok": False, "error": incomplete_error, "retryable": True})
-                        if incomplete_continuations >= max_incomplete_continuations:
-                            recovered_output = self._wait_for_operator_repair_current_final_gate(
-                                phase_id=phase_id,
-                                state=state,
-                                context=context,
-                                loop_vars=loop_vars,
-                                command_started_at=command_started_at,
-                            )
-                            if recovered_output is not None:
-                                return json.dumps(recovered_output)
-                            if poll_index < max_polls:
-                                prompt_for_attempt = self._custom_op_operator_next_poll_prompt(
-                                    incomplete_error=incomplete_error,
-                                    report_summary=report_summary,
-                                    operator_context_path=self._current_operator_repair_context_path(state=state, loop_vars=loop_vars),
-                                    state=state,
-                                    context=context,
-                                    loop_vars=loop_vars,
-                                )
-                                incomplete_continuations = 0
-                                break
-                            return last_raw
-                        incomplete_continuations += 1
-                        prompt_for_attempt = self._custom_op_operator_continuation_prompt(
-                            incomplete_error=incomplete_error,
-                            raw_response=raw_response,
-                            continuation_index=incomplete_continuations,
-                            max_continuations=max_incomplete_continuations,
-                            report_summary=report_summary,
-                            operator_context_path=self._current_operator_repair_context_path(state=state, loop_vars=loop_vars),
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                        )
-                        continue
-                    report_incomplete_error = self._custom_op_operator_current_reports_incomplete_error(
-                        state=state,
-                        context=context,
-                        loop_vars=loop_vars,
-                        command_started_at=command_started_at,
-                    )
-                    if report_incomplete_error:
-                        report_summary = self._custom_op_operator_fail_closed_report_summary(
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                        )
-                        last_error = report_incomplete_error
-                        last_raw = json.dumps({"ok": False, "error": report_incomplete_error, "retryable": True})
-                        recovered_output = self._wait_for_operator_repair_current_final_gate(
-                            phase_id=phase_id,
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                            command_started_at=command_started_at,
-                        )
-                        if recovered_output is not None:
-                            return json.dumps(recovered_output)
-                        if poll_index < max_polls:
-                            prompt_for_attempt = self._custom_op_operator_next_poll_prompt(
-                                incomplete_error=report_incomplete_error,
-                                report_summary=report_summary,
-                                operator_context_path=self._current_operator_repair_context_path(state=state, loop_vars=loop_vars),
-                                state=state,
-                                context=context,
-                                loop_vars=loop_vars,
-                            )
-                            incomplete_continuations = 0
-                            break
-                        return last_raw
-                    return raw_response
-                last_error = retry_error
-                last_raw = raw_response
-                recovered_output = self._recover_operator_repair_from_current_final_gate(
-                    phase_id=phase_id,
-                    state=state,
-                    context=context,
-                    loop_vars=loop_vars,
-                    command_started_at=command_started_at,
-                )
-                if recovered_output is not None:
-                    return json.dumps(recovered_output)
-                break
-
-        recovered_output = self._wait_for_operator_repair_current_final_gate(
-            phase_id=phase_id,
-            state=state,
-            context=context,
-            loop_vars=loop_vars,
-            command_started_at=command_started_at,
-        )
-        if recovered_output is not None:
-            return json.dumps(recovered_output)
-        if last_raw:
-            return last_raw
-        return json.dumps({"ok": False, "error": last_error})
-
-    def _custom_op_operator_final_gate_grace_seconds(self) -> float:
-        raw_value = self.framework_config.get(
-            "custom_op_operator_final_gate_grace_seconds",
-            os.environ.get(
-                "SEAM_CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_SECONDS",
-                CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_DEFAULT,
-            ),
-        )
-        try:
-            value = float(raw_value)
-        except (TypeError, ValueError):
-            return float(CUSTOM_OP_OPERATOR_FINAL_GATE_GRACE_DEFAULT)
-        return max(0.0, value)
-
-    def _custom_op_operator_final_gate_poll_interval_seconds(self) -> float:
-        raw_value = self.framework_config.get(
-            "custom_op_operator_final_gate_poll_interval_seconds",
-            os.environ.get(
-                "SEAM_CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_SECONDS",
-                CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_DEFAULT,
-            ),
-        )
-        try:
-            value = float(raw_value)
-        except (TypeError, ValueError):
-            return float(CUSTOM_OP_OPERATOR_FINAL_GATE_POLL_INTERVAL_DEFAULT)
-        return max(0.1, value)
-
-    def _wait_for_operator_repair_current_final_gate(
-        self,
-        *,
-        phase_id: str,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-        command_started_at: float | None,
-    ) -> dict[str, object] | None:
-        grace_seconds = self._custom_op_operator_final_gate_grace_seconds()
-        if grace_seconds <= 0:
-            return None
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return None
-        reports_dir = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars)
-        gate_path = reports_dir / "custom_op_final_gate.json"
-        if not gate_path.exists():
-            return None
-        deadline = time.time() + grace_seconds
-        interval = self._custom_op_operator_final_gate_poll_interval_seconds()
-        while True:
-            recovered = self._recover_operator_repair_from_current_final_gate(
-                phase_id=phase_id,
-                state=state,
-                context=context,
-                loop_vars=loop_vars,
-                command_started_at=command_started_at,
-            )
-            if recovered is not None:
-                return recovered
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                return None
-            time.sleep(min(interval, remaining))
-
-    def _should_use_custom_op_operator_outer_loop_prompt(
-        self,
-        *,
-        phase_id: str,
-        state: dict[str, Any],
-        loop_history: list[Any] | None,
-        loop_state: dict[str, Any] | None,
-    ) -> bool:
-        if not self._should_use_custom_op_operator_gate_polling(phase_id, state):
-            return False
-        if isinstance(loop_state, dict) and isinstance(loop_state.get(phase_id), dict):
-            return True
-        if not loop_history:
-            return False
-        for entry in loop_history:
-            if not isinstance(entry, dict):
-                continue
-            summary = entry.get("step_outputs_summary")
-            if isinstance(summary, dict) and phase_id in summary:
-                return True
-            if entry.get("operator_repair_phase_id") == phase_id:
-                return True
-        return False
-
-    def _custom_op_operator_outer_loop_prompt(
-        self,
-        *,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-        loop_history: list[Any] | None,
-        loop_state: dict[str, Any] | None,
-    ) -> str:
-        progress_block = self._custom_op_operator_repair_progress_block(
-            state=state,
-            context=context,
-            loop_vars=loop_vars,
-        )
-        history_block = self._custom_op_operator_previous_repair_history(
-            loop_history=loop_history,
-            loop_state=loop_state,
-        )
-        operator_context_path = self._current_operator_repair_context_path(state=state, loop_vars=loop_vars)
-        context_line = f"Re-read operator repair context before editing: {operator_context_path}.\n" if operator_context_path else ""
-        return (
-            "Continue Phase 5 custom-op `fix_operator` repair in a later outer repair-loop iteration.\n"
-            "This is not the first operator repair attempt, so do not restart from the full repair_operator_fixer prompt; use this compact progress-aware prompt and keep working from previous results.\n"
-            f"{context_line}\n"
-            "Previous repair results/history:\n"
-            f"{history_block}\n\n"
-            "Custom-op operator repair progress:\n"
-            f"{progress_block}\n\n"
-            "Phase 1 source discovery plus the Phase 3 entry-script contract remain the repair scope authority. "
-            "Current migration reports are evidence only. Repair every remaining operator or operator+variant unit listed above, rerun the full custom-op validation command, and only return final JSON after a current strict `custom_op_final_gate.json` is FULL_PASS. "
-            "Do not accept partial reports, CPU fallback, ATen-only, NpuExtension-only, smoke-test-only, or summary-only evidence."
-        )
-
-    def _custom_op_operator_previous_repair_history(
-        self,
-        *,
-        loop_history: list[Any] | None,
-        loop_state: dict[str, Any] | None,
-    ) -> str:
-        lines = [self._format_history_summary(loop_history or [])]
-        if isinstance(loop_state, dict):
-            for key in ("error_analysis", "fix_operator", "custom_op_final_gate", "custom_op_fail_closed"):
-                value = loop_state.get(key)
-                if isinstance(value, dict):
-                    excerpt = json.dumps(value, ensure_ascii=False, sort_keys=True)
-                    if len(excerpt) > 1200:
-                        excerpt = excerpt[:1200] + "...[truncated]"
-                    lines.append(f"- previous {key}: {excerpt}")
-                elif value is not None:
-                    lines.append(f"- previous {key}: {value}")
-        return "\n".join(lines)[:5000]
-
-    def _custom_op_operator_continuation_prompt(
-        self,
-        *,
-        incomplete_error: str,
-        raw_response: str,
-        continuation_index: int,
-        max_continuations: int,
-        report_summary: str = "",
-        operator_context_path: str = "",
-        state: dict[str, Any] | None = None,
-        context: dict[str, Any] | None = None,
-        loop_vars: dict[str, Any] | None = None,
-    ) -> str:
-        response_excerpt = (raw_response or "").strip()
-        if len(response_excerpt) > 4000:
-            response_excerpt = response_excerpt[:4000] + "\n...[truncated]"
-        report_block = report_summary.strip() or "(No current fail-closed migration report summary available.)"
-        progress_block = self._custom_op_operator_repair_progress_block(
-            state=state or {},
-            context=context or {},
-            loop_vars=loop_vars,
-        )
-        context_line = f"Re-read operator repair context before editing: {operator_context_path}.\n" if operator_context_path else ""
-        return (
-            "Continue the same custom-op `fix_operator` repair in this session.\n"
-            f"Reason the previous response is not accepted: {incomplete_error}.\n"
-            f"Continuation {continuation_index}/{max_continuations}.\n"
-            f"{context_line}\n"
-            "The Phase 5 repair source of truth is Phase 1 source discovery plus the Phase 3 entry-script contract and validation script. "
-            "For ordinary CUDA projects, keep using the selected full validation command and repair NPU-incompatible code/operators. "
-            "For custom-op projects, repair every source-discovered operator from the Phase 1/Phase 3 operator inventory and rerun the full custom-op validation script. "
-            "For custom-op projects with expanded variants, repair every operator+variant identity from the expanded variant inventory and rerun the full variant-aware validation script.\n\n"
-            "Custom-op operator repair progress:\n"
-            f"{progress_block}\n\n"
-            "Do not stop at FAILED, INCOMPLETE, partial, report-only, ATen-only, NpuExtension-only, CppExtension-only, smoke-test-only, or CPU fallback evidence. "
-            "Keep repairing until the project has real project-local Ascend C/CANN OPP op_host and op_kernel/AscendC sources, generated/build-installed OPP artifacts, route evidence, same-run runtime coverage, parity, performance, no-fallback proof, and a current `custom_op_final_gate.json` whose strict final-gate status is FULL_PASS. "
-            "Only return final JSON after that strict gate is produced and verified. If you need more work, perform it now rather than summarizing.\n\n"
-            "Current fail-closed report summary:\n"
-            f"{report_block}\n\n"
-            "Previous incomplete response excerpt:\n"
-            f"{response_excerpt}"
-        )
-
-    def _custom_op_operator_next_poll_prompt(
-        self,
-        *,
-        incomplete_error: str,
-        report_summary: str,
-        operator_context_path: str,
-        state: dict[str, Any] | None,
-        context: dict[str, Any] | None,
-        loop_vars: dict[str, Any] | None,
-    ) -> str:
-        progress_block = self._custom_op_operator_repair_progress_block(
-            state=state or {},
-            context=context or {},
-            loop_vars=loop_vars,
-        )
-        context_line = f"Re-read operator repair context before editing: {operator_context_path}.\n" if operator_context_path else ""
-        report_block = report_summary.strip() or "(No current fail-closed migration report summary available.)"
-        return (
-            "Continue the same long-running custom-op `fix_operator` repair.\n"
-            f"The previous attempt is still not accepted: {incomplete_error}.\n"
-            "This is an Ascend C/CANN OPP artifact repair; do not stop because the current strict final gate is missing or incomplete. "
-            "Keep building, installing, integrating, probing, and measuring the project-local OPP custom operators until a current strict `custom_op_final_gate.json` validates FULL_PASS.\n"
-            f"{context_line}\n"
-            "Strict per-unit repair progress:\n"
-            f"{progress_block}\n\n"
-            "Current fail-closed report summary:\n"
-            f"{report_block}\n\n"
-            "Only return final JSON after the strict gate is produced and verified. If the gate is not FULL_PASS, continue repairing now."
-        )
-
-    def _custom_op_operator_repair_progress_block(
-        self,
-        *,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-    ) -> str:
-        target_units, source_label = self._custom_op_operator_target_units(state)
-        contract = state.get("phase_3_entry_script")
-        final_gate, final_gate_status = self._read_custom_op_progress_report(
-            contract=contract,
-            context=context,
-            loop_vars=loop_vars,
-            name="custom_op_final_gate.json",
-        )
-        summary, summary_status = self._read_custom_op_progress_report(
-            contract=contract,
-            context=context,
-            loop_vars=loop_vars,
-            name="summary.json",
-        )
-        ledger_source = final_gate if final_gate is not None else summary if summary is not None else {}
-        ledger_project_root = self._custom_op_progress_project_root(
-            contract=contract,
-            context=context,
-            loop_vars=loop_vars,
-        )
-        ledger = custom_op_final_gate_unit_ledger(
-            ledger_source,
-            target_units=target_units,
-            project_root=ledger_project_root,
-        )
-        completed = cast(list[str], ledger.get("strict_pass_units") or [])
-        remaining = cast(list[str], ledger.get("remaining_units") or [])
-        lines = [
-            f"- target_inventory_source: {source_label}",
-            f"- total_target_operator_variant_inventory: {len(target_units) if target_units else 'unknown'}",
-        ]
-        if target_units:
-            lines.append("- all_target_operators_and_variants: " + ", ".join(target_units))
-        else:
-            lines.append("- all_target_operators_and_variants: unavailable from Phase 1/Phase 3 scope; re-read those artifacts before claiming completion")
-        lines.append(f"- completed_evidence_count: {len(completed)}")
-        if completed:
-            lines.append("- completed_evidence_units: " + ", ".join(completed))
-        else:
-            lines.append("- completed_evidence_units: none proven by current reports")
-        lines.append(f"- remaining_or_unknown_count: {len(remaining) if target_units else 'unknown'}")
-        if remaining:
-            lines.append("- remaining_operator_variant_gaps: " + ", ".join(remaining))
-        elif target_units:
-            lines.append("- remaining_operator_variant_gaps: none listed by current report evidence, but only a current strict final gate FULL_PASS can be accepted")
-        else:
-            lines.append("- remaining_operator_variant_gaps: all Phase 1/Phase 3 target units are unknown until inventory is re-read")
-        lines.append(f"- strict_per_unit_pass_count: {ledger.get('strict_pass_count', 0)}")
-        lines.append(f"- strict_per_unit_remaining_count: {ledger.get('remaining_count', 0)}")
-        for unit_line in self._custom_op_progress_ledger_lines(ledger):
-            lines.append(unit_line)
-        lines.append(f"- custom_op_final_gate_report: {final_gate_status}")
-        lines.append(f"- summary_report: {summary_status}")
-        blocking_gaps = self._custom_op_report_blocking_gaps(final_gate, summary)
-        if blocking_gaps:
-            lines.append("- report_blocking_gaps: " + "; ".join(blocking_gaps[:8]))
-        elif final_gate is None or summary is None:
-            lines.append("- report_blocking_gaps: report evidence absent/partial; treat unproven target units as remaining")
-        else:
-            lines.append("- report_blocking_gaps: none reported, but report evidence is not scope authority")
-        return "\n".join(lines)[:8000]
-
-    def _custom_op_progress_project_root(
-        self,
-        *,
-        contract: object,
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-    ) -> str:
-        if isinstance(contract, dict) and has_custom_op_contract(contract):
-            return str(self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars).parent)
-        raw_project_dir = context.get("PROJECT_DIR") or (loop_vars or {}).get("project_dir") or self.project_dir
-        return str(raw_project_dir)
-
-    @staticmethod
-    def _custom_op_progress_ledger_lines(ledger: dict[str, object]) -> list[str]:
-        raw_units = ledger.get("units")
-        if not isinstance(raw_units, list) or not raw_units:
-            return ["- strict_per_unit_ledger: no target units available"]
-        lines: list[str] = []
-        remaining_lines = 0
-        for item in raw_units:
-            if not isinstance(item, dict):
-                continue
-            unit = str(item.get("unit_identity") or "").strip()
-            status = str(item.get("status") or "remaining").strip()
-            if status == "strict_pass":
-                continue
-            missing = item.get("missing_evidence")
-            missing_items = [str(value) for value in missing[:6]] if isinstance(missing, list) else []
-            detail = "; ".join(missing_items) if missing_items else "strict evidence incomplete"
-            lines.append(f"- remaining_detail[{unit}]: {detail}")
-            remaining_lines += 1
-            if remaining_lines >= 20:
-                break
-        if not lines:
-            return ["- strict_per_unit_ledger: all listed units have strict per-unit evidence; final gate still must validate FULL_PASS"]
-        if isinstance(raw_units, list) and remaining_lines < len([item for item in raw_units if isinstance(item, dict) and item.get("status") != "strict_pass"]):
-            lines.append("- remaining_detail: truncated; inspect custom_op_final_gate strict ledger for the full list")
-        return lines
-
-    def _custom_op_operator_target_units(self, state: dict[str, Any]) -> tuple[list[str], str]:
-        variant_overlay = expanded_variant_contract_from_outputs(state)
-        inventory = variant_overlay.get("expanded_variant_inventory")
-        if isinstance(inventory, dict):
-            units = self._string_list_from_inventory_values(inventory.get("unit_identities"))
-            if units:
-                return units, "Phase 1/Phase 3 expanded_variant_inventory.operator+variant unit_identities"
-        contract = state.get("phase_3_entry_script")
-        if isinstance(contract, dict):
-            schema = contract.get("operator_inventory_schema")
-            if isinstance(schema, dict):
-                for key in ("fine_grained_operator_units", "operator_units", "operators", "rows"):
-                    units = self._string_list_from_inventory_values(schema.get(key))
-                    if units:
-                        return units, f"Phase 3 operator_inventory_schema.{key}"
-        phase1 = state.get("phase_1_project_analysis")
-        if isinstance(phase1, dict):
-            surface = phase1.get("custom_op_surface")
-            if isinstance(surface, dict):
-                for key in ("expanded_operator_variants", "fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols"):
-                    units = self._string_list_from_inventory_values(surface.get(key))
-                    if units:
-                        return units, f"Phase 1 custom_op_surface.{key}"
-            for key in ("expanded_operator_variants", "fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols"):
-                units = self._string_list_from_inventory_values(phase1.get(key))
-                if units:
-                    return units, f"Phase 1 {key}"
-        return [], "Phase 1/Phase 3 inventory unavailable"
-
-    @staticmethod
-    def _string_list_from_inventory_values(value: object) -> list[str]:
-        units: list[str] = []
-        if not isinstance(value, list):
-            return units
-        for item in value:
-            unit = ""
-            if isinstance(item, str):
-                unit = item.strip()
-            elif isinstance(item, dict):
-                for key in ("unit_identity", "row_id", "name", "operator", "op_name", "id"):
-                    raw = item.get(key)
-                    if isinstance(raw, str) and raw.strip():
-                        unit = raw.strip()
-                        break
-            if unit and unit not in units:
-                units.append(unit)
-        return units
-
-    def _read_custom_op_progress_report(
-        self,
-        *,
-        contract: object,
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-        name: str,
-    ) -> tuple[dict[str, Any] | None, str]:
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return None, "not applicable: no active custom-op contract"
-        path = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars) / name
-        if not path.exists():
-            return None, f"missing at {path}"
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return None, f"malformed at {path}: {exc}"
-        if not isinstance(data, dict):
-            return None, f"non-object at {path}"
-        status_parts = []
-        for key in ("status", "full_migration_status", "inventory_count", "closed_pass_entries", "remaining_entries"):
-            if key in data:
-                status_parts.append(f"{key}={data[key]}")
-        return cast(dict[str, Any], data), (", ".join(status_parts) or f"present at {path}")
-
-    def _custom_op_completed_units_from_reports(
-        self,
-        target_units: list[str],
-        final_gate: dict[str, Any] | None,
-        summary: dict[str, Any] | None,
-    ) -> list[str]:
-        completed: list[str] = []
-        target_set = set(target_units)
-        for report in (final_gate, summary):
-            if not isinstance(report, dict):
-                continue
-            rows = report.get("rows")
-            if not isinstance(rows, list):
-                rows = report.get("entries")
-            if not isinstance(rows, list):
-                continue
-            for row in rows:
-                if not isinstance(row, dict) or not self._custom_op_report_row_has_pass_evidence(row):
-                    continue
-                identity = self._custom_op_report_row_identity(row)
-                if identity and identity in target_set and identity not in completed:
-                    completed.append(identity)
-        if not completed and target_units and final_gate:
-            status = str(final_gate.get("full_migration_status") or final_gate.get("status") or "").upper()
-            closed_pass_entries = final_gate.get("closed_pass_entries")
-            if status == "FULL_PASS" and closed_pass_entries == len(target_units):
-                completed.extend(target_units)
-        return completed
-
-    @staticmethod
-    def _custom_op_report_row_identity(row: dict[str, Any]) -> str:
-        for key in ("unit_identity", "row_id", "manifest_row_id", "name", "operator", "op_name", "id"):
-            value = row.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
-
-    @staticmethod
-    def _custom_op_report_row_has_pass_evidence(row: dict[str, Any]) -> bool:
-        for key in ("status", "full_migration_status", "repair_status", "result"):
-            value = row.get(key)
-            if isinstance(value, str) and value.strip().upper() in {"PASS", "PASSED", "FULL_PASS", "CLOSED_PASS", "SUCCESS"}:
-                return True
-        for key in ("passed", "closed", "full_pass", "strict_pass"):
-            if row.get(key) is True:
-                return True
-        return False
-
-    @staticmethod
-    def _custom_op_report_blocking_gaps(*reports: dict[str, Any] | None) -> list[str]:
-        gaps: list[str] = []
-        for report in reports:
-            if not isinstance(report, dict):
-                continue
-            for key in ("blocking_gaps", "remaining_gaps", "gaps", "errors"):
-                value = report.get(key)
-                if isinstance(value, list):
-                    for item in value:
-                        text = str(item)
-                        if text and text not in gaps:
-                            gaps.append(text)
-        return gaps
-
-    def _current_operator_repair_context_path(
-        self,
-        *,
-        state: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-    ) -> str:
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return ""
-        entry_script = ""
-        if isinstance(loop_vars, dict):
-            entry_script = str(loop_vars.get("entry_script") or "")
-        if not entry_script:
-            entry_script = str(contract.get("run_command") or "")
-        try:
-            phase1_analysis = state.get("phase_1_project_analysis") if isinstance(state.get("phase_1_project_analysis"), dict) else None
-            return self._write_operator_repair_context_artifact(
-                project_dir=self.project_dir,
-                entry_script=entry_script,
-                phase3_contract=cast(dict[str, object], contract),
-                phase1_analysis=cast(dict[str, object] | None, phase1_analysis),
-            )
-        except Exception as exc:
-            logger.warning("Could not refresh operator repair context for continuation: %s", exc)
-            return ""
-
-    def _custom_op_operator_current_reports_incomplete_error(
-        self,
-        *,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-        command_started_at: float | None,
-    ) -> str:
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return ""
-        reports_dir = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars)
-        gate_path = reports_dir / "custom_op_final_gate.json"
-        try:
-            stat_result = gate_path.stat()
-        except OSError:
-            return "custom-op operator repair did not produce current custom_op_final_gate.json before strict OPP final gate FULL_PASS"
-        if command_started_at is not None and stat_result.st_mtime + 1.0 < command_started_at:
-            return "custom-op operator repair custom_op_final_gate.json is stale before strict OPP final gate FULL_PASS"
-        try:
-            gate_data = json.loads(gate_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return "custom-op operator repair wrote malformed custom_op_final_gate.json before strict OPP final gate FULL_PASS"
-        if not isinstance(gate_data, dict):
-            return "custom-op operator repair wrote malformed custom_op_final_gate.json before strict OPP final gate FULL_PASS"
-        gate_map = cast(dict[str, object], gate_data)
-        status_text = " ".join(
-            str(gate_map.get(key) or "")
-            for key in ("status", "full_migration_status", "result", "outcome")
-        ).lower()
-        remaining = gate_map.get("remaining_entries")
-        closed = gate_map.get("closed_pass_entries")
-        manifest = gate_map.get("manifest_entries")
-        if (
-            "fail" in status_text
-            or "incomplete" in status_text
-            or _positive_int(remaining)
-            or (isinstance(closed, int) and isinstance(manifest, int) and closed < manifest)
-        ):
-            return "custom-op operator repair reports are still INCOMPLETE before strict OPP final gate FULL_PASS"
-        validation = validate_custom_op_final_gate(gate_map, project_root=reports_dir.parent)
-        if validation.get("passed") is not True or gate_map.get("full_migration_status") != "FULL_PASS":
-            errors = validation.get("errors")
-            if isinstance(errors, list) and errors:
-                details = "; ".join(str(error) for error in errors[:12])
-                remaining = len(errors) - 12
-                if remaining > 0:
-                    details = f"{details}; ... +{remaining} more"
-                return f"custom-op operator repair reports do not validate strict OPP final gate FULL_PASS: {details}"
-            return "custom-op operator repair reports do not validate strict OPP final gate FULL_PASS"
-        return ""
-
-    def _custom_op_operator_fail_closed_report_summary(
-        self,
-        *,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-    ) -> str:
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return ""
-        reports_dir = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars)
-        lines = [f"reports_dir: {reports_dir}"]
-        for name in (
-            "custom_op_final_gate.json",
-            "summary.json",
-            "phase5_entry_failure.json",
-            "operator_inventory.json",
-            "migration_manifest.json",
-            "runtime_coverage.json",
-            "performance.json",
-            "implementation_resolution.json",
-        ):
-            path = reports_dir / name
-            if not path.exists():
-                lines.append(f"- {name}: missing")
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                lines.append(f"- {name}: malformed ({exc})")
-                continue
-            if not isinstance(data, dict):
-                lines.append(f"- {name}: non-object report")
-                continue
-            summary_parts = []
-            for key in (
-                "status",
-                "full_migration_status",
-                "inventory_count",
-                "manifest_entries",
-                "closed_pass_entries",
-                "remaining_entries",
-                "resolved_entries",
-                "message",
-            ):
-                if key in data:
-                    summary_parts.append(f"{key}={data[key]}")
-            rows = data.get("rows")
-            if isinstance(rows, list):
-                summary_parts.append(f"rows={len(rows)}")
-            entries = data.get("entries")
-            if isinstance(entries, list):
-                summary_parts.append(f"entries={len(entries)}")
-            blocking = data.get("blocking_gaps")
-            if isinstance(blocking, list) and blocking:
-                summary_parts.append("blocking_gaps=" + "; ".join(str(item) for item in blocking[:4]))
-            lines.append(f"- {name}: " + (", ".join(summary_parts) or "present"))
-        return "\n".join(lines)[:6000]
-
-    def _custom_op_operator_poll_timeout(self, repair_timeout: int | None) -> int:
-        raw_timeout = self.framework_config.get("custom_op_operator_full_repair_wait_timeout")
-        if raw_timeout is None:
-            raw_timeout = self.framework_config.get("custom_op_operator_repair_full_wait_timeout")
-        if raw_timeout is None:
-            raw_timeout = self.framework_config.get("custom_op_operator_poll_timeout")
-        if raw_timeout is None:
-            raw_timeout = self.framework_config.get("custom_op_operator_repair_poll_timeout")
-        if raw_timeout is None:
-            return repair_timeout if repair_timeout is not None and repair_timeout > 0 else CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT
-        try:
-            poll_timeout = int(raw_timeout)
-        except (TypeError, ValueError):
-            logger.warning(
-                "Invalid custom_op_operator_full_repair_wait_timeout=%r; using repair timeout %s",
-                raw_timeout,
-                repair_timeout or CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT,
-            )
-            return repair_timeout if repair_timeout is not None and repair_timeout > 0 else CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT
-        if poll_timeout < 1:
-            logger.warning(
-                "Invalid custom_op_operator_full_repair_wait_timeout=%r; using repair timeout %s",
-                raw_timeout,
-                repair_timeout or CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT,
-            )
-            return repair_timeout if repair_timeout is not None and repair_timeout > 0 else CUSTOM_OP_OPERATOR_POLL_TIMEOUT_DEFAULT
-        return poll_timeout
-
-    def _custom_op_operator_max_polls(self, repair_timeout: int | None, poll_timeout: int) -> int:
-        raw_polls = self.framework_config.get("custom_op_operator_max_polls")
-        if raw_polls is None:
-            raw_polls = self.framework_config.get("custom_op_operator_repair_max_polls")
-        if raw_polls is not None:
-            try:
-                return max(1, int(raw_polls))
-            except (TypeError, ValueError):
-                return CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
-        return CUSTOM_OP_OPERATOR_MAX_POLLS_DEFAULT
-
-    def _custom_op_operator_incomplete_max_continuations(self) -> int:
-        raw_value = self.framework_config.get("custom_op_operator_incomplete_max_continuations")
-        if raw_value is None:
-            raw_value = self.framework_config.get("custom_op_operator_repair_incomplete_max_continuations")
-        if raw_value is None:
-            return CUSTOM_OP_OPERATOR_INCOMPLETE_MAX_CONTINUATIONS_DEFAULT
-        try:
-            if isinstance(raw_value, bool):
-                raise ValueError
-            return max(0, int(raw_value))
-        except (TypeError, ValueError):
-            logger.warning(
-                "Invalid custom_op_operator_incomplete_max_continuations=%r; using default %s",
-                raw_value,
-                CUSTOM_OP_OPERATOR_INCOMPLETE_MAX_CONTINUATIONS_DEFAULT,
-            )
-            return CUSTOM_OP_OPERATOR_INCOMPLETE_MAX_CONTINUATIONS_DEFAULT
-
-    def _should_use_custom_op_operator_gate_polling(self, phase_id: str, state: dict[str, Any]) -> bool:
-        if not self._is_operator_repair_phase(phase_id):
-            return False
-        contract = state.get("phase_3_entry_script")
-        return isinstance(contract, dict) and has_custom_op_contract(contract)
-
-    def _resolve_sub_workflow_llm_session(
-        self,
-        *,
-        agent_id: str,
-        phase_id: str,
-        state: dict[str, Any],
-        loop_state: dict[str, Any] | None,
-        use_custom_op_gate_polling: bool,
-    ) -> str:
-        if self._should_use_fresh_operator_repair_session(
-            phase_id=phase_id,
-            state=state,
-            loop_state=loop_state,
-            use_custom_op_gate_polling=use_custom_op_gate_polling,
-        ):
-            retry_session_id = self._create_sub_workflow_retry_session(agent_id, phase_id)
-            logger.warning(
-                "Using fresh operator repair session after prior retryable communication error: "
-                "phase_id=%s agent_id=%s retry_session_id=%s",
-                phase_id,
-                agent_id,
-                retry_session_id,
-            )
-            return retry_session_id
-        return self._resolve_persistent_llm_session(agent_id)
-
-    def _resolve_persistent_llm_session(self, agent_id: str) -> str:
-        if self.session_registry:
-            try:
-                return str(self.session_registry.resolve(agent_id))
-            except KeyError:
-                pass
-        return str(self.session_mgr.get_or_create(role=agent_id, lifecycle="persistent"))
-
-    def _should_use_fresh_operator_repair_session(
-        self,
-        *,
-        phase_id: str,
-        state: dict[str, Any],
-        loop_state: dict[str, Any] | None,
-        use_custom_op_gate_polling: bool,
-    ) -> bool:
-        if not self._is_operator_repair_phase(phase_id):
-            return False
-        if not use_custom_op_gate_polling:
-            return False
-        if not isinstance(loop_state, dict):
-            return False
-        return self._operator_repair_retryable_session_error(phase_id, loop_state.get(phase_id))
-
-    @classmethod
-    def _operator_repair_retryable_session_error(cls, phase_id: str, output: object) -> bool:
-        if not cls._is_operator_repair_phase(phase_id):
-            return False
-        if not isinstance(output, dict):
-            return False
-        error = str(output.get("error") or "").strip()
-        return bool(error) and cls._is_retryable_session_error_text(error)
-
-    @staticmethod
-    def _is_retryable_session_error_text(error_text: str) -> bool:
-        normalized = error_text.strip().lower()
-        return any(token in normalized for token in RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS)
-
-    @staticmethod
-    def _is_operator_repair_phase(phase_id: str) -> bool:
-        return phase_id in {"fix_operator", "imp_fix_operator"}
-
-    @classmethod
-    def _operator_repair_communication_failure(cls, phase_id: str, output: object) -> bool:
-        if not cls._is_operator_repair_phase(phase_id):
-            return False
-        if not isinstance(output, dict):
-            return False
-        if output.get("retryable") is True:
-            return True
-        error = str(output.get("error") or "").strip()
-        return bool(error) and cls._is_retryable_session_error_text(error)
-
-    @classmethod
-    def _operator_repair_partial_response(cls, phase_id: str, output: object) -> bool:
-        if not cls._is_operator_repair_phase(phase_id):
-            return False
-        if not isinstance(output, dict):
-            return False
-        if cls._operator_repair_communication_failure(phase_id, output):
-            return True
-        raw_response = str(output.get("raw_response") or "").strip()
-        if not raw_response:
-            return False
-        if cls._custom_op_operator_partial_text(raw_response):
-            return True
-        return not cls._operator_repair_output_has_completion_signal(output)
-
-    @staticmethod
-    def _partial_progress_text(text: str) -> bool:
-        normalized = " ".join(text.strip().lower().replace("\u2019", "'").split())
-        if not normalized:
-            return False
-        partial_markers = (
-            "i read this as",
-            "i'll inspect",
-            "i will inspect",
-            "i've identified",
-            "i have identified",
-            "i've got",
-            "i have got",
-            "i'm pulling",
-            "i am pulling",
-            "i'm going to",
-            "i am going to",
-            "next i will",
-            "i'll now",
-            "i will now",
-            "let me",
-        )
-        return any(marker in normalized for marker in partial_markers)
-
-    @staticmethod
-    def _custom_op_operator_partial_text(text: str) -> bool:
-        return WorkflowExecutor._partial_progress_text(text)
-
-    @staticmethod
-    def _operator_repair_output_has_completion_signal(output: dict[str, object]) -> bool:
-        completion_keys = (
-            "fixed",
-            "modified_files",
-            "summary",
-            "verification",
-            "validation",
-            "agent_diagnostics",
-            "custom_op_final_gate",
-            "status",
-            "repair_status",
-            "errors",
-            "validation_errors",
-            "remaining_errors",
-        )
-        return any(key in output for key in completion_keys)
-
-    @classmethod
-    def _repair_response_continuation_reason(cls, phase_id: str, output: dict[str, Any]) -> str | None:
-        if phase_id not in SUB_WORKFLOW_REPAIR_PHASE_IDS:
-            return None
-        if output.get("communication_error") is True:
-            return "repair phase ended with a retryable communication error before completing a fix"
-        raw_response = str(output.get("raw_response") or "").strip()
-        public_keys = {str(key) for key in output if not str(key).startswith("_")}
-        if raw_response and public_keys.issubset({"raw_response"}):
-            return "repair phase returned prose/status text instead of final repair JSON"
-        if cls._is_status_only_llm_response(output):
-            return "repair phase returned status/progress-only JSON instead of a completed repair result"
-        if public_keys and public_keys.issubset(STATUS_ONLY_LLM_RESPONSE_KEYS | {"session_id", "raw_response"}):
-            return "repair phase returned status/progress-only JSON instead of a completed repair result"
-        if cls._partial_progress_text(raw_response):
-            return "repair phase returned an in-progress update instead of continuing until the fix was applied"
-        if not cls._repair_output_has_actionable_progress(output):
-            return "repair phase returned JSON without modified files, dependency commands, environment changes, or verification evidence"
-        return None
-
-    @classmethod
-    def _repair_output_has_actionable_progress(cls, output: dict[str, Any]) -> bool:
-        fixed = output.get("fixed")
-        if isinstance(fixed, bool) and fixed:
-            return True
-        for key in (
-            "modified_files",
-            "commands_run",
-            "installed_packages",
-            "environment_changes",
-            "generated_artifacts",
-            "created_files",
-            "updated_files",
-            "verification_commands",
-            "tests_run",
-        ):
-            if cls._nonempty_repair_progress_value(output.get(key)):
-                return True
-        for key in ("verification", "validation", "agent_diagnostics"):
-            value = output.get(key)
-            if isinstance(value, Mapping) and value:
-                return True
-            if isinstance(value, list) and value:
-                return True
-        return False
-
-    @staticmethod
-    def _nonempty_repair_progress_value(value: object) -> bool:
-        if isinstance(value, list):
-            return any(str(item).strip() for item in value)
-        if isinstance(value, Mapping):
-            return bool(value)
-        if isinstance(value, str):
-            return bool(value.strip())
-        return False
-
-    def _continue_repair_phase_until_actionable(
-        self,
-        *,
-        phase_id: str,
-        agent_id: str,
-        session_id: str,
-        phase: PhaseDefinition,
-        phase_output: dict[str, Any],
-        prompt_context: dict[str, Any],
-        state: dict[str, Any],
-        timeout: int | None,
-    ) -> tuple[dict[str, Any], str | None]:
-        current_output = phase_output
-        reason = self._repair_response_continuation_reason(phase_id, current_output)
-        if reason is None:
-            return current_output, None
-        attempts = self._repair_phase_continuation_attempts()
-        for attempt in range(1, attempts + 1):
-            prompt = self._build_repair_phase_continuation_prompt(
-                phase_id=phase_id,
-                reason=reason,
-                previous_output=current_output,
-                attempt=attempt,
-                max_attempts=attempts,
-                prompt_context=prompt_context,
-            )
-            raw_response = self._send_sub_workflow_llm_command(
-                phase_id=phase_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                prompt_text=prompt,
-                timeout=timeout,
-            )
-            parsed = extract_json_response(raw_response)
-            self._raise_for_session_error_output(parsed, phase_id)
-            if not parsed:
-                current_output = {"raw_response": raw_response}
-            else:
-                current_output = self._normalize_llm_output(phase, parsed, prompt_context, state)
-            reason = self._repair_response_continuation_reason(phase_id, current_output)
-            if reason is None:
-                return current_output, None
-        return current_output, (
-            f"{phase_id} did not produce an actionable completed repair after {attempts} "
-            f"same-session continuation prompt(s): {reason}"
-        )
-
-    def _repair_phase_continuation_attempts(self) -> int:
-        raw = self.framework_config.get("repair_continuation_attempts")
-        if raw is None:
-            raw = self.framework_config.get("sub_workflow_repair_continuation_attempts")
-        if raw is None:
-            return SUB_WORKFLOW_REPAIR_CONTINUATION_ATTEMPTS_DEFAULT
-        try:
-            return max(0, min(10, int(str(raw))))
-        except (TypeError, ValueError):
-            return SUB_WORKFLOW_REPAIR_CONTINUATION_ATTEMPTS_DEFAULT
-
-    def _build_repair_phase_continuation_prompt(
-        self,
-        *,
-        phase_id: str,
-        reason: str,
-        previous_output: dict[str, Any],
-        attempt: int,
-        max_attempts: int,
-        prompt_context: dict[str, Any],
-    ) -> str:
-        previous_json = json.dumps(previous_output, ensure_ascii=False, indent=2, sort_keys=True)
-        required_shape = json.dumps(
-            {
-                "modified_files": ["path/or/empty-only-for-dependency-env-change"],
-                "commands_run": ["commands actually run, if any"],
-                "installed_packages": ["packages installed or pinned, if any"],
-                "environment_changes": ["env/runtime changes, if any"],
-                "summary": "what was actually changed",
-                "verification": ["verification commands and observed result"],
-                "agent_diagnostics": "remaining blocker or empty string",
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        return (
-            "Your previous Phase 5 repair response was not an actionable completed repair result.\n"
-            f"Reason: {reason}.\n"
-            f"Continuation attempt: {attempt}/{max_attempts}.\n\n"
-            "Continue in this same session. Do not return a plan, progress update, or 'I will' message. "
-            "Use the already-provided project context and keep working until you have actually applied a fix or made a verified dependency/environment change.\n\n"
-            f"Project dir: {self.project_dir}\n"
-            f"Entry command: {prompt_context.get('entry_script', '')}\n"
-            f"Repair phase: {phase_id}\n\n"
-            "For code_adapter/operator_fixer repairs, final JSON must include non-empty modified_files plus verification evidence. "
-            "For dependency_fixer repairs, final JSON may use non-empty commands_run, installed_packages, or environment_changes when no source file changes are needed. "
-            "If the current role is wrong, make the smallest safe diagnostic change you can, record the exact blocker in agent_diagnostics, and still return final JSON only.\n\n"
-            "Required final JSON shape:\n"
-            f"```json\n{required_shape}\n```\n\n"
-            "Previous non-actionable response:\n"
-            f"```json\n{previous_json}\n```"
-        )
-
-
-    @staticmethod
-    def _communication_failure_output(output: dict[str, object]) -> dict[str, object]:
-        return {
-            **output,
-            "status": "communication_error",
-            "communication_error": True,
-            "retryable": True,
-        }
-
-    @staticmethod
-    def _prompt_template_for_llm_phase(
-        *,
-        phase_id: str,
-        default_template: str,
-        state: dict[str, Any],
-    ) -> str:
-        if phase_id in {"fix_operator", "imp_fix_operator"}:
-            phase3_contract = state.get("phase_3_entry_script")
-            if isinstance(phase3_contract, dict) and _operator_repair_has_custom_op_contract(
-                cast(dict[str, object], phase3_contract)
-            ):
-                return "repair_custom_op_variant_service"
-        return default_template
-
-    def _recover_operator_repair_from_current_final_gate(
-        self,
-        *,
-        phase_id: str,
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-        command_started_at: float | None,
-        require_current_run: bool = True,
-    ) -> dict[str, object] | None:
-        if not self._is_operator_repair_phase(phase_id):
-            return None
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return None
-        reports_dir = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars)
-        gate_path = reports_dir / "custom_op_final_gate.json"
-        try:
-            stat_result = gate_path.stat()
-        except OSError:
-            return None
-        if stat_result.st_size > _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
-            return None
-        if require_current_run and command_started_at is not None and stat_result.st_mtime + 1.0 < command_started_at:
-            return None
-        try:
-            with gate_path.open("r", encoding="utf-8") as handle:
-                gate_data = cast(object, json.load(handle))
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(gate_data, dict):
-            return None
-        gate_map = cast(dict[str, object], gate_data)
-        variant_overlay = expanded_variant_contract_from_outputs(state)
-        apply_expanded_variant_contract(gate_map, variant_overlay, include_required_checks=False)
-        validation = validate_custom_op_final_gate(gate_map, project_root=reports_dir.parent)
-        if validation.get("passed") is not True or gate_map.get("full_migration_status") != "FULL_PASS":
-            return None
-        return {
-            "fixed": True,
-            "status": "success",
-            "summary": "Recovered from operator-fixer no-response after validating current-run custom_op_final_gate FULL_PASS.",
-            "agent_diagnostics": "session response missing but current migration_reports/custom_op_final_gate.json validated FULL_PASS",
-            "custom_op_final_gate_recovered": True,
-            "custom_op_final_gate_path": str(gate_path),
-            "custom_op_final_gate": {
-                "passed": True,
-                "path": str(gate_path),
-                "summary": {
-                    "inventory_count": gate_map.get("inventory_count"),
-                    "manifest_entries": gate_map.get("manifest_entries"),
-                    "closed_pass_entries": gate_map.get("closed_pass_entries"),
-                    "remaining_entries": gate_map.get("remaining_entries"),
-                    "full_migration_status": gate_map.get("full_migration_status"),
-                },
-            },
-        }
-
-    def _recover_operator_repair_from_valid_full_pass_output(
-        self,
-        *,
-        phase_id: str,
-        phase_output: dict[str, Any],
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-    ) -> dict[str, object] | None:
-        if not self._operator_repair_output_claims_full_pass(phase_id, phase_output):
-            return None
-        recovered = self._recover_operator_repair_from_current_final_gate(
-            phase_id=phase_id,
-            state=state,
-            context=context,
-            loop_vars=loop_vars,
-            command_started_at=None,
-            require_current_run=False,
-        )
-        if recovered is None:
-            return None
-        recovered["summary"] = "Recovered from operator-fixer FULL_PASS output after validating custom_op_final_gate FULL_PASS."
-        recovered["agent_diagnostics"] = "operator repair reported FULL_PASS and migration_reports/custom_op_final_gate.json validated FULL_PASS"
-        return recovered
-
-    @classmethod
-    def _operator_repair_output_claims_full_pass(cls, phase_id: str, phase_output: dict[str, Any]) -> bool:
-        if not cls._is_operator_repair_phase(phase_id):
-            return False
-        text_parts = [
-            str(phase_output.get("status") or ""),
-            str(phase_output.get("summary") or ""),
-            str(phase_output.get("agent_diagnostics") or ""),
-            str(phase_output.get("full_migration_status") or ""),
-        ]
-        verification = phase_output.get("verification")
-        if isinstance(verification, dict):
-            text_parts.append(str(verification.get("status") or ""))
-            result = verification.get("result")
-            if isinstance(result, dict):
-                text_parts.append(str(result.get("status") or ""))
-        text = "\n".join(text_parts).lower()
-        return "full_pass" in text and ("pass" in text or "success" in text)
 
     def _create_sub_workflow_retry_session(self, agent_id: str, phase_id: str) -> str:
         retry_role = f"{agent_id}_{phase_id}_retry"
@@ -3495,6 +1545,39 @@ class WorkflowExecutor:
                 pass
         return str(self.session_mgr.get_or_create(role=retry_role, lifecycle="ephemeral"))
 
+    # ── Phase-aware previous_outputs whitelist ────────────────────────
+    # Maps prompt_id patterns to a whitelist of state keys that should appear
+    # in the serialized `previous_outputs` context.  An empty list means the
+    # phase receives no previous_outputs at all.  A missing key falls back to
+    # the legacy "all state" behaviour so we stay backward-compatible.
+
+    _PREVIOUS_OUTPUTS_WHITELIST: dict[str, list[str]] = {
+        # Early phases: no prior outputs needed.
+        "phase_0_env_detect": [],
+        "phase_1_project_analysis": [],
+        "phase_2_venv_create": [],
+        # Phase 1.5 gets `phase_1_context` separately; do not duplicate.
+        "phase_1_5_constraint_summary": [],
+        # Phase 3 only needs its own input mapping; no prior outputs required.
+        "phase_3_entry_script": [],
+        # Phase 3.5 needs ONLY Phase 3 entry script output, not Phase 0/1/1.5/2 noise.
+        "phase_35_static_validate": ["phase_3_entry_script"],
+        # Phase 6/report still receives all prior outputs (full context required).
+        # No entry → falls through to legacy "all" behaviour.
+    }
+
+    def _filter_previous_outputs(self, phase: PhaseDefinition, state: dict) -> dict[str, Any]:
+        """Return only the whitelisted state keys as `previous_outputs` for a phase."""
+        pid = phase.id
+        pt = phase.prompt_template or ""
+        for key in (pid, pt):
+            if key in self._PREVIOUS_OUTPUTS_WHITELIST:
+                allowed = self._PREVIOUS_OUTPUTS_WHITELIST[key]
+                if not allowed:
+                    return {}
+                return {k: v for k, v in state.items() if k in allowed}
+        return dict(state)
+
     def _inject_llm_baseline_context(
         self,
         input_ctx: dict,
@@ -3507,10 +1590,16 @@ class WorkflowExecutor:
         input_ctx.setdefault("user_constraints", self.user_constraints)
         constraint_summary = self._resolve_constraint_summary(state)
         input_ctx.setdefault("constraint_summary", constraint_summary)
-        input_ctx.setdefault("platform", "NPU")
+        input_ctx.setdefault("platform", self.platform_policy.id)
+        input_ctx.setdefault("platform_display_name", self.platform_policy.display_name)
+        input_ctx.setdefault("platform_guidance", (
+            f"Target accelerator: {self.platform_policy.display_name}. "
+            f"Use {self.platform_policy.guidance_native_framework}."
+        ))
 
+        filtered_state = self._filter_previous_outputs(phase, state)
         serialized_state = {}
-        for k, v in state.items():
+        for k, v in filtered_state.items():
             if isinstance(v, dict):
                 sanitized = {kk: vv for kk, vv in v.items()
                              if isinstance(vv, (str, int, float, bool, list))}
@@ -3518,146 +1607,17 @@ class WorkflowExecutor:
             elif isinstance(v, (str, int, float, bool, list)):
                 serialized_state[k] = v
         input_ctx.setdefault("previous_outputs", json.dumps(serialized_state, indent=2, ensure_ascii=False))
-        route = self._phase5_workflow_route(state)
-        input_ctx.setdefault("phase5_workflow_route", route)
-        input_ctx.setdefault("phase1_phase3_repair_scope", self._phase1_phase3_repair_scope_summary(state))
 
-    def _phase5_workflow_route(self, state: dict[str, Any]) -> str:
-        contract = state.get("phase_3_entry_script")
-        if isinstance(contract, dict) and has_custom_op_contract(contract):
-            variant_overlay = expanded_variant_contract_from_outputs(state)
-            inventory = variant_overlay.get("expanded_variant_inventory")
-            if isinstance(inventory, dict) and inventory.get("variant_axes_detected") is True:
-                return CUSTOM_OP_WITH_VARIANTS
-            return CUSTOM_OP
-        if isinstance(contract, dict):
-            serving_route = serving_route_from_contract(contract)
-            if serving_route is not None:
-                return serving_route
-        phase1 = state.get("phase_1_project_analysis")
-        if isinstance(phase1, dict) and phase1.get("migration_route") in SERVING_ROUTES:
-            return str(phase1["migration_route"])
-        return ORDINARY_CUDA
+        for key, value in _get_exec_ctx(self.exec_backend).items():
+            input_ctx.setdefault(key, value)
+        self._inject_container_env_context(input_ctx)
+        self._inject_execution_environment_context(input_ctx)
 
-    def _phase1_phase3_repair_scope_summary(self, state: dict[str, Any]) -> str:
-        route = self._phase5_workflow_route(state)
-        contract = state.get("phase_3_entry_script")
-        phase1 = state.get("phase_1_project_analysis")
-        parts = [f"workflow_route={route}"]
-        if isinstance(contract, dict):
-            for key in ("entry_script_path", "run_command", "entry_script_kind", "reports_dir"):
-                value = contract.get(key)
-                if value:
-                    parts.append(f"phase3.{key}={value}")
-            if route in SERVING_ROUTES:
-                for key in ("serving_framework", "launch_command", "serving_reports_dir"):
-                    value = contract.get(key)
-                    if value:
-                        parts.append(f"phase3.{key}={value}")
-                parts.append(f"serving_expected_framework={serving_framework_for_route(route)}")
-            for key in ("required_report_paths", "required_checks"):
-                value = contract.get(key)
-                if isinstance(value, list) and value:
-                    parts.append(f"phase3.{key}=" + ", ".join(str(item) for item in value[:20]))
-            schema = contract.get("operator_inventory_schema")
-            if isinstance(schema, dict):
-                for key in ("fine_grained_operator_units", "operator_units", "operators", "rows"):
-                    value = schema.get(key)
-                    if isinstance(value, list) and value:
-                        parts.append(f"phase3.operator_inventory_schema.{key}_count={len(value)}")
-                        parts.append(f"phase3.operator_inventory_schema.{key}_sample=" + ", ".join(str(item) for item in value[:20]))
-                        break
-            variant_overlay = expanded_variant_contract_from_outputs(state)
-            inventory = variant_overlay.get("expanded_variant_inventory")
-            if isinstance(inventory, dict):
-                unit_ids = inventory.get("unit_identities")
-                if isinstance(unit_ids, list):
-                    parts.append(f"expanded_variant_unit_count={len(unit_ids)}")
-                    parts.append("expanded_variant_units_sample=" + ", ".join(str(item) for item in unit_ids[:20]))
-                count = inventory.get("expanded_operator_instances_count")
-                if count:
-                    parts.append(f"expanded_operator_instances_count={count}")
-        if isinstance(phase1, dict):
-            for key in ("operator_unit_count", "inventory_count", "expanded_operator_instances_count"):
-                value = phase1.get(key)
-                if value:
-                    parts.append(f"phase1.{key}={value}")
-            surface = phase1.get("custom_op_surface")
-            if isinstance(surface, dict):
-                for key in ("fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols"):
-                    value = surface.get(key)
-                    if isinstance(value, list) and value:
-                        parts.append(f"phase1.custom_op_surface.{key}_count={len(value)}")
-                        parts.append(f"phase1.custom_op_surface.{key}_sample=" + ", ".join(str(item) for item in value[:20]))
-                variants = surface.get("expanded_operator_variants")
-                if isinstance(variants, list) and variants:
-                    unit_ids = []
-                    for item in variants[:20]:
-                        if isinstance(item, dict) and item.get("unit_identity"):
-                            unit_ids.append(str(item["unit_identity"]))
-                    parts.append(f"phase1.custom_op_surface.expanded_operator_variants_count={len(variants)}")
-                    if unit_ids:
-                        parts.append("phase1.custom_op_surface.expanded_operator_variants_sample=" + ", ".join(unit_ids))
-                axes = surface.get("variant_axes")
-                if isinstance(axes, dict) and axes:
-                    parts.append("phase1.custom_op_surface.variant_axes=" + json.dumps(axes, ensure_ascii=False, default=str))
-            serving_surface = phase1.get("serving_runtime_surface")
-            if isinstance(serving_surface, dict):
-                for key in ("serving_framework", "launch_command", "project_test_files", "launch_evidence"):
-                    value = serving_surface.get(key)
-                    if isinstance(value, list) and value:
-                        parts.append(f"phase1.serving_runtime_surface.{key}=" + ", ".join(str(item) for item in value[:20]))
-                    elif value:
-                        parts.append(f"phase1.serving_runtime_surface.{key}={value}")
-        return "\n".join(parts)[:6000]
-
-    def _active_custom_op_full_repair_requirements(self, state: dict[str, Any]) -> str:
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return ""
-        return (
-            "1. Read operatorRepairContext artifact and treat it as the source of truth.\n"
-            "2. Repair every Phase 1/Phase 3 discovered operator and every expanded operator+variant identity.\n"
-            "3. Rerun the full Phase 3 validation command and produce every required report.\n"
-            "4. Return success only after the strict final gate validates FULL_PASS.\n"
-            "5. Return FAILED/INCOMPLETE if the full repair is not yet closed."
-        )
-
-    def _strict_custom_op_acceptance_contract(self, state: dict[str, Any]) -> str:
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return "ordinary operator repair: validate by rerunning the selected Phase 3 command; no custom-op final gate is active"
-        required_reports = contract.get("required_report_paths")
-        if not isinstance(required_reports, list) or not required_reports:
-            required_reports = [
-                "migration_reports/operator_inventory.json",
-                "migration_reports/migration_manifest.json",
-                "migration_reports/runtime_coverage.json",
-                "migration_reports/performance.json",
-                "migration_reports/build.json",
-                "migration_reports/custom_op_final_gate.json",
-                "migration_reports/summary.json",
-            ]
-        required_checks = contract.get("required_checks")
-        if not isinstance(required_checks, list) or not required_checks:
-            required_checks = [
-                "inventory_manifest_equality",
-                "closed_pass_entries_equals_manifest_entries",
-                "remaining_entries_zero",
-                "full_migration_status_full_pass",
-                "strict_ascend_c_cann_opp_artifacts",
-                "same_run_runtime_coverage",
-                "no_fallback_no_zero_call_no_builtin_contamination",
-            ]
-        lines = [
-            "Custom-op repair is accepted only when the full Phase 3 validation command has been rerun and current project-local reports pass strict validation.",
-            "Required reports:",
-            *(f"- {item}" for item in required_reports),
-            "Required checks:",
-            *(f"- {item}" for item in required_checks),
-            "Framework acceptance: validate_custom_op_final_gate must pass, full_migration_status must be FULL_PASS, remaining_entries must be 0, and every Phase 1/Phase 3 operator or expanded variant identity must be closed.",
-        ]
-        return "\n".join(str(line) for line in lines)[:6000]
+    def _inject_execution_environment_context(self, input_ctx: dict) -> None:
+        if "execution_environment_context" in input_ctx:
+            return
+        probe = getattr(self, "_container_env_probe", None)
+        input_ctx["execution_environment_context"] = _get_exec_env_ctx(self.exec_backend, probe)
 
     def _inject_llm_phase_specific_context(
         self,
@@ -3680,6 +1640,25 @@ class WorkflowExecutor:
         if "phase_6" in pid:
             input_ctx.setdefault("report_dir",
                                  os.path.join(self.artifact_store.artifact_dir, "reports"))
+
+    def _inject_container_env_context(self, input_ctx: dict) -> None:
+        if not isinstance(self.exec_backend, ContainerBackend):
+            return
+        probe = self._container_env_probe
+        if not probe:
+            return
+
+        backend_ctx = _get_exec_ctx(self.exec_backend)
+        for k, v in backend_ctx.items():
+            input_ctx.setdefault(k, v)
+
+        input_ctx.setdefault(
+            "container_env_facts",
+            json.dumps(probe, ensure_ascii=False, indent=2, default=str),
+        )
+        for key in ("interpreter_path", "python_version", "platform", "platform_machine", "cwd", "torch_version"):
+            if key in probe:
+                input_ctx.setdefault(f"container_{key}", str(probe[key]))
 
     def _inject_sub_workflow_context(
         self,
@@ -3706,6 +1685,12 @@ class WorkflowExecutor:
         constraint = self._resolve_constraint_summary(state)
         hist_summary = self._format_history_summary(loop_history)
 
+        # Inject container execution context for Phase 5 sub-workflow phases
+        es = str(entry_script)
+        exec_cmd: str | list[str] = shlex.split(es) if isinstance(self.exec_backend, ContainerBackend) else es
+        exec_ctx = _get_exec_ctx(self.exec_backend, command=exec_cmd)
+        input_ctx.update(exec_ctx)
+
         if phase_id in ("fix_dependency", "fix_code", "fix_operator"):
             if phase_id in {"fix_dependency", "fix_operator"}:
                 default_role = "dependency_fixer" if phase_id == "fix_dependency" else "operator_fixer"
@@ -3726,22 +1711,22 @@ class WorkflowExecutor:
                 if phase_id == "fix_operator":
                     phase3_contract = state.get("phase_3_entry_script") if isinstance(state.get("phase_3_entry_script"), dict) else None
                     if _operator_repair_has_custom_op_contract(phase3_contract):
-                        phase1_analysis = state.get("phase_1_project_analysis") if isinstance(state.get("phase_1_project_analysis"), dict) else None
                         operator_context_path = self._write_operator_repair_context_artifact(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
                             phase3_contract=phase3_contract,
-                            phase1_analysis=cast(dict[str, object] | None, phase1_analysis),
                         )
                         input_ctx["operator_custom_op_guidance"] = _operator_custom_op_guidance(
                             operator_context_path,
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
                     else:
                         input_ctx["operator_custom_op_guidance"] = _operator_generic_guidance(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
             input_ctx.update({
                 "error_text": script_stderr,
@@ -3763,14 +1748,6 @@ class WorkflowExecutor:
                     str(card) for card in step_outputs.get("experience_action_cards", [])
                 ) or "(No analyzer-selected experience cards)",
                 "experience_usage_report_schema": self._experience_usage_report_schema_text(),
-                "phase1_phase3_repair_scope": self._phase1_phase3_repair_scope_summary(state),
-                "operator_repair_progress_block": self._custom_op_operator_repair_progress_block(
-                    state=state,
-                    context={},
-                    loop_vars={"project_dir": self.project_dir},
-                ),
-                "strict_custom_op_acceptance_contract": self._strict_custom_op_acceptance_contract(state),
-                "active_custom_op_full_repair_requirements": self._active_custom_op_full_repair_requirements(state),
             })
 
         elif phase_id in ("imp_fix_dependency", "imp_fix_code", "imp_fix_operator"):
@@ -3795,22 +1772,22 @@ class WorkflowExecutor:
                 if phase_id == "imp_fix_operator":
                     phase3_contract = state.get("phase_3_entry_script") if isinstance(state.get("phase_3_entry_script"), dict) else None
                     if _operator_repair_has_custom_op_contract(phase3_contract):
-                        phase1_analysis = state.get("phase_1_project_analysis") if isinstance(state.get("phase_1_project_analysis"), dict) else None
                         operator_context_path = self._write_operator_repair_context_artifact(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
                             phase3_contract=phase3_contract,
-                            phase1_analysis=cast(dict[str, object] | None, phase1_analysis),
                         )
                         input_ctx["operator_custom_op_guidance"] = _operator_custom_op_guidance(
                             operator_context_path,
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
                     else:
                         input_ctx["operator_custom_op_guidance"] = _operator_generic_guidance(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
+                            platform_policy=self.platform_policy,
                         )
             input_ctx.update({
                 "error_text": script_stderr,
@@ -3827,14 +1804,6 @@ class WorkflowExecutor:
                 "artifact_base_path": artifact_base,
                 "raw_attempt_files": raw_files,
                 "experience_usage_report_schema": self._experience_usage_report_schema_text(),
-                "phase1_phase3_repair_scope": self._phase1_phase3_repair_scope_summary(state),
-                "operator_repair_progress_block": self._custom_op_operator_repair_progress_block(
-                    state=state,
-                    context={},
-                    loop_vars={"project_dir": self.project_dir},
-                ),
-                "strict_custom_op_acceptance_contract": self._strict_custom_op_acceptance_contract(state),
-                "active_custom_op_full_repair_requirements": self._active_custom_op_full_repair_requirements(state),
             })
 
         elif phase_id == "improvement_plan":
@@ -3865,6 +1834,9 @@ class WorkflowExecutor:
                 "constraint_summary": constraint,
             })
 
+        self._inject_container_env_context(input_ctx)
+        self._inject_execution_environment_context(input_ctx)
+
     def _resolve_constraint_summary(self, state: dict) -> str:
         ph = state.get("phase_1_5_constraint_summary", {})
         if isinstance(ph, dict):
@@ -3893,24 +1865,43 @@ class WorkflowExecutor:
             env.update({k: v for k, v in ph0.items()
                         if isinstance(v, (str, int, float, bool))})
         ph2 = state.get("phase_2_venv_create", {})
+        installed: object = []
         if isinstance(ph2, dict):
-            pkgs = ph2.get("installed_packages", [])
-            if isinstance(pkgs, list):
-                for pkg in pkgs:
-                    if isinstance(pkg, str) and pkg.lower().startswith("torch-npu=="):
-                        env["torch_npu_version"] = pkg.split("==", 1)[-1]
-                        break
+            installed = ph2.get("installed_packages", [])
+        accel_ctx = extract_accelerator_context(installed)
+        env["torch_npu_version"] = accel_ctx["torch_npu_version"]
+        env["accelerator_packages"] = accel_ctx["accelerator_packages"]
+        env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
         return env
 
     def _format_history_summary(self, loop_history: list) -> str:
         if not loop_history:
             return "(No previous repair attempts)"
-        lines = ["| Iteration | Status | Duration |", "|---|---|---|"]
+        lines = ["| Iteration | Status | Duration | Summary | Agent Diagnostics |", "|---|---|---|---|---|"]
         for entry in loop_history:
             idx = entry.get("iteration", "?")
             stat = entry.get("status", "?")
             dur = entry.get("duration", "?")
-            lines.append(f"| {idx} | {stat} | {dur} |")
+            fixer_out = entry.get("fixer_outputs", {}) if isinstance(entry.get("fixer_outputs"), dict) else {}
+            row_summary = ""
+            row_diag = ""
+            if fixer_out:
+                summaries = []
+                diags = []
+                for meta in fixer_out.values():
+                    if isinstance(meta, dict):
+                        s = meta.get("summary", "")
+                        if s:
+                            summaries.append(s)
+                        ad = meta.get("agent_diagnostics", "")
+                        if ad:
+                            if isinstance(ad, dict):
+                                diags.append(json.dumps(ad, ensure_ascii=False))
+                            else:
+                                diags.append(str(ad))
+                row_summary = "; ".join(summaries)[:100] if summaries else ""
+                row_diag = "; ".join(diags)[:100] if diags else ""
+            lines.append(f"| {idx} | {stat} | {dur} | {row_summary or '(none)'} | {row_diag or '(none)'} |")
         return "\n".join(lines)
 
     def _format_error_analyzer_history(
@@ -3920,11 +1911,12 @@ class WorkflowExecutor:
             return "(No previous repair attempts — this is the first failure)"
 
         lines = [
-            "| Iter | Status | Duration | Last Category | Last Repair Role |",
-            "|------|--------|----------|---------------|------------------|",
+            "| Iter | Status | Duration | Last Category | Last Repair Role | Summary | Agent Diagnostics |",
+            "|------|--------|----------|---------------|------------------|---------|-------------------|",
         ]
         latest_category = "unknown"
         latest_repair_role = ""
+        fixer_details: list[dict] = []
         for h in loop_history:
             if not isinstance(h, dict):
                 continue
@@ -3933,9 +1925,37 @@ class WorkflowExecutor:
             if "error_category" in h or "repair_role" in h:
                 latest_category = row_category
                 latest_repair_role = row_repair_role
+            fixer_out = h.get("fixer_outputs", {}) if isinstance(h.get("fixer_outputs"), dict) else {}
+            row_summary = ""
+            row_diag = ""
+            if fixer_out:
+                summaries = []
+                diags = []
+                for pid, meta in fixer_out.items():
+                    if isinstance(meta, dict):
+                        s = meta.get("summary", "")
+                        if s:
+                            summaries.append(s)
+                        ad = meta.get("agent_diagnostics", "")
+                        if ad:
+                            if isinstance(ad, dict):
+                                diags.append(json.dumps(ad, ensure_ascii=False))
+                            else:
+                                diags.append(str(ad))
+                        if meta.get("modified_files"):
+                            fixer_details.append({
+                                "iteration": h.get("iteration", "?"),
+                                "phase": pid,
+                                "summary": s,
+                                "modified_files": meta["modified_files"],
+                                "agent_diagnostics": ad,
+                            })
+                row_summary = "; ".join(summaries)[:120] if summaries else ""
+                row_diag = "; ".join(diags)[:120] if diags else ""
             lines.append(
                 f"| Iter {h.get('iteration', '?')} | {h.get('status', '?')} | "
-                f"{h.get('duration', '?')} | {row_category} | {row_repair_role or '(none)'} |"
+                f"{h.get('duration', '?')} | {row_category} | {row_repair_role or '(none)'} | "
+                f"{row_summary or '(none)'} | {row_diag or '(none)'} |"
             )
 
         if latest_category == "unknown" and not latest_repair_role:
@@ -3953,7 +1973,44 @@ class WorkflowExecutor:
         if fix_roles:
             lines.append(f"Previous repair roles used: {', '.join(sorted(fix_roles))}")
 
+        if fixer_details:
+            lines.append("\n## Previous Fixer Outputs")
+            for fd in fixer_details:
+                lines.append(f"\nIteration {fd['iteration']}, phase `{fd['phase']}`:")
+                if fd.get("summary"):
+                    lines.append(f"  Summary: {fd['summary']}")
+                if fd.get("modified_files"):
+                    lines.append(f"  Modified files: {', '.join(fd['modified_files'])}")
+                diag = fd.get("agent_diagnostics")
+                if diag:
+                    if isinstance(diag, dict):
+                        lines.append(f"  Agent Diagnostics: {json.dumps(diag, ensure_ascii=False)}")
+                    else:
+                        lines.append(f"  Agent Diagnostics: {diag}")
+
         return "\n".join(lines)
+
+    def _collect_fixer_outputs(self, step_outputs: dict) -> dict | None:
+        result: dict[str, Any] = {}
+        for pid in SUB_WORKFLOW_REPAIR_PHASE_ORDER:
+            out = step_outputs.get(pid)
+            if not isinstance(out, dict):
+                continue
+            entry: dict[str, Any] = {}
+            if out.get("summary"):
+                entry["summary"] = str(out["summary"])
+            if out.get("modified_files"):
+                mf = out["modified_files"]
+                entry["modified_files"] = list(mf) if isinstance(mf, list) else [str(mf)]
+            if out.get("agent_diagnostics"):
+                ad = out["agent_diagnostics"]
+                if isinstance(ad, dict):
+                    entry["agent_diagnostics"] = {str(k): str(v) for k, v in ad.items()}
+                else:
+                    entry["agent_diagnostics"] = str(ad)
+            if entry:
+                result[pid] = entry
+        return result if result else None
 
     def _serialize_last_review(self, step_outputs: dict) -> str | None:
         review = step_outputs.get("review_verdict")
@@ -3999,52 +2056,44 @@ class WorkflowExecutor:
             if "python_version" not in normalized:
                 normalized["python_version"] = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
-        # phase_1_project_analysis: bind project_dir to framework context, not model output
+        # phase_1_project_analysis: inject project_dir
         if "project_analysis" in phase_id or phase_id == "phase_1":
-            normalized["project_dir"] = prompt_context.get("project_dir", self.project_dir)
-            self._normalize_project_analysis_variant_count(normalized)
-            normalize_serving_phase1_surface(normalized)
+            if "project_dir" not in normalized:
+                normalized["project_dir"] = prompt_context.get("project_dir", self.project_dir)
 
         # phase_3_entry_script: inject entry_script_path
         if "entry_script" in phase_id or phase_id == "phase_3":
-            ph1 = state.get("phase_1_project_analysis") or state.get("phase_1")
             if "entry_script_path" not in normalized:
+                ph1 = state.get("phase_1_project_analysis") or state.get("phase_1")
                 if isinstance(ph1, dict) and ph1.get("entry_script"):
                     normalized["entry_script_path"] = ph1["entry_script"]
                 elif prompt_context.get("entry_script"):
                     normalized["entry_script_path"] = prompt_context["entry_script"]
-            if isinstance(ph1, dict) and ph1.get("migration_route") in SERVING_ROUTES:
-                route = str(ph1["migration_route"])
-                normalize_serving_phase3_contract(
-                    normalized,
-                    route=route,
-                    project_dir=str(self.project_dir),
-                    phase1_output=ph1,
-                )
-            elif normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(state, prompt_context):
-                _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
-                normalized["project_dir"] = str(self.project_dir)
-            variant_overlay = expanded_variant_contract_from_outputs(state)
-            if variant_overlay:
-                apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
-                ensure_strict_expanded_variant_validation_script(
-                    normalized,
-                    variant_overlay,
-                    project_dir=str(self.project_dir),
-                )
+            workflow_globals = getattr(getattr(self, "workflow", None), "globals", None) or {}
+            if self._custom_op_route_disabled(workflow_globals):
+                normalized = self._strip_custom_op_contract_fields(normalized)
+            else:
+                if self._custom_op_required_signal(state, prompt_context):
+                    _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
+            normalized = self._normalize_phase3_container_paths(
+                normalized, prompt_context,
+            )
 
         if "phase_35" in phase_id or "static_validate" in phase_id:
             phase_3_output = state.get("phase_3_entry_script")
-            if isinstance(phase_3_output, dict) and phase_3_output.get("entry_script_kind") == "custom_op_full_validation":
+            workflow_globals = getattr(getattr(self, "workflow", None), "globals", None) or {}
+            if (
+                not self._custom_op_route_disabled(workflow_globals)
+                and isinstance(phase_3_output, dict)
+                and phase_3_output.get("entry_script_kind") == "custom_op_full_validation"
+            ):
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
-                entry_script_path = phase_3_output.get("entry_script_path")
-                if isinstance(entry_script_path, str) and entry_script_path.strip():
-                    normalized.setdefault("entry_script_path", entry_script_path)
-            if expanded_variant_contract_from_outputs(state):
-                normalized["expanded_variant_static_required"] = True
 
-        if phase_id == "analyze_error" or normalized.get("repair_role") in {"dependency_fixer", "code_adapter", "operator_fixer"}:
+        if (
+            not self._custom_op_route_disabled(getattr(getattr(self, "workflow", None), "globals", None) or {})
+            and (phase_id == "analyze_error" or normalized.get("repair_role") in {"dependency_fixer", "code_adapter", "operator_fixer"})
+        ):
             history_text = str(prompt_context.get("previous_outputs", ""))
             normalized = force_custom_op_operator_routing_if_needed(
                 normalized,
@@ -4056,8 +2105,17 @@ class WorkflowExecutor:
         return normalized
 
     @staticmethod
-    def _normalize_project_analysis_variant_count(output: dict[str, Any]) -> None:
-        normalize_project_analysis_expanded_variants(cast(dict[str, object], output))
+    def _custom_op_route_disabled(workflow_globals: Mapping[str, object]) -> bool:
+        if workflow_globals.get("custom_op_route_enabled") is False:
+            return True
+        return workflow_globals.get("disable_custom_op_contract_injection") is True
+
+    @staticmethod
+    def _strip_custom_op_contract_fields(output: dict[str, Any]) -> dict[str, Any]:
+        stripped = dict(output)
+        for field in CUSTOM_OP_CONTRACT_KEYS:
+            stripped.pop(field, None)
+        return stripped
 
     @classmethod
     def _custom_op_required_signal(cls, *values: object) -> bool:
@@ -4075,15 +2133,26 @@ class WorkflowExecutor:
     def _custom_op_signal(cls, value: object) -> bool | None:
         if isinstance(value, str):
             if any(pattern.search(value) for pattern in CUSTOM_OP_NEGATIVE_PATTERNS):
-                return False
+                return None
+            lowered = value.lower()
+            if any(term.lower() in lowered for term in CUSTOM_OP_REQUIRED_TERMS):
+                return True
             return None
         if isinstance(value, dict):
-            if has_custom_op_contract(value):
+            if value.get("entry_script_kind") == "custom_op_full_validation":
                 return True
-            if has_explicit_no_custom_op_contract(value):
+            if value.get("custom_op_detected") is True:
+                return True
+            if value.get("custom_op_detected") is False:
                 return False
+            if any(key in value for key in CUSTOM_OP_CONTRACT_KEYS):
+                return True
             custom_op_surface = value.get("custom_op_surface")
             if isinstance(custom_op_surface, dict):
+                if custom_op_surface.get("custom_op_detected") is True:
+                    return True
+                if custom_op_surface.get("custom_op_detected") is False:
+                    return False
                 return cls._custom_op_signal_from_iterable(
                     item for key, item in value.items() if key not in {"_meta", "custom_op_surface"}
                 )
@@ -4100,16 +2169,53 @@ class WorkflowExecutor:
 
     @classmethod
     def _custom_op_signal_from_iterable(cls, values: Iterable[object]) -> bool | None:
-        saw_negative = False
         for item in values:
             signal = cls._custom_op_signal(item)
-            if signal is True:
-                return True
-            if signal is False:
-                saw_negative = True
-        if saw_negative:
-            return False
+            if signal is not None:
+                return signal
         return None
+
+    def _normalize_phase3_container_paths(
+        self,
+        output: dict,
+        prompt_context: dict,
+    ) -> dict:
+        """Rewrite host-visible path fields when the model returns container paths.
+
+        Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
+        is NOT rewritten.
+        """
+        from pathlib import Path
+
+        project_dir = prompt_context.get("project_dir") or getattr(self, "project_dir", None)
+        container_workdir = (
+            prompt_context.get("container_workdir")
+            or prompt_context.get("container_project_dir")
+        )
+        if not project_dir or not container_workdir:
+            return output
+
+        if not project_dir.startswith("/"):
+            try:
+                project_dir = str(Path(project_dir).resolve())
+            except OSError:
+                return output
+
+        normalized = dict(output)
+
+        entry = normalized.get("entry_script_path")
+        if isinstance(entry, str) and entry.strip():
+            normalized["entry_script_path"] = _rewrite_container_to_host_path(
+                entry, project_dir, container_workdir,
+            )
+
+        reports = normalized.get("reports_dir")
+        if isinstance(reports, str) and reports.strip():
+            normalized["reports_dir"] = _rewrite_container_to_host_path(
+                reports, project_dir, container_workdir,
+            )
+
+        return normalized
 
     # ── Shell phase ─────────────────────────────────────────────────────
 
@@ -4124,6 +2230,8 @@ class WorkflowExecutor:
         loop_state: dict | None = None,
     ) -> tuple[str, dict]:
         """Execute a shell command with OOM-safe output tailing."""
+        from core.execution_backend import ContainerBackend
+
         # 1. Resolve command
         cmd = self.resolver.resolve(
             getattr(phase, "command", "") or "",
@@ -4150,55 +2258,127 @@ class WorkflowExecutor:
             cwd = cmd["cwd"]
 
         entry_script_command = self._is_phase5_entry_script_command(phase, loop_vars)
-        current_run_entry_script = entry_script_command or getattr(phase, "id", "") == "run_entry_script"
+        timeout = phase.timeout
+
+        # Container backend path
+        if isinstance(self.exec_backend, ContainerBackend):
+            return self._execute_shell_phase_container(
+                phase, cmd, cwd, entry_script_command, timeout, state, context,
+                loop_vars=loop_vars, loop_state=loop_state,
+            )
+
+        # Local path (existing code, unchanged)
+        return self._execute_shell_phase_local(
+            phase, cmd, cwd, entry_script_command, timeout, state, context,
+            loop_vars=loop_vars, loop_state=loop_state,
+        )
+
+    def _execute_shell_phase_container(
+        self,
+        phase: PhaseDefinition,
+        cmd: Any,
+        cwd: str,
+        entry_script_command: bool,
+        timeout: int | None,
+        state: dict,
+        context: dict,
+        *,
+        loop_vars: dict | None = None,
+        loop_state: dict | None = None,
+    ) -> tuple[str, dict]:
+        backend: ContainerBackend = self.exec_backend
         run_cmd: str | list[str]
-        run_shell = not entry_script_command
+        run_env: dict[str, str] | None = None
         if entry_script_command:
-            run_cmd = shlex.split(str(cmd))
+            tokens = shlex.split(str(cmd))
+            run_env, stripped = _extract_env_prefix(str(cmd))
+            if stripped:
+                run_cmd = shlex.split(stripped)
+            else:
+                run_cmd = tokens
         else:
             run_cmd = str(cmd)
 
-        # 3. Resolve timeout; None means subprocess.run has no timeout.
-        timeout = phase.timeout
+        try:
+            result = backend.run(
+                run_cmd, cwd=cwd, env=run_env or None, timeout=timeout,
+            )
+            exit_code = result.exit_code
+            stdout = result.stdout
+            stderr = result.stderr
+            duration = result.duration
+        except subprocess.TimeoutExpired:
+            exit_code = 124
+            duration = timeout if timeout else 0
+            stdout = ""
+            stderr = f"Execution timed out after {timeout}s"
+        except Exception as exc:
+            exit_code = 1
+            duration = 0
+            stdout = ""
+            stderr = str(exc)
 
-        preflight_result = self._custom_op_opp_preflight_for_entry_script(
-            state,
-            context,
-            loop_vars,
-            current_run_entry_script,
-        )
-        if preflight_result is not None and preflight_result.get("passed") is not True:
-            stderr = format_custom_op_opp_preflight_failure(preflight_result)
-            captured = {
-                "exit_code": 1,
-                "stdout": "",
-                "stderr": stderr,
-                "duration": 0,
-                "command": str(cmd),
-                "custom_op_opp_preflight": preflight_result,
-            }
-            if loop_state is not None:
-                loop_state["script_exit_code"] = 1
-                loop_state["script_stdout"] = ""
-                loop_state["script_stderr"] = stderr
-                loop_state["script_duration"] = 0
-                loop_state["custom_op_opp_preflight"] = preflight_result
-            on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
-            if on_failure != "break":
-                return ("success", captured)
+        captured = {
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "duration": round(duration, 3),
+            "command": str(cmd),
+        }
+
+        if loop_state is not None:
+            loop_state["script_exit_code"] = exit_code
+            loop_state["script_stdout"] = stdout
+            loop_state["script_stderr"] = stderr
+            loop_state["script_duration"] = captured["duration"]
+
+        on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
+        if exit_code != 0 and on_failure != "break":
+            return ("success", captured)
+        if exit_code != 0:
             return ("failure", captured)
+        return ("success", captured)
+
+    def _execute_shell_phase_local(
+        self,
+        phase: PhaseDefinition,
+        cmd: Any,
+        cwd: str,
+        entry_script_command: bool,
+        timeout: int | None,
+        state: dict,
+        context: dict,
+        *,
+        loop_vars: dict | None = None,
+        loop_state: dict | None = None,
+    ) -> tuple[str, dict]:
+        run_cmd: str | list[str]
+        run_shell = not entry_script_command
+        run_env: dict[str, str] | None = None
+        if entry_script_command:
+            tokens = shlex.split(str(cmd))
+            run_env, stripped = _extract_env_prefix(str(cmd))
+            if stripped:
+                run_cmd = shlex.split(stripped)
+            else:
+                run_cmd = tokens
+            run_shell = False
+        else:
+            run_cmd = str(cmd)
 
         out_path = err_path = None
-        start_t = time.time()
         try:
-            # 4. Redirect to temp files
             with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as out_f, \
                  tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as err_f:
                 out_path = out_f.name
                 err_path = err_f.name
 
+            start_t = time.time()
+            env_for_subprocess = None
+            if run_env:
+                env_for_subprocess = {**os.environ, **run_env}
             result = subprocess.run(
-                run_cmd, shell=run_shell, cwd=cwd,
+                run_cmd, shell=run_shell, cwd=cwd, env=env_for_subprocess,
                 stdout=open(out_path, "w"), stderr=open(err_path, "w"),
                 timeout=timeout,
             )
@@ -4206,7 +2386,6 @@ class WorkflowExecutor:
 
             exit_code = result.returncode
 
-            # 5. Read tail
             stdout = self._read_tail(out_path)
             stderr = self._read_tail(err_path)
 
@@ -4236,19 +2415,13 @@ class WorkflowExecutor:
             "duration": round(duration, 3),
             "command": str(cmd),
         }
-        if current_run_entry_script:
-            captured["run_entry_script_started_at"] = start_t
 
-        # 7. Store in loop_state
         if loop_state is not None:
             loop_state["script_exit_code"] = exit_code
             loop_state["script_stdout"] = stdout
             loop_state["script_stderr"] = stderr
             loop_state["script_duration"] = captured["duration"]
-            if current_run_entry_script:
-                loop_state["run_entry_script_started_at"] = start_t
 
-        # on_failure handling
         on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
         if exit_code != 0 and on_failure != "break":
             return ("success", captured)
@@ -4264,25 +2437,6 @@ class WorkflowExecutor:
         if raw_command == "${loop_vars.entry_script}":
             return True
         return bool(loop_vars and str(loop_vars.get("entry_script", "")) == str(raw_command))
-
-    def _custom_op_opp_preflight_for_entry_script(
-        self,
-        state: dict,
-        context: dict,
-        loop_vars: dict[str, Any] | None,
-        entry_script_command: bool,
-    ) -> dict[str, object] | None:
-        if not entry_script_command:
-            return None
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(contract):
-            return None
-        project_dir = self.project_dir
-        if loop_vars and isinstance(loop_vars.get("project_dir"), str):
-            project_dir = str(loop_vars["project_dir"])
-        elif isinstance(context.get("PROJECT_DIR"), str):
-            project_dir = str(context["PROJECT_DIR"])
-        return validate_custom_op_opp_preflight(cast(dict[str, object], contract), project_dir)
 
     def _read_tail(self, path: str, max_bytes: int = _MAX_TAIL) -> str:
         """Read at most last *max_bytes* of a file."""
@@ -4319,16 +2473,34 @@ class WorkflowExecutor:
             return ("success", {"operation": operation, "error_signature": error_sig})
 
         if operation == "rule_based_migration":
+            backend = _params.get("backend", "").lower() if isinstance(_params.get("backend"), str) else ""
+            workflow_rule_migration = getattr(self.workflow, "rule_migration", None)
+            platform_strategy = self.platform_policy.default_rule_migration_strategy
+
+            migrator = create_migrator_resolved(
+                workflow_params_backend=backend if backend else None,
+                workflow_rule_migration=workflow_rule_migration,
+                platform_policy_strategy=platform_strategy,
+            )
+            result = migrator.migrate_directory(
+                self.project_dir,
+                pattern=str(_params.get("pattern", "*.py")),
+            )
+            strategy_id = resolve_rule_migration_strategy(
+                workflow_params_backend=backend if backend else None,
+                workflow_rule_migration=workflow_rule_migration,
+                platform_policy_strategy=platform_strategy,
+            )
+            return ("success", {"operation": operation, "result": result, "backend": backend or None, "strategy": strategy_id})
+
+        if operation == "ppu_rule_based_migration":
             pattern = _params.get("pattern", "*.py")
-            migrator = RuleBasedMigrator()
+            migrator = PPURuleBasedMigrator()
             result = migrator.migrate_directory(self.project_dir, pattern=str(pattern))
-            return ("success", {"operation": operation, "result": result})
+            return ("success", {"operation": operation, "result": result, "backend": "ppu"})
 
         if operation == "custom_op_final_gate":
             return self._execute_custom_op_final_gate(state, context, loop_vars, loop_state)
-
-        if operation == "serving_final_gate":
-            return self._execute_serving_final_gate(state, context, loop_vars, loop_state)
 
         # Generic: just return
         if not operation:
@@ -4368,23 +2540,13 @@ class WorkflowExecutor:
             self._record_custom_op_gate_failure(loop_state, result)
             return "success", result
         try:
-            gate_stat = gate_path.stat()
+            gate_size = gate_path.stat().st_size
         except OSError as exc:
             result["errors"] = [f"custom-op final gate report could not be stat'ed: {exc}"]
             self._record_custom_op_gate_failure(loop_state, result)
             return "success", result
-        gate_size = gate_stat.st_size
         if gate_size > _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
             result["errors"] = [f"custom-op final gate report too large: {gate_path}"]
-            self._record_custom_op_gate_failure(loop_state, result)
-            return "success", result
-
-        run_started_at = loop_state.get("run_entry_script_started_at") if loop_state is not None else None
-        if isinstance(run_started_at, (int, float)) and gate_stat.st_mtime < float(run_started_at):
-            result["errors"] = [
-                "custom-op final gate report is stale: "
-                f"{gate_path} predates the current run_entry_script execution"
-            ]
             self._record_custom_op_gate_failure(loop_state, result)
             return "success", result
 
@@ -4402,9 +2564,10 @@ class WorkflowExecutor:
             return "success", result
 
         gate_map = cast(dict[str, object], gate_data)
-        variant_overlay = expanded_variant_contract_from_outputs(state)
-        apply_expanded_variant_contract(gate_map, variant_overlay, include_required_checks=False)
-        validation = validate_custom_op_final_gate(gate_map, project_root=reports_dir.parent)
+        validation = validate_custom_op_final_gate(
+            gate_map, project_root=reports_dir.parent,
+            platform_policy=self.platform_policy,
+        )
         result["passed"] = validation["passed"]
         result["errors"] = validation["errors"]
         result["summary"] = {
@@ -4422,7 +2585,15 @@ class WorkflowExecutor:
 
     @staticmethod
     def _has_custom_op_contract(contract: dict[str, Any]) -> bool:
-        return has_custom_op_contract(contract)
+        return any(
+            field in contract
+            for field in (
+                "entry_script_kind",
+                "reports_dir",
+                "required_report_paths",
+                "required_checks",
+            )
+        )
 
     def _resolve_custom_op_reports_dir(
         self,
@@ -4453,108 +2624,6 @@ class WorkflowExecutor:
         existing_stderr = str(loop_state.get("script_stderr") or "")
         loop_state["script_stderr"] = f"{existing_stderr}\n{gate_message}".strip()
         loop_state["custom_op_final_gate"] = result
-
-    def _execute_serving_final_gate(
-        self,
-        state: dict,
-        context: dict,
-        loop_vars: dict | None,
-        loop_state: dict | None,
-    ) -> tuple[str, dict]:
-        route = self._phase5_workflow_route(state)
-        if route not in SERVING_ROUTES:
-            result = {"operation": "serving_final_gate", "skipped": True, "passed": True, "route": route}
-            if loop_state is not None:
-                loop_state["serving_final_gate"] = result
-            return "success", result
-
-        gate_path = self._resolve_serving_final_gate_path(state, context, loop_vars)
-        result: dict[str, Any] = {
-            "operation": "serving_final_gate",
-            "skipped": False,
-            "path": str(gate_path),
-            "passed": False,
-            "route": route,
-            "errors": [],
-        }
-
-        if not gate_path.exists():
-            result["errors"] = [f"serving final gate report missing: {gate_path}"]
-            self._record_serving_gate_failure(loop_state, result)
-            return "success", result
-        try:
-            gate_stat = gate_path.stat()
-        except OSError as exc:
-            result["errors"] = [f"serving final gate report could not be stat'ed: {exc}"]
-            self._record_serving_gate_failure(loop_state, result)
-            return "success", result
-        if gate_stat.st_size > _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
-            result["errors"] = [f"serving final gate report too large: {gate_path}"]
-            self._record_serving_gate_failure(loop_state, result)
-            return "success", result
-        run_started_at = loop_state.get("run_entry_script_started_at") if loop_state is not None else None
-        if isinstance(run_started_at, (int, float)) and gate_stat.st_mtime < float(run_started_at):
-            result["errors"] = [f"serving final gate report is stale: {gate_path} predates current run_entry_script execution"]
-            self._record_serving_gate_failure(loop_state, result)
-            return "success", result
-        try:
-            with gate_path.open("r", encoding="utf-8") as handle:
-                gate_data = cast(object, json.load(handle))
-        except (OSError, json.JSONDecodeError) as exc:
-            result["errors"] = [f"serving final gate report could not be read: {exc}"]
-            self._record_serving_gate_failure(loop_state, result)
-            return "success", result
-        if not isinstance(gate_data, dict):
-            result["errors"] = ["serving final gate report must be a JSON object"]
-            self._record_serving_gate_failure(loop_state, result)
-            return "success", result
-        gate_map = cast(dict[str, object], gate_data)
-        validation = validate_serving_final_gate(gate_map, expected_route=route)
-        result["passed"] = validation["passed"]
-        result["errors"] = validation["errors"]
-        result["summary"] = {
-            "migration_route": gate_map.get("migration_route"),
-            "serving_framework": gate_map.get("serving_framework"),
-            "full_migration_status": gate_map.get("full_migration_status"),
-        }
-        if loop_state is not None:
-            loop_state["serving_final_gate"] = result
-        if not validation["passed"]:
-            self._record_serving_gate_failure(loop_state, result)
-        return "success", result
-
-    def _resolve_serving_final_gate_path(self, state: dict[str, Any], context: dict, loop_vars: dict | None) -> Path:
-        contract = state.get("phase_3_entry_script")
-        project_dir = self.project_dir
-        if loop_vars and isinstance(loop_vars.get("project_dir"), str):
-            project_dir = loop_vars["project_dir"]
-        elif isinstance(context.get("PROJECT_DIR"), str):
-            project_dir = context["PROJECT_DIR"]
-        if isinstance(contract, dict):
-            paths = contract.get("required_report_paths")
-            if isinstance(paths, list):
-                for item in cast(list[object], paths):
-                    if isinstance(item, str) and "serving_final_gate" in item:
-                        candidate = Path(item).expanduser()
-                        return candidate if candidate.is_absolute() else Path(project_dir).resolve() / candidate
-            reports_dir = contract.get("serving_reports_dir")
-            if isinstance(reports_dir, str) and reports_dir.strip():
-                candidate = Path(reports_dir).expanduser()
-                base = candidate if candidate.is_absolute() else Path(project_dir).resolve() / candidate
-                return base / "serving_final_gate.json"
-        return Path(project_dir).resolve() / "migration_reports" / "serving_final_gate.json"
-
-    @staticmethod
-    def _record_serving_gate_failure(loop_state: dict | None, result: dict[str, Any]) -> None:
-        if loop_state is None:
-            return
-        loop_state["script_exit_code"] = 1
-        errors = result.get("errors")
-        concise = "; ".join(str(error) for error in errors[:5]) if isinstance(errors, list) and errors else "serving final gate failed"
-        gate_message = f"Serving final evidence gate failed: {concise}"
-        existing_stderr = str(loop_state.get("script_stderr") or "")
-        loop_state["script_stderr"] = f"{existing_stderr}\n{gate_message}".strip()
-        loop_state["serving_final_gate"] = result
 
     # ── Python phase ────────────────────────────────────────────────────
 
@@ -4621,11 +2690,17 @@ class WorkflowExecutor:
             "iteration": loop_state.get("iteration", 0),
             "last_artifact_path": self._resolve_last_artifact_path(),
         }
+        entry_script = loop_vars.get("entry_script", "")
+        es = str(entry_script)
+        exec_cmd: str | list[str] = shlex.split(es) if isinstance(self.exec_backend, ContainerBackend) else es
+        review_ctx.update(_get_exec_ctx(self.exec_backend, command=exec_cmd))
         review_ctx.update(
             self._resolve_input_mapping(phase, state, context,
                                         loop_vars=loop_vars, loop_state=loop_state,
                                         loop_history=loop_history)
         )
+        self._inject_container_env_context(review_ctx)
+        self._inject_execution_environment_context(review_ctx)
 
         prompt_text = self.prompt_loader.load_prompt(phase.prompt_template, review_ctx)
         prompt_text, _explicit_skill_bundle = self._append_explicit_runtime_skill_markdown(
@@ -4636,27 +2711,18 @@ class WorkflowExecutor:
         parsed: dict = {}
         active_prompt = prompt_text
         for attempt in range(1, max_retry + 1):
-            raw_response = self.session_mgr.send_command(sid, active_prompt, timeout=self._resolve_top_level_llm_timeout(phase))
+            raw_response = self.session_mgr.send_command(sid, active_prompt, timeout=phase.timeout)
             parsed = extract_json_response(raw_response)
             self._raise_for_session_error_output(parsed, phase.id)
-            response_shape_errors = self._review_phase_response_shape_errors(parsed, raw_response)
-            if response_shape_errors:
-                if attempt < max_retry:
-                    active_prompt = self._build_review_phase_correction_prompt(response_shape_errors)
-                    continue
-                parsed = {
-                    "verdict": "unknown",
-                    "cpu_fallback_detected": False,
-                    "cpu_fallback_necessary": False,
-                    "alternative_suggestions": "",
-                    "reasoning": "Review response failed validation: " + "; ".join(response_shape_errors),
-                }
-                break
             verdict = str(parsed.get("verdict", "")).lower()
             if verdict in ("accept", "reject"):
                 break
             if attempt < max_retry:
-                active_prompt = self._build_review_phase_correction_prompt(["verdict must be accept or reject"])
+                active_prompt = (
+                    "Your previous response could not be parsed as valid JSON "
+                    "or was missing a valid verdict.\n"
+                    "Please return valid JSON with verdict field."
+                )
 
         # 5. Parse verdict
         if not parsed:
@@ -4701,35 +2767,6 @@ class WorkflowExecutor:
         }
 
         return {"verdict": verdict, "reasoning": reasoning, "status": status}
-
-    @classmethod
-    def _review_phase_response_shape_errors(cls, parsed: dict[str, Any], raw_response: str) -> list[str]:
-        errors: list[str] = []
-        if not parsed:
-            if raw_response.strip():
-                errors.append("response contained no parseable JSON object")
-            else:
-                errors.append("response was empty")
-            return errors
-        if cls._is_status_only_llm_response(parsed):
-            errors.append("review response returned status/progress-only JSON instead of the complete review schema")
-        missing_keys = [key for key in REVIEW_PHASE_REQUIRED_KEYS if key not in parsed]
-        if missing_keys:
-            errors.append("Missing required review JSON keys: " + ", ".join(missing_keys))
-        return errors
-
-    @staticmethod
-    def _build_review_phase_correction_prompt(errors: list[str]) -> str:
-        error_lines = "\n".join(f"- {error}" for error in errors)
-        return (
-            "Your previous review response failed validation:\n"
-            f"{error_lines}\n\n"
-            "Return one complete replacement JSON object for this review phase only. "
-            "It must include verdict, cpu_fallback_detected, cpu_fallback_necessary, "
-            "alternative_suggestions, and reasoning. "
-            "Do not return a patch, commentary, acknowledgement, or status/progress-only JSON. "
-            "Return only the corrected JSON object."
-        )
 
     def _format_loop_history(self, loop_history: list) -> str:
         """Format loop history into a markdown-style summary."""
@@ -4862,28 +2899,6 @@ class WorkflowExecutor:
             # Merge step_outputs for next iterations
             loop_state.update(iter_result.get("step_outputs", {}))
             step_outputs.update(iter_result.get("step_outputs", {}))
-            if iter_status == "communication_error":
-                recovered = self._recover_operator_repair_from_loop_boundary(
-                    step_outputs=step_outputs,
-                    loop_state=loop_state,
-                    state=state,
-                    context=context,
-                    loop_vars=loop_vars,
-                )
-                if recovered is not None:
-                    recovered_phase_id, recovered_output = recovered
-                    self._apply_operator_repair_recovery(
-                        phase_id=recovered_phase_id,
-                        recovered_output=recovered_output,
-                        step_outputs=step_outputs,
-                        loop_state=loop_state,
-                    )
-                    iter_status = "success"
-                    iter_result["status"] = "success"
-                    logger.info(
-                        "Recovered Phase 5 operator repair at loop boundary after validating current strict custom-op reports: phase_id=%s",
-                        recovered_phase_id,
-                    )
             self._stamp_pending_experience_verifications(loop_state, iteration)
             verification_signal = self._record_pending_experience_verification(
                 loop_state, step_outputs, iteration
@@ -4910,6 +2925,9 @@ class WorkflowExecutor:
                 history_entry["entry_script_action"] = revision_result
             if verification_signal:
                 history_entry["experience_verification"] = verification_signal
+            fixer_outputs = self._collect_fixer_outputs(step_outputs)
+            if fixer_outputs:
+                history_entry["fixer_outputs"] = fixer_outputs
             loop_history.append(history_entry)
             loop_state["iteration"] = iteration
 
@@ -4924,14 +2942,6 @@ class WorkflowExecutor:
                 break
 
             if step_outputs.get("entry_script_revision_applied"):
-                loop_state["stagnation_count"] = 0
-                continue
-
-            if iter_status == "communication_error":
-                loop_state["stagnation_count"] = 0
-                continue
-
-            if self._iteration_made_repair_progress(step_outputs):
                 loop_state["stagnation_count"] = 0
                 continue
 
@@ -4953,18 +2963,45 @@ class WorkflowExecutor:
                 final_status = "skipped"
                 break
 
+            # 4e. Post-repair canonical rerun (last iteration only)
+            # When a repair fixer executed in the final iteration but the stale
+            # script_exit_code is still nonzero, re-run the sub-workflow once to
+            # obtain a fresh exit code and let success-conditioned phases (e.g.
+            # custom_op_final_gate) validate the repaired state.
+            if iteration == max_iterations and loop_state.get("script_exit_code", 0) != 0:
+                fixer_outputs = self._collect_fixer_outputs(step_outputs)
+                if fixer_outputs:
+                    logger.info(
+                        "Last-iteration post-repair canonical rerun for phase '%s' (fixer: %s)",
+                        phase.id, list(fixer_outputs.keys()),
+                    )
+                    # Save experience-tracking state that the bonus
+                    # re-run would queue fresh items into but must not
+                    # overwrite the already-stamped records.
+                    _pending = loop_state.get("pending_experience_verifications")
+                    _verified = loop_state.get("experience_verifications")
+                    bonus_result = self._run_sub_workflow(
+                        sub_wf_def, loop_vars, state, context, sub_wf_phases,
+                        sub_wf_blocks, step_outputs, loop_history, loop_state,
+                    )
+                    loop_state.update(bonus_result.get("step_outputs", {}))
+                    # Restore experience-tracking records so the bonus
+                    # pass never corrupts stamped/verified state.
+                    if _pending is not None:
+                        loop_state["pending_experience_verifications"] = _pending
+                    if _verified is not None:
+                        loop_state["experience_verifications"] = _verified
+                    # Re-check stop conditions after bonus pass
+                    bonus_stop = self._check_stop_conditions(
+                        stop_conds, loop_state, self.workflow.globals or {}
+                    )
+                    if bonus_stop:
+                        final_status = bonus_stop
+                        logger.info("Post-repair stop condition matched: '%s'", bonus_stop)
+                        break
+
         if final_status == "success" and loop_state.get("script_exit_code") != 0:
             final_status = "failure"
-        fail_closed_summary = self._custom_op_fail_closed_summary(loop_state)
-        if fail_closed_summary and final_status in {"stagnation", "failure"}:
-            terminal_status = (
-                CUSTOM_OP_STAGNATION_FAIL_CLOSED_STATUS
-                if final_status == "stagnation"
-                else CUSTOM_OP_FAIL_CLOSED_STATUS
-            )
-            final_status = terminal_status
-            fail_closed_summary["terminal_status"] = terminal_status
-            loop_state["custom_op_fail_closed"] = fail_closed_summary
 
         # 5. Store final result
         self.state[phase.id] = {
@@ -4976,100 +3013,9 @@ class WorkflowExecutor:
 
         return {
             "status": final_status,
-            "final_status": final_status,
             "iterations": len(loop_history),
             "loop_history": loop_history,
             "loop_state": loop_state,
-        }
-
-    def _recover_operator_repair_from_loop_boundary(
-        self,
-        *,
-        step_outputs: dict[str, Any],
-        loop_state: dict[str, Any],
-        state: dict[str, Any],
-        context: dict[str, Any],
-        loop_vars: dict[str, Any] | None,
-    ) -> tuple[str, dict[str, object]] | None:
-        started_at = loop_state.get("run_entry_script_started_at")
-        if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
-            started_at = None
-        for phase_id in ("fix_operator", "imp_fix_operator"):
-            phase_output = step_outputs.get(phase_id, loop_state.get(phase_id))
-            if not self._operator_repair_communication_failure(phase_id, phase_output):
-                continue
-            recovered_output = self._recover_operator_repair_from_current_final_gate(
-                phase_id=phase_id,
-                state=state,
-                context=context,
-                loop_vars=loop_vars,
-                command_started_at=started_at,
-            )
-            if recovered_output is not None:
-                return phase_id, recovered_output
-        return None
-
-    @staticmethod
-    def _apply_operator_repair_recovery(
-        *,
-        phase_id: str,
-        recovered_output: dict[str, object],
-        step_outputs: dict[str, Any],
-        loop_state: dict[str, Any],
-    ) -> None:
-        step_outputs[phase_id] = recovered_output
-        loop_state[phase_id] = recovered_output
-        step_outputs["script_exit_code"] = 0
-        loop_state["script_exit_code"] = 0
-        step_outputs["script_stderr"] = ""
-        loop_state["script_stderr"] = ""
-        gate = recovered_output.get("custom_op_final_gate")
-        if isinstance(gate, dict):
-            step_outputs["custom_op_final_gate"] = gate
-            loop_state["custom_op_final_gate"] = gate
-
-    @staticmethod
-    def _custom_op_fail_closed_summary(loop_state: dict[str, Any]) -> dict[str, Any] | None:
-        gate = loop_state.get("custom_op_final_gate")
-        if not isinstance(gate, dict) or gate.get("skipped") is True or gate.get("passed") is not False:
-            return None
-        summary = gate.get("summary") if isinstance(gate.get("summary"), dict) else {}
-        summary_map = cast(dict[str, Any], summary)
-        errors = gate.get("errors") if isinstance(gate.get("errors"), list) else []
-        error_text = "\n".join(str(error) for error in cast(list[object], errors)).lower()
-        remaining_entries = summary_map.get("remaining_entries")
-        full_status = str(summary_map.get("full_migration_status") or "").strip()
-        missing_strict_terms = (
-            "opp",
-            "op_host",
-            "op_kernel",
-            "ascend",
-            "cann",
-            "producer",
-            "runtime-loaded",
-            "runtime loaded",
-            "native artifact",
-            "remaining_entries",
-            "remaining entries",
-            "generated opp inventory",
-            "generated operators not covered",
-            "generated opp operator entries",
-        )
-        remaining_positive = isinstance(remaining_entries, int) and not isinstance(remaining_entries, bool) and remaining_entries > 0
-        incomplete_status = bool(full_status and full_status != "FULL_PASS")
-        strict_error = any(term in error_text for term in missing_strict_terms)
-        if not (remaining_positive or incomplete_status or strict_error):
-            return None
-        return {
-            "migration_passed": False,
-            "report_generation_succeeded": None,
-            "blocker": "missing_strict_ascend_cann_opp_evidence",
-            "inventory_count": summary_map.get("inventory_count"),
-            "manifest_entries": summary_map.get("manifest_entries"),
-            "closed_pass_entries": summary_map.get("closed_pass_entries"),
-            "remaining_entries": remaining_entries,
-            "full_migration_status": full_status or None,
-            "errors": [str(error) for error in cast(list[object], errors)[:10]],
         }
 
     def _execute_orchestration_phase(self, phase: PhaseDefinition, state: dict, context: dict) -> dict:
@@ -5153,7 +3099,6 @@ class WorkflowExecutor:
             if not isinstance(imp_phase, dict):
                 continue
             pid = imp_phase.get("id", "unnamed")
-            active_phase_id = str(pid)
             ptype = (imp_phase.get("type") or "llm").lower()
 
             cond = imp_phase.get("condition")
@@ -5185,66 +3130,28 @@ class WorkflowExecutor:
                     prompt_text, _explicit_skill_bundle = self._append_explicit_runtime_skill_markdown(
                         prompt_text, mini, agent_id
                     )
-                    use_custom_op_gate_polling = self._should_use_custom_op_operator_gate_polling(str(pid), state)
-                    sid = self._resolve_sub_workflow_llm_session(
-                        agent_id=agent_id,
-                        phase_id=str(pid),
-                        state=state,
-                        loop_state=loop_state,
-                        use_custom_op_gate_polling=use_custom_op_gate_polling,
-                    )
-                    timeout = self._resolve_sub_workflow_llm_timeout(mini)
-                    command_started_at = time.time()
-                    if use_custom_op_gate_polling:
-                        raw_response = self._send_custom_op_operator_repair_with_gate_polling(
-                            phase_id=str(pid),
-                            agent_id=agent_id,
-                            session_id=sid,
-                            prompt_text=prompt_text,
-                            timeout=timeout,
-                            state=state,
-                            context=context,
-                            loop_vars={},
-                            command_started_at=command_started_at,
-                        )
+                    if self.session_registry:
+                        try:
+                            sid = self.session_registry.resolve(agent_id)
+                        except KeyError:
+                            sid = self.session_mgr.get_or_create(
+                                role=agent_id, lifecycle="persistent")
                     else:
-                        raw_response = self._send_sub_workflow_llm_command(
-                            phase_id=pid,
-                            agent_id=agent_id,
-                            session_id=sid,
-                            prompt_text=prompt_text,
-                            timeout=timeout,
-                        )
+                        sid = self.session_mgr.get_or_create(
+                            role=agent_id, lifecycle="persistent")
+                    timeout = self._resolve_sub_workflow_llm_timeout(mini)
+                    raw_response = self._send_sub_workflow_llm_command(
+                        phase_id=pid,
+                        agent_id=agent_id,
+                        session_id=sid,
+                        prompt_text=prompt_text,
+                        timeout=timeout,
+                    )
                     output = extract_json_response(raw_response)
                     self._raise_for_session_error_output(output, pid)
                     if not output:
                         output = {"raw_response": raw_response}
                     if isinstance(output, dict):
-                        claimed_recovery = output.get("custom_op_final_gate_recovered") is True
-                        recovered_output = self._recover_operator_repair_from_current_final_gate(
-                            phase_id=str(pid),
-                            state=state,
-                            context=context,
-                            loop_vars={},
-                            command_started_at=command_started_at if 'command_started_at' in locals() else None,
-                        ) if claimed_recovery else None
-                        if recovered_output is not None:
-                            output = {**output, **recovered_output}
-                            step_outputs["script_exit_code"] = 0
-                            step_outputs["script_stderr"] = ""
-                            step_outputs["custom_op_final_gate"] = recovered_output.get("custom_op_final_gate")
-                        elif claimed_recovery:
-                            output = self._communication_failure_output({
-                                **output,
-                                "ok": False,
-                                "error": "custom-op operator repair claimed final-gate recovery without current strict OPP final gate FULL_PASS",
-                            })
-                        elif self._operator_repair_partial_response(str(pid), output):
-                            output = self._communication_failure_output({
-                                **output,
-                                "ok": False,
-                                "error": "custom-op operator repair returned partial/in-progress response before strict OPP final gate FULL_PASS",
-                            })
                         self._attach_experience_usage_report(step_outputs, pid, output)
                     step_outputs[pid] = output
                     if mini.output_as:
@@ -5277,67 +3184,28 @@ class WorkflowExecutor:
                                     prompt, _explicit_skill_bundle = self._append_explicit_runtime_skill_markdown(
                                         prompt, rest_mini, agent_id
                                     )
-                                    use_custom_op_gate_polling = self._should_use_custom_op_operator_gate_polling(str(next_id), state)
-                                    sid = self._resolve_sub_workflow_llm_session(
-                                        agent_id=agent_id,
-                                        phase_id=str(next_id),
-                                        state=state,
-                                        loop_state=loop_state,
-                                        use_custom_op_gate_polling=use_custom_op_gate_polling,
-                                    )
-                                    timeout = self._resolve_sub_workflow_llm_timeout(rest_mini)
-                                    active_phase_id = str(next_id)
-                                    command_started_at = time.time()
-                                    if use_custom_op_gate_polling:
-                                        raw = self._send_custom_op_operator_repair_with_gate_polling(
-                                            phase_id=str(next_id),
-                                            agent_id=agent_id,
-                                            session_id=sid,
-                                            prompt_text=prompt,
-                                            timeout=timeout,
-                                            state=state,
-                                            context=context,
-                                            loop_vars={},
-                                            command_started_at=command_started_at,
-                                        )
+                                    if self.session_registry:
+                                        try:
+                                            sid = self.session_registry.resolve(agent_id)
+                                        except KeyError:
+                                            sid = self.session_mgr.get_or_create(
+                                                role=agent_id, lifecycle="persistent")
                                     else:
-                                        raw = self._send_sub_workflow_llm_command(
-                                            phase_id=next_id,
-                                            agent_id=agent_id,
-                                            session_id=sid,
-                                            prompt_text=prompt,
-                                            timeout=timeout,
-                                        )
+                                        sid = self.session_mgr.get_or_create(
+                                            role=agent_id, lifecycle="persistent")
+                                    timeout = self._resolve_sub_workflow_llm_timeout(rest_mini)
+                                    raw = self._send_sub_workflow_llm_command(
+                                        phase_id=next_id,
+                                        agent_id=agent_id,
+                                        session_id=sid,
+                                        prompt_text=prompt,
+                                        timeout=timeout,
+                                    )
                                     out = extract_json_response(raw)
                                     self._raise_for_session_error_output(out, next_id)
                                     if not out:
                                         out = {"raw_response": raw}
                                     if isinstance(out, dict):
-                                        claimed_recovery = out.get("custom_op_final_gate_recovered") is True
-                                        recovered_out = self._recover_operator_repair_from_current_final_gate(
-                                            phase_id=str(next_id),
-                                            state=state,
-                                            context=context,
-                                            loop_vars={},
-                                            command_started_at=command_started_at,
-                                        ) if claimed_recovery else None
-                                        if recovered_out is not None:
-                                            out = {**out, **recovered_out}
-                                            step_outputs["script_exit_code"] = 0
-                                            step_outputs["script_stderr"] = ""
-                                            step_outputs["custom_op_final_gate"] = recovered_out.get("custom_op_final_gate")
-                                        elif claimed_recovery:
-                                            out = self._communication_failure_output({
-                                                **out,
-                                                "ok": False,
-                                                "error": "custom-op operator repair claimed final-gate recovery without current strict OPP final gate FULL_PASS",
-                                            })
-                                        elif self._operator_repair_partial_response(active_phase_id, out):
-                                            out = self._communication_failure_output({
-                                                **out,
-                                                "ok": False,
-                                                "error": "custom-op operator repair returned partial/in-progress response before strict OPP final gate FULL_PASS",
-                                            })
                                         self._attach_experience_usage_report(step_outputs, next_id, out)
                                     step_outputs[next_id] = out
                                     if rest_mini.output_as:
@@ -5353,34 +3221,8 @@ class WorkflowExecutor:
                         context=context, loop_state=loop_state,
                     )
                     subprocess.run(str(cmd), shell=True, cwd=self.project_dir, timeout=self._mini_phase(imp_phase).timeout)
-            except SessionCommandError as exc:
-                phase_output = dict(exc.payload)
-                if self._operator_repair_communication_failure(active_phase_id, phase_output):
-                    recovered_output = self._recover_operator_repair_from_current_final_gate(
-                        phase_id=str(active_phase_id),
-                        state=state,
-                        context=context,
-                        loop_vars={},
-                        command_started_at=locals().get("command_started_at", time.time()),
-                    )
-                    if recovered_output is not None:
-                        phase_output = recovered_output
-                        step_outputs["script_exit_code"] = 0
-                        step_outputs["script_stderr"] = ""
-                        step_outputs["custom_op_final_gate"] = recovered_output["custom_op_final_gate"]
-                    else:
-                        phase_output = self._communication_failure_output(phase_output)
-                        logger.warning(
-                            "Improvement sub-phase '%s' session command failed; preserving original loop failure for retry: %s",
-                            active_phase_id,
-                            exc,
-                        )
-                    step_outputs[active_phase_id] = phase_output
-                    state[active_phase_id] = phase_output
-                else:
-                    logger.warning("Improvement phase '%s' failed: %s", active_phase_id, exc)
             except Exception as exc:
-                logger.warning("Improvement phase '%s' failed: %s", active_phase_id, exc)
+                logger.warning("Improvement phase '%s' failed: %s", pid, exc)
         if step_outputs:
             loop_state.update(step_outputs)
 
@@ -5449,7 +3291,6 @@ class WorkflowExecutor:
             # Execute based on type
             phase_status = "success"
             phase_output: Any = {}
-            command_started_at = time.time()
 
             try:
                 if phase_type == "shell":
@@ -5469,30 +3310,13 @@ class WorkflowExecutor:
                     self._inject_llm_baseline_context(input_ctx, mini, state)
                     self._inject_sub_workflow_context(input_ctx, phase_id, step_outputs, loop_vars, state, loop_history)
 
-                    if self._should_use_custom_op_operator_outer_loop_prompt(
-                        phase_id=str(phase_id),
-                        state=state,
-                        loop_history=loop_history,
-                        loop_state=loop_state,
-                    ):
-                        prompt_text = self._custom_op_operator_outer_loop_prompt(
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                            loop_history=loop_history,
-                            loop_state=loop_state,
+                    prompt_text = self.prompt_loader.load_prompt(
+                        mini.prompt_template, input_ctx
+                    )
+                    if not self._is_slim_repair_prompt_phase(phase_id):
+                        prompt_text = self._append_inherited_experience_markdown(
+                            prompt_text, phase_id, step_outputs
                         )
-                    else:
-                        prompt_template = self._prompt_template_for_llm_phase(
-                            phase_id=str(phase_id),
-                            default_template=mini.prompt_template,
-                            state=state,
-                        )
-                        prompt_text = self.prompt_loader.load_prompt(prompt_template, input_ctx)
-                        if not self._is_slim_repair_prompt_phase(phase_id):
-                            prompt_text = self._append_inherited_experience_markdown(
-                                prompt_text, phase_id, step_outputs
-                            )
 
                     timeout = self._resolve_sub_workflow_llm_timeout(mini)
 
@@ -5508,93 +3332,52 @@ class WorkflowExecutor:
                             step_outputs=step_outputs, loop_history=loop_history,
                             log_phase_id=phase_id,
                         )
-                    use_custom_op_gate_polling = self._should_use_custom_op_operator_gate_polling(str(phase_id), state)
-                    sid = self._resolve_sub_workflow_llm_session(
-                        agent_id=agent_id,
-                        phase_id=str(phase_id),
-                        state=state,
-                        loop_state=loop_state,
-                        use_custom_op_gate_polling=use_custom_op_gate_polling,
-                    )
-
-                    if use_custom_op_gate_polling:
-                        raw_response = self._send_custom_op_operator_repair_with_gate_polling(
-                            phase_id=str(phase_id),
-                            agent_id=agent_id,
-                            session_id=sid,
-                            prompt_text=prompt_text,
-                            timeout=timeout,
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                            command_started_at=command_started_at,
-                        )
+                    if self.session_registry:
+                        try:
+                            sid = self.session_registry.resolve(agent_id)
+                        except KeyError:
+                            sid = self.session_mgr.get_or_create(role=agent_id, lifecycle="persistent")
                     else:
+                        sid = self.session_mgr.get_or_create(role=agent_id, lifecycle="persistent")
+
+                    raw_response = self._send_sub_workflow_llm_command(
+                        phase_id=phase_id,
+                        agent_id=agent_id,
+                        session_id=sid,
+                        prompt_text=prompt_text,
+                        timeout=timeout,
+                    )
+                    phase_output = extract_json_response(raw_response)
+                    self._raise_for_session_error_output(phase_output, phase_id)
+
+                    sub_output_format = expected_output_format(mini.output_schema, prompt_text)
+
+                    sub_parse_attempt = 0
+                    max_sub_parse_retries = 2
+                    while not phase_output and sub_parse_attempt < max_sub_parse_retries:
+                        sub_parse_attempt += 1
+                        parse_correction = self._build_validation_correction_prompt(
+                            "Your response did not contain a valid JSON object.",
+                            output_format_example=sub_output_format,
+                            is_parse_failure=True,
+                            phase_name=phase_id,
+                        )
                         raw_response = self._send_sub_workflow_llm_command(
                             phase_id=phase_id,
                             agent_id=agent_id,
                             session_id=sid,
-                            prompt_text=prompt_text,
+                            prompt_text=parse_correction,
                             timeout=timeout,
                         )
-                    phase_output = extract_json_response(raw_response)
-                    self._raise_for_session_error_output(phase_output, phase_id)
+                        phase_output = extract_json_response(raw_response)
+                        self._raise_for_session_error_output(phase_output, phase_id)
                     if not phase_output:
                         phase_output = {"raw_response": raw_response}
                     phase_output = self._normalize_llm_output(mini, phase_output, input_ctx, state)
-                    repair_continuation_error = None
-                    if isinstance(phase_output, dict) and str(phase_id) in SUB_WORKFLOW_REPAIR_PHASE_IDS and not use_custom_op_gate_polling:
-                        phase_output, repair_continuation_error = self._continue_repair_phase_until_actionable(
-                            phase_id=str(phase_id),
-                            agent_id=agent_id,
-                            session_id=sid,
-                            phase=mini,
-                            phase_output=phase_output,
-                            prompt_context=input_ctx,
-                            state=state,
-                            timeout=timeout,
-                        )
-                        if repair_continuation_error:
-                            phase_status = "communication_error"
-                            phase_output = self._communication_failure_output({
-                                **phase_output,
-                                "ok": False,
-                                "error": repair_continuation_error,
-                            })
-                    if isinstance(phase_output, dict) and phase_status != "communication_error":
-                        recovered_output = self._recover_operator_repair_from_valid_full_pass_output(
-                            phase_id=str(phase_id),
-                            phase_output=phase_output,
-                            state=state,
-                            context=context,
-                            loop_vars=loop_vars,
-                        )
-                        if recovered_output is not None:
-                            phase_output = {**phase_output, **recovered_output}
-                    if isinstance(phase_output, dict) and phase_output.get("custom_op_final_gate_recovered") is True:
-                        recovered_gate = phase_output.get("custom_op_final_gate") if recovered_output is not None else None
-                        if isinstance(recovered_gate, dict):
-                            step_outputs["script_exit_code"] = 0
-                            step_outputs["script_stderr"] = ""
-                            step_outputs["custom_op_final_gate"] = recovered_gate
-                        else:
-                            phase_status = "communication_error"
-                            phase_output = self._communication_failure_output({
-                                **phase_output,
-                                "ok": False,
-                                "error": "custom-op operator repair claimed final-gate recovery without current strict OPP final gate FULL_PASS",
-                            })
-                    elif self._operator_repair_partial_response(str(phase_id), phase_output):
-                        phase_status = "communication_error"
-                        phase_output = self._communication_failure_output({
-                            **phase_output,
-                            "ok": False,
-                            "error": "custom-op operator repair returned partial/in-progress response before strict OPP final gate FULL_PASS",
-                        })
 
                     # Validate
                     validation_failed = False
-                    if phase_status != "communication_error" and (mini.validator or mini.validate_only):
+                    if mini.validator or mini.validate_only:
                         validation_passed = False
                         validation_errors: list[str] = []
                         max_retries = 3
@@ -5609,8 +3392,8 @@ class WorkflowExecutor:
                             error_msg = "; ".join(validation_errors)
                             correction = self._build_validation_correction_prompt(
                                 error_msg,
-                                phase_id=phase_id,
-                                validator_name=str(mini.validator or phase_id),
+                                output_format_example=sub_output_format,
+                                phase_name=phase_id,
                             )
                             raw_response = self._send_sub_workflow_llm_command(
                                 phase_id=phase_id,
@@ -5622,7 +3405,23 @@ class WorkflowExecutor:
                             phase_output = extract_json_response(raw_response)
                             self._raise_for_session_error_output(phase_output, phase_id)
                             if not phase_output:
-                                phase_output = {"raw_response": raw_response}
+                                parse_correction = self._build_validation_correction_prompt(
+                                    "Your response did not contain a valid JSON object.",
+                                    output_format_example=sub_output_format,
+                                    is_parse_failure=True,
+                                    phase_name=phase_id,
+                                )
+                                raw_response = self._send_sub_workflow_llm_command(
+                                    phase_id=phase_id,
+                                    agent_id=agent_id,
+                                    session_id=sid,
+                                    prompt_text=parse_correction,
+                                    timeout=timeout,
+                                )
+                                phase_output = extract_json_response(raw_response)
+                                self._raise_for_session_error_output(phase_output, phase_id)
+                                if not phase_output:
+                                    phase_output = {"raw_response": raw_response}
                             phase_output = self._normalize_llm_output(mini, phase_output, input_ctx, state)
                         if not validation_passed:
                             validation_failed = True
@@ -5636,7 +3435,7 @@ class WorkflowExecutor:
                             except Exception as exc:
                                 logger.warning("Artifact save failed for invalid %s: %s", phase_id, exc)
 
-                    if phase_status != "communication_error" and not validation_failed:
+                    if not validation_failed:
                         # Save artifacts
                         try:
                             self.artifact_store.save_phase_output(phase_id, phase_output)
@@ -5685,26 +3484,8 @@ class WorkflowExecutor:
 
             except SessionCommandError as exc:
                 logger.warning("Sub-phase '%s' session command failed: %s", phase_id, exc)
+                phase_status = "failure"
                 phase_output = dict(exc.payload)
-                if self._operator_repair_communication_failure(phase_id, phase_output):
-                    recovered_output = self._recover_operator_repair_from_current_final_gate(
-                        phase_id=str(phase_id),
-                        state=state,
-                        context=context,
-                        loop_vars=loop_vars,
-                        command_started_at=command_started_at,
-                    )
-                    if recovered_output is not None:
-                        phase_status = "success"
-                        phase_output = recovered_output
-                        step_outputs["script_exit_code"] = 0
-                        step_outputs["script_stderr"] = ""
-                        step_outputs["custom_op_final_gate"] = recovered_output["custom_op_final_gate"]
-                    else:
-                        phase_status = "communication_error"
-                        phase_output = self._communication_failure_output(phase_output)
-                else:
-                    phase_status = "failure"
             except Exception as exc:
                 logger.exception("Sub-phase '%s' raised: %s", phase_id, exc)
                 phase_status = "failure"
@@ -5733,9 +3514,7 @@ class WorkflowExecutor:
                             phase_status = "entry_script_revised"
                             break
 
-            # Early exit on hard failures. Operator repair communication failures are
-            # recorded as retryable iteration outcomes so Phase 5 can rerun the
-            # original validation/analyze/fix cycle instead of terminating.
+            # Early exit on failure with break
             if phase_status == "failure":
                 sub_on_failure = sub_phase.get("on_failure", "continue")
                 validation_failed = isinstance(phase_output, dict) and "validation_errors" in phase_output
@@ -5863,11 +3642,25 @@ class WorkflowExecutor:
         shell_controls = {"&&", "||", ";", "|", "`", "$()", ">", "<"}
         if tokens[0] in shell_builtins or any(token in shell_controls for token in tokens):
             return "unsafe_run_command"
-        if tokens[0] in {"bash", "sh", "/bin/bash", "/bin/sh"} or tokens[0].endswith(".sh"):
+
+        real_executable = tokens[0].rsplit("/", 1)[-1]
+        _, stripped_cmd = _extract_env_prefix(run_command)
+        if stripped_cmd:
+            try:
+                stripped_tokens = shlex.split(stripped_cmd)
+                if stripped_tokens:
+                    real_executable = stripped_tokens[0].rsplit("/", 1)[-1]
+            except ValueError:
+                pass
+
+        if real_executable in shell_builtins:
+            return "unsafe_run_command"
+        if real_executable in {"bash", "sh", "/bin/bash", "/bin/sh"} or real_executable.endswith(".sh"):
+            return "unsafe_run_command"
+        if real_executable in {"docker", "podman"}:
             return "unsafe_run_command"
         updated_contract = dict(contract)
         updated_contract["run_command"] = run_command
-        updated_contract["project_dir"] = str(self.project_dir)
         if entry_script_path:
             updated_contract["entry_script_path"] = entry_script_path
         elif not updated_contract.get("entry_script_path"):
@@ -5887,6 +3680,12 @@ class WorkflowExecutor:
             tokens = shlex.split(run_command)
         except ValueError:
             return ""
+        _, stripped = _extract_env_prefix(run_command)
+        if stripped:
+            try:
+                tokens = shlex.split(stripped)
+            except ValueError:
+                pass
         for token in tokens:
             if token.endswith(".py") or Path(token).suffix == ".py":
                 return token
@@ -6276,14 +4075,12 @@ class WorkflowExecutor:
         project_dir: str,
         entry_script: str,
         phase3_contract: dict[str, object] | None,
-        phase1_analysis: dict[str, object] | None = None,
     ) -> str:
         return write_operator_repair_context_artifact(
             artifact_dir=str(self.artifact_store.artifact_dir),
             project_dir=project_dir,
             entry_script=entry_script,
             phase3_contract=phase3_contract,
-            phase1_analysis=phase1_analysis,
         )
 
     def _mini_phase(self, phase_dict: dict) -> PhaseDefinition:
@@ -6305,6 +4102,8 @@ class WorkflowExecutor:
                 on_success=raw_transition.get("on_success"),
                 on_failure=raw_transition.get("on_failure"),
                 on_skip=raw_transition.get("on_skip"),
+                on_stagnation=raw_transition.get("on_stagnation"),
+                on_reject_exhausted=raw_transition.get("on_reject_exhausted"),
             )
 
         transitions = phase_dict.get("transitions", {})
@@ -6406,20 +4205,6 @@ class WorkflowExecutor:
 
     # ── Stagnation detection ────────────────────────────────────────────
 
-    @classmethod
-    def _iteration_made_repair_progress(cls, step_outputs: dict[str, Any]) -> bool:
-        for phase_id in SUB_WORKFLOW_REPAIR_PHASE_IDS:
-            output = step_outputs.get(phase_id)
-            if not isinstance(output, dict):
-                continue
-            if cls._repair_response_continuation_reason(phase_id, output) is None:
-                return True
-        return False
-
-    @classmethod
-    def _iteration_executed_repair_phase(cls, step_outputs: dict[str, Any]) -> bool:
-        return cls._iteration_made_repair_progress(step_outputs)
-
     def _check_stagnation(
         self,
         error_signature: str,
@@ -6448,21 +4233,6 @@ class WorkflowExecutor:
 
     # ── Next phase resolution ───────────────────────────────────────────
 
-    @staticmethod
-    def _is_failure_transition_status(status: str) -> bool:
-        return status not in {"success", "skipped"}
-
-    @classmethod
-    def _transition_keys_for_status(cls, status: str) -> tuple[str, ...]:
-        if status == "success":
-            return ("success", "on_success")
-        if status == "skipped":
-            return ("skipped", "on_skip")
-        if cls._is_failure_transition_status(status):
-            keys = [status, "failure", "on_failure"]
-            return tuple(dict.fromkeys(keys))
-        return (status,)
-
     def _get_next_phase_id(
         self,
         current_phase: PhaseDefinition,
@@ -6474,42 +4244,72 @@ class WorkflowExecutor:
 
         Priority:
           1. phase.transition (TransitionDefinition)
-          2. phase.transitions dict
-          3. Unhandled failure-like status terminates
-          4. Default: next phase in workflow.phases list
-          5. None (terminate)
+          2. phase.transitions dict (raw keys + on_* YAML-style aliases)
+          3. Unhandled failure terminates
+          4. Unhandled non-success / non-skipped status terminates (fail-closed)
+          5. Default: next phase in workflow.phases list
+          6. None (terminate)
         """
-        failure_status = self._is_failure_transition_status(status)
-
         # 1. Check TransitionDefinition
         transition = current_phase.transition
         if transition is not None:
             if status == "success" and transition.on_success:
-                return transition.on_success
-            if failure_status and transition.on_failure:
+                target = transition.on_success
+                if target in ("phase_7a_evaluate", "phase_7b_refine"):
+                    p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                    if not p7_cfg:
+                        return "complete"
+                return target
+            if status == "failure" and transition.on_failure:
                 return transition.on_failure
             if status == "skipped" and transition.on_skip:
                 return transition.on_skip
+            if status == "stagnation" and transition.on_stagnation:
+                return transition.on_stagnation
+            if status == "reject_exhausted" and transition.on_reject_exhausted:
+                return transition.on_reject_exhausted
 
-        # 2. Check transitions dict. Exact status-specific routes win before
-        # generic failure/on_failure routes.
+        # 2. Check transitions dict
         if current_phase.transitions:
-            for key in self._transition_keys_for_status(status):
+            status_keys = {
+                "success": ("success", "on_success"),
+                "failure": ("failure", "on_failure"),
+                "skipped": ("skipped", "on_skip"),
+                "stagnation": ("stagnation", "on_stagnation"),
+                "reject_exhausted": ("reject_exhausted", "on_reject_exhausted"),
+            }
+            for key in status_keys.get(status, (status,)):
                 target = current_phase.transitions.get(key)
                 if target:
+                    if target in ("phase_7a_evaluate", "phase_7b_refine"):
+                        p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                        if not p7_cfg:
+                            return "complete"
                     return target
 
         # 3. Fail closed when a phase fails without an explicit recovery route.
-        if failure_status:
+        if status == "failure":
             return None
 
-        # 4. Default: next phase in list
+        # 4. Fail closed for all non-standard terminal statuses (stagnation,
+        #    reject_exhausted, accept, …) that lack an explicit transition.
+        #    Only `success` and `skipped` are allowed to fall through to the
+        #    default next-phase lookup.
+        if status not in ("success", "skipped"):
+            return None
+
+        # 5. Default: next phase in list
         idx = self.phase_index.get(current_phase.id, -1)
         phases = self.workflow.phases or []
         if idx >= 0 and idx + 1 < len(phases):
-            return phases[idx + 1].id
+            next_id = phases[idx + 1].id
+            if next_id in ("phase_7a_evaluate", "phase_7b_refine"):
+                p7_cfg = getattr(getattr(self.workflow, 'experience', None), 'phase7_enabled', True)
+                if not p7_cfg:
+                    return "complete"
+            return next_id
 
-        # 5. Last phase -> terminate
+        # 6. Last phase → terminate
         return None
 
     def _build_experience_query_context(
@@ -6540,13 +4340,6 @@ class WorkflowExecutor:
 
         phase3_contract = state.get("phase_3_entry_script")
         phase35_static = state.get("phase_35_static_validate")
-        explicit_no_custom_op_contract = (
-            isinstance(phase3_contract, dict)
-            and has_explicit_no_custom_op_contract(phase3_contract)
-        ) or (
-            isinstance(phase35_static, dict)
-            and phase35_static.get("custom_op_static_required") is False
-        )
         native_custom_op_gate_required = (
             isinstance(phase3_contract, dict)
             and self._has_custom_op_contract(phase3_contract)
@@ -6557,10 +4350,9 @@ class WorkflowExecutor:
         if native_custom_op_gate_required:
             result["custom_op_native_gate_required"] = "true"
             result["custom_op_evidence_policy"] = (
-                "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only"
+                self.platform_policy.custom_op_evidence.custom_op_evidence_policy
+                or "require_real_custom_op_artifacts"
             )
-        elif explicit_no_custom_op_contract:
-            result["exclude_custom_op_experiences"] = "true"
 
         # Resolve from known state sources
         ph1 = state.get("phase_1_project_analysis", {})

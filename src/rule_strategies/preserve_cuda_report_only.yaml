@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# preserve_cuda_report_only — PPU-compatible conservative strategy
+#
+# Preserves torch.cuda (the correct API for PPU/CUDA-compatible platforms).
+# Only scans for NVIDIA-specific patterns (nvidia-smi, pynvml, subprocess calls)
+# without modifying source code.  Report-only, zero replacements.
+# ---------------------------------------------------------------------------
+
+id: preserve_cuda_report_only
+display_name: "Preserve CUDA (Report Only)"
+mode: report_only
+description: >
+  Conservative PPU-compatible strategy.  Preserves torch.cuda code (the correct
+  API for PPU/CUDA-compatible platforms).  Only reports NVIDIA-specific patterns
+  (nvidia-smi, NVML imports, subprocess calls).  No source code is modified.
+migrator_class: YamlRuleBasedMigrator
+migrator_module: migrator.yaml_rule_based
+destructive: false
+rewrite:
+  enabled: false
+scan_patterns:
+  - id: nvidia_smi_references
+    regex: "nvidia-smi"
+  - id: nvidia_smi_subprocess
+    regex: "subprocess\\.run.*nvidia|os\\.system.*nvidia"
+  - id: nvidia_smi_imports
+    regex: "pynvml|py3nvml"
