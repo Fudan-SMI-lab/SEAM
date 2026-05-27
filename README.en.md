@@ -35,7 +35,7 @@ Run the commands below on your domestic GPU server or container environment to t
 
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
-cd seam
+cd SEAM
 bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
   --server_type opencode \
   --server_url http://127.0.0.1:5000
