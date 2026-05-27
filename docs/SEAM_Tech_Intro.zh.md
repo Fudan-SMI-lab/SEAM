@@ -46,7 +46,6 @@ SEAM 内部把迁移问题分解成 **6 步** 来解决：
 
 
 
-![SEAM架构介绍图](images/SEAM.png)
 
 
 
