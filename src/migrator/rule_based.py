@@ -9,10 +9,16 @@ from typing import Any  # noqa: F401
 
 
 class RuleBasedMigrator:
-    """Migrates CUDA-specific PyTorch code to NPU (Ascend) equivalents using regex rules."""
+    """Legacy rule migrator with safe default and explicit NPU opt-in."""
 
-    def __init__(self):
+    _NPU_STRATEGIES = {"npu", "npu_ascend", "cuda_to_npu"}
+
+    def __init__(self, target_platform: str | None = None, strategy: str | None = None):
+        strategy_key = (strategy or target_platform or "report_only").strip().lower()
+        self.strategy = strategy_key or "report_only"
+        self.rewrite_enabled = self.strategy in self._NPU_STRATEGIES
         self._rules = self._build_rules()
+        self._scan_patterns = self._build_scan_patterns()
 
     def _build_rules(self) -> list[tuple[str, str]]:
         """Return list of (pattern, replacement) regex rules."""
@@ -31,6 +37,18 @@ class RuleBasedMigrator:
             (r"(?<=[\s(,=\[])'nccl'(?=[\s)\],;])", "'hccl'"),
         ]
 
+
+    def _build_scan_patterns(self) -> list[tuple[str, str]]:
+        return [
+            ("torch_cuda_references", r"torch\.cuda"),
+            ("cuda_method_calls", r"\.cuda\("),
+            ("cuda_device_literals", r"[\"']cuda(?::\d+)?[\"']"),
+            ("nccl_backend_literals", r"[\"']nccl[\"']"),
+            ("nvidia_smi_references", r"nvidia-smi"),
+            ("nvml_references", r"pynvml|py3nvml|nvml"),
+            ("cuda_extension_references", r"CUDAExtension|cpp_extension|torch\.utils\.cpp_extension"),
+        ]
+
     def migrate(self, source_code: str) -> tuple[str, dict[str, Any]]:
         """Apply all migration rules to source code.
 
@@ -41,7 +59,20 @@ class RuleBasedMigrator:
             Tuple of (migrated_code, report_dict).
             Report contains per-rule replacement counts and summary.
         """
-        report = {"rules": {}, "total_replacements": 0}
+        if not self.rewrite_enabled:
+            report: dict[str, Any] = {
+                "rules": {},
+                "total_replacements": 0,
+                "mode": "report_only",
+                "strategy": self.strategy,
+                "destructive": False,
+            }
+            for name, pattern in self._scan_patterns:
+                report["rules"][name] = len(re.findall(pattern, source_code))
+            report["rules"].setdefault("inject_torch_npu", 0)
+            return source_code, report
+
+        report = {"rules": {}, "total_replacements": 0, "mode": "rewrite", "strategy": self.strategy, "destructive": True}
 
         # Check if torch.cuda exists anywhere for Rule 1 (inject torch_npu)
         has_cuda = bool(re.search(r"torch\.cuda|\.cuda\(|[\"']cuda[\"']", source_code))
@@ -116,7 +147,7 @@ class RuleBasedMigrator:
         Returns:
             Aggregate report dict with per-file results and summary.
         """
-        aggregate = {"files": {}, "summary": {"total_files": 0, "total_replacements": 0, "rules": {}}}
+        aggregate = {"files": {}, "summary": {"total_files": 0, "total_replacements": 0, "rules": {}, "mode": "rewrite" if self.rewrite_enabled else "report_only", "strategy": self.strategy, "destructive": self.rewrite_enabled}}
         files = glob_module.glob(os.path.join(dirpath, "**", pattern), recursive=True)
 
         for filepath in files:
@@ -133,7 +164,7 @@ class RuleBasedMigrator:
                     )
 
                 # Write migrated code back if changes were made
-                if report["total_replacements"] > 0:
+                if self.rewrite_enabled and report["total_replacements"] > 0:
                     with open(filepath, "w", encoding="utf-8") as f:
                         f.write(new_code)
             except Exception as e:

@@ -39,6 +39,7 @@ class TestBuiltinPresets:
         assert len(p.custom_op_evidence.native_binary_tokens) > 0
         assert len(p.custom_op_evidence.native_source_tokens) > 0
         assert p.custom_op_evidence.custom_op_evidence_policy != ""
+        assert p.default_rule_migration_strategy == "cuda_to_npu"
 
     def test_ppu_cuda_compatible_preset(self):
         p = BUILTIN_PRESETS["ppu_cuda_compatible"]
@@ -47,6 +48,7 @@ class TestBuiltinPresets:
         assert "ppu" in p.custom_op_evidence.target_device_values
         assert "ppu_custom" in p.custom_op_evidence.positive_boolean_fields
         assert p.custom_op_evidence.custom_op_evidence_policy != ""
+        assert p.default_rule_migration_strategy == "preserve_cuda_report_only"
 
     def test_musa_muxi_preset_accepts_maca_tokens(self):
         p = BUILTIN_PRESETS["musa_muxi"]
@@ -54,6 +56,7 @@ class TestBuiltinPresets:
         assert "maca" in p.custom_op_evidence.target_device_values
         assert "maca" in p.custom_op_evidence.native_build_log_tokens
         assert "maca_custom_op_built" in p.custom_op_evidence.native_artifact_fields
+        assert p.default_rule_migration_strategy == "report_only"
 
     def test_all_presets_have_required_fields(self):
         for preset_id, policy in BUILTIN_PRESETS.items():

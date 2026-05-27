@@ -11,7 +11,30 @@ from migrator.rule_based import RuleBasedMigrator
 
 @pytest.fixture
 def migrator():
-    return RuleBasedMigrator()
+    return RuleBasedMigrator(strategy="cuda_to_npu")
+
+
+def test_default_rule_based_migrator_is_report_only():
+    code = 'import torch\nx = torch.cuda.is_available()\ny = x.cuda()\nz = ("cuda")'
+    result, report = RuleBasedMigrator().migrate(code)
+    assert result == code
+    assert "import torch_npu" not in result
+    assert report["mode"] == "report_only"
+    assert report["total_replacements"] == 0
+    assert report["rules"]["torch_cuda_references"] == 1
+    assert report["rules"]["cuda_method_calls"] == 1
+    assert report["rules"]["inject_torch_npu"] == 0
+
+
+def test_target_platform_npu_enables_legacy_rewrite():
+    code = 'import torch\nx = torch.cuda.is_available()\ny = x.cuda()\nz = ("cuda")'
+    result, report = RuleBasedMigrator(target_platform="npu").migrate(code)
+    assert "torch.npu.is_available()" in result
+    assert ".npu()" in result
+    assert '"npu"' in result
+    assert "import torch_npu" in result
+    assert report["mode"] == "rewrite"
+    assert report["total_replacements"] >= 4
 
 
 class TestMigrate:
