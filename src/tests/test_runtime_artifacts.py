@@ -1,5 +1,6 @@
+import json
 from pathlib import Path
-from core.runtime_artifacts import write_operator_repair_context_artifact
+from core.runtime_artifacts import CANONICAL_CUSTOM_OP_REPORT_NAMES, scaffold_or_refresh_custom_op_canonical_reports, write_operator_repair_context_artifact
 
 
 def test_operator_repair_context_uses_phase3_inventory_when_reports_missing(tmp_path: Path) -> None:
@@ -140,3 +141,114 @@ def test_operator_repair_context_lists_expanded_variants_as_missing_report_scope
     assert "Expanded Variant Units Listed Here: 3" in text
     assert "Variant 1: generic_kernel:shape=small:precision=fp16" in text
     assert "Unit 3: generic_kernel:shape=small:precision=fp32" in text
+
+
+def test_scaffold_or_refresh_custom_op_canonical_reports_fail_closed_for_full_variant_scope(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    units = [f"variant_route:dtype={'double' if i >= 2 else 'float'}:variant={i}" for i in range(4)]
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "reports_dir": str(project_dir / "migration_reports"),
+        "expanded_variant_inventory": {
+            "variant_axes_detected": True,
+            "unit_identities": units,
+            "expanded_operator_instances_count": 4,
+        },
+    }
+
+    result = scaffold_or_refresh_custom_op_canonical_reports(project_dir=str(project_dir), phase3_contract=phase3_contract)
+
+    reports_dir = project_dir / "migration_reports"
+    assert result["unit_count"] == 4
+    assert {path.name for path in reports_dir.iterdir()} == set(CANONICAL_CUSTOM_OP_REPORT_NAMES)
+    gate = json.loads((reports_dir / "custom_op_final_gate.json").read_text(encoding="utf-8"))
+    assert gate["full_migration_status"] == "INCOMPLETE"
+    assert gate["closed_pass_entries"] == 0
+    assert gate["remaining_entries"] == 4
+    assert [row["unit_identity"] for row in gate["strict_per_unit_ledger"]] == units
+    assert all(row["strict_pass"] is False for row in gate["strict_per_unit_ledger"])
+
+
+def test_scaffold_refresh_replaces_invalid_full_pass_final_gate_fail_closed(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    reports_dir = project_dir / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    _ = (reports_dir / "custom_op_final_gate.json").write_text(
+        json.dumps({"status": "FULL_PASS", "rows": [{"unit_identity": "op_a"}]}),
+        encoding="utf-8",
+    )
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "reports_dir": str(reports_dir),
+        "operator_inventory_schema": {"fine_grained_operator_units": ["op_a"]},
+    }
+
+    result = scaffold_or_refresh_custom_op_canonical_reports(project_dir=str(project_dir), phase3_contract=phase3_contract)
+
+    gate = json.loads((reports_dir / "custom_op_final_gate.json").read_text(encoding="utf-8"))
+    written_reports = result["written_reports"]
+    assert isinstance(written_reports, list)
+    assert str(reports_dir / "custom_op_final_gate.json") in written_reports
+    assert gate["full_migration_status"] == "INCOMPLETE"
+    assert gate["strict_per_unit_ledger"][0]["unit_identity"] == "op_a"
+    assert gate["strict_per_unit_ledger"][0]["strict_pass"] is False
+
+
+def test_scaffold_phase1_expanded_variants_extracts_unit_identity_from_rows(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    phase1_analysis: dict[str, object] = {
+        "custom_op_surface": {
+            "expanded_operator_variants": [
+                {"unit_identity": "op:variant=a", "family": "op"},
+                {"unit_identity": "op:variant=b", "family": "op"},
+            ]
+        }
+    }
+
+    result = scaffold_or_refresh_custom_op_canonical_reports(
+        project_dir=str(project_dir),
+        phase1_analysis=phase1_analysis,
+    )
+
+    gate = json.loads((project_dir / "migration_reports" / "custom_op_final_gate.json").read_text(encoding="utf-8"))
+    assert result["unit_source"] == "phase_1_analysis"
+    assert [row["unit_identity"] for row in gate["strict_per_unit_ledger"]] == ["op:variant=a", "op:variant=b"]
+    assert not any(str(row["unit_identity"]).startswith("{") for row in gate["strict_per_unit_ledger"])
+
+
+def test_scaffold_rejects_symlinked_migration_reports(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    outside_dir = tmp_path / "outside_reports"
+    outside_dir.mkdir()
+    (project_dir / "migration_reports").symlink_to(outside_dir, target_is_directory=True)
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "operator_inventory_schema": {"fine_grained_operator_units": ["op_a"]},
+    }
+
+    try:
+        scaffold_or_refresh_custom_op_canonical_reports(project_dir=str(project_dir), phase3_contract=phase3_contract)
+    except ValueError as exc:
+        assert "migration_reports must not be a symlink" in str(exc)
+    else:
+        raise AssertionError("symlinked migration_reports must be rejected")
+    assert not (outside_dir / "custom_op_final_gate.json").exists()
+
+
+def test_scaffold_falls_back_from_external_reports_dir_to_project_reports(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    external_dir = tmp_path / "external_reports"
+    external_dir.mkdir()
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "reports_dir": str(external_dir),
+        "operator_inventory_schema": {"fine_grained_operator_units": ["op_a"]},
+    }
+
+    result = scaffold_or_refresh_custom_op_canonical_reports(project_dir=str(project_dir), phase3_contract=phase3_contract)
+
+    project_gate = project_dir / "migration_reports" / "custom_op_final_gate.json"
+    assert result["reports_dir"] == str(project_dir / "migration_reports")
+    assert project_gate.exists()
+    assert not (external_dir / "custom_op_final_gate.json").exists()

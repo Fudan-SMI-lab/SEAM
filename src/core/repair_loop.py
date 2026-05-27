@@ -22,7 +22,12 @@ from core.custom_op_variants import apply_expanded_variant_contract, expanded_va
 from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx
 from core.paths import workspace_root
 from core.prompt_loader import PromptLoader
-from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
+from core.runtime_artifacts import (
+    safe_project_reports_dir,
+    scaffold_or_refresh_custom_op_canonical_reports,
+    write_operator_repair_context_artifact,
+    write_repair_runtime_artifacts,
+)
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
 from core.platform_policy import PlatformPolicy
@@ -133,7 +138,10 @@ def _operator_custom_op_target_units(phase3_contract: dict[str, object] | None) 
 
 def _operator_custom_op_progress_block(phase3_contract: dict[str, object] | None, project_dir: str) -> str:
     target_units = _operator_custom_op_target_units(phase3_contract)
-    reports_dir = Path(project_dir).resolve() / "migration_reports"
+    try:
+        reports_dir = safe_project_reports_dir(Path(project_dir))
+    except ValueError as exc:
+        return f"Current strict custom-op final-gate progress\nreport_dir_error={exc}"
     gate_path = reports_dir / "custom_op_final_gate.json"
     gate_data: object = {}
     if gate_path.exists() and gate_path.stat().st_size <= _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
@@ -650,6 +658,17 @@ class RepairLoopEngine:
         max_entry_script_revisions = self._max_entry_script_revisions()
         entry_script_revision_requests: list[dict[str, object]] = []
         active_phase3_contract = dict(phase3_contract or {})
+        if _operator_repair_has_custom_op_contract(active_phase3_contract):
+            scaffold_result = scaffold_or_refresh_custom_op_canonical_reports(
+                project_dir=project_dir,
+                phase3_contract=active_phase3_contract,
+            )
+            written_reports = scaffold_result.get("written_reports")
+            if isinstance(written_reports, list) and written_reports:
+                self._log(
+                    f"Custom-op report scaffold refreshed {len(written_reports)} fail-closed reports",
+                    logger,
+                )
 
         entry_script_timeout = _get_timeout(self.config, "entry_script_timeout")
         prepared_command = self._prepare_entry_command(entry_script, project_dir)
@@ -1465,7 +1484,7 @@ class RepairLoopEngine:
 
     @staticmethod
     def _canonical_custom_op_reports_dir(project_dir: str) -> Path:
-        return Path(project_dir).resolve() / "migration_reports"
+        return safe_project_reports_dir(Path(project_dir))
 
     def _validate_custom_op_final_gate_for_contract(
         self,
