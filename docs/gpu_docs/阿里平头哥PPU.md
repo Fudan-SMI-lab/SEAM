@@ -1,4 +1,4 @@
-# 阿里平头哥 PPU简介
+# 阿里平头哥PPU
 
 PPU（Parallel Processing Unit）是阿里巴巴平头哥半导体推出的训推一体 AI 加速芯片，是大模型训推一体的高性能GPU设备，生态易用性较好。
 
