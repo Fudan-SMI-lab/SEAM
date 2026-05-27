@@ -3,7 +3,7 @@
 You are executing `{phase_name}` for `{project_dir}`.
 
 ## Context
-This is Phase 3.5 in the CUDA → Ascend NPU migration workflow. Phase 3 has selected an entry script and run command. Your job is to **statically analyze** the selected entry script for patterns that would prevent automated, headless execution in the target runtime.
+This is Phase 3.5 in the CUDA source-project migration workflow for the platform selected by platform policy. Phase 3 has selected an entry script and run command. Your job is to **statically analyze** the selected entry script for patterns that would prevent automated, headless execution in the target runtime.
 
 ## Goal
 Analyze the `entry_script_path` selected in Phase 3 and determine if it can run non-interactively (no user input, no infinite loops, no GUI prompts).
@@ -28,7 +28,7 @@ The `previous_outputs` block below contains **only** the `phase_3_entry_script` 
 
 If Phase 3 includes `entry_script_kind: custom_op_full_validation`, validate the selected script against the source-discovery contract embedded in `previous_outputs`, the `migration_reports/` paths in `required_report_paths`, and the `required_checks` in `previous_outputs`. Set `validation_passed=false` for report-only, smoke, MVP, partial, synthetic, or benchmark routes, missing source inventory discovery, missing native symbol/kernel inventory or source evidence, missing out-of-scope groups, missing project-local artifacts, missing project API custom-op invocation, missing numeric performance, or fallback/zero-call/builtin/stub success. Reject inventories that only list row names/counts, group multiple source-discovered units into a family-only row, omit unit identity or variant/signature, omit kernel launch sites, omit public-entry mapping, or fail to prove source-driven fine-grained discovery.
 
-For passing custom-op outputs, include `custom_op_static_required: true` plus these booleans set to `true`: `custom_op_requirements_checked`, `script_source_driven_inventory`, `script_emits_fine_grained_units`, `script_maps_public_api_to_units`, `script_discovers_full_inventory`, `script_records_native_operator_symbols`, `script_runs_project_api_custom_ops`, `script_rejects_report_only_success`, `script_requires_project_local_artifacts`, `script_requires_numeric_performance`, and `script_checks_no_fallback`.
+For passing custom-op outputs, include `custom_op_static_required: true` plus these booleans set to `true`: `custom_op_requirements_checked`, `script_source_driven_inventory`, `script_emits_fine_grained_units`, `script_maps_public_api_to_units`, `script_discovers_full_inventory`, `script_records_native_operator_symbols`, `script_runs_project_api_custom_ops`, `script_rejects_report_only_success`, `script_requires_project_local_artifacts`, `script_requires_numeric_performance`, and `script_checks_no_fallback`. If the Phase 3 contract includes `expanded_variant_inventory`, `variant_axis_coverage`, `per_variant_performance_report`, or otherwise declares expanded variants, also include `expanded_variant_static_required: true`, `script_discovers_expanded_variant_inventory: true`, `script_checks_variant_axis_coverage: true`, and `script_requires_per_variant_performance: true`.
 
 ## Important Notes
 
@@ -49,6 +49,33 @@ Return exactly one JSON object with this shape:
 }
 ```
 
+For a passing custom-op script with expanded variants, return every enforced boolean explicitly:
+
+```json
+{
+  "validation_passed": true,
+  "issues": [],
+  "fix_plan": "No issues found. Script is headless-compliant and satisfies the source-driven custom-op and expanded-variant static gates.",
+  "entry_script_kind": "custom_op_full_validation",
+  "custom_op_static_required": true,
+  "custom_op_requirements_checked": true,
+  "script_source_driven_inventory": true,
+  "script_emits_fine_grained_units": true,
+  "script_maps_public_api_to_units": true,
+  "script_discovers_full_inventory": true,
+  "script_records_native_operator_symbols": true,
+  "script_runs_project_api_custom_ops": true,
+  "script_rejects_report_only_success": true,
+  "script_requires_project_local_artifacts": true,
+  "script_requires_numeric_performance": true,
+  "script_checks_no_fallback": true,
+  "expanded_variant_static_required": true,
+  "script_discovers_expanded_variant_inventory": true,
+  "script_checks_variant_axis_coverage": true,
+  "script_requires_per_variant_performance": true
+}
+```
+
 Or if issues are found:
 
 ```json
@@ -66,3 +93,5 @@ Or if issues are found:
 - `validation_passed`: `true` if the script can run fully non-interactively; `false` if any blocking patterns are found.
 - `issues`: List of human-readable descriptions of each issue found, including file path, line number, and the problematic pattern. Empty list when validation passes.
 - `fix_plan`: Actionable plan to resolve all issues. If `validation_passed` is true, this should confirm compliance. If false, describe specific code changes, wrapper scripts, or command-line flags needed.
+- Custom-op boolean fields: required and `true` whenever `custom_op_static_required` is true, `entry_script_kind` is `custom_op_full_validation`, or any custom-op static boolean appears. Do not omit them from passing custom-op responses.
+- Expanded-variant boolean fields: required and `true` whenever expanded variants are present in the Phase 3 contract. Do not omit them from passing expanded-variant custom-op responses.

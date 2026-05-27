@@ -153,7 +153,7 @@ def _valid_custom_op_contract(
             "kernel_launch_site_inventory",
             "public_entry_mapping",
             "inventory_granularity_fine",
-            "per_entry_opp_custom_op_artifact_evidence",
+            "per_entry_target_custom_op_artifact_evidence",
             "per_entry_adapter_evidence",
             "per_entry_parity_evidence",
             "integration_e2e_evidence",
