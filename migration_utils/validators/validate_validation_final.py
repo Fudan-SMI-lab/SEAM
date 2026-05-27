@@ -1009,14 +1009,11 @@ def _native_compiled_artifact_paths(
     platform_policy: PlatformPolicy | None = None,
 ) -> list[str]:
     candidates = _native_artifact_path_candidates(evidence)
-    platform_signaled = [
+    return [
         value
         for value in candidates
         if _is_native_compiled_platform_artifact_path(value, platform_policy)
     ]
-    if platform_signaled:
-        return platform_signaled
-    return [value for value in candidates if _is_compiled_project_artifact_path(value)]
 
 
 def _is_compiled_project_artifact_path(value: str) -> bool:
