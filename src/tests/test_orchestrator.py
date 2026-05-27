@@ -218,6 +218,7 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
             call_order.append("rule_based_migrator_init")
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda path: build_workflow())
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda path=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="abc123"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
@@ -400,6 +401,7 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
         pass
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda path: build_workflow())
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda path=None: {"framework": {"review": {"enabled": False}}})
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="failed5"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
@@ -516,6 +518,7 @@ def test_orchestrator_passes_container_backend_to_repair_loop(monkeypatch: pytes
         def get_execution_context(self, **kw) -> dict: return {"execution_backend_mode": "container"}
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="t1"))
     monkeypatch.setattr("core.execution_backend.ContainerBackend", FakeContainerBackend)
@@ -578,6 +581,7 @@ def test_orchestrator_passes_none_backend_for_local_config(monkeypatch: pytest.M
 
     # Test with absent backend
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(None))
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="t2"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
@@ -647,6 +651,7 @@ def test_orchestrator_cleans_up_backend_in_finally(monkeypatch: pytest.MonkeyPat
     class FakeMigrator: pass
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="t3"))
     monkeypatch.setattr("core.execution_backend.ContainerBackend", FakeContainerBackend)
@@ -727,6 +732,7 @@ def test_orchestrator_calls_preflight_for_container_backend(monkeypatch: pytest.
     class FakeMigrator: pass
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="pf1"))
     monkeypatch.setattr("core.execution_backend.ContainerBackend", FakeContainerBackend)
@@ -785,6 +791,7 @@ def test_orchestrator_preflight_failure_stops_early(monkeypatch: pytest.MonkeyPa
     class FakeMigrator: pass
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="pf2"))
     monkeypatch.setattr("core.execution_backend.ContainerBackend", FakeContainerBackend)
@@ -884,6 +891,7 @@ def test_ppu_workflow_uses_ppu_rule_based_migrator(monkeypatch: pytest.MonkeyPat
         )
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: build_ppu_workflow())
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="ppu1"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
@@ -955,6 +963,7 @@ def test_non_ppu_workflow_uses_regular_rule_based_migrator(monkeypatch: pytest.M
         return FakeMigrator()
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: build_workflow())
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="npu1"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
@@ -1025,3 +1034,207 @@ def test_select_rule_based_migrator_legacy_backend_overrides_policy() -> None:
     result, report = migrator.migrate(code)
     assert result == code
     assert report["strategy"] == "report_only"
+
+
+# ── Workflow Selector integration tests ────────────────────────────────
+
+
+def test_orchestrator_resolves_selector_before_load_workflow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """When workflow_path is a selector YAML, orchestrator resolves it
+    before load_workflow and journals the resolution."""
+    import yaml as _yaml
+
+    # Build a minimal workflow that load_workflow will accept
+    def _minimal_wf_yaml(name: str) -> dict:
+        return {
+            "name": name, "version": "1.0", "description": "test",
+            "phases": [
+                {"id": "p0", "name": "p0", "type": "llm",
+                 "prompt_template": "t.md", "agent": "main_engineer",
+                 "transitions": {"on_success": "complete"}},
+            ],
+            "terminals": ["complete", "failed"],
+            "agents": {"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+        }
+
+    # Write candidate workflow files
+    wf_a = tmp_path / "npu.yaml"
+    _ = wf_a.write_text(_yaml.dump(_minimal_wf_yaml("npu")), encoding="utf-8")
+    wf_b = tmp_path / "ppu.yaml"
+    _ = wf_b.write_text(_yaml.dump(_minimal_wf_yaml("ppu")), encoding="utf-8")
+
+    # Write selector YAML
+    import json as _json
+    selector = tmp_path / "sel.yaml"
+    selector_data = {
+        "kind": "workflow_selector",
+        "name": "test-selector",
+        "candidate_workflows": [
+            {"path": str(wf_a), "description": "NPU"},
+            {"path": str(wf_b), "description": "PPU"},
+        ],
+        "fallback": str(wf_a),
+    }
+    _ = selector.write_text(_yaml.dump(selector_data), encoding="utf-8")
+
+    captured_workflow_path: list[str] = []
+    journal_entries: list[dict] = []
+
+    def fake_load_workflow(path: str):
+        captured_workflow_path.append(path)
+        from core.types import WorkflowDefinition, PhaseDefinition
+        return WorkflowDefinition(
+            name="npu", version="1.0", description="test",
+            phases=[PhaseDefinition(id="p0", name="p0", prompt_template="t.md",
+                                     output_schema={}, transitions={"on_success": "complete"})],
+            terminals=["complete"],
+        )
+
+    class FakeArtifactStore:
+        def __init__(self, base_dir: str, run_id: str) -> None:
+            self.base_dir = base_dir
+            self.run_id = run_id
+        def write_journal(self, entry: dict) -> str:
+            journal_entries.append(entry)
+            return "j"
+        def load_phase_output(self, phase_id: str):
+            return None
+        def save_phase_output(self, phase_id: str, data, attempt: int = 0) -> str:
+            return "r"
+        def mark_validated(self, phase_id: str, data) -> str:
+            return "v"
+
+    class FakePromptLoader:
+        def __init__(self, d: str) -> None: pass
+        def load_prompt(self, phase_id: str, context=None) -> str: return "prompt"
+
+    class FakeValidatorEngine: pass
+
+    class FakeStateMachine:
+        def __init__(self, wf) -> None:
+            self.current_phase = wf.phases[0].id; self.terminal = None
+        def record_success(self, phase_id: str):
+            self.current_phase = None; self.terminal = "complete"; return True, "complete"
+        def record_failure(self, *a): return False, None
+        def current_terminal(self) -> str | None: return self.terminal
+
+    class FakePhaseRunner:
+        def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
+        def __init__(self, *a, **kw) -> None: pass
+        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
+        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
+            return {"phase_3_entry_script": {"run_command": "python t.py"}}
+        def run_phase_4(self, *a, **kw) -> dict: return {}
+        def run_phase_6(self, *a, **kw) -> dict: return {}
+        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:
+        def __init__(self, *a, **kw) -> None: pass
+        @staticmethod
+        def _format_history_summary(h): return ""
+        def run(self, *a, **kw) -> dict:
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeMigrator: pass
+
+    # Real is_selector_file (selector exists), fake session mgr returns first candidate
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: True)
+    monkeypatch.setattr("core.orchestrator.load_workflow", fake_load_workflow)
+    monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: {"framework": {"review": {"enabled": False}}})
+    monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="sel1"))
+    monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
+    monkeypatch.setattr("core.orchestrator.PromptLoader", FakePromptLoader)
+    monkeypatch.setattr("core.orchestrator.ValidatorEngine", FakeValidatorEngine)
+    monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
+    monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
+    monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
+    monkeypatch.setattr("core.orchestrator.resolve_workflow_from_selector",
+                        lambda selector_path, session_mgr, prompt_loader, project_context=None, output_dir=".": wf_a)
+
+    session_mgr = MockSessionManager()
+    orchestrator = Orchestrator(session_mgr=session_mgr, project_dir="/tmp/testproj", workflow_path=str(selector))
+    result = orchestrator.run_workflow("/tmp/testproj")
+
+    assert result["success"] is True
+    assert captured_workflow_path == [str(wf_a)]
+    selector_journals = [e for e in journal_entries if e.get("status") == "selector_resolved"]
+    assert len(selector_journals) == 1
+    assert selector_journals[0]["details"]["selector_path"] == str(selector)
+    assert selector_journals[0]["details"]["resolved_workflow_path"] == str(wf_a)
+
+
+def test_orchestrator_passes_through_normal_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When workflow_path is a normal workflow YAML, orchestrator loads it directly."""
+    captured_workflow_path: list[str] = []
+    fw_config: dict = {"framework": {"review": {"enabled": False}}}
+
+    def fake_load_workflow(path: str):
+        captured_workflow_path.append(path)
+        return build_workflow()
+
+    class _FakeAS:
+        def __init__(self, base_dir: str, run_id: str) -> None: pass
+        def write_journal(self, entry: dict) -> str: return "j"
+        def load_phase_output(self, phase_id: str): return None
+        def save_phase_output(self, phase_id: str, data, attempt: int = 0) -> str: return "r"
+        def mark_validated(self, phase_id: str, data) -> str: return "v"
+
+    class _FakePL:
+        def __init__(self, d: str) -> None: pass
+        def load_prompt(self, *a, **kw) -> str: return "prompt"
+
+    class _FakeVE: pass
+    class _FakeSM:
+        def __init__(self, wf) -> None:
+            self.current_phase = wf.phases[0].id; self.terminal = None
+        def record_success(self, p: str):
+            self.current_phase = None; self.terminal = "complete"; return True, "complete"
+        def record_failure(self, *a): return False, None
+        def current_terminal(self) -> str | None: return self.terminal
+
+    class _FakePR:
+        def set_container_context(self, ctx) -> None: pass
+        def set_execution_environment_context(self, ctx: str) -> None: pass
+        def __init__(self, *a, **kw) -> None: pass
+        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
+        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
+            return {"phase_3_entry_script": {"run_command": "python t.py"}}
+        def run_phase_4(self, *a, **kw) -> dict: return {}
+        def run_phase_6(self, *a, **kw) -> dict: return {}
+        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
+
+    class _FakeRL:
+        def __init__(self, *a, **kw) -> None: pass
+        @staticmethod
+        def _format_history_summary(h): return ""
+        def run(self, *a, **kw) -> dict:
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class _FakeMig: pass
+
+    monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
+    monkeypatch.setattr("core.orchestrator.load_workflow", fake_load_workflow)
+    monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
+    monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="nrm1"))
+    monkeypatch.setattr("core.orchestrator.ArtifactStore", _FakeAS)
+    monkeypatch.setattr("core.orchestrator.PromptLoader", _FakePL)
+    monkeypatch.setattr("core.orchestrator.ValidatorEngine", _FakeVE)
+    monkeypatch.setattr("core.orchestrator.StateMachine", _FakeSM)
+    monkeypatch.setattr("core.orchestrator.PhaseRunner", _FakePR)
+    monkeypatch.setattr("core.orchestrator.RepairLoopEngine", _FakeRL)
+    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: _FakeMig())
+
+    session_mgr = MockSessionManager()
+    orchestrator = Orchestrator(session_mgr=session_mgr, project_dir="/tmp/testproj", workflow_path="normal_wf.yaml")
+    result = orchestrator.run_workflow("/tmp/testproj")
+
+    assert result["success"] is True
+    assert captured_workflow_path == ["normal_wf.yaml"]

@@ -16,9 +16,10 @@ from core.config import load_workflow
 from core.config_loader import load_framework_config
 from core.execution_backend import get_container_prompt_context, get_execution_environment_context
 from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
+from core.platform_policy import PlatformPolicy, resolve_policy
 from core.prompt_loader import PromptLoader
 from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
-from core.platform_policy import PlatformPolicy, resolve_policy
+from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
 from core.state_machine import StateMachine
 from core.validator_engine import ValidatorEngine
 from rule_strategies import create_migrator_resolved
@@ -118,15 +119,45 @@ class Orchestrator:
         framework_config_path: str | None = None,
     ) -> dict[str, object]:
         active_project_dir = project_dir or self.project_dir
+
+        run_id = f"run-{uuid4().hex}"
+        artifact_store = ArtifactStore(active_project_dir, run_id)
+        prompt_loader = PromptLoader(str(Path(__file__).resolve().parent.parent / "prompts"))
+
+        # ── Workflow Selector resolution (before load_workflow) ──────────
+        try:
+            if is_selector_file(self.workflow_path):
+                project_ctx = {
+                    "project_path": active_project_dir,
+                    "project_name": Path(active_project_dir).name,
+                    "language": "Python",
+                }
+                materialized = resolve_workflow_from_selector(
+                    self.workflow_path,
+                    self.session_mgr,
+                    prompt_loader,
+                    project_context=project_ctx,
+                    output_dir=artifact_store.base_dir,
+                )
+                self._journal(
+                    artifact_store,
+                    phase_id="orchestrator",
+                    status="selector_resolved",
+                    details={
+                        "selector_path": self.workflow_path,
+                        "resolved_workflow_path": str(materialized),
+                    },
+                )
+                self.workflow_path = str(materialized)
+        except FileNotFoundError:
+            pass  # path will be validated by load_workflow below
+
         workflow = load_workflow(self.workflow_path)
         fw_config = load_framework_config(framework_config_path)
         self._fw_config = fw_config
         runner_session_mgr = cast(RunnerSessionManagerLike, cast(object, self.session_mgr))
         repair_session_mgr = cast(RepairSessionManagerLike, self.session_mgr)
 
-        run_id = f"run-{uuid4().hex}"
-        artifact_store = ArtifactStore(active_project_dir, run_id)
-        prompt_loader = PromptLoader(str(Path(__file__).resolve().parent.parent / "prompts"))
         validator = ValidatorEngine()
         state_machine = StateMachine(workflow)
         runner = PhaseRunner(
