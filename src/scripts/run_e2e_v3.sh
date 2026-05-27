@@ -210,9 +210,13 @@ else
         AGENT_INFO=$(curl -fsS --max-time 5 "$SERVER_URL/agent" 2>/dev/null | head -c 200 || echo "")
         echo -e "${GREEN}✓${NC} Server reachable: ${AGENT_INFO:-OK}"
     else
-        echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
-        echo -e "${YELLOW}  Start the server before running E2E tests.${NC}"
-        exit 1
+        if [[ "$SERVER_NO_AUTO_START" == true ]]; then
+            echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
+            echo -e "${YELLOW}  Start the server before running E2E tests.${NC}"
+            exit 1
+        else
+            echo -e "${YELLOW}⚠  Server not reachable at $SERVER_URL (auto-start enabled, Python will attempt)${NC}"
+        fi
     fi
 fi
 
