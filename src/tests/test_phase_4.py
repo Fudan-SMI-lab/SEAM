@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,10 +15,18 @@ from core.validator_engine import ValidatorEngine
 from migrator.rule_based import RuleBasedMigrator
 
 
+class NoopSessionManager:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+        return f"{role}-{lifecycle}"
+
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+        raise AssertionError(f"Unexpected send_command for {session_id}: {command} ({timeout})")
+
+
 def build_runner(base_dir):
     artifact_store = ArtifactStore(str(base_dir), "testrun")
     runner = PhaseRunner(
-        session_mgr=None,
+        session_mgr=NoopSessionManager(),
         artifact_store=artifact_store,
         prompt_loader=PromptLoader(),
         validator=ValidatorEngine(),
@@ -62,13 +71,13 @@ def test_run_phase_4_migrates_cuda_project(tmp_path):
     }
     artifact_store.mark_validated("phase_3_entry_script", phase_3_output)
 
-    migrator = RuleBasedMigrator()
+    migrator = RuleBasedMigrator(strategy="cuda_to_npu")
     report = runner.run_phase_4(artifact_store, migrator)
 
-    assert report["files_migrated"] >= 1
+    assert cast(int, report["files_migrated"]) >= 1
     assert isinstance(report["files_skipped"], int)
     assert isinstance(report["replacement_counts"], dict)
-    assert report["total_replacements"] > 0
+    assert cast(int, report["total_replacements"]) > 0
 
     migrated_code = src_file.read_text()
     assert "torch.cuda" not in migrated_code
@@ -79,13 +88,13 @@ def test_run_phase_4_migrates_cuda_project(tmp_path):
 
     saved = artifact_store.load_phase_output("phase_4_rule_migration")
     assert saved is not None
-    assert saved["files_migrated"] >= 1
-    assert saved["total_replacements"] > 0
+    assert cast(int, saved["files_migrated"]) >= 1
+    assert cast(int, saved["total_replacements"]) > 0
 
 
 def test_run_phase_4_fails_without_phase_3(tmp_path):
     runner, artifact_store = build_runner(tmp_path)
-    migrator = RuleBasedMigrator()
+    migrator = RuleBasedMigrator(strategy="cuda_to_npu")
 
     with pytest.raises(ValueError, match="Phase 3 output"):
         runner.run_phase_4(artifact_store, migrator)
@@ -103,7 +112,7 @@ def test_run_phase_4_empty_project(tmp_path):
     }
     artifact_store.mark_validated("phase_3_entry_script", phase_3_output)
 
-    migrator = RuleBasedMigrator()
+    migrator = RuleBasedMigrator(strategy="cuda_to_npu")
     report = runner.run_phase_4(artifact_store, migrator)
 
     assert report["files_migrated"] == 0
@@ -118,6 +127,6 @@ def test_run_phase_4_fails_missing_project_dir(tmp_path):
         "entry_script_path": "/some/path.py",
     })
 
-    migrator = RuleBasedMigrator()
+    migrator = RuleBasedMigrator(strategy="cuda_to_npu")
     with pytest.raises(ValueError, match="project_dir not found"):
         runner.run_phase_4(artifact_store, migrator)

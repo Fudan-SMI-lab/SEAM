@@ -3796,6 +3796,41 @@ def test_rule_based_migration_platform_strategy_used_without_workflow_override(t
     assert "torch.npu.is_available()" in migrated
 
 
+def test_rule_based_migration_muxi_workflow_uses_report_only_strategy(tmp_path: Path) -> None:
+    from core.config import load_workflow
+
+    source_file = tmp_path / "model.py"
+    original = "import torch\nprint(torch.cuda.is_available())\nmodel = torch.ones(1).cuda()\n"
+    source_file.write_text(original, encoding="utf-8")
+    workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "musa_muxi_migration_v2_container_baseaware_entryfix.yaml"
+    workflow = load_workflow(str(workflow_path))
+    workflow.execution_backend = None
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="phase_4_rule_migration",
+        name="Rule Migration",
+        prompt_template="",
+        output_schema={},
+        type="builtin",
+    )
+    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py"})
+
+    status, output = executor._execute_builtin_phase(phase, state={}, context={})
+
+    assert status == "success"
+    assert output.get("strategy") == "rule_strategies/report_only.yaml"
+    assert source_file.read_text(encoding="utf-8") == original
+    assert output["result"]["summary"]["total_replacements"] == 0
+
+
 def test_builtin_phase_missing_operation_fails(tmp_path: Path) -> None:
     workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
     executor = WorkflowExecutor(
@@ -4430,7 +4465,7 @@ class TestContainerEnvContextInjection:
             workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
             project_dir=str(tmp_path), output_dir=str(tmp_path),
         )
-        ctx: dict = {}
+        ctx: dict[str, object] = {}
         executor._inject_container_env_context(ctx)
         assert ctx == {}
 
@@ -4450,7 +4485,7 @@ class TestContainerEnvContextInjection:
             workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
             project_dir=str(tmp_path), output_dir=str(tmp_path),
         )
-        ctx: dict = {}
+        ctx: dict[str, object] = {}
         executor._inject_container_env_context(ctx)
         assert "container_env_facts" in ctx
         assert "container_python_version" in ctx
@@ -4468,7 +4503,7 @@ class TestContainerEnvContextInjection:
             exec_backend=mock_backend,
         )
         executor._container_env_probe = {"container_id": "existing-cid", "status": "ok"}
-        ctx: dict = {"container_name_or_id": "pre-set"}
+        ctx: dict[str, object] = {"container_name_or_id": "pre-set"}
         executor._inject_container_env_context(ctx)
         assert ctx["container_name_or_id"] == "pre-set"
 
@@ -4602,7 +4637,7 @@ class TestExperienceConfigGate:
 
 
 class TestPhase7SkipAndReroute:
-    def _executor_with_phases(self, tmp_path: Path, phases: list, experience_cfg=None):
+    def _executor_with_phases(self, tmp_path: Path, phases: list[PhaseDefinition], experience_cfg: ExperienceConfig | None = None):
         if experience_cfg is None:
             experience_cfg = ExperienceConfig(enabled=True, phase7_enabled=True)
         workflow = WorkflowDefinition(
@@ -4823,9 +4858,11 @@ def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
         id="phase_35_static_validate", name="3.5", prompt_template="phase_35_static_validate",
         output_schema={}, type="llm",
     )
-    ctx: dict = {}
+    ctx: dict[str, object] = {}
     executor._inject_llm_baseline_context(ctx, phase, state)
-    parsed = json.loads(ctx["previous_outputs"])
+    previous_outputs = ctx["previous_outputs"]
+    assert isinstance(previous_outputs, str)
+    parsed = json.loads(previous_outputs)
     assert "phase_3_entry_script" in parsed
     assert "phase_0_env_detect" not in parsed
     assert "phase_1_project_analysis" not in parsed
@@ -4844,9 +4881,11 @@ def test_we_inject_llm_baseline_context_early_phase_empty(temp_dir):
         id="phase_0_env_detect", name="0", prompt_template="phase_0_env_detect",
         output_schema={}, type="llm",
     )
-    ctx: dict = {}
+    ctx: dict[str, object] = {}
     executor._inject_llm_baseline_context(ctx, phase, state)
-    assert json.loads(ctx["previous_outputs"]) == {}
+    previous_outputs = ctx["previous_outputs"]
+    assert isinstance(previous_outputs, str)
+    assert json.loads(previous_outputs) == {}
 
 
 # ── disable_custom_op_contract_injection flag regression ──────────────────

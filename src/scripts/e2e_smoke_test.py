@@ -62,14 +62,14 @@ class MockSessionManager:
         self.send_command_calls: list[tuple[str, str, int | None]] = []
         self._sessions: dict[tuple[str, str], str] = {}
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         self.get_or_create_calls.append((role, lifecycle))
         key = (role, lifecycle)
         if key not in self._sessions:
             self._sessions[key] = f"{role}-{lifecycle}-session"
         return self._sessions[key]
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = None, **kwargs: object) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = None, retries: int | None = None) -> str:
         self.send_command_calls.append((session_id, command, timeout))
         if command.startswith("# Phase 0 - Environment Detection") or command.startswith(
             "Your previous response for phase_0_env_detect"
@@ -281,7 +281,7 @@ def run_smoke_test() -> None:
             prompt_loader=prompt_loader,
             validator=validator,
         )
-        migrator = RuleBasedMigrator()
+        migrator = RuleBasedMigrator(strategy="cuda_to_npu")
 
         phase_outputs = runner.run_phase_0_to_3(str(project_dir), session_mgr, artifact_store)
         sync_full_phase_artifacts(artifact_store, phase_outputs)

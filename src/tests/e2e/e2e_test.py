@@ -470,7 +470,7 @@ def run_e2e(
         framework_config = load_framework_config(framework_config_path)
         runner = PhaseRunner(observer, artifact_store, prompt_loader, validator)
         repair = RepairLoopEngine(observer, artifact_store, prompt_loader, validator, config=framework_config)
-        migrator = RuleBasedMigrator()
+        migrator = RuleBasedMigrator(strategy="cuda_to_npu")
 
         main_session_id = observer.get_or_create(role="main_engineer", lifecycle="persistent")
         observer.set_metadata("main_session_id", main_session_id)

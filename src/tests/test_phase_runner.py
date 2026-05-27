@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typing_extensions import override
@@ -16,6 +17,7 @@ from core.phase_runner import PhaseRunner, PhaseSpec, SessionManagerLike
 from core.prompt_loader import PromptLoader
 from core.types import PhaseDefinition, RuntimeSkillsConfig, SubWorkflowDefinition, WorkflowDefinition
 from core.validator_engine import ValidationResult, ValidatorEngine
+from validators.validate_project_analysis import validate as validate_project_analysis
 
 
 class MockSession:
@@ -36,10 +38,10 @@ class MockSession:
 
 
 class NoopSessionManager:
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         return f"{role}-{lifecycle}"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
         raise AssertionError(f"Unexpected manager send for {session_id}: {command} ({timeout})")
 
 
@@ -49,7 +51,7 @@ class RecordingSessionManager:
         self.get_or_create_calls: list[dict[str, str]] = []
         self.send_calls: list[tuple[str, str, int | None, int | None]] = []
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
@@ -68,11 +70,11 @@ class MockSessionManager:
         self.get_or_create_calls = []
         self.send_calls = []
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
         self.send_calls.append((session_id, command, timeout))
         if command.startswith("# Phase 3.5"):
             return self.responses["phase_35"].pop(0)
@@ -103,6 +105,14 @@ def build_runner(base_dir: Path, session_mgr: SessionManagerLike | None = None) 
         validator=ValidatorEngine(),
     )
     return runner, artifact_store
+
+
+def write_tiny_cuda_custom_op_project(root: Path) -> None:
+    scripts_dir = root / "test_data_and_scripts"
+    scripts_dir.mkdir(parents=True)
+    _ = (scripts_dir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    _ = (root / "requirements.txt").write_text("torch\n", encoding="utf-8")
+    _ = (root / "kernel.cu").write_text('extern "C" void add_cuda() { }\n', encoding="utf-8")
 
 
 def write_runtime_skill(root: Path, name: str, content: str) -> Path:
@@ -364,7 +374,7 @@ def test_run_review_check_json_example_text_not_session_error(tmp_path: Path) ->
             self.send_calls: list[tuple[str, str, int | None]] = []
 
         @override
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
             self.send_calls.append((session_id, command, timeout))
             return self.responses.pop(0)
 
@@ -548,7 +558,7 @@ class Phase6SessionManager:
         self.get_or_create_calls: list[dict[str, str]] = []
         self.send_calls: list[tuple[str, str, int | None, int | None]] = []
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
@@ -653,15 +663,17 @@ def test_run_phase_6_fallback_on_session_error(tmp_path: Path) -> None:
     )
 
     result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+    summary = cast(dict[str, object], result["migration_summary"])
+    report_paths = cast(list[str], result["report_paths"])
 
     assert result["fallback"] is True
-    assert result["migration_summary"]["overall_status"] == "partial"
-    assert result["migration_summary"]["files_migrated"] == 0
-    assert result["migration_summary"]["files_skipped"] == 0
-    assert result["migration_summary"]["phase5_status"] == "success"
+    assert summary["overall_status"] == "partial"
+    assert summary["files_migrated"] == 0
+    assert summary["files_skipped"] == 0
+    assert summary["phase5_status"] == "success"
     assert session_mgr.send_calls[0][2] == 600
     assert session_mgr.send_calls[0][3] == 0
-    assert all(Path(path).exists() for path in result["report_paths"])
+    assert all(Path(path).exists() for path in report_paths)
 
     saved = artifact_store.load_phase_output("phase_6_report")
     assert saved is not None
@@ -682,12 +694,13 @@ def test_run_phase_6_fallback_on_timeout_exception(tmp_path: Path) -> None:
     )
 
     result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+    report_paths = cast(list[str], result["report_paths"])
 
     assert result["fallback"] is True
     assert result["fallback_reason"] == "phase 6 timed out"
     assert session_mgr.send_calls[0][2] == 600
     assert session_mgr.send_calls[0][3] == 0
-    assert all(Path(path).exists() for path in result["report_paths"])
+    assert all(Path(path).exists() for path in report_paths)
 
 
 def test_run_phase_6_fallback_on_incomplete_response(tmp_path: Path) -> None:
@@ -701,10 +714,12 @@ def test_run_phase_6_fallback_on_incomplete_response(tmp_path: Path) -> None:
     )
 
     result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+    summary = cast(dict[str, object], result["migration_summary"])
+    report_paths = cast(list[str], result["report_paths"])
 
     assert result["fallback"] is True
-    assert result["migration_summary"]["overall_status"] == "partial"
-    assert all(Path(path).exists() for path in result["report_paths"])
+    assert summary["overall_status"] == "partial"
+    assert all(Path(path).exists() for path in report_paths)
 
 
 def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
@@ -750,10 +765,10 @@ def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
 
 def test_run_phase_0_to_1_returns_outputs(tmp_path: Path) -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
             return "sess"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
             del session_id, command, timeout
             return '{"ok": true}'
 
@@ -790,10 +805,10 @@ def test_run_phase_2_to_3_accepts_constraint_summary() -> None:
 
 def test_build_prompt_context_has_constraint_keys() -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
             return "x"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
             del session_id, command, timeout
             return "{}"
 
@@ -930,10 +945,10 @@ def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_con
 
 def test_phase_35_prompt_context_includes_previous_outputs() -> None:
     class MockSM:
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
             return "x"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
             del session_id, command, timeout
             return "{}"
 
@@ -1021,11 +1036,11 @@ def test_run_phase_2_to_3_retries_phase_3_after_phase_35_failure(tmp_path: Path)
                 },
             ]
 
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
             del role, lifecycle
             return "persistent-main"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
             del session_id, timeout
             if command.startswith("# Phase 2"):
                 return json.dumps(
@@ -1123,7 +1138,7 @@ def custom_op_phase3_output(tmp_path: Path, *, create_script: bool = True) -> di
             "kernel_launch_site_inventory",
             "public_entry_mapping",
             "inventory_granularity_fine",
-            "per_entry_opp_custom_op_artifact_evidence",
+            "per_entry_target_custom_op_artifact_evidence",
             "per_entry_adapter_evidence",
             "per_entry_parity_evidence",
             "integration_e2e_evidence",
@@ -1175,11 +1190,11 @@ class CustomOpPhase35SessionManager:
         self.phase35_prompts = []
         self.phase35_outputs = list(phase35_outputs)
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         del role, lifecycle
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
         del session_id, timeout
         if command.startswith("# Phase 2"):
             return json.dumps(
@@ -1204,11 +1219,11 @@ def test_run_phase_2_to_3_rejects_missing_custom_op_entry_script_before_phase35(
         def __init__(self) -> None:
             self.phase35_prompts = []
 
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
             del role, lifecycle
             return "persistent-main"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
             del session_id, timeout
             if command.startswith("# Phase 2"):
                 return json.dumps(
@@ -1263,11 +1278,11 @@ def test_run_phase_2_to_3_accepts_relative_custom_op_entry_script(tmp_path: Path
         def __init__(self) -> None:
             self.phase35_prompts = []
 
-        def get_or_create(self, role: str, lifecycle: str) -> str:
+        def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
             del role, lifecycle
             return "persistent-main"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
+        def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
             del session_id, timeout
             if command.startswith("# Phase 2"):
                 return json.dumps(
@@ -1455,7 +1470,7 @@ class TestPhaseRunnerContainerContext:
             "container_python_version": "3.10.0",
         })
         phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
-        context = {"project_dir": "/tmp/proj", "user_constraints": ""}
+        context: dict[str, object] = {"project_dir": "/tmp/proj", "user_constraints": ""}
         result = runner._build_prompt_context(phase_spec, context)
         assert result["execution_backend_mode"] == "container"
         assert result["container_name_or_id"] == "c1"
@@ -1471,7 +1486,7 @@ class TestPhaseRunnerContainerContext:
         )
         runner.set_container_context({"project_dir": "/container/dir"})
         phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
-        context = {"project_dir": "/host/proj"}
+        context: dict[str, object] = {"project_dir": "/host/proj"}
         result = runner._build_prompt_context(phase_spec, context)
         assert result["project_dir"] == "/host/proj"
 
@@ -1498,7 +1513,12 @@ def _make_session_mgr() -> SessionManagerLike:
     return M()
 
 
-def _make_artifact_store():
+def _make_artifact_store(tmp_path: Path | None = None) -> ArtifactStore:
+    root = tmp_path or Path("/tmp")
+    return ArtifactStore(str(root), "test-artifacts")
+
+
+def _unused_legacy_artifact_store():
     class S:
         def __init__(self):
             self.artifact_dir = "/tmp/test-artifacts"
@@ -1847,3 +1867,53 @@ def test_boundary_avoids_framework_name_in_phase_prompts(tmp_path: Path) -> None
     first_prompt = session.calls[0][0]
     assert "OpenCode" not in first_prompt
     assert "SEAM" not in first_prompt
+
+
+def test_phase_runner_phase1_rejects_untrusted_sidecar_without_response_json(tmp_path: Path) -> None:
+    runner, artifact_store = build_runner(tmp_path)
+    project_dir = tmp_path / "custom_project"
+    project_dir.mkdir()
+    write_tiny_cuda_custom_op_project(project_dir)
+    _ = (Path(artifact_store.artifact_dir) / "phase_1_project_analysis.json").write_text(
+        json.dumps({
+            "project_dir": str(project_dir),
+            "dependencies": ["torch"],
+            "cuda_detected": True,
+            "entry_script": "test_data_and_scripts/main.py",
+        }),
+        encoding="utf-8",
+    )
+    session = MockSession([
+        "Phase 1 complete. JSON output saved to `.sm-artifacts/testrun/phase_1_project_analysis.json`.",
+        "Still saved to `.sm-artifacts/testrun/phase_1_project_analysis.json`.",
+        "Still saved to `.sm-artifacts/testrun/phase_1_project_analysis.json`.",
+    ])
+
+    with pytest.raises(ValueError, match="response contained no parseable JSON object"):
+        runner.run_single_phase(session, "phase_1", {"project_dir": str(project_dir), "max_retry": 1})
+
+
+def test_phase_runner_phase1_status_only_response_fails_shape(tmp_path: Path) -> None:
+    runner, _artifact_store = build_runner(tmp_path)
+    spec = PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis")
+
+    validation = runner._validate_phase_response_shape(spec, {"status": "complete"}, "{}")
+
+    assert validation.passed is False
+    assert any("status/progress-only" in error for error in validation.errors)
+
+
+def test_phase_runner_phase1_normalizer_discovers_project_fields(tmp_path: Path) -> None:
+    project_dir = tmp_path / "custom_project"
+    project_dir.mkdir()
+    write_tiny_cuda_custom_op_project(project_dir)
+    runner, _artifact_store = build_runner(tmp_path)
+    spec = PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis")
+
+    normalized = runner._normalize_output(spec, {"route": "custom_op"}, {"project_dir": str(project_dir)}, {})
+
+    assert normalized["dependencies"] == ["torch"]
+    assert normalized["cuda_detected"] is True
+    assert normalized["entry_script"] == "test_data_and_scripts/main.py"
+    assert normalized["migration_route"] == "custom_op"
+    assert validate_project_analysis(normalized)["passed"] is True
