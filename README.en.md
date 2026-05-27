@@ -34,7 +34,7 @@ New to domestic GPUs? You may face these common hurdles:
 Run the commands below on your domestic GPU server or container environment to try SEAM:
 
 ```bash
-git clone https://github.com/seam-project/seam.git
+git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd seam
 bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
   --server_type opencode \
@@ -107,7 +107,7 @@ See [SEAM Technical Introduction](docs/SEAM_Tech_Intro.zh.md) for detailed techn
 
 Feel free to reach out for any ideas or questions regarding SEAM and Chinese GPUs.
 
-For primary contact, please send emails to **cfff@fudan.edu.cn**  — the official mailbox of Fudan University CFFF Platform. Our engineering team will respond to all feedback in a timely manner.
+Please send emails to **cfff@fudan.edu.cn**  — the official mailbox of Fudan University CFFF Platform. Our engineering team will respond to all feedback in a timely manner.
 
 
 ---
@@ -121,6 +121,10 @@ MIT License
 Copyright (c) 2026 Fudan-SMI-lab
 ```
 
-<p align="center">
-  <sub>❤️ Co-developed by Fudan University and Shanghai Innovation Institute ❤️</sub>
-</p>
+
+---
+
+This project is jointly developed by:
+- Statistical Machine Intelligence Lab (SMI-lab), Artificial Intelligence Innovation and Incubation Institute, Fudan University
+- Shanghai Innovation Institute
+- CFFF platform of Fudan University
