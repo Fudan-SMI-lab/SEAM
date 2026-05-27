@@ -1,5 +1,8 @@
 """Hook system for workflow lifecycle events."""
 
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
 import json
 import os
 import shutil
@@ -8,23 +11,27 @@ import warnings
 from pathlib import Path
 from typing import Any
 
+from core.types import HookDefinition
+
+HookConfig = dict[str, Any] | HookDefinition
+
 
 class HookManager:
     """Execute builtin hooks at workflow lifecycle points."""
 
-    def __init__(self, workflow_hooks: dict[str, list[dict]], output_dir: str = "."):
+    def __init__(self, workflow_hooks: Mapping[str, Sequence[HookConfig]], output_dir: str = "."):
         """
         Args:
             workflow_hooks: {"workflow_start": [{"type": "builtin", "operation": "snapshot_project", ...}]}
             output_dir: directory for hook outputs (snapshots, telemetry, etc.)
         """
-        self._hooks = workflow_hooks
+        self._hooks: dict[str, list[HookConfig]] = {key: list(value) for key, value in workflow_hooks.items()}
         self._output_dir = output_dir
         self._results: dict[str, dict[str, Any]] = {}
 
     # ── Public API ──────────────────────────────────────────────────
 
-    def execute(self, hook_point: str, context: dict) -> dict[str, Any]:
+    def execute(self, hook_point: str, context: dict[str, Any]) -> dict[str, Any]:
         """Execute all hooks for a given point.
 
         Returns merged results from all hooks.
@@ -67,7 +74,7 @@ class HookManager:
         """Return all hook results accumulated so far."""
         return dict(self._results)
 
-    def register(self, hook_point: str, phase_id: str = "", hook_config: list[dict] | None = None) -> None:
+    def register(self, hook_point: str, phase_id: str = "", hook_config: list[dict[str, Any]] | None = None) -> None:
         """Register additional hooks at runtime.
 
         Args:
@@ -85,7 +92,7 @@ class HookManager:
 
     # ── Dispatch ─────────────────────────────────────────────────────
 
-    def _dispatch_builtin(self, operation: str, params: dict, context: dict) -> dict:
+    def _dispatch_builtin(self, operation: str, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """Route to the appropriate _builtin_{operation} method."""
         method_name = f"_builtin_{operation}"
         method = getattr(self, method_name, None)
@@ -95,7 +102,7 @@ class HookManager:
 
     # ── Builtin operations ───────────────────────────────────────────
 
-    def _builtin_snapshot_project(self, params: dict, context: dict) -> dict:
+    def _builtin_snapshot_project(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """Snapshot all .py files in project_dir to JSON."""
         project_dir = params.get("project_dir") or context.get("PROJECT_DIR", "")
         if not project_dir:
@@ -129,7 +136,7 @@ class HookManager:
 
         return {"snapshot_path": os.path.abspath(snap_path), "file_count": len(snapshot)}
 
-    def _builtin_copy_artifacts(self, params: dict, context: dict) -> dict:
+    def _builtin_copy_artifacts(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """Copy .sm-artifacts/ directory to output_dir."""
         project_dir = params.get("project_dir") or context.get("PROJECT_DIR", "")
         if not project_dir:
@@ -144,7 +151,7 @@ class HookManager:
         shutil.copytree(str(src), str(dest), dirs_exist_ok=True)
         return {"artifacts_copied": True, "dest": str(dest)}
 
-    def _builtin_write_summary(self, params: dict, context: dict) -> dict:
+    def _builtin_write_summary(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """Write summary.json based on state and phase results."""
         summary = {
             "state": context.get("state", {}),
@@ -158,7 +165,7 @@ class HookManager:
 
         return {"summary_path": os.path.abspath(path)}
 
-    def _builtin_save_telemetry(self, params: dict, context: dict) -> dict:
+    def _builtin_save_telemetry(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """Save telemetry data. Delegate to context.get('telemetry_bridge').save_metrics()."""
         bridge = context.get("telemetry_bridge")
         telemetry_data = {}
@@ -184,6 +191,6 @@ class HookManager:
 
         return {"telemetry_saved": True, "path": os.path.abspath(path)}
 
-    def _builtin_noop(self, params: dict, context: dict) -> dict:
+    def _builtin_noop(self, params: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """No-operation hook (for testing/debugging)."""
         return {"noop": True, "timestamp": time.time()}

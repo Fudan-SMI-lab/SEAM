@@ -23,7 +23,7 @@ from core.custom_op_variants import (
     apply_expanded_variant_contract,
     ensure_strict_expanded_variant_validation_script,
     expanded_variant_contract_from_outputs,
-    normalize_project_analysis_expanded_variants,
+    normalize_phase1_project_analysis,
 )
 from core.execution_backend import get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_env_ctx
 from core.paths import resolve_relative_path, workspace_root
@@ -117,6 +117,26 @@ def _rewrite_container_to_host_path(
         return project_dir
     return str(Path(project_dir) / rel)
 
+STATUS_ONLY_RESPONSE_KEYS = frozenset(
+    {
+        "status",
+        "message",
+        "summary",
+        "progress",
+        "current_step",
+        "next_step",
+        "todo",
+        "todos",
+        "task",
+        "tasks",
+    }
+)
+PHASE_RESPONSE_REQUIRED_KEYS = {
+    "phase_1_project_analysis": ("project_dir", "dependencies", "cuda_detected", "entry_script"),
+    "phase_2_venv_create": ("venv_path", "python_path", "installed_packages"),
+    "phase_3_entry_script": ("entry_script_path", "run_command"),
+    "phase_35_static_validate": ("validation_passed", "issues", "fix_plan"),
+}
 
 logger = logging.getLogger(__name__)
 
@@ -778,7 +798,10 @@ class PhaseRunner:
         active_prompt = prompt
         for attempt in range(1, max_retry + 1):
             raw_response = self._send_prompt(session, active_prompt, timeout, session_mgr)
-            parsed_output: JsonObject = dict(extract_json_response(raw_response))
+            parsed_response = extract_json_response(raw_response)
+            parsed_output: JsonObject = dict(parsed_response) if isinstance(parsed_response, dict) else {}
+            parsed_output_from_response = bool(parsed_output)
+            parsed_output_from_sidecar = False
             output_format = self._extract_output_format_from_prompt(active_prompt)
             parse_attempt = 0
             while not parsed_output and parse_attempt < 2:
@@ -790,8 +813,35 @@ class PhaseRunner:
                     phase_name=phase.prompt_id,
                 )
                 raw_response = self._send_prompt(session, parse_prompt, timeout, session_mgr)
-                parsed_output = dict(extract_json_response(raw_response))
+                parsed_response = extract_json_response(raw_response)
+                parsed_output = dict(parsed_response) if isinstance(parsed_response, dict) else {}
+                parsed_output_from_response = bool(parsed_output)
+                parsed_output_from_sidecar = False
             normalized_output = self._normalize_output(phase, parsed_output, prompt_context, normalized_context)
+            shape_output = normalized_output if parsed_output_from_response or parsed_output_from_sidecar else parsed_output
+            response_shape_validation = self._validate_phase_response_shape(phase, shape_output, raw_response)
+            if not response_shape_validation.passed:
+                validation = response_shape_validation
+                last_validation = validation
+                _ = artifact_store.write_journal(
+                    self._build_journal_entry(
+                        phase=phase,
+                        attempt=attempt,
+                        status="failed",
+                        session_ref=session_ref,
+                        raw_path="",
+                        canonical_path="",
+                        validation=validation,
+                    )
+                )
+                if attempt < max_retry:
+                    active_prompt = self._build_correction_prompt(
+                        phase=phase,
+                        validation=validation,
+                        previous_prompt=prompt,
+                    )
+                    continue
+                break
 
             # Attach raw prompt and response for end-to-end verification.
             # Keys are prefixed with `_` to avoid conflicts with phase output schemas.
@@ -877,6 +927,38 @@ class PhaseRunner:
 
         error_text = "; ".join(last_validation.errors) or "unknown validation failure"
         raise ValueError(f"{phase.prompt_id} failed validation after {max_retry} attempts: {error_text}")
+
+
+    @classmethod
+    def _validate_phase_response_shape(
+        cls,
+        phase: PhaseSpec,
+        output: JsonObject,
+        raw_response: str,
+    ) -> ValidationResult:
+        errors: list[str] = []
+        required_keys = PHASE_RESPONSE_REQUIRED_KEYS.get(phase.prompt_id, ())
+        if not required_keys:
+            return ValidationResult(passed=True, errors=[], warnings=[])
+        if not output:
+            if raw_response.strip():
+                errors.append("response contained no parseable JSON object")
+            else:
+                errors.append("response was empty")
+        elif cls._is_status_only_response(output):
+            errors.append(
+                f"{phase.prompt_id} returned status/progress-only JSON instead of the complete phase schema"
+            )
+
+        missing_keys = [key for key in required_keys if key not in output]
+        if missing_keys:
+            errors.append("Missing required phase JSON keys: " + ", ".join(missing_keys))
+        return ValidationResult(passed=not errors, errors=errors, warnings=[])
+
+    @staticmethod
+    def _is_status_only_response(output: JsonObject) -> bool:
+        keys = {str(key) for key in output if not str(key).startswith("_")}
+        return bool(keys) and keys.issubset(STATUS_ONLY_RESPONSE_KEYS)
 
     @staticmethod
     def _build_correction_prompt(
@@ -1281,8 +1363,7 @@ class PhaseRunner:
         if phase.prompt_id == "phase_0_env_detect" and "python_version" not in normalized:
             normalized["python_version"] = self._current_python_version()
         if phase.prompt_id == "phase_1_project_analysis":
-            normalized["project_dir"] = str(prompt_context["project_dir"])
-            normalize_project_analysis_expanded_variants(normalized)
+            normalize_phase1_project_analysis(normalized, project_dir=prompt_context["project_dir"])
             normalize_serving_phase1_surface(normalized)
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})

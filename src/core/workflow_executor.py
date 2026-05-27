@@ -31,6 +31,7 @@ from core.types import (
     HookDefinition,
     HookResult,
     RuntimeSkillsConfig,
+    ExecutionBackendConfig,
 )
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.variable_resolver import VariableResolver
@@ -43,7 +44,7 @@ from core.custom_op_variants import (
     apply_expanded_variant_contract,
     ensure_strict_expanded_variant_validation_script,
     expanded_variant_contract_from_outputs,
-    normalize_project_analysis_expanded_variants,
+    normalize_phase1_project_analysis,
 )
 from core.routes import SERVING_ROUTES, normalize_serving_phase1_surface, normalize_serving_phase3_contract
 from core.phase_boundary import inject_phase_boundary
@@ -413,10 +414,9 @@ class WorkflowExecutor:
         self.exec_backend = backend
 
     def _auto_select_image(
-        self, config: "ExecutionBackendConfig",
-    ) -> "ExecutionBackendConfig":
+        self, config: ExecutionBackendConfig,
+    ) -> ExecutionBackendConfig:
         """Run agent image-selection for ``mode=auto`` before container creation."""
-        from core.types import ExecutionBackendConfig as _EBC
 
         if config.mode != "container":
             return config
@@ -446,12 +446,12 @@ class WorkflowExecutor:
                 is_discovered = True
             else:
                 logger.info("Auto mode: no configured images and no local images discovered; falling back to local")
-                return _EBC(mode="local")
+                return ExecutionBackendConfig(mode="local")
 
         # Send selection prompt to agent
         selected = self._send_image_selection_prompt(candidates, is_discovered)
         if selected and selected in candidates:
-            config = _EBC(
+            config = ExecutionBackendConfig(
                 mode=config.mode,
                 source=config.source,
                 runtime=config.runtime,
@@ -476,7 +476,7 @@ class WorkflowExecutor:
                 "Auto image selection returned invalid value %r; falling back to local",
                 selected,
             )
-            return _EBC(mode="local")
+            return ExecutionBackendConfig(mode="local")
 
         return config
 
@@ -554,7 +554,7 @@ class WorkflowExecutor:
 
     # ── Main entry point ────────────────────────────────────────────────
 
-    def execute(self, context: dict) -> dict:
+    def execute(self, context: dict[str, Any]) -> dict[str, Any]:
         """Execute the full workflow lifecycle.
 
         Args:
@@ -1126,11 +1126,11 @@ class WorkflowExecutor:
     def _evaluate_condition(
         self,
         condition: str,
-        state: dict,
-        context: dict,
-        loop_vars: dict | None = None,
-        loop_state: dict | None = None,
-        step_outputs: dict | None = None,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+        step_outputs: dict[str, Any] | None = None,
     ) -> bool:
         """Evaluate a condition expression.
 
@@ -1155,7 +1155,7 @@ class WorkflowExecutor:
         # Step 2: Handle $.field_name shorthand (not ${} format)
         expr = resolved
         if "$." in expr:
-            def dollar_repl(m: re.Match) -> str:
+            def dollar_repl(m: re.Match[str]) -> str:
                 field = m.group(1)
                 # Lookup order: step_outputs (current iter) → globals → context → loop_state (outer, stale-safe)
                 # step_outputs first so current-iteration script_exit_code wins over previous iteration's value in outer loop_state
@@ -1204,13 +1204,13 @@ class WorkflowExecutor:
     def _resolve_input_mapping(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
-        loop_vars: dict | None = None,
-        loop_state: dict | None = None,
-        loop_history: list | None = None,
-        step_outputs: dict | None = None,
-    ) -> dict:
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+        loop_history: list[Any] | None = None,
+        step_outputs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Resolve phase.input_mapping into a context dict."""
         resolved_ctx: dict[str, Any] = {}
         for key, value in (phase.input_mapping or {}).items():
@@ -1231,13 +1231,13 @@ class WorkflowExecutor:
     def _execute_llm_phase(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
+        state: dict[str, Any],
+        context: dict[str, Any],
         session_id: str | None = None,
-        loop_vars: dict | None = None,
-        loop_state: dict | None = None,
-        step_outputs: dict | None = None,
-    ) -> tuple[str, dict]:
+        loop_vars: dict[str, Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+        step_outputs: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         """Execute an LLM-type phase: resolve agent, send prompt, validate."""
         # 1. Resolve agent / session
         agent_id = phase.agent or "main_engineer"
@@ -1718,7 +1718,7 @@ class WorkflowExecutor:
         # No entry → falls through to legacy "all" behaviour.
     }
 
-    def _filter_previous_outputs(self, phase: PhaseDefinition, state: dict) -> dict[str, Any]:
+    def _filter_previous_outputs(self, phase: PhaseDefinition, state: dict[str, Any]) -> dict[str, Any]:
         """Return only the whitelisted state keys as `previous_outputs` for a phase."""
         pid = phase.id
         pt = phase.prompt_template or ""
@@ -1732,9 +1732,9 @@ class WorkflowExecutor:
 
     def _inject_llm_baseline_context(
         self,
-        input_ctx: dict,
+        input_ctx: dict[str, Any],
         phase: PhaseDefinition,
-        state: dict,
+        state: dict[str, Any],
     ) -> None:
         input_ctx.setdefault("phase_name", phase.id)
         input_ctx.setdefault("project_dir", self.project_dir)
@@ -1765,7 +1765,7 @@ class WorkflowExecutor:
         self._inject_container_env_context(input_ctx)
         self._inject_execution_environment_context(input_ctx)
 
-    def _inject_execution_environment_context(self, input_ctx: dict) -> None:
+    def _inject_execution_environment_context(self, input_ctx: dict[str, Any]) -> None:
         if "execution_environment_context" in input_ctx:
             return
         probe = getattr(self, "_container_env_probe", None)
@@ -1773,9 +1773,9 @@ class WorkflowExecutor:
 
     def _inject_llm_phase_specific_context(
         self,
-        input_ctx: dict,
+        input_ctx: dict[str, Any],
         phase: PhaseDefinition,
-        state: dict,
+        state: dict[str, Any],
     ) -> None:
         pid = phase.id
         if "phase_1_5" in pid or "constraint_summary" in pid:
@@ -1792,7 +1792,7 @@ class WorkflowExecutor:
         if "phase_6" in pid:
             input_ctx.setdefault("report_dir", self._artifact_report_dir())
 
-    def _inject_container_env_context(self, input_ctx: dict) -> None:
+    def _inject_container_env_context(self, input_ctx: dict[str, Any]) -> None:
         if not isinstance(self.exec_backend, ContainerBackend):
             return
         probe = self._container_env_probe
@@ -1813,12 +1813,12 @@ class WorkflowExecutor:
 
     def _inject_sub_workflow_context(
         self,
-        input_ctx: dict,
+        input_ctx: dict[str, Any],
         phase_id: str,
-        step_outputs: dict,
-        loop_vars: dict,
-        state: dict,
-        loop_history: list | None,
+        step_outputs: dict[str, Any],
+        loop_vars: dict[str, Any],
+        state: dict[str, Any],
+        loop_history: list[Any] | None,
     ) -> None:
         if loop_history is None:
             loop_history = []
@@ -1988,13 +1988,13 @@ class WorkflowExecutor:
         self._inject_container_env_context(input_ctx)
         self._inject_execution_environment_context(input_ctx)
 
-    def _resolve_constraint_summary(self, state: dict) -> str:
+    def _resolve_constraint_summary(self, state: dict[str, Any]) -> str:
         ph = state.get("phase_1_5_constraint_summary", {})
         if isinstance(ph, dict):
             return str(ph.get("constraint_summary", ""))
         return ""
 
-    def _serialize_entry_script_contract(self, state: dict) -> str:
+    def _serialize_entry_script_contract(self, state: dict[str, Any]) -> str:
         contract = state.get("phase_3_entry_script", {}) if isinstance(state, dict) else {}
         if not isinstance(contract, dict) or not contract:
             return "(No Phase 3 entry-script contract available)"
@@ -2009,7 +2009,7 @@ class WorkflowExecutor:
             "Return empty lists/objects when no experience was used or ignored."
         )
 
-    def _build_env_context(self, state: dict) -> dict:
+    def _build_env_context(self, state: dict[str, Any]) -> dict[str, Any]:
         env: dict[str, object] = {}
         ph0 = state.get("phase_0_env_detect", {})
         if isinstance(ph0, dict):
@@ -2025,7 +2025,7 @@ class WorkflowExecutor:
         env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
         return env
 
-    def _format_history_summary(self, loop_history: list) -> str:
+    def _format_history_summary(self, loop_history: list[Any]) -> str:
         if not loop_history:
             return "(No previous repair attempts)"
         lines = ["| Iteration | Status | Duration | Summary | Agent Diagnostics |", "|---|---|---|---|---|"]
@@ -2056,7 +2056,7 @@ class WorkflowExecutor:
         return "\n".join(lines)
 
     def _format_error_analyzer_history(
-        self, loop_history: list, step_outputs: dict, state: dict,
+        self, loop_history: list[Any], step_outputs: dict[str, Any], state: dict[str, Any],
     ) -> str:
         if not loop_history:
             return "(No previous repair attempts — this is the first failure)"
@@ -2067,7 +2067,7 @@ class WorkflowExecutor:
         ]
         latest_category = "unknown"
         latest_repair_role = ""
-        fixer_details: list[dict] = []
+        fixer_details: list[dict[str, Any]] = []
         for h in loop_history:
             if not isinstance(h, dict):
                 continue
@@ -2141,7 +2141,7 @@ class WorkflowExecutor:
 
         return "\n".join(lines)
 
-    def _collect_fixer_outputs(self, step_outputs: dict) -> dict | None:
+    def _collect_fixer_outputs(self, step_outputs: dict[str, Any]) -> dict[str, Any] | None:
         result: dict[str, Any] = {}
         for pid in SUB_WORKFLOW_REPAIR_PHASE_ORDER:
             out = step_outputs.get(pid)
@@ -2163,7 +2163,7 @@ class WorkflowExecutor:
                 result[pid] = entry
         return result if result else None
 
-    def _serialize_last_review(self, step_outputs: dict) -> str | None:
+    def _serialize_last_review(self, step_outputs: dict[str, Any]) -> str | None:
         review = step_outputs.get("review_verdict")
         if isinstance(review, dict):
             out = {"verdict": review.get("verdict", "unknown"),
@@ -2194,10 +2194,10 @@ class WorkflowExecutor:
     def _normalize_llm_output(
         self,
         phase: PhaseDefinition,
-        output: dict,
-        prompt_context: dict,
-        state: dict,
-    ) -> dict:
+        output: dict[str, Any],
+        prompt_context: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
         """Inject missing fields replicating PhaseRunner._normalize_output logic."""
         normalized = dict(output)
         phase_id = phase.id
@@ -2272,9 +2272,8 @@ class WorkflowExecutor:
 
         return normalized
 
-    @staticmethod
-    def _normalize_project_analysis_variant_count(output: dict[str, Any]) -> None:
-        normalize_project_analysis_expanded_variants(cast(dict[str, object], output))
+    def _normalize_project_analysis_variant_count(self, output: dict[str, Any]) -> None:
+        normalize_phase1_project_analysis(cast(dict[str, object], output), project_dir=self.project_dir)
 
     @staticmethod
     def _custom_op_route_disabled(workflow_globals: Mapping[str, object]) -> bool:
@@ -2349,9 +2348,9 @@ class WorkflowExecutor:
 
     def _normalize_phase3_container_paths(
         self,
-        output: dict,
-        prompt_context: dict,
-    ) -> dict:
+        output: dict[str, Any],
+        prompt_context: dict[str, Any],
+    ) -> dict[str, Any]:
         """Rewrite host-visible path fields when the model returns container paths.
 
         Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
@@ -2396,11 +2395,11 @@ class WorkflowExecutor:
     def _execute_shell_phase(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
-        loop_vars: dict | None = None,
-        loop_state: dict | None = None,
-    ) -> tuple[str, dict]:
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         """Execute a shell command with OOM-safe output tailing."""
         from core.execution_backend import ContainerBackend
 
@@ -2452,12 +2451,12 @@ class WorkflowExecutor:
         cwd: str,
         entry_script_command: bool,
         timeout: int | None,
-        state: dict,
-        context: dict,
+        state: dict[str, Any],
+        context: dict[str, Any],
         *,
-        loop_vars: dict | None = None,
-        loop_state: dict | None = None,
-    ) -> tuple[str, dict]:
+        loop_vars: dict[str, Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         backend: ContainerBackend = self.exec_backend
         run_cmd: str | list[str]
         run_env: dict[str, str] | None = None
@@ -2545,12 +2544,12 @@ class WorkflowExecutor:
         cwd: str,
         entry_script_command: bool,
         timeout: int | None,
-        state: dict,
-        context: dict,
+        state: dict[str, Any],
+        context: dict[str, Any],
         *,
-        loop_vars: dict | None = None,
-        loop_state: dict | None = None,
-    ) -> tuple[str, dict]:
+        loop_vars: dict[str, Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         run_cmd: str | list[str]
         run_shell = not entry_script_command
         run_env: dict[str, str] | None = None
@@ -2622,7 +2621,7 @@ class WorkflowExecutor:
             stderr = self._read_tail(err_path) if err_path else ""
         except Exception as exc:
             exit_code = 1
-            duration = time.time() - (start_t if "start_t" in dir() else time.time())
+            duration = 0.0
             stdout = ""
             stderr = str(exc)
 
@@ -2666,8 +2665,8 @@ class WorkflowExecutor:
 
     def _custom_op_opp_preflight_for_entry_script(
         self,
-        state: dict,
-        context: dict,
+        state: dict[str, Any],
+        context: dict[str, Any],
         loop_vars: dict[str, Any] | None,
         entry_script_command: bool,
     ) -> dict[str, object] | None:
@@ -2717,13 +2716,13 @@ class WorkflowExecutor:
     def _execute_builtin_phase(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
-        loop_vars: dict | None = None,
-        loop_state: dict | None = None,
-    ) -> tuple[str, dict]:
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
         """Execute a builtin operation."""
-        _params: dict = getattr(phase, "params", {}) or {}
+        _params: dict[str, Any] = getattr(phase, "params", {}) or {}
         operation = _params.get("operation", "")
         if not isinstance(operation, str):
             operation = ""
@@ -2742,11 +2741,11 @@ class WorkflowExecutor:
             workflow_rule_migration = getattr(self.workflow, "rule_migration", None)
             platform_strategy = self.platform_policy.default_rule_migration_strategy
 
-            migrator = create_migrator_resolved(
+            migrator = cast(Any, create_migrator_resolved(
                 workflow_params_backend=backend if backend else None,
                 workflow_rule_migration=workflow_rule_migration,
                 platform_policy_strategy=platform_strategy,
-            )
+            ))
             result = migrator.migrate_directory(
                 self.project_dir,
                 pattern=str(_params.get("pattern", "*.py")),
@@ -2778,11 +2777,11 @@ class WorkflowExecutor:
 
     def _execute_custom_op_final_gate(
         self,
-        state: dict,
-        context: dict,
-        loop_vars: dict | None,
-        loop_state: dict | None,
-    ) -> tuple[str, dict]:
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+        loop_state: dict[str, Any] | None,
+    ) -> tuple[str, dict[str, Any]]:
         contract = state.get("phase_3_entry_script")
         if not isinstance(contract, dict) or not self._has_custom_op_contract(contract):
             result = {"operation": "custom_op_final_gate", "skipped": True, "passed": True}
@@ -2865,8 +2864,8 @@ class WorkflowExecutor:
     def _resolve_custom_op_reports_dir(
         self,
         contract: dict[str, Any],
-        context: dict,
-        loop_vars: dict | None,
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
     ) -> Path:
         project_dir = None
         if loop_vars and isinstance(loop_vars.get("project_dir"), str):
@@ -2878,7 +2877,7 @@ class WorkflowExecutor:
         return Path(str(project_dir)).resolve() / "migration_reports"
 
     @staticmethod
-    def _record_custom_op_gate_failure(loop_state: dict | None, result: dict[str, Any]) -> None:
+    def _record_custom_op_gate_failure(loop_state: dict[str, Any] | None, result: dict[str, Any]) -> None:
         if loop_state is None:
             return
         loop_state["script_exit_code"] = 1
@@ -2901,16 +2900,16 @@ class WorkflowExecutor:
     def _execute_python_phase(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
-    ) -> tuple[str, dict]:
+        state: dict[str, Any],
+        context: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
         """Execute a whitelisted Python builtin operation."""
         params = getattr(phase, "params", {}) or {}
         operation = params.get("operation", "")
 
         if operation not in self._WHITELISTED_PYTHON_OPS:
             return ("failure", {"error": f"Operation '{operation}' not whitelisted",
-                                "allowed": list(self._WHITELISTED_PYTHON_OPS)})
+                                "allowed": list[Any](self._WHITELISTED_PYTHON_OPS)})
 
         hook_ctx = {**context, "state": state, "phase_results": self.phase_results,
                     "telemetry_bridge": self.telemetry_bridge}
@@ -2926,14 +2925,14 @@ class WorkflowExecutor:
     def _execute_review_phase(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
-        loop_vars: dict,
-        loop_state: dict,
-        loop_history: list,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any],
+        loop_state: dict[str, Any],
+        loop_history: list[Any],
         sub_workflow_def: SubWorkflowDefinition | None,
-        verdicts_cfg: dict,
-    ) -> dict:
+        verdicts_cfg: dict[str, Any],
+    ) -> dict[str, Any]:
         """Execute a review gate: get verdict, route accept/reject."""
         max_retry = 2  # retry_json_parse
 
@@ -2975,7 +2974,7 @@ class WorkflowExecutor:
         )
 
         # 3. Send command with JSON parse retry
-        parsed: dict = {}
+        parsed: dict[str, Any] = {}
         active_prompt = prompt_text
         for attempt in range(1, max_retry + 1):
             raw_response = self.session_mgr.send_command(sid, active_prompt, timeout=phase.timeout)
@@ -3035,7 +3034,7 @@ class WorkflowExecutor:
 
         return {"verdict": verdict, "reasoning": reasoning, "status": status}
 
-    def _format_loop_history(self, loop_history: list) -> str:
+    def _format_loop_history(self, loop_history: list[Any]) -> str:
         """Format loop history into a markdown-style summary."""
         if not loop_history:
             return "(No repair history)"
@@ -3052,11 +3051,11 @@ class WorkflowExecutor:
     def _execute_dispatch_phase(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
-        loop_vars: dict,
-        loop_state: dict,
-        step_outputs: dict,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any],
+        loop_state: dict[str, Any],
+        step_outputs: dict[str, Any],
     ) -> str | None:
         """Resolve dispatch routing: read a field value → look up target."""
         params = getattr(phase, "params", {}) or {}
@@ -3094,7 +3093,7 @@ class WorkflowExecutor:
 
     # ── Loop phase ──────────────────────────────────────────────────────
 
-    def _execute_loop_phase(self, phase: PhaseDefinition, state: dict, context: dict) -> dict:
+    def _execute_loop_phase(self, phase: PhaseDefinition, state: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """Execute a loop-type phase with sub-workflow, stop conditions, stagnation."""
         params = getattr(phase, "params", {}) or {}
         sub_wf_name = phase.sub_workflow
@@ -3111,7 +3110,7 @@ class WorkflowExecutor:
 
         # 3. Initialize loop state
         loop_state: dict[str, Any] = {"stagnation_count": 0}
-        loop_history: list[dict] = []
+        loop_history: list[dict[str, Any]] = []
         review_reject_count = 0
         stagnation_threshold = int(
             sub_wf_def.stagnation_threshold if isinstance(sub_wf_def.stagnation_threshold, (int, float))
@@ -3248,7 +3247,7 @@ class WorkflowExecutor:
             "loop_state": loop_state,
         }
 
-    def _execute_orchestration_phase(self, phase: PhaseDefinition, state: dict, context: dict) -> dict:
+    def _execute_orchestration_phase(self, phase: PhaseDefinition, state: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         handler_path = getattr(phase, 'handler', '') or getattr(phase, 'handler', None)
         if not handler_path:
             logger.error("Orchestration phase '%s' missing handler", phase.id)
@@ -3307,7 +3306,7 @@ class WorkflowExecutor:
             logger.error("Orchestration handler failed for phase '%s': %s", phase.id, e)
             return {"status": "failure", "error": str(e)}
 
-    def _find_review_phase(self, phases: list) -> dict | None:
+    def _find_review_phase(self, phases: list[Any]) -> dict[str, Any] | None:
         """Find a review-type phase in a list of sub-workflow phase dicts."""
         for p in phases:
             if isinstance(p, dict) and (p.get("type") or "llm") == "review":
@@ -3316,10 +3315,10 @@ class WorkflowExecutor:
 
     def _execute_improvement_block(
         self,
-        block_cfg: dict,
-        state: dict,
-        context: dict,
-        loop_state: dict,
+        block_cfg: dict[str, Any],
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_state: dict[str, Any],
     ) -> None:
         imp_phases = block_cfg.get("phases", [])
         if not imp_phases:
@@ -3411,7 +3410,7 @@ class WorkflowExecutor:
                                     )
                                     self._inject_llm_baseline_context(mini_ctx, rest_mini, state)
                                     self._inject_sub_workflow_context(
-                                        mini_ctx, rest.get("id"), step_outputs, {}, state, [],
+                                        mini_ctx, str(rest.get("id") or ""), step_outputs, {}, state, [],
                                     )
                                     prompt = self.prompt_loader.load_prompt(
                                         rest_mini.prompt_template, mini_ctx)
@@ -3466,15 +3465,15 @@ class WorkflowExecutor:
     def _run_sub_workflow(
         self,
         sub_wf_def: SubWorkflowDefinition,
-        loop_vars: dict,
-        state: dict,
-        context: dict,
-        sub_wf_phases: list,
-        blocks: dict | None = None,
-        step_outputs: dict | None = None,
-        loop_history: list | None = None,
-        loop_state: dict | None = None,
-    ) -> dict:
+        loop_vars: dict[str, Any],
+        state: dict[str, Any],
+        context: dict[str, Any],
+        sub_wf_phases: list[Any],
+        blocks: dict[str, Any] | None = None,
+        step_outputs: dict[str, Any] | None = None,
+        loop_history: list[Any] | None = None,
+        loop_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Execute sub-workflow phases in order, collecting step_outputs."""
         if step_outputs is None:
             step_outputs = {}
@@ -3483,6 +3482,7 @@ class WorkflowExecutor:
         dispatch_targets = {"repair_dispatch": {"fix_dependency", "fix_code", "fix_operator"},
                             "improvement_dispatch": {"imp_fix_dependency", "imp_fix_code", "imp_fix_operator"}}
         dispatch_active: str | None = None
+        phase_status = "success"
 
         for sub_phase in sub_wf_phases:
             if not isinstance(sub_phase, dict):
@@ -3713,10 +3713,10 @@ class WorkflowExecutor:
                         step_outputs=step_outputs,
                     )
                     if next_id:
-                        dispatch_route = dispatch_targets.get(phase_id)
+                        dispatch_route = next(iter(dispatch_targets.get(phase_id) or []), None)
                         dispatch_active = next_id
                     else:
-                        dispatch_route = dispatch_targets.get(phase_id)
+                        dispatch_route = next(iter(dispatch_targets.get(phase_id) or []), None)
                     phase_output = {"dispatched_to": next_id}
 
                 elif phase_type == "builtin":
@@ -3728,7 +3728,7 @@ class WorkflowExecutor:
                     phase_output = self._execute_review_phase(
                         self._mini_phase(sub_phase), state, context,
                         loop_vars=loop_vars, loop_state=step_outputs,
-                        loop_history=loop_history, sub_workflow_def=sub_wf_def,
+                        loop_history=loop_history or [], sub_workflow_def=sub_wf_def,
                         verdicts_cfg=sub_phase.get("verdicts", {}),
                     )
                     phase_status = phase_output.get("status", "success")
@@ -3783,7 +3783,7 @@ class WorkflowExecutor:
                     break
 
         return {
-            "status": phase_status if "phase_status" in dir() else "success",
+            "status": phase_status,
             "step_outputs": step_outputs,
         }
 
@@ -4344,7 +4344,7 @@ class WorkflowExecutor:
             phase3_contract=phase3_contract,
         )
 
-    def _mini_phase(self, phase_dict: dict) -> PhaseDefinition:
+    def _mini_phase(self, phase_dict: dict[str, Any]) -> PhaseDefinition:
         """Create a PhaseDefinition from a plain dict (for sub-workflow phases)."""
         hooks = None
         raw_hooks = phase_dict.get("hooks")
@@ -4412,7 +4412,7 @@ class WorkflowExecutor:
         setattr(mini, "cwd", phase_dict.get("cwd"))
         return mini
 
-    def _find_sub_phase_by_id(self, phases: list, phase_id: str) -> dict | None:
+    def _find_sub_phase_by_id(self, phases: list[Any], phase_id: str) -> dict[str, Any] | None:
         """Find a sub-phase dict by id."""
         for p in phases:
             if isinstance(p, dict) and p.get("id") == phase_id:
@@ -4423,9 +4423,9 @@ class WorkflowExecutor:
 
     def _check_stop_conditions(
         self,
-        stop_conditions: list[dict],
-        loop_state: dict,
-        globals: dict,
+        stop_conditions: list[dict[str, Any]],
+        loop_state: dict[str, Any],
+        globals: dict[str, Any],
     ) -> str | None:
         """Evaluate stop conditions in order. Return matched status or None."""
         for cond_def in stop_conditions:
@@ -4437,7 +4437,7 @@ class WorkflowExecutor:
             # Resolve $.field references
             expr = cond_expr
             if "$." in expr:
-                def repl(m: re.Match) -> str:
+                def repl(m: re.Match[str]) -> str:
                     field_name = m.group(1)
                     for src in (loop_state, globals):
                         if field_name in src:
@@ -4469,7 +4469,7 @@ class WorkflowExecutor:
     def _check_stagnation(
         self,
         error_signature: str,
-        loop_state: dict,
+        loop_state: dict[str, Any],
         threshold: int = 3,
     ) -> bool:
         """Detect if the same error has occurred *threshold* times in a row."""
@@ -4498,8 +4498,8 @@ class WorkflowExecutor:
         self,
         current_phase: PhaseDefinition,
         status: str,
-        state: dict,
-        context: dict,
+        state: dict[str, Any],
+        context: dict[str, Any],
     ) -> str | None:
         """Determine the next phase to execute.
 
@@ -4576,11 +4576,11 @@ class WorkflowExecutor:
     def _build_experience_query_context(
         self,
         phase: PhaseDefinition,
-        state: dict,
-        context: dict,
-        step_outputs: dict | None = None,
-        loop_history: list | None = None,
-    ) -> dict:
+        state: dict[str, Any],
+        context: dict[str, Any],
+        step_outputs: dict[str, Any] | None = None,
+        loop_history: list[Any] | None = None,
+    ) -> dict[str, Any]:
         query_config = getattr(phase, 'experience_query', None) or {}
         result = {
             "phase": phase.id,
@@ -4693,7 +4693,7 @@ class WorkflowExecutor:
             return ["operator_fixer"]
         return [phase.agent or "main_engineer"]
 
-    def _backfill_candidates_from_state(self, state: dict, run_id: str) -> list[dict]:
+    def _backfill_candidates_from_state(self, state: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
         """Bridge Phase 7a → 7b: copy LLM-produced candidates from state to ExperienceStore.
 
         Phase 7a outputs candidates to state['phase_7a_evaluate']['candidates'],
@@ -4711,7 +4711,7 @@ class WorkflowExecutor:
 
         store = self.experience_store
         project_source_root = str(phase_7a_output.get("project_source_root") or "")
-        normalized_candidates: list[dict] = []
+        normalized_candidates: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for index, raw_candidate in enumerate(candidates, start=1):
             if not isinstance(raw_candidate, dict):
@@ -4723,6 +4723,8 @@ class WorkflowExecutor:
             c.setdefault("source_run_id", run_id)
             if project_source_root:
                 c.setdefault("project_source_root", project_source_root)
+            if store is None:
+                break
             try:
                 store.write_candidate(run_id, cid, c)
                 logger.info("Backfilled candidate %s to ExperienceStore (run_id=%s)", cid, run_id)
@@ -4733,7 +4735,7 @@ class WorkflowExecutor:
         return normalized_candidates
 
     @staticmethod
-    def _stable_candidate_id(candidate: dict, index: int, seen_ids: set[str]) -> str:
+    def _stable_candidate_id(candidate: dict[str, Any], index: int, seen_ids: set[str]) -> str:
         raw_id = str(candidate.get("candidate_id") or "").strip()
         if raw_id:
             candidate_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_id).strip("-") or f"candidate-{index:03d}"

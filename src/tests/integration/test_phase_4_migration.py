@@ -11,10 +11,10 @@ from migrator.rule_based import RuleBasedMigrator
 
 
 class NoopSessionManager:
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         return f"{role}-{lifecycle}"
 
-    def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
         raise AssertionError(f"Unexpected send_command for {session_id}: {command} ({timeout})")
 
 
@@ -69,7 +69,7 @@ def test_phase_4_migrates_real_cuda_project(tmp_path: Path) -> None:
         validator=ValidatorEngine(),
     )
 
-    report = runner.run_phase_4(artifact_store, RuleBasedMigrator())
+    report = runner.run_phase_4(artifact_store, RuleBasedMigrator(strategy="cuda_to_npu"))
     replacement_counts = cast(dict[str, int], report["replacement_counts"])
 
     assert report["files_migrated"] == 2
