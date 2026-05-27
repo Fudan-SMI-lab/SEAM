@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnusedCallResult=false, reportUnusedParameter=false
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -15,7 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.artifact_store import ArtifactStore
 from core.prompt_loader import PromptLoader
-from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, force_custom_op_operator_routing_if_needed
+from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, _build_final_gate_validator_command, _build_final_gate_validator_python_script, _final_gate_validator_contract_summary, _repair_role_descriptions_text, _write_final_gate_validator_runner, force_custom_op_operator_routing_if_needed
 from core.runtime_artifacts import write_operator_repair_context_artifact
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
@@ -1678,7 +1679,7 @@ def test_repair_loop_entry_script_action_blocks_unsafe_command(tmp_path: Path, r
 
 
 
-def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_forces_missing_custom_op_gate_report_to_report_fixer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     session_mgr = MockSessionManager({
         "category": "pathing",
         "root_cause": "Path.relative_to(PROJECT_DIR) is stale",
@@ -1698,11 +1699,11 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
     )))
 
     assert result["success"] is False
-    assert result["repair_session_ids"] == {"operator_fixer": "session-2"}
-    assert ("operator_fixer", "persistent") in session_mgr.get_or_create_calls
+    assert result["repair_session_ids"] == {"final_gate_report_fixer": "session-2"}
+    assert ("final_gate_report_fixer", "persistent") in session_mgr.get_or_create_calls
     assert ("code_adapter", "persistent") not in session_mgr.get_or_create_calls
     assert result["error_history"][0].get("error_category") == "operator"
-    assert result["error_history"][0].get("repair_role") == "operator_fixer"
+    assert result["error_history"][0].get("repair_role") == "final_gate_report_fixer"
 
 
 def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: Path) -> None:
@@ -1769,3 +1770,1364 @@ def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, 
 
     assert result["success"] is False
     assert str(tmp_path / "migration_reports" / "custom_op_final_gate.json") in str(result["final_stderr"])
+
+
+# ── final_gate_report_fixer routing tests ──────────────────────────────
+
+
+def test_report_schema_error_routes_to_final_gate_report_fixer() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "Final gate report is malformed",
+        "suggested_fix": "Fix the report structure",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows must be a non-empty list; source_inventory must include discovery_complete and discovery_sources_checked metadata",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+    assert "report schema" in str(routed["root_cause"]).lower() or "report" in str(routed["root_cause"]).lower()
+
+
+def test_performance_report_schema_error_routes_to_final_gate_report_fixer() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "Report aggregation mismatch",
+        "suggested_fix": "Fix aggregation",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="performance_report must be an object proving complete migration_reports/performance.json coverage",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_source_inventory_schema_error_routes_to_final_gate_report_fixer() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "source inventory aggregation wrong",
+        "suggested_fix": "Fix source inventory",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="source_inventory must match manifest rows (missing source inventory entries: op_1, op_2)",
+        history=[],
+        phase3_contract={"required_report_paths": ["migration_reports/custom_op_final_gate.json"]},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_full_migration_status_error_routes_to_final_gate_report_fixer() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "Pending entries",
+        "suggested_fix": "Close remaining",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="full_migration_status must be 'FULL_PASS'; remaining_entries must be 0; inventory_count, manifest_entries, and closed_pass_entries must match",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_gate_report_missing_routes_to_final_gate_report_fixer() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "Gate file not found",
+        "suggested_fix": "Regenerate gate report",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom-op final gate report missing: /path/to/custom_op_final_gate.json",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_evidence_native_artifact_error_routes_to_operator_fixer() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "Native artifact missing",
+        "suggested_fix": "Build native artifact",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text=(
+            "custom_op_final_gate failed: rows[0].opp_custom_op_artifact_evidence "
+            "must prove a native compiled Ascend custom-op artifact"
+        ),
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+
+
+def test_evidence_runtime_coverage_error_routes_to_operator_fixer() -> None:
+    classification = {
+        "category": "code",
+        "root_cause": "API mismatch",
+        "suggested_fix": "Adjust code",
+        "repair_role": "code_adapter",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows[0].same_run_runtime_coverage must include custom call count > 0",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+
+
+def test_no_contract_does_not_force_report_fixer() -> None:
+    classification = {
+        "category": "dependency",
+        "root_cause": "missing package",
+        "suggested_fix": "pip install",
+        "repair_role": "dependency_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="rows must be a non-empty list",
+        history=[],
+        phase3_contract=None,
+    )
+
+    assert routed["repair_role"] == "dependency_fixer"
+
+
+# ── enable_override tests ────────────────────────────────────────────────
+
+
+def test_enable_override_false_disables_routing() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "Final gate report is malformed",
+        "suggested_fix": "Fix the report structure",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows must be a non-empty list",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        enable_override=False,
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+    assert routed["category"] == "operator"
+
+
+def test_enable_override_true_default_routes_to_report_fixer() -> None:
+    classification = {
+        "category": "operator",
+        "root_cause": "Final gate report is malformed",
+        "suggested_fix": "Fix the report structure",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows must be a non-empty list",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        enable_override=True,
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_enable_override_true_routes_evidence_to_operator_fixer() -> None:
+    classification = {
+        "category": "code",
+        "root_cause": "API mismatch",
+        "suggested_fix": "Adjust code",
+        "repair_role": "code_adapter",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows[0].same_run_runtime_coverage must include custom call count > 0",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        enable_override=True,
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+
+
+def test_enable_override_false_preserves_original_classification() -> None:
+    classification = {
+        "category": "dependency",
+        "root_cause": "vendor torch is missing",
+        "suggested_fix": "select the container base environment",
+        "repair_role": "dependency_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows must be a non-empty list",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        enable_override=False,
+    )
+
+    assert routed["category"] == "dependency"
+    assert routed["repair_role"] == "dependency_fixer"
+
+
+# ── operator routing override config tests ──────────────────────────────
+
+
+def test_operator_routing_override_enabled_config_none_defaults_true() -> None:
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(None) is True
+
+
+def test_operator_routing_override_enabled_config_missing_key_defaults_true() -> None:
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled({"framework": {}}) is True
+
+
+def test_operator_routing_override_enabled_config_explicit_false() -> None:
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"framework": {"custom_op_operator_routing_override_enabled": False}}
+    ) is False
+
+
+def test_operator_routing_override_enabled_config_explicit_true() -> None:
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"framework": {"custom_op_operator_routing_override_enabled": True}}
+    ) is True
+
+
+# ── force routing with phase3_contract (workflow executor path) ────────
+
+
+def test_phase3_contract_from_state_makes_report_fixer_reachable() -> None:
+    """When phase3_contract is passed (from state), report-fixer branch is reachable."""
+    classification = {
+        "category": "operator",
+        "root_cause": "Report aggregation mismatch",
+        "suggested_fix": "Fix aggregation",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="source_inventory must match manifest rows (missing source inventory entries: op_1, op_2)",
+        history=[],
+        phase3_contract={"required_report_paths": ["migration_reports/custom_op_final_gate.json"]},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_prompt_context_alone_sufficient_for_evidence_signal_but_contract_needed_for_report_fixer() -> None:
+    """prompt_context alone provides evidence signal but phase3_contract is needed for report fixer routing."""
+    classification = {
+        "category": "code",
+        "root_cause": "API mismatch",
+        "suggested_fix": "Adjust code",
+        "repair_role": "code_adapter",
+    }
+
+    # Without phase3_contract, falls through to operator_fixer
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows[0].same_run_runtime_coverage must include custom call count > 0",
+        history=[],
+        prompt_context={"entry_script_contract": '{"entry_script_kind": "custom_op_full_validation"}'},
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+
+
+# ── latest-only history tests ───────────────────────────────────────────
+
+
+def test_format_error_analyzer_context_latest_only_returns_single_entry(tmp_path: Path) -> None:
+    """Latest-only format shows only the most recent fixer's full summary."""
+    history = [
+        {
+            "iteration": 1,
+            "exit_code": 1,
+            "error_category": "dependency",
+            "repair_role": "dependency_fixer",
+            "fix_summary": "Installed torch_npu v2.1.0 from Alibaba mirror",
+            "modified_files": ["requirements.txt"],
+            "agent_diagnostics": "Verified: dependency closure OK",
+        },
+        {
+            "iteration": 2,
+            "exit_code": 1,
+            "error_category": "operator",
+            "repair_role": "operator_fixer",
+            "fix_summary": "Replaced CUDA kernel with AscendC implementation in ops/",
+            "modified_files": ["model.py", "ops/custom_ops.cpp"],
+            "agent_diagnostics": "C kernel ported to AscendC. No CPU fallback.",
+        },
+    ]
+
+    formatted = RepairLoopEngine._format_error_analyzer_context(history, "")
+
+    # Shows total count and frequency
+    assert "Total previous iterations: 2" in formatted
+    assert "Error category frequency:" in formatted
+    assert "dependency: 1" in formatted
+    assert "operator: 1" in formatted
+
+    # Shows latest (iteration 2) complete, untruncated
+    assert "## Latest Previous Fixer Output (Complete)" in formatted
+    assert "Replaced CUDA kernel with AscendC implementation in ops/" in formatted
+    assert "model.py" in formatted
+    assert "ops/custom_ops.cpp" in formatted
+    assert "C kernel ported to AscendC. No CPU fallback." in formatted
+
+    # Does NOT show iteration 1 data
+    assert "Installed torch_npu v2.1.0" not in formatted
+
+
+def test_format_error_analyzer_context_empty_history_returns_placeholder() -> None:
+    formatted = RepairLoopEngine._format_error_analyzer_context([], "")
+    assert "No previous repair attempts" in formatted
+    assert "first failure" in formatted
+
+
+def test_format_error_analyzer_context_single_iteration_shows_latest() -> None:
+    history = [
+        {
+            "iteration": 1,
+            "exit_code": 1,
+            "error_category": "dependency",
+            "repair_role": "dependency_fixer",
+            "fix_summary": "Added missing torch_npu dependency from Alibaba mirror",
+            "modified_files": ["requirements.txt", "setup.py"],
+            "agent_diagnostics": "Package installed; import verified.",
+        },
+    ]
+
+    formatted = RepairLoopEngine._format_error_analyzer_context(history, "")
+
+    assert "Total previous iterations: 1" in formatted
+    assert "## Latest Previous Fixer Output (Complete)" in formatted
+    assert "Added missing torch_npu dependency from Alibaba mirror" in formatted
+    assert "requirements.txt" in formatted
+    assert "setup.py" in formatted
+    assert "Package installed; import verified." in formatted
+
+
+# ── prompt role list includes all repair roles ──────────────────────────
+
+
+def test_analyzer_prompt_mentions_final_gate_report_fixer_role() -> None:
+    """Raw base analyzer template uses {repair_role_descriptions}; no static final_gate_report_fixer.
+    When rendered with report roles, it includes final_gate_report_fixer."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery.md").read_text(encoding="utf-8")
+    assert "{repair_role_descriptions}" in content
+    assert "final_gate_report_fixer" not in content  # not in raw template
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    ctx = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}),
+    }
+    prompt = loader.load_prompt("phase_error_recovery", ctx)
+    assert "final_gate_report_fixer" in prompt
+
+
+def test_analyzer_prompt_describes_final_gate_report_fixer_role() -> None:
+    """Base analyzer prompt uses dynamic {repair_role_descriptions} and renders
+    final_gate_report_fixer when the context provides it."""
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    context = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}),
+    }
+    prompt = loader.load_prompt("phase_error_recovery", context)
+    assert "final_gate_report_fixer" in prompt
+    assert "Fix entry-script report aggregation logic" in prompt
+
+
+def test_analyzer_prompt_describes_output_field_semantics() -> None:
+    """Dynamic {repair_role_descriptions} includes output field semantics."""
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    context = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}),
+    }
+    prompt = loader.load_prompt("phase_error_recovery", context)
+    assert "## Output Field Semantics" in prompt
+    assert "`category`" in prompt
+    assert "`repair_role`" in prompt
+
+
+def test_container_analyzer_prompt_renders_final_gate_report_fixer() -> None:
+    """Container analyzer prompt renders final_gate_report_fixer via dynamic role text."""
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    context = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}),
+        "execution_backend_mode": "container", "actual_execution_command": "x",
+        "container_name_or_id": "c", "container_workdir": "/w",
+        "host_project_dir": "/h", "container_project_dir": "/c",
+    }
+    prompt = loader.load_prompt("phase_error_recovery_container", context)
+    assert "final_gate_report_fixer" in prompt
+    assert "## Output Field Semantics" in prompt
+
+
+def test_musa_analyzer_prompt_renders_final_gate_report_fixer_when_provided() -> None:
+    """MUSA analyzer prompt renders final_gate_report_fixer only when context provides it."""
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    base_ctx = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "execution_backend_mode": "container", "actual_execution_command": "x",
+        "container_name_or_id": "c", "container_workdir": "/w",
+        "host_project_dir": "/h", "container_project_dir": "/c",
+        "container_probe_command_prefix": "p",
+        "execution_environment_context": "",
+    }
+    # With report fixer roles → includes final_gate_report_fixer
+    ctx_with_report = {**base_ctx, "repair_role_descriptions": _repair_role_descriptions_text(
+        {"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}
+    )}
+    prompt_with = loader.load_prompt("phase_error_recovery_container_musa", ctx_with_report)
+    assert "final_gate_report_fixer" in prompt_with
+    assert "## Repair Roles" in prompt_with
+
+    # Without report fixer roles (default 3 basic) → no final_gate_report_fixer
+    prompt_without = loader.load_prompt("phase_error_recovery_container_musa", base_ctx)
+    assert "final_gate_report_fixer" not in prompt_without
+    assert "`operator_fixer`." in prompt_without or "`operator_fixer`\n" in prompt_without
+
+
+def test_ppu_analyzer_prompt_renders_final_gate_report_fixer() -> None:
+    """PPU analyzer prompt renders final_gate_report_fixer via dynamic role text."""
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    context = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}),
+        "execution_backend_mode": "container", "actual_execution_command": "x",
+        "container_name_or_id": "c", "container_workdir": "/w",
+        "host_project_dir": "/h", "container_project_dir": "/c",
+    }
+    prompt = loader.load_prompt("phase_error_recovery_container_ppu", context)
+    assert "final_gate_report_fixer" in prompt
+    assert "## Output Field Semantics" in prompt
+
+
+# ── override preserves analyzer-selected final_gate_report_fixer ──────
+
+
+def test_analyzer_selected_final_gate_report_fixer_survives_override() -> None:
+    """When the analyzer explicitly selects final_gate_report_fixer, the routing
+    override must not overwrite it to operator_fixer even when evidence signal exists."""
+    classification = {
+        "category": "operator",
+        "root_cause": "Final gate report structure is missing required rows",
+        "suggested_fix": "Regenerate the report aggregation in the entry script",
+        "repair_role": "final_gate_report_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows[0].opp_custom_op_artifact_evidence must prove a native compiled Ascend custom-op artifact",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_analyzer_selected_final_gate_report_fixer_survives_without_report_schema_signal() -> None:
+    """Even without a report-schema pattern in error_text, an analyzer-selected
+    final_gate_report_fixer must not be overwritten to operator_fixer."""
+    classification = {
+        "category": "validation",
+        "root_cause": "Entry script does not produce valid final gate JSON",
+        "suggested_fix": "Fix the entry script report emission",
+        "repair_role": "final_gate_report_fixer",
+    }
+
+    # Error text only has evidence patterns, nothing report-schema-related
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: zero_call_detected=true, builtin_contamination_detected=true",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+# ── override config from workflow globals / direct keys ────────────────
+
+
+def test_override_disabled_via_direct_config_key() -> None:
+    """Direct top-level key in config can disable the routing override."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"custom_op_operator_routing_override_enabled": False}
+    ) is False
+
+
+def test_override_disabled_via_nested_framework_key() -> None:
+    """Nested framework key still works to disable the routing override."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"framework": {"custom_op_operator_routing_override_enabled": False}}
+    ) is False
+
+
+def test_override_direct_key_takes_priority_over_nested() -> None:
+    """Direct key takes priority over nested framework key."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {
+            "custom_op_operator_routing_override_enabled": False,
+            "framework": {"custom_op_operator_routing_override_enabled": True},
+        }
+    ) is False
+
+
+def test_override_workflow_globals_form_disables_routing() -> None:
+    """Workflow globals with direct key can disable the routing override."""
+    classification = {
+        "category": "operator",
+        "root_cause": "Final gate report is malformed",
+        "suggested_fix": "Fix the report structure",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="rows must be a non-empty list",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        enable_override=False,
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+    assert routed["category"] == "operator"
+
+
+def test_override_config_merge_workflow_globals_disables() -> None:
+    """When both workflow globals (direct key false) and framework (key true)
+    are merged, the direct key false wins and disables the override."""
+    from core.repair_loop import _operator_routing_override_enabled
+    merged = {
+        "custom_op_operator_routing_override_enabled": False,
+        "framework": {"custom_op_operator_routing_override_enabled": True},
+    }
+    assert _operator_routing_override_enabled(merged) is False
+
+
+# ── prompt text no longer has unconditional final-gate-to-operator ─────
+
+
+def test_musa_prompt_distinguishes_report_schema_from_operator_evidence() -> None:
+    """MUSA prompt distinguishes report/schema failures from operator evidence
+    when the dynamic repair_role_descriptions is provided.
+    The raw template must NOT have the old unconditional routing; the distinction
+    is provided via {repair_role_descriptions}."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery_container_musa.md").read_text(encoding="utf-8")
+    # Template uses {repair_role_descriptions} for role guidance
+    assert "{repair_role_descriptions}" in content
+    assert "report schema/aggregation" in content.lower() or "evidence/artifact" in content.lower()
+    # Must NOT have the old unconditional "final-gate evidence ... route to operator_fixer"
+    old_pattern = "or final-gate evidence as the remaining blocker"
+    assert old_pattern not in content
+    # When rendered with report roles, includes final_gate_report_fixer
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    ctx = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text(
+            {"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}
+        ),
+        "execution_backend_mode": "container", "actual_execution_command": "x",
+        "container_name_or_id": "c", "container_workdir": "/w",
+        "host_project_dir": "/h", "container_project_dir": "/c",
+        "container_probe_command_prefix": "p",
+        "execution_environment_context": "",
+    }
+    prompt = loader.load_prompt("phase_error_recovery_container_musa", ctx)
+    assert "final_gate_report_fixer" in prompt
+    assert "schema alignment" in prompt.lower()
+
+
+def test_container_prompt_distinguishes_report_schema_from_operator_evidence() -> None:
+    """Container raw template has {repair_role_descriptions}; no static final_gate_report_fixer.
+    When rendered with report roles, includes boundary guidance."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery_container.md").read_text(encoding="utf-8")
+    assert "{repair_role_descriptions}" in content
+    assert "final_gate_report_fixer" not in content  # not in raw template
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    ctx = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}),
+        "execution_backend_mode": "container", "actual_execution_command": "x",
+        "container_name_or_id": "c", "container_workdir": "/w",
+        "host_project_dir": "/h", "container_project_dir": "/c",
+    }
+    prompt = loader.load_prompt("phase_error_recovery_container", ctx)
+    assert "final_gate_report_fixer" in prompt
+    assert "## Routing Boundary" in prompt
+
+
+def test_ppu_prompt_distinguishes_report_schema_from_operator_evidence() -> None:
+    """PPU raw template has {repair_role_descriptions}; no static final_gate_report_fixer.
+    When rendered with report roles, includes boundary guidance."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery_container_ppu.md").read_text(encoding="utf-8")
+    assert "{repair_role_descriptions}" in content
+    assert "final_gate_report_fixer" not in content  # not in raw template
+    from core.prompt_loader import PromptLoader
+    loader = PromptLoader(prompts_dir=str(Path(__file__).resolve().parent.parent / "prompts"))
+    ctx = {
+        "phase_name": "test", "project_dir": "/tmp", "failed_phase": "t",
+        "entry_script": "x", "iteration": "1", "failure_log": "err",
+        "entry_script_contract": "{}", "constraint_summary": "c",
+        "last_review": "lr", "env_context": "{}",
+        "artifact_base_path": "/tmp", "raw_attempt_files": "[]",
+        "workspace_root": "/ws", "previous_outputs": "h",
+        "repair_role_descriptions": _repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}),
+        "execution_backend_mode": "container", "actual_execution_command": "x",
+        "container_name_or_id": "c", "container_workdir": "/w",
+        "host_project_dir": "/h", "container_project_dir": "/c",
+    }
+    prompt = loader.load_prompt("phase_error_recovery_container_ppu", ctx)
+    assert "final_gate_report_fixer" in prompt
+    assert "## Routing Boundary" in prompt
+
+
+# ── leaked h variable regression test ──────────────────────────────────
+
+
+def test_format_error_analyzer_context_uses_latest_record_schema() -> None:
+    """Regression test: _format_error_analyzer_context uses 'latest' record,
+    not a leaked loop variable 'h', to determine the schema type.
+    
+    If the bug exists, and the history has mixed schemas (summary schema
+    in earlier entries, full record schema in latest), the leaked 'h'
+    from the category-frequency loop would check the wrong schema."""
+    history = [
+        {
+            "iteration": 1,
+            "exit_code": 1,
+            "error_category": "dependency",
+            "repair_role": "dependency_fixer",
+            "fix_summary": "Installed torch_npu",
+            "modified_files": ["req.txt"],
+            "agent_diagnostics": "OK",
+        },
+        {
+            "iteration": 2,
+            "exit_code": 1,
+            "error": "error text",
+            "classification": {"category": "operator", "root_cause": "x", "suggested_fix": "y"},
+            "fix_attempt": {"repair_role": "operator_fixer", "modified_files": ["model.py"], "agent_diagnostics": "Native artifact built"},
+        },
+    ]
+
+    formatted = RepairLoopEngine._format_error_analyzer_context(history, "")
+
+    assert "Total previous iterations: 2" in formatted
+    assert "operator" in formatted
+    # The latest entry uses full record schema (has 'classification', 'fix_attempt')
+    # so suggested_fix from classification should appear
+    assert "y" in formatted
+    # Native artifact built from fix_attempt should appear
+    assert "Native artifact built" in formatted
+
+
+# ── fix_summary preference in latest-only history ─────────────────────
+
+
+def test_format_error_analyzer_context_prefers_fix_summary_over_suggested_fix() -> None:
+    """When fix_attempt.fix_summary exists, prefer it over classification.suggested_fix."""
+    history = [
+        {
+            "iteration": 1,
+            "exit_code": 1,
+            "error": "err",
+            "classification": {"category": "operator", "root_cause": "rc", "suggested_fix": "Analyzer: port the kernel"},
+            "fix_attempt": {"repair_role": "operator_fixer", "fix_summary": "Fixer: Ported kernel to AscendC — verified working", "modified_files": ["ops/kernel.cpp"], "agent_diagnostics": "Runtime verified"},
+        },
+    ]
+
+    formatted = RepairLoopEngine._format_error_analyzer_context(history, "")
+
+    # Prefer the fixer's actual summary, not the analyzer's suggestion
+    assert "Fixer: Ported kernel to AscendC — verified working" in formatted
+    # Analyzer's suggestion should NOT be the primary summary
+    assert "Fixer:" in formatted  # fixer summary present
+
+
+def test_format_error_analyzer_context_falls_back_to_suggested_fix() -> None:
+    """When fix_attempt has no fix_summary, fall back to classification.suggested_fix."""
+    history = [
+        {
+            "iteration": 1,
+            "exit_code": 1,
+            "error": "err",
+            "classification": {"category": "operator", "root_cause": "rc", "suggested_fix": "Only suggestion: recompile with AscendC"},
+            "fix_attempt": {"repair_role": "operator_fixer", "modified_files": [], "agent_diagnostics": "Failed"},
+        },
+    ]
+
+    formatted = RepairLoopEngine._format_error_analyzer_context(history, "")
+
+    assert "Only suggestion: recompile with AscendC" in formatted
+
+
+# ── string config parsing for override ───────────────────────────────
+
+
+def test_override_disabled_via_string_false() -> None:
+    """String 'false' disables the routing override (not just Python bool False)."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"custom_op_operator_routing_override_enabled": "false"}
+    ) is False
+
+
+def test_override_disabled_via_string_zero() -> None:
+    """String '0' disables the routing override."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"custom_op_operator_routing_override_enabled": "0"}
+    ) is False
+
+
+def test_override_disabled_via_string_no() -> None:
+    """String 'no' disables the routing override."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"custom_op_operator_routing_override_enabled": "no"}
+    ) is False
+
+
+def test_override_enabled_via_string_true() -> None:
+    """String 'true' keeps the override enabled."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"custom_op_operator_routing_override_enabled": "true"}
+    ) is True
+
+
+def test_override_enabled_via_string_yes() -> None:
+    """String 'yes' keeps the override enabled."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"custom_op_operator_routing_override_enabled": "yes"}
+    ) is True
+
+
+def test_override_nested_string_false_disables() -> None:
+    """Nested framework key with string 'false' disables the override."""
+    from core.repair_loop import _operator_routing_override_enabled
+    assert _operator_routing_override_enabled(
+        {"framework": {"custom_op_operator_routing_override_enabled": "false"}}
+    ) is False
+
+
+# ── report-fixer prompts no longer claim evidence passed ─────────────
+
+
+def test_report_fixer_prompt_does_not_claim_evidence_passed() -> None:
+    """Generic report fixer prompt no longer says evidence passed."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "repair_final_gate_report_fixer.md").read_text(encoding="utf-8")
+    assert "evidence passed" not in content.lower()
+    assert "evidence is already valid" not in content.lower()
+    assert "Preserve existing evidence" in content
+    assert "operator blocker" in content.lower() or "operator_fixer" in content.lower()
+
+
+def test_container_report_fixer_prompt_does_not_claim_evidence_passed() -> None:
+    """Container report fixer prompt no longer says evidence passed."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "repair_final_gate_report_fixer_container.md").read_text(encoding="utf-8")
+    assert "evidence passed" not in content.lower()
+    assert "evidence is already valid" not in content.lower()
+    assert "Preserve existing evidence" in content
+
+
+def test_musa_report_fixer_prompt_does_not_claim_evidence_passed() -> None:
+    """MUSA report fixer prompt no longer says evidence passed validation."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "repair_final_gate_report_fixer_container_musa.md").read_text(encoding="utf-8")
+    assert "passed evidence-level validation" not in content.lower()
+    assert "evidence is already valid" not in content.lower()
+    assert "preserve existing evidence" in content.lower() or "do NOT fabricate" in content.lower()
+
+
+# ── dynamic output format example ──────────────────────────────────────
+
+
+def test_base_prompt_output_format_uses_generic_placeholder() -> None:
+    """Base prompt output format uses generic placeholder, not hardcoded role list."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery.md").read_text(encoding="utf-8")
+    assert '"repair_role": "<selected repair role from available roles below>"' in content
+    assert "dependency_fixer | code_adapter | operator_fixer" not in content
+
+
+def test_container_prompt_output_format_uses_generic_placeholder() -> None:
+    """Container prompt output format uses generic placeholder."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery_container.md").read_text(encoding="utf-8")
+    assert '"repair_role": "<selected repair role from available roles below>"' in content
+    assert "dependency_fixer | code_adapter | operator_fixer" not in content
+
+
+def test_musa_prompt_output_format_uses_generic_placeholder() -> None:
+    """MUSA prompt output format uses generic placeholder, not role name."""
+    content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery_container_musa.md").read_text(encoding="utf-8")
+    assert '"repair_role": "<selected repair role from available roles below>"' in content
+
+
+# ── forced routing available_roles gate ────────────────────────────────
+
+
+def test_force_routing_respects_available_roles_report_schema_without_report_fixer() -> None:
+    """When final_gate_report_fixer is NOT in available_roles, report-schema error
+    routes to operator_fixer instead (fallback)."""
+    classification = {
+        "category": "operator",
+        "root_cause": "Report structure wrong",
+        "suggested_fix": "Fix the report aggregation",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="rows must be a non-empty list; source_inventory must include discovery_complete",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        available_roles={"dependency_fixer", "code_adapter", "operator_fixer"},
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+
+
+def test_force_routing_respects_available_roles_with_report_fixer() -> None:
+    """When final_gate_report_fixer IS in available_roles, report-schema error
+    routes to final_gate_report_fixer."""
+    classification = {
+        "category": "operator",
+        "root_cause": "Report structure wrong",
+        "suggested_fix": "Fix the report aggregation",
+        "repair_role": "operator_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="rows must be a non-empty list; source_inventory must include discovery_complete",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        available_roles={"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+# ── analyzer-selected final_gate_report_fixer availability gate ──────────
+
+
+def test_analyzer_selected_report_fixer_downgraded_when_unavailable() -> None:
+    """When analyzer selects final_gate_report_fixer but available_roles lacks it,
+    the routing downgrades to operator_fixer."""
+    classification = {
+        "category": "validation",
+        "root_cause": "Entry script report emission is missing required rows",
+        "suggested_fix": "Fix the entry script report logic",
+        "repair_role": "final_gate_report_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: zero_call_detected=true",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        available_roles={"dependency_fixer", "code_adapter", "operator_fixer"},
+    )
+
+    assert routed["repair_role"] == "operator_fixer"
+
+
+def test_analyzer_selected_report_fixer_preserved_when_available() -> None:
+    """When analyzer selects final_gate_report_fixer and available_roles includes it,
+    the routing preserves it."""
+    classification = {
+        "category": "validation",
+        "root_cause": "Entry script report emission is missing required rows",
+        "suggested_fix": "Fix the entry script report logic",
+        "repair_role": "final_gate_report_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: zero_call_detected=true",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        available_roles={"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+def test_analyzer_selected_report_fixer_preserved_when_available_roles_none() -> None:
+    """When available_roles is None (RepairLoopEngine default), analyzer-selected
+    final_gate_report_fixer is preserved."""
+    classification = {
+        "category": "validation",
+        "root_cause": "Entry script report emission is missing required rows",
+        "suggested_fix": "Fix the entry script report logic",
+        "repair_role": "final_gate_report_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: zero_call_detected=true",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+# ── forced routing blocks operator_fixer when excluded ─────────────────
+
+
+def test_force_routing_blocks_operator_fixer_fallback_when_excluded() -> None:
+    """When evidence signal fires but available_roles excludes operator_fixer,
+    the fallback must not assign an unavailable role — return original classification."""
+    classification = {
+        "category": "code",
+        "root_cause": "API mismatch",
+        "suggested_fix": "Adjust code",
+        "repair_role": "code_adapter",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows[0].same_run_runtime_coverage must include custom call count > 0",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        available_roles={"dependency_fixer", "code_adapter"},
+    )
+
+    # operator_fixer is excluded — the original classification must be preserved.
+    assert routed["category"] == "code"
+    assert routed["repair_role"] == "code_adapter"
+
+
+def test_force_routing_blocks_both_report_and_operator_when_excluded() -> None:
+    """When both final_gate_report_fixer and operator_fixer are excluded from
+    available_roles, report-schema signal does NOT force-route to either."""
+    classification = {
+        "category": "dependency",
+        "root_cause": "Missing dependency",
+        "suggested_fix": "Install missing package",
+        "repair_role": "dependency_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="rows must be a non-empty list; source_inventory must include discovery_complete",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation", "required_report_paths": ["migration_reports/custom_op_final_gate.json"]},
+        available_roles={"dependency_fixer", "code_adapter"},
+    )
+
+    assert routed["category"] == "dependency"
+    assert routed["repair_role"] == "dependency_fixer"
+
+
+def test_force_routing_blocks_analyzer_selected_report_fixer_when_both_excluded() -> None:
+    """When the analyzer selects final_gate_report_fixer but both it and
+    operator_fixer are excluded, no forced routing to either occurs."""
+    classification = {
+        "category": "validation",
+        "root_cause": "Report structure wrong",
+        "suggested_fix": "Fix the report",
+        "repair_role": "final_gate_report_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        classification,
+        error_text="custom_op_final_gate failed: rows[0].opp_custom_op_artifact_evidence must prove a native compiled Ascend custom-op artifact",
+        history=[],
+        phase3_contract={"entry_script_kind": "custom_op_full_validation"},
+        available_roles={"dependency_fixer", "code_adapter"},
+    )
+
+    assert routed["repair_role"] == "final_gate_report_fixer"
+
+
+# ── final gate validator command tests ──────────────────────────────────
+
+
+def test_final_gate_validator_contract_summary_returns_expected_text() -> None:
+    summary = _final_gate_validator_contract_summary()
+    assert "report/schema" in summary or "report" in summary.lower()
+    assert "migration_reports/custom_op_final_gate.json" in summary
+    assert "evidence" in summary.lower()
+    assert len(summary) > 80
+
+
+def test_build_final_gate_validator_command_produces_runnable_script(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    invalid_gate = {"rows": "not_a_list", "inventory_count": "not_an_integer"}
+    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(invalid_gate), encoding="utf-8")
+
+    command = _build_final_gate_validator_command(
+        project_dir=str(tmp_path),
+        platform_policy=None,
+    )
+
+    assert "cd " in command
+    assert "PYTHONPATH=" in command
+    assert "python3" in command
+    assert "validate_custom_op_final_gate" in command
+    assert "passed=" in command
+    assert "error_count=" in command
+    assert str(tmp_path) in command
+
+    result = subprocess.run(
+        command, shell=True, capture_output=True, text=True,
+        timeout=30, cwd=str(PROJECT_ROOT),
+    )
+
+    assert result.returncode == 0, f"Command failed with stderr:\n{result.stderr}"
+    assert "passed=False" in result.stdout
+    assert "error_count=" in result.stdout
+    assert "inventory_count must be an integer" in result.stdout
+
+
+def test_build_final_gate_validator_command_with_custom_policy_preserves_overrides(
+    tmp_path: Path,
+) -> None:
+    from core.platform_policy import PlatformPolicy, CustomOpEvidenceConfig
+
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps({}), encoding="utf-8")
+
+    custom_config = CustomOpEvidenceConfig(
+        artifact_path_tokens=["test_custom_path_token"],
+        native_binary_tokens=(b"__CUSTOM_TOKEN_XYZ__",),
+        build_log_error_message="CUSTOM: build log missing expected tokens",
+    )
+    custom_policy = PlatformPolicy(
+        id="test_custom_override",
+        display_name="Test Custom Override",
+        guidance_native_label="TestAccel",
+        guidance_native_framework="test_npu",
+        custom_op_evidence=custom_config,
+    )
+
+    command = _build_final_gate_validator_command(
+        project_dir=str(tmp_path),
+        platform_policy=custom_policy,
+    )
+
+    # Verify the serialized policy contains custom overrides in the base64-encoded blob.
+    # The command includes a base64-encoded JSON policy; decode and inspect it.
+    import base64, re
+    b64_match = re.search(r"b64decode\(\s*'([^']+)'\s*\)", command)
+    assert b64_match is not None, "Command should contain a base64-encoded policy blob"
+    decoded_policy_json = base64.b64decode(b64_match.group(1)).decode()
+    assert "test_custom_override" in decoded_policy_json
+    assert "TestAccel" in decoded_policy_json
+    assert "test_custom_path_token" in decoded_policy_json
+    assert "__B64__" in decoded_policy_json  # bytes field base64-encoded
+
+    result = subprocess.run(
+        command, shell=True, capture_output=True, text=True,
+        timeout=30, cwd=str(PROJECT_ROOT),
+    )
+
+    assert result.returncode == 0, f"Command failed with stderr:\n{result.stderr}"
+    assert "passed=" in result.stdout
+    assert "error_count=" in result.stdout
+
+
+def test_build_repair_prompt_injects_final_gate_command_for_report_fixer(
+    tmp_path: Path,
+) -> None:
+    session_mgr = MockSessionManager({
+        "category": "operator",
+        "root_cause": "report schema wrong",
+        "suggested_fix": "fix report logic",
+        "repair_role": "final_gate_report_fixer",
+    })
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+
+    prompt = engine._build_repair_prompt(
+        entry_script="python validate.py",
+        project_dir=str(tmp_path),
+        iteration=1,
+        error_text="rows must be a non-empty list",
+        classification={
+            "category": "operator",
+            "root_cause": "report schema wrong",
+            "suggested_fix": "fix report logic",
+            "repair_role": "final_gate_report_fixer",
+            "raw_response": "{}",
+        },
+        history=[],
+    )
+
+    # Prompt-visible command is now a concise bash invocation, not inline Python.
+    assert "bash " in prompt
+    assert "finalGateValidator_" in prompt  # runner script name in path
+    assert "PYTHONPATH" not in prompt  # framework internals not exposed in prompt
+    assert "validate_custom_op_final_gate" not in prompt  # Python imports not in prompt
+    assert "Do NOT fabricate" in prompt or "do NOT fabricate" in prompt
+    assert "report-fixer scope" in prompt.lower() or "report_fixer" in prompt.lower() or "outside the report-fixer scope" in prompt.lower() or "contract summary" in prompt.lower() or "Validator Contract" in prompt
+    # Runner script should exist under artifact runtime directory.
+    runner_dir = Path(artifact_store.artifact_dir) / "runtime"
+    runner_files = list(runner_dir.glob("finalGateValidator_*.sh"))
+    assert len(runner_files) >= 1
+    assert runner_files[0].stat().st_mode & 0o111  # executable
+
+
+def test_operator_fixer_prompt_excludes_final_gate_validator_command(
+    tmp_path: Path,
+) -> None:
+    session_mgr = MockSessionManager({
+        "category": "operator",
+        "root_cause": "unsupported custom op",
+        "suggested_fix": "port custom op",
+        "repair_role": "operator_fixer",
+    })
+    engine, _artifact_store = build_engine(tmp_path, session_mgr)
+
+    prompt = engine._build_repair_prompt(
+        entry_script="python main.py",
+        project_dir=str(tmp_path),
+        iteration=1,
+        error_text="RuntimeError: unsupported custom op",
+        classification={
+            "category": "operator",
+            "root_cause": "unsupported custom op",
+            "suggested_fix": "port custom op",
+            "repair_role": "operator_fixer",
+            "raw_response": "{}",
+        },
+        history=[],
+    )
+
+    assert "final_gate_validator_command" not in prompt
+    assert "final_gate_validator_contract_summary" not in prompt
+
+
+def test_dependency_fixer_prompt_excludes_final_gate_validator_command(
+    tmp_path: Path,
+) -> None:
+    session_mgr = MockSessionManager({
+        "category": "dependency",
+        "root_cause": "torch_npu missing",
+        "suggested_fix": "install torch_npu",
+        "repair_role": "dependency_fixer",
+    })
+    engine, _artifact_store = build_engine(tmp_path, session_mgr)
+
+    prompt = engine._build_repair_prompt(
+        entry_script="python main.py",
+        project_dir=str(tmp_path),
+        iteration=1,
+        error_text="ModuleNotFoundError: No module named 'torch_npu'",
+        classification={
+            "category": "dependency",
+            "root_cause": "torch_npu missing",
+            "suggested_fix": "install torch_npu",
+            "repair_role": "dependency_fixer",
+            "raw_response": "{}",
+        },
+        history=[],
+    )
+
+    assert "final_gate_validator_command" not in prompt
+    assert "final_gate_validator_contract_summary" not in prompt
+
+
+# ── Runner script tests ───────────────────────────────────────────────
+
+
+def test_write_final_gate_validator_runner_creates_executable_script(
+    tmp_path: Path,
+) -> None:
+    """Runner script is created, is executable, and contains validator logic."""
+    artifact_dir = str(tmp_path / "artifacts")
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps({}), encoding="utf-8")
+
+    runner_path = _write_final_gate_validator_runner(
+        artifact_dir=artifact_dir,
+        project_dir=str(tmp_path),
+        platform_policy=None,
+    )
+
+    runner_file = Path(runner_path)
+    assert runner_file.exists()
+    assert runner_file.stat().st_mode & 0o700  # executable
+    assert runner_file.suffix == ".sh"
+    content = runner_file.read_text()
+    assert "#!/usr/bin/env bash" in content
+    assert "set -euo pipefail" in content
+    assert "PYTHONPATH=" in content  # internal to script
+    assert "validate_custom_op_final_gate" in content  # internal to script
+    assert str(tmp_path) in content
+
+
+def test_build_final_gate_validator_command_with_runner_path_returns_concise_bash(
+    tmp_path: Path,
+) -> None:
+    """When runner_path is provided, command is concise bash invocation."""
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps({}), encoding="utf-8")
+
+    artifact_dir = str(tmp_path / "artifacts")
+    runner_path = _write_final_gate_validator_runner(
+        artifact_dir=artifact_dir,
+        project_dir=str(tmp_path),
+        platform_policy=None,
+    )
+
+    command = _build_final_gate_validator_command(
+        project_dir=str(tmp_path),
+        platform_policy=None,
+        runner_path=runner_path,
+    )
+
+    assert command.startswith("bash ")
+    # No framework internals exposed in the prompt-visible command.
+    assert "PYTHONPATH" not in command
+    assert "validate_custom_op_final_gate" not in command
+    assert "cd " not in command  # cd is inside the runner script
+    assert runner_path in command
+
+
+def test_write_and_run_final_gate_validator_runner(
+    tmp_path: Path,
+) -> None:
+    """Full round-trip: write runner, run it, verify output."""
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    invalid_gate = {"rows": "not_a_list", "inventory_count": "not_an_integer"}
+    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(invalid_gate), encoding="utf-8")
+
+    artifact_dir = str(tmp_path / "artifacts")
+    runner_path = _write_final_gate_validator_runner(
+        artifact_dir=artifact_dir,
+        project_dir=str(tmp_path),
+        platform_policy=None,
+    )
+
+    result = subprocess.run(
+        f"bash {runner_path}", shell=True, capture_output=True, text=True,
+        timeout=30, cwd=str(PROJECT_ROOT),
+    )
+
+    assert result.returncode == 0, f"Runner failed with stderr:\n{result.stderr}"
+    assert "passed=False" in result.stdout
+    assert "error_count=" in result.stdout
+    assert "inventory_count must be an integer" in result.stdout
+
+
+def test_final_gate_validator_python_script_produces_valid_code(
+    tmp_path: Path,
+) -> None:
+    """The extracted Python script is syntactically valid and self-contained."""
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps({}), encoding="utf-8")
+
+    script = _build_final_gate_validator_python_script(
+        project_dir=str(tmp_path),
+        platform_policy=None,
+    )
+
+    assert "import base64" in script
+    assert "validate_custom_op_final_gate" in script
+    assert "PlatformPolicy" in script
+    # Should be valid Python.
+    compile(script, "<validator_script>", "exec")
