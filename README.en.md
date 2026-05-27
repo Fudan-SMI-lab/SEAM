@@ -59,12 +59,12 @@ Execution Results:
 
 #### 1. Multi-hardware & Multi-framework Support
 
-| Hardware \ Framework | Torch | vLLM | SGLang |
-| --- | --- | --- | --- |
-| **Alibaba Pingtouge PPU** | ✅ Done | ✅ Done | ✅ Done |
-| **Huawei Ascend** | ✅ Done | ✅ Done | ✅ Done |
-| **MetaX** | ✅ Done | ✅ Done | ✅ Done |
-| **Other GPUs** | 🔜 Request welcome | 🔜 Request welcome | 🔜 Request welcome |
+| Hardware \ Framework | Torch | vLLM | SGLang |Other Framework |
+| --- | --- | --- | --- | --- |
+| **Alibaba Pingtouge PPU** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
+| **Huawei Ascend** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
+| **MetaX** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
+| **Other GPUs** | 🔜 Request welcome | 🔜 Request welcome | 🔜 Request welcome | 🔜 Request welcome |
 
 #### 2. End-to-End Automated Migration
 
@@ -122,8 +122,5 @@ Copyright (c) 2026 Fudan-SMI-lab
 ```
 
 <p align="center">
-  <sub>❤️ Co-developed by Fudan University SMI Lab, Fudan CFFF Platform and Shanghai Chuangzhi Institute ❤️</sub>
+  <sub>❤️ Co-developed by Fudan University and Shanghai Innovation Institute ❤️</sub>
 </p>
-
-
-

@@ -59,12 +59,12 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 
 1.  **多硬件×多框架覆盖**
     
-    | 硬件 \ 框架 | Torch | vLLM | SGLang |
-    | --- | --- | --- | --- |
-    | **阿里 平头哥PPU** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |
-    | **华为 昇腾Ascend** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |
-    | **沐曦 MetaX** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |
-    | **其他GPUs** | 🔜 等你提需求 | 🔜 等你提需求 | 🔜 等你提需求 |
+    | 硬件 \ 框架 | Torch | vLLM | SGLang |其他框架 |
+    | --- | --- | --- | --- |--- |
+    | **阿里 平头哥PPU** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
+    | **华为 昇腾Ascend** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
+    | **沐曦 MetaX** | ✅ 已完成 | ✅ 已完成 | ✅ 已完成 |🔜 等你提需求 |
+    | **其他GPUs** | 🔜 等你提需求 | 🔜 等你提需求 | 🔜 等你提需求 |🔜 等你提需求 |
     
 2.  **自动化端到端迁移**
     
@@ -79,17 +79,14 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
     SEAM有零先验运行、跨案例知识迁移、边际成本趋近于零等能力。其中，每次迁移完成后，评估成功与失败的案例，把有效的适配方案提炼为可复用技能（skill），存入 `.memory/skills/` 和 `.memory/memory/` 目录，为下一次运行提供参考。
     
 4.  **幻觉控制：确保迁移结果真实有效**
-    
 
-SEAM采用行为验证、错误分类和精准路由、三振出局、Fail-closed 门控、自定义算子验证证据链等策略，确保迁移结果真实有效。
+    SEAM采用行为验证、错误分类和精准路由、三振出局、Fail-closed 门控、自定义算子验证证据链等策略，确保迁移结果真实有效。
 
 
-<p align="center">
+**“自进化”和“幻觉控制”是SEAM的核心能力，相辅相成，正向循环。**
 
-“自进化”和“幻觉控制”是SEAM的核心能力，相辅相成，正向循环。
+> 更多SEAM的技术方案介绍，参见[SEAM技术方案讲解](docs/SEAM_Tech_Intro.zh.md)。
 
-更多SEAM的技术方案介绍，参见[SEAM技术方案讲解](docs/SEAM_Tech_Intro.zh.md)。
-</p>
 
 ---
 
@@ -121,5 +118,5 @@ Copyright (c) 2026 Fudan-SMI-lab
 ```
 
 <p align="center">
-  <sub>❤️本项目由复旦大学SMI Lab、复旦大学CFFF平台、上海创智学院共同构建❤️</sub>
+  <sub>❤️本项目由复旦大学、上海创智学院共同构建❤️</sub>
 </p>
