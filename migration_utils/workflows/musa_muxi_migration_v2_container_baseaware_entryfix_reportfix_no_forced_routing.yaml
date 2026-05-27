@@ -1,9 +1,11 @@
-name: musa_muxi_migration_v2_container_baseaware_entryfix
+name: musa_muxi_migration_v2_container_baseaware_entryfix_reportfix_no_forced_routing
 version: "2.0"
 description: >
   CUDA to MUSA/MUXI container workflow with base-environment-aware dependency
-  selection, conservative report-only rule migration, and full custom-op final
-  gate support through PlatformPolicy evidence tokens and prompt templates.
+  selection, conservative report-only rule migration, full custom-op final
+  gate support (including report fixer routes), and custom-op forced routing
+  override disabled so analyzer-driven routing is preserved.
+  Suitable for analyzer-first custom-op E2E coverage.
 
 target_platform:
   preset: musa_muxi
@@ -62,6 +64,7 @@ globals:
   review_gate_enabled: false
   max_review_iterations: 3
   max_entry_script_revisions: 2
+  custom_op_operator_routing_override_enabled: false
 
 experience:
   enabled: false
