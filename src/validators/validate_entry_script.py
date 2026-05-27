@@ -117,6 +117,11 @@ REQUIRED_INVENTORY_SCHEMA_FIELDS = {
     "out_of_scope_source_groups",
 }
 
+
+CHECK_ALIASES = {
+    "per_entry_opp_custom_op_artifact_evidence": "per_entry_target_custom_op_artifact_evidence",
+}
+
 REQUIRED_CHECKS = {
     "inventory_manifest_equality",
     "closed_pass_count_equals_manifest_entries",
@@ -126,7 +131,7 @@ REQUIRED_CHECKS = {
     "kernel_launch_site_inventory",
     "public_entry_mapping",
     "inventory_granularity_fine",
-    "per_entry_opp_custom_op_artifact_evidence",
+    "per_entry_target_custom_op_artifact_evidence",
     "per_entry_adapter_evidence",
     "per_entry_parity_evidence",
     "integration_e2e_evidence",
@@ -620,7 +625,8 @@ def _string_list(value: object) -> list[str] | None:
 
 
 def _normalize_check(value: str) -> str:
-    return value.strip().lower().replace("-", "_").replace(" ", "_")
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return CHECK_ALIASES.get(normalized, normalized)
 
 
 def _contains_token(values: list[str], token: str) -> bool:

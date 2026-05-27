@@ -7,6 +7,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
 EXECUTION_ROOT = PROJECT_ROOT.parent
 
+from validators.validate_entry_static import CUSTOM_OP_BOOLEAN_FIELDS, EXPANDED_VARIANT_BOOLEAN_FIELDS
+
 PHASE_PROMPT_FILES = [
     "phase_0_env_detect.md",
     "phase_1_project_analysis.md",
@@ -52,6 +54,39 @@ def test_phase_35_prompt_mentions_custom_op_contract_static_gate():
     assert "script_emits_fine_grained_units" in content
     assert "script_maps_public_api_to_units" in content
     assert NEW_CONSTRAINT in content
+
+
+def test_phase_35_custom_op_example_includes_validator_boolean_contract():
+    content = (PROMPTS_DIR / "phase_35_static_validate.md").read_text()
+
+    for field in CUSTOM_OP_BOOLEAN_FIELDS:
+        assert f'"{field}": true' in content, f"phase 3.5 custom-op example missing {field}"
+    for field in EXPANDED_VARIANT_BOOLEAN_FIELDS:
+        assert f'"{field}": true' in content, f"phase 3.5 expanded-variant example missing {field}"
+
+
+def test_phase3_forbids_hard_coded_and_report_only_custom_op_gates():
+    content = (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
+
+    assert "Hard-coded expected unit identity lists are forbidden" in content
+    assert "Report-only scripts" in content
+    assert "merely inspect existing JSON" in content
+    assert "custom_op_with_variants" in content
+    assert "discover the expanded variant inventory from source" in content
+    assert "prove variant-axis coverage" in content
+    assert "one performance entry per expanded variant" in content
+
+
+def test_phase3_phase35_prompts_are_platform_generic_for_custom_op_contracts():
+    phase3 = (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
+    phase35 = (PROMPTS_DIR / "phase_35_static_validate.md").read_text()
+
+    assert "Ascend NPU migration workflow" not in phase3
+    assert "Ascend NPU migration workflow" not in phase35
+    assert "targeting the platform selected by platform policy" in phase3
+    assert "platform selected by platform policy" in phase35
+    assert "per_entry_target_custom_op_artifact_evidence" in phase3
+    assert "per_entry_opp_custom_op_artifact_evidence" not in phase3
 
 
 def test_custom_op_phase_prompts_use_source_driven_contract_without_external_requirements():
