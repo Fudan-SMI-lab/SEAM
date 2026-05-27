@@ -34,7 +34,7 @@ If backend mode is `container`, use `actual_execution_command` and do not run th
 ## Fix History
 {previous_outputs}
 
-Use prior fixer summaries as repair evidence. If a dependency fixer reports verified remaining dependency/environment issues, route back to `dependency_fixer` with a dependency-closure fix. If it reports native/custom-op, shared-object, missing-symbol, or final-gate evidence as the remaining blocker, do not repeat dependency repair; route to `operator_fixer`.
+Use prior fixer summaries as repair evidence. If a dependency fixer reports verified remaining dependency/environment issues, route back to `dependency_fixer` with a dependency-closure fix. If it reports native/custom-op, shared-object, missing-symbol, or final-gate operator-evidence issues (artifacts, runtime coverage, custom calls) as the remaining blocker, route to `operator_fixer`.
 
 ## Previous Review Assessment
 {last_review}
@@ -53,7 +53,7 @@ Identify the first real exception, compare against history, and route exactly on
 - `dependency`: missing/mismatched package, vendor package hidden, SDK path, compiler path, import dependency.
 - `pathing`: host/container path mismatch, missing file, wrong cwd.
 - `migration logic`: Python-level API/device/backend issue.
-- `operator`: shared object, native symbol, compiler, custom kernel, custom-op final gate.
+- `operator`: shared object, native symbol, compiler, custom kernel, custom-op final-gate evidence/artifact failures.
 - `validation`: entry script or success criterion issue.
 - `unknown`: insufficient evidence.
 
@@ -61,7 +61,7 @@ Identify the first real exception, compare against history, and route exactly on
 - Wrong interpreter, missing vendor torch, or project `.venv` hiding conda/vendor torch is `dependency` and should prefer correcting the interpreter to the base env.
 - Missing `torch_musa` is not automatically a failure when Phase 0 shows MACA/MetaX or CUDA-compatible vendor torch.
 - Python-level device strings, backend strings, tensor placement, or unsupported imports are `migration logic` for `code_adapter`.
-- Failing `.so` loads, missing exported native symbols, compiler errors, unsupported kernels, or custom-op final-gate failures are `operator`.
+- Failing `.so` loads, missing exported native symbols, compiler errors, unsupported kernels, or custom-op final-gate evidence/artifact failures are `operator`.
 - Host path used in a container command or `/workspace` used in local mode is `pathing`.
 - CPU fallback is not a valid fix. CPU baseline is only performance comparison when explicitly configured.
 
@@ -77,7 +77,7 @@ Identify the first real exception, compare against history, and route exactly on
   "category": "dependency",
   "root_cause": "specific explanation",
   "suggested_fix": "concrete corrective action",
-  "repair_role": "dependency_fixer",
+  "repair_role": "<selected repair role from available roles below>",
   "entry_script_action": {
     "needed": false,
     "action": "none",
@@ -87,3 +87,5 @@ Identify the first real exception, compare against history, and route exactly on
   }
 }
 ```
+
+{repair_role_descriptions}

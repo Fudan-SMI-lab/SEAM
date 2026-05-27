@@ -54,7 +54,7 @@ Phase 3 entry-script contract, including custom-op validation requirements:
 ## Fix History
 {previous_outputs}
 
-Use prior fixer summaries as repair evidence. If a dependency fixer reports verified remaining dependency/environment issues, route back to `dependency_fixer` with a dependency-closure fix. If it reports native/custom-op, shared-object, missing-symbol, or final-gate evidence as the remaining blocker, do not repeat dependency repair; route to `operator_fixer`.
+Use prior fixer summaries as repair evidence. If a dependency fixer reports verified remaining dependency/environment issues, route back to `dependency_fixer` with a dependency-closure fix. If it reports native/custom-op, shared-object, missing-symbol, or final-gate operator-evidence issues (artifacts, runtime coverage, custom calls) as the remaining blocker, do not repeat dependency repair; route to `operator_fixer`.
 
 ## Previous Review Assessment
 {last_review}
@@ -140,7 +140,7 @@ First, provide your reasoning and diagnosis in free text. Then, at the end of yo
   "category": "<bucket from Required Actions #3>",
   "root_cause": "<specific explanation>",
   "suggested_fix": "<concrete corrective action>",
-  "repair_role": "<dependency_fixer | code_adapter | operator_fixer>",
+  "repair_role": "<selected repair role from available roles below>",
   "entry_script_action": {
     "needed": false,
     "action": "none",
@@ -151,10 +151,7 @@ First, provide your reasoning and diagnosis in free text. Then, at the end of yo
 }
 ```
 
-## Repair Role Descriptions
-- `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.
-- `code_adapter`: Fix Python-level API replacements, device placement, tensor operations. Must prioritize PPU-native solutions. If the root cause is a C library limitation, STOP and report it — do not implement CPU fallback.
-- `operator_fixer`: Fix missing/unsupported PPU operators — implement custom operators, compose alternatives from PPU-supported primitives, or port kernels to PPU-compatible implementations. ALL fixes must be PPU-native.
+{repair_role_descriptions}
 
 ## Retry Decision Rule
 - Pick a role only when a concrete fix path exists for that role.

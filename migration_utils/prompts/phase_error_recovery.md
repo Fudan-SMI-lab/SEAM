@@ -129,7 +129,7 @@ First, provide your reasoning and diagnosis in free text. Then, at the end of yo
   "category": "<bucket from Required Actions #3>",
   "root_cause": "<specific explanation>",
   "suggested_fix": "<concrete corrective action>",
-  "repair_role": "<dependency_fixer | code_adapter | operator_fixer>",
+  "repair_role": "<selected repair role from available roles below>",
   "entry_script_action": {
     "needed": false,
     "action": "none",
@@ -140,10 +140,7 @@ First, provide your reasoning and diagnosis in free text. Then, at the end of yo
 }
 ```
 
-## Repair Role Descriptions
-- `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.
-- `code_adapter`: Fix CUDA-to-NPU code migration at the Python level — device placement, API replacements, tensor operations. Must prioritize NPU-native solutions. If the root cause is a C library limitation (not a Python API issue), STOP and report it — do not implement CPU fallback.
-- `operator_fixer`: Fix missing/unsupported NPU operators — implement custom operators, compose alternatives from NPU-supported primitives, or port CUDA kernels to AscendC. ALL fixes must be NPU-native.
+{repair_role_descriptions}
 
 ## Retry Decision Rule
 - Pick a role only when a concrete fix path exists for that role.
