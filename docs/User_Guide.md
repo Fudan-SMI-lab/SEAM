@@ -24,9 +24,10 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 *   .memory .skill 等文件夹会更新，是SEAM的自进化学习的经验记忆和技能素材，非必要勿删。
 
 
-## 高级使用
+## 高级自定义使用
 
 可以自定义修改YAML文件，来实现更复杂的迁移任务。
+
 也可以自定义自己的skill等。
 
 更多细节更新中。
