@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from core.custom_op_variants import expanded_variant_contract_from_contract
-from validators.validate_validation_final import custom_op_final_gate_unit_ledger
+from validators.validate_validation_final import custom_op_final_gate_unit_ledger, validate_custom_op_final_gate
 
 
 NO_EXPERIENCE_CARDS_NOTE = "(No analyzer-selected experience cards)"
@@ -384,19 +384,33 @@ def _phase1_discovery_lines(phase1_analysis: dict[str, object]) -> list[str]:
     return lines
 
 
+def safe_project_reports_dir(project_path: Path) -> Path:
+    project_resolved = project_path.resolve()
+    reports_dir = project_resolved / "migration_reports"
+    if reports_dir.exists() and reports_dir.is_symlink():
+        raise ValueError(f"migration_reports must not be a symlink: {reports_dir}")
+    return reports_dir
+
+
 def _reports_dir(project_path: Path, contract: dict[str, object]) -> Path:
+    project_resolved = project_path.resolve()
+    default_reports_dir = safe_project_reports_dir(project_resolved)
     raw = contract.get("reports_dir")
     if isinstance(raw, str) and raw.strip():
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
-            candidate = project_path / candidate
+            candidate = project_resolved / candidate
         try:
-            resolved = candidate.resolve()
-            _ = resolved.relative_to(project_path)
+            resolved = candidate.resolve(strict=False)
+            _ = resolved.relative_to(project_resolved)
         except (OSError, ValueError):
-            return (project_path / "migration_reports").resolve()
+            return default_reports_dir
+        if resolved == default_reports_dir:
+            return default_reports_dir
+        if candidate.exists() and candidate.is_symlink():
+            return default_reports_dir
         return resolved
-    return (project_path / "migration_reports").resolve()
+    return default_reports_dir
 
 
 def _read_json_report(path: Path, warnings: list[str]) -> object:
@@ -661,3 +675,265 @@ def _strict_progress_lines(ledger: dict[str, object]) -> list[str]:
                 lines.append("Remaining Detail: truncated; inspect final-gate/unit ledger for the full list")
                 break
     return lines
+
+
+CANONICAL_CUSTOM_OP_REPORT_NAMES: tuple[str, ...] = (
+    "operator_inventory.json",
+    "migration_manifest.json",
+    "preflight.json",
+    "baseline.json",
+    "runtime_coverage.json",
+    "performance.json",
+    "build.json",
+    "implementation_resolution.json",
+    "evidence_validation.json",
+    "summary.json",
+    "custom_op_final_gate.json",
+)
+
+
+def scaffold_or_refresh_custom_op_canonical_reports(
+    *,
+    project_dir: str,
+    phase3_contract: dict[str, object] | None = None,
+    phase1_analysis: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Create or refresh fail-closed canonical custom-op reports from authoritative scope."""
+    project_path = Path(project_dir).resolve()
+    contract = dict(phase3_contract or {})
+    phase1 = dict(phase1_analysis or {})
+    reports_dir = _reports_dir(project_path, contract)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    units, source = _canonical_scaffold_units(contract, phase1)
+    if not units:
+        return {"reports_dir": str(reports_dir), "unit_count": 0, "unit_source": source, "written_reports": []}
+    rows = [_canonical_fail_closed_row(unit, source) for unit in units]
+    now_message = "fail-closed scaffold only; run Phase 5 validation to replace with measured current-run evidence"
+
+    report_payloads: dict[str, dict[str, object]] = {
+        "operator_inventory.json": {
+            "status": "INCOMPLETE",
+            "unit_source": source,
+            "inventory_count": len(rows),
+            "rows": rows,
+            "message": now_message,
+        },
+        "migration_manifest.json": {
+            "status": "INCOMPLETE",
+            "unit_source": source,
+            "manifest_entries": len(rows),
+            "closed_pass_entries": 0,
+            "remaining_entries": len(rows),
+            "rows": rows,
+            "message": now_message,
+        },
+        "preflight.json": _canonical_stage_report("preflight", rows, source),
+        "baseline.json": _canonical_stage_report("baseline", rows, source),
+        "runtime_coverage.json": _canonical_stage_report("runtime_coverage", rows, source),
+        "performance.json": _canonical_stage_report("performance", rows, source),
+        "build.json": _canonical_stage_report("build", rows, source),
+        "implementation_resolution.json": _canonical_stage_report("implementation_resolution", rows, source),
+        "evidence_validation.json": _canonical_stage_report("evidence_validation", rows, source),
+        "summary.json": {
+            "status": "INCOMPLETE",
+            "full_migration_status": "INCOMPLETE",
+            "unit_source": source,
+            "inventory_count": len(rows),
+            "manifest_entries": len(rows),
+            "closed_pass_entries": 0,
+            "remaining_entries": len(rows),
+            "blocking_gaps": ["canonical reports are scaffolded fail-closed until measured evidence closes every row"],
+            "message": now_message,
+        },
+        "custom_op_final_gate.json": {
+            "status": "INCOMPLETE",
+            "full_migration_status": "INCOMPLETE",
+            "unit_source": source,
+            "inventory_count": len(rows),
+            "manifest_entries": len(rows),
+            "closed_pass_entries": 0,
+            "remaining_entries": len(rows),
+            "strict_per_unit_ledger": rows,
+            "blocking_gaps": ["strict custom-op final gate remains fail-closed until real OPP/runtime/parity/performance evidence is present for every row"],
+            "message": now_message,
+        },
+    }
+
+    written: list[str] = []
+    for name in CANONICAL_CUSTOM_OP_REPORT_NAMES:
+        path = reports_dir / name
+        existing = _read_existing_report_object(path)
+        payload = report_payloads[name]
+        if existing is not None:
+            existing_rows = existing.get("rows") or existing.get("strict_per_unit_ledger")
+            existing_units = _rows_unit_identities(existing_rows)
+            target_units = [str(row["unit_identity"]) for row in rows]
+            if target_units and existing_units and all(unit in existing_units for unit in target_units):
+                if name == "custom_op_final_gate.json" and _report_claims_full_pass(existing):
+                    validation = validate_custom_op_final_gate(existing, project_root=project_path)
+                    if validation.get("passed") is not True:
+                        payload["refresh_reason"] = "existing full-pass final gate did not validate; replaced with fail-closed scaffold"
+                        path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+                        written.append(str(path))
+                    continue
+                continue
+            payload = _merge_fail_closed_scaffold(existing, payload, rows, source)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+        written.append(str(path))
+    return {"reports_dir": str(reports_dir), "unit_count": len(rows), "unit_source": source, "written_reports": written}
+
+
+def _canonical_scaffold_units(contract: dict[str, object], phase1_analysis: dict[str, object]) -> tuple[list[str], str]:
+    expanded_units = _expanded_variant_units_from_contract(contract)
+    if expanded_units:
+        return expanded_units, "phase_3_expanded_variant_contract"
+    phase3_units = _phase3_contract_operator_units(contract)
+    if phase3_units:
+        return phase3_units, "phase_3_contract"
+    phase1_units = _phase1_analysis_operator_units(phase1_analysis)
+    if phase1_units:
+        return phase1_units, "phase_1_analysis"
+    return [], "empty_scope"
+
+
+def _phase1_analysis_operator_units(phase1_analysis: dict[str, object]) -> list[str]:
+    surface = phase1_analysis.get("custom_op_surface")
+    if not isinstance(surface, dict):
+        return []
+    surface_dict = cast(dict[str, object], surface)
+    variants = surface_dict.get("expanded_operator_variants")
+    if isinstance(variants, list):
+        units = _unit_identities_from_rows(variants)
+        if units:
+            return units
+    for key in ("fine_grained_operator_units", "operator_units", "discovered_operator_names", "native_operator_symbols"):
+        value = surface_dict.get(key)
+        if isinstance(value, list):
+            units = _string_list(value)
+            if units:
+                return units
+    return []
+
+
+def _unit_identities_from_rows(value: list[object]) -> list[str]:
+    units: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            item_dict = cast(dict[str, object], item)
+            for field_name in ("unit_identity", "identity", "name"):
+                raw_identity = item_dict.get(field_name)
+                if isinstance(raw_identity, str) and raw_identity.strip():
+                    units.append(raw_identity.strip())
+                    break
+        elif isinstance(item, str) and item.strip():
+            units.append(item.strip())
+    return _dedupe_preserve_order(units)
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _canonical_fail_closed_row(unit_identity: str, source: str) -> dict[str, object]:
+    return {
+        "unit_identity": unit_identity,
+        "unit_source": source,
+        "status": "INCOMPLETE",
+        "migration_status": "INCOMPLETE",
+        "strict_pass": False,
+        "missing_evidence": [
+            "opp_custom_op_artifact_evidence",
+            "adapter_evidence",
+            "parity_evidence",
+            "integration_e2e_evidence",
+            "same_run_runtime_coverage",
+            "performance_evidence",
+            "no_fallback_no_zero_call_no_builtin_contamination",
+        ],
+        "scaffold_scope_only": True,
+    }
+
+
+def _canonical_stage_report(stage: str, rows: list[dict[str, object]], source: str) -> dict[str, object]:
+    return {
+        "status": "INCOMPLETE",
+        "stage": stage,
+        "unit_source": source,
+        "total_count": len(rows),
+        "closed_pass_entries": 0,
+        "remaining_entries": len(rows),
+        "rows": rows,
+        "message": "fail-closed scaffold only; no pass evidence has been fabricated",
+    }
+
+
+def _read_existing_report_object(path: Path) -> dict[str, object] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return cast(dict[str, object], data) if isinstance(data, dict) else None
+
+
+def _report_claims_full_pass(report: dict[str, object]) -> bool:
+    for key in ("status", "full_migration_status", "result", "outcome"):
+        value = report.get(key)
+        if isinstance(value, str) and value.strip().upper() in {"PASS", "PASSED", "FULL_PASS", "SUCCESS"}:
+            return True
+    return False
+
+
+def _merge_fail_closed_scaffold(
+    existing: dict[str, object],
+    scaffold: dict[str, object],
+    rows: list[dict[str, object]],
+    source: str,
+) -> dict[str, object]:
+    existing_rows = existing.get("rows") or existing.get("strict_per_unit_ledger")
+    existing_units = _rows_unit_identities(existing_rows)
+    target_units = [str(row["unit_identity"]) for row in rows]
+    if not existing_units:
+        merged = dict(scaffold)
+        merged["refresh_reason"] = "existing report missing authoritative unit_identity rows or collapsed Phase 3 scope"
+        return merged
+    if not all(unit in existing_units for unit in target_units):
+        existing_row_items = cast(list[object], existing_rows) if isinstance(existing_rows, list) else []
+        rows_by_unit: dict[str, dict[str, object]] = {}
+        for row in existing_row_items:
+            if not isinstance(row, dict):
+                continue
+            row_dict = cast(dict[str, object], row)
+            unit = row_dict.get("unit_identity")
+            if isinstance(unit, str) and unit.strip():
+                rows_by_unit[unit.strip()] = row_dict
+        merged_rows = [rows_by_unit.get(str(row["unit_identity"]), row) for row in rows]
+        merged = dict(scaffold)
+        if "strict_per_unit_ledger" in merged:
+            merged["strict_per_unit_ledger"] = merged_rows
+        else:
+            merged["rows"] = merged_rows
+        merged["refresh_reason"] = "existing report preserved authoritative unit_identity rows and appended missing Phase 3 scope rows fail-closed"
+        return merged
+    merged = dict(existing)
+    merged.setdefault("unit_source", source)
+    return merged
+
+
+def _rows_unit_identities(rows_obj: object) -> list[str]:
+    units: list[str] = []
+    if not isinstance(rows_obj, list):
+        return units
+    for item in rows_obj:
+        if not isinstance(item, dict):
+            continue
+        unit = cast(dict[str, object], item).get("unit_identity")
+        if isinstance(unit, str) and unit.strip() and unit.strip() not in units:
+            units.append(unit.strip())
+    return units
