@@ -309,10 +309,7 @@ def main() -> None:
         print(f"  ⚠️  oh-my-opencode.json 不存在")
 
     # 测试服务器连接
-    hostname = "127.0.0.1"
-    port = 4098
-    server_type = "opencode"
-    base_url = f"http://{hostname}:{port}"
+    base_url = "http://127.0.0.1:4098"
     
     print(f"\n4️⃣  测试 OpenCode Server ({base_url}):")
     if not check_server_alive(base_url):
@@ -332,10 +329,8 @@ def main() -> None:
         print(f"\n运行命令:")
         print("  python -m tests.e2e.e2e_test_v2 \\")
         print("    --project-dir /path/to/cuda_project \\")
-        print(f"    --hostname {hostname} \\")
-        print(f"    --port {port} \\")
-        print(f"    --server_type {server_type} \\")
-        print("    --output_dir output_projects \\")
+        print(f"    --server-url {base_url} \\")
+        print("    --output-dir output_projects \\")
         print("    --keep-temp-dir --review-gate")
     else:
         print(" ❌ LLM 调用失败，请检查配置")

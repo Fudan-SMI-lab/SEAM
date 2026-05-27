@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+from unittest import mock
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -9,19 +11,55 @@ from core.paths import (  # noqa: E402
     execution_root,
     legacy_workspace_root,
     project_search_roots,
+    migration_utils_root,
     src_root,
     workspace_root,
 )
 
 
-def test_execution_root_is_seam_root() -> None:
+def test_src_root_is_self() -> None:
+    """src_root() should point to the src/ directory (this package)."""
     assert src_root().name == "src"
-    assert execution_root().name == "SEAM"
+
+
+def test_migration_utils_root_is_deprecated_alias() -> None:
+    """migration_utils_root() is a deprecated alias for src_root()."""
+    assert migration_utils_root() == src_root()
+
+
+def test_execution_root_is_seam_root() -> None:
+    assert execution_root().name == "SEAM-merge-main-fusion-baseline"
     assert workspace_root() == execution_root()
 
 
-def test_default_outputs_are_under_execution_root() -> None:
-    assert default_output_projects_root() == execution_root() / "output_projects"
+def test_default_outputs_are_outside_execution_root() -> None:
+    """Default output projects go outside the SEAM repo (parent workspace)."""
+    result = default_output_projects_root()
+    assert result.name == "output_projects"
+    assert result.parent == legacy_workspace_root()
+
+
+def test_default_outputs_env_override() -> None:
+    """MIGRATION_OUTPUT_PROJECTS_ROOT env var overrides the default."""
+    with mock.patch.dict(os.environ, {"MIGRATION_OUTPUT_PROJECTS_ROOT": "/custom/output/path"}):
+        result = default_output_projects_root()
+    assert result == Path("/custom/output/path")
+
+
+def test_default_outputs_env_override_resolves_home() -> None:
+    """Env override resolves ~ and expands user home."""
+    with mock.patch.dict(os.environ, {"MIGRATION_OUTPUT_PROJECTS_ROOT": "~/my_outputs"}):
+        result = default_output_projects_root()
+    assert result == Path.home() / "my_outputs"
+
+
+def test_default_outputs_env_override_empty_ignored() -> None:
+    """Empty or whitespace-only env var is ignored (falls back to default)."""
+    with mock.patch.dict(os.environ, {"MIGRATION_OUTPUT_PROJECTS_ROOT": "   "}):
+        result = default_output_projects_root()
+    # Should fall back to default
+    assert result.name == "output_projects"
+    assert result.parent == legacy_workspace_root()
 
 
 def test_project_search_roots_are_root_first_with_legacy_fallbacks() -> None:

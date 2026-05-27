@@ -1,8 +1,0 @@
-name: sanitize-cuda-wheel-stack-for-torch-npu
-title: Sanitize CUDA wheel stacks for torch-npu environments
-description: Sanitize CUDA wheel stacks for torch-npu environments
-category: dependency_issue
-subtype: cuda_wheel_stack_replacement
-target_roles: ["cuda_to_npu_migration_agent", "dependency_setup_agent", "torch_npu_validation_agent"]
-target_phases: ["dependency_analysis", "environment_creation", "runtime_validation"]
-trigger_fingerprint: {'category': 'dependency_issue', 'subtype': 'cuda_wheel_stack_replacement', 'signals': ['requirements include nvidia-*cu12 packages', 'requirements include triton or flash-attn', 'torch/torchaudio/torchvision pinned without CPU/NPU-compatible variants', 'numpy>=2 with CANN 8.x torch-npu stack', 'torchaudio import failure references libtorch_cuda.so', 'migration target is Ascend NPU with torch-npu'], 'recommended_action': 'sanitize dependency manifest before venv creation and validate torch, torch_npu, torchaudio, torchvision, and torch.npu availability'}

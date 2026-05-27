@@ -1,8 +1,0 @@
-name: cuda-extension-to-ascendc-opp-aclnn-bridge
-title: Migrate CUDA custom extensions to real Ascend C/CANN OPP with ACLNN PyTorch bridge
-description: Migrate CUDA custom extensions to real Ascend C/CANN OPP with ACLNN PyTorch bridge
-category: operator_incompat
-subtype: cuda_extension_to_ascendc_opp_aclnn_bridge
-target_roles: ["operator_fixer", "custom_op_migration_agent", "phase_5_validator"]
-target_phases: ["fix_operator", "custom_op_opp_preflight", "phase_5_validation", "final_gate"]
-trigger_fingerprint: {'category': 'operator_incompat', 'subtype': 'cuda_extension_to_ascendc_opp_aclnn_bridge', 'signals': ['PyTorch project contains CUDAExtension or custom CUDA/C++ extension sources', 'migration attempt only swaps to NpuExtension, CppExtension, or ATen-style adapter code', 'validation reports missing op_host, op_kernel, generated ACLNN headers, kernel_meta, libcust_opapi.so, or OPP build/install provenance', 'final gate rejects fallback, stub, report-only, or direct-only route evidence'], 'required_artifacts': ['project-local ascend_opp package', 'op_host definitions with shape inference, dtype inference, tiling, and AddConfig', 'AscendC op_kernel sources', 'CMake/build/install provenance', 'generated ACLNN headers and op_api library', 'kernel_meta and libcust_opapi.so', 'PyTorch NpuExtension adapter linked against cust_opapi, opapi, and ascendcl'], 'anti_patterns': ['treating NpuExtension adapter evidence as the OPP producer', 'accepting ATen-only or fallback success as native migration', 'missing same-run per-operator route evidence', 'runtime bridge that does not launch ACLNN on the current NPU stream']}

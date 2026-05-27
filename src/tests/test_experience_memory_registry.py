@@ -33,7 +33,7 @@ def test_manifest_created_from_catalog_upsert(tmp_path):
     assert manifest["counts"]["total"] == 1
     assert manifest["counts"]["by_type"] == {"skill": 1}
     assert manifest["counts"]["by_status"] == {"promoted": 1}
-    assert manifest["storage_roots"]["catalog"] == os.path.join(".memory", "memory", "index", "experiences.jsonl")
+    assert manifest["storage_roots"]["catalog"] == os.path.join("memory", "index", "experiences.jsonl")
     assert manifest["storage_roots"]["local_skills"] == ".skills"
 
 
@@ -284,34 +284,6 @@ def test_experience_query_skips_inactive_statuses(tmp_path):
     assert [exp["id"] for exp in result["selected_experiences"]] == ["active-exp"]
 
 
-def test_experience_query_skips_quarantined_promoted_aten_skill(tmp_path):
-    store = ExperienceStore(str(tmp_path))
-    skill_dir = tmp_path / ".memory" / "skills" / "cuda-custom-extension-to-npu-aten-cpp-extension"
-    skill_dir.mkdir(parents=True)
-    skill_data = skill_dir / "skill_data.json"
-    skill_data.write_text(json.dumps({"title": "ATen skill"}), encoding="utf-8")
-    store.upsert_index({
-        "id": "promoted-cuda-custom-extension-to-npu-aten-cpp-extension",
-        "type": "skill",
-        "status": "quarantined",
-        "title": "Port CUDA custom extension to NPU-routed C++/ATen extension",
-        "subtype": "cuda_extension_to_npu_routed_cpp_extension",
-        "tags": ["custom-op", "aten", "cpp-extension"],
-        "asset_paths": [str(skill_data)],
-    })
-
-    class SelectorSession:
-        def get_or_create(self, role: str, lifecycle: str) -> str:
-            return f"session:{role}"
-
-        def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
-            raise AssertionError("quarantined promoted ATen skill must not reach selector")
-
-    result = ExperienceQuerier(store, SelectorSession()).query({"phase": "phase_5_validation"})
-
-    assert result["selected_experiences"] == []
-
-
 def test_experience_query_filters_aten_only_custom_op_under_native_gate(tmp_path):
     store = ExperienceStore(str(tmp_path))
     stale_path = tmp_path / "aten.json"
@@ -466,7 +438,7 @@ def test_compact_catalog_dedupes_without_touching_legacy_index(tmp_path):
 
 def test_cleanup_staging_dry_run_is_non_mutating(tmp_path):
     store = ExperienceStore(str(tmp_path))
-    run_dir = tmp_path / ".memory" / "memory" / "staging" / "run-1"
+    run_dir = tmp_path / "memory" / "staging" / "run-1"
     run_dir.mkdir(parents=True)
     (run_dir / "note.json").write_text("{}", encoding="utf-8")
     store.upsert_catalog_entry({
@@ -521,9 +493,9 @@ def test_rebuild_catalog_ignores_non_canonical_promotion_metadata_json(tmp_path)
     entry = entries[0]
     assert entry["id"] == "promoted-migration-case"
     assert entry["type"] == "document"
-    assert os.path.join(".memory", "memory", "promotions", "knowledge", "migration-case", "experience.json") in entry["asset_paths"]
-    assert os.path.join(".memory", "memory", "promotions", "knowledge", "migration-case", "metadata.json") in entry["asset_paths"]
-    assert path.endswith(os.path.join(".memory", "memory", "promotions", "knowledge", "migration-case", "experience.json"))
+    assert os.path.join("memory", "promotions", "knowledge", "migration-case", "experience.json") in entry["asset_paths"]
+    assert os.path.join("memory", "promotions", "knowledge", "migration-case", "metadata.json") in entry["asset_paths"]
+    assert path.endswith(os.path.join("memory", "promotions", "knowledge", "migration-case", "experience.json"))
 
 
 def test_record_experience_usage_preserves_legacy_custom_fields(tmp_path):
@@ -554,8 +526,8 @@ def test_record_experience_usage_preserves_legacy_custom_fields(tmp_path):
 
 def test_prune_orphans_preserves_assets_referenced_only_by_legacy_index(tmp_path):
     store = ExperienceStore(str(tmp_path))
-    legacy_asset = tmp_path / ".memory" / "memory" / "cases" / "legacy.json"
-    orphan_asset = tmp_path / ".memory" / "memory" / "cases" / "orphan.json"
+    legacy_asset = tmp_path / "memory" / "cases" / "legacy.json"
+    orphan_asset = tmp_path / "memory" / "cases" / "orphan.json"
     legacy_asset.parent.mkdir(parents=True, exist_ok=True)
     legacy_asset.write_text("{}", encoding="utf-8")
     orphan_asset.write_text("{}", encoding="utf-8")
@@ -563,15 +535,15 @@ def test_prune_orphans_preserves_assets_referenced_only_by_legacy_index(tmp_path
         "id": "legacy-only",
         "status": "promoted",
         "type": "skill",
-        "asset_paths": [os.path.join(".memory", "memory", "cases", "legacy.json")],
+        "asset_paths": [os.path.join("memory", "cases", "legacy.json")],
     })
 
     dry_run = store.prune_orphans()
     result = store.prune_orphans(dry_run=False)
 
     assert dry_run["dry_run"] is True
-    assert os.path.join(".memory", "memory", "cases", "orphan.json") in dry_run["targets"]
-    assert os.path.join(".memory", "memory", "cases", "legacy.json") not in dry_run["targets"]
+    assert os.path.join("memory", "cases", "orphan.json") in dry_run["targets"]
+    assert os.path.join("memory", "cases", "legacy.json") not in dry_run["targets"]
     assert legacy_asset.exists()
     assert not orphan_asset.exists()
     assert result["target_count"] == 1

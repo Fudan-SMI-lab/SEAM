@@ -1,0 +1,30 @@
+1. 这是 operator 修复任务，只处理当前失败；不要扩展成通用 workplan。
+2. 先阅读 {runtime_error_artifact_path} 和 {runtime_card_artifact_path}，结合 {project_dir} 和 {entry_script} 定位当前 operator incompatibility。
+3. 做 PPU 原生修复，不要加 CPU fallback；若是 custom-op 项目，参考下方 PPU operator custom-op guidance。
+4. 直接修改目标项目文件并运行验证；不要启动后台检索/后台 agents 后提前返回，不要把 modified_files: []、调研计划、等待后台结果或"下一步再修"当作本轮修复结果。
+5. ## PPU Operator Custom-Op Guidance
+   This project may include custom CUDA operators. For PPU migration:
+   - Do NOT follow AscendC/CANN porting guidance unless the project explicitly requires Ascend/NPU support.
+   - PPU environments execute CUDA operators through CUDA-compatible APIs; the operator code may work as-is on PPU.
+   - If the operator uses NVIDIA-specific features not available on PPU, report the specific kernel/function and escalate — do NOT attempt blind rewrites.
+   {operator_custom_op_guidance}
+   **PPU NOTE**: The guidance above (if present) may reference Ascend/CANN toolchains. Only follow those references if the project explicitly targets Ascend hardware in addition to PPU. Otherwise, treat them as informational context about the operator's original design intent.
+6. ## Container Execution Context
+
+This workflow uses a container execution backend for Phase 5 validation.
+
+- **Execution backend mode**: `{execution_backend_mode}`
+- **Actual execution command**: `{actual_execution_command}`
+- **Container name or ID**: `{container_name_or_id}`
+- **Container workdir**: `{container_workdir}`
+- **Host project directory**: `{host_project_dir}`
+- **Container project directory**: `{container_project_dir}`
+
+**CRITICAL**: This workflow creates a NEW exclusive container from the base image.
+Do NOT use, exec into, or install packages into pre-existing containers. Always use
+the `actual_execution_command` provided by the framework.
+
+当你在容器工作流中手动验证修复时，使用 `actual_execution_command` 进行验证执行。
+不要直接在宿主机上运行 `{entry_script}`，该脚本需要在容器环境中执行。
+如果需要在容器内手动验证，请使用：
+`{actual_execution_command}`

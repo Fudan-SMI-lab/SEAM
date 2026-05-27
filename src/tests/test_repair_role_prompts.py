@@ -1,6 +1,5 @@
 import sys
 from pathlib import Path
-from collections.abc import Callable
 from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -10,8 +9,6 @@ from core import repair_loop
 from core.prompt_loader import PromptLoader
 
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
-OPERATOR_GENERIC_GUIDANCE = cast(Callable[..., str], repair_loop.__dict__["_operator_generic_guidance"])
-OPERATOR_CUSTOM_OP_GUIDANCE = cast(Callable[..., str], repair_loop.__dict__["_operator_custom_op_guidance"])
 
 COMMON_CONTEXT = {
     "repair_role": "dependency_fixer",
@@ -29,14 +26,7 @@ COMMON_CONTEXT = {
     "runtime_error_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md",
     "runtime_card_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md",
     "workspace_root": "/workspace",
-    "phase1_phase3_repair_scope": "(No active custom-op contract scope in this direct generic prompt test.)",
-    "strict_custom_op_acceptance_contract": "(No active custom-op contract; agent may return regular operator repair JSON only.)",
-    "operator_repair_progress_block": "(No active custom-op repair progress in this direct generic prompt test.)",
-    "active_custom_op_full_repair_requirements": "",
-    "operator_custom_op_guidance": OPERATOR_GENERIC_GUIDANCE(
-        project_dir="/tmp/test_project",
-        entry_script="python train.py",
-    ),
+    "operator_custom_op_guidance": "4. This is a generic operator-incompatibility repair.\n5. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证, 只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics。",
 }
 
 
@@ -89,15 +79,6 @@ def test_operator_fixer_prompt_is_generic_without_custom_op_guidance() -> None:
     assert "/tmp/test_project" in prompt
     assert "python train.py" in prompt
     assert "Ascend NPU 原生修复" in prompt
-    assert "No active custom-op contract is present" in prompt
-    assert "不要生成 OPP/custom-op 产物" in prompt
-    assert "active custom-op contract" in prompt
-    assert "严格 Ascend C/CANN OPP custom operator" not in prompt
-    assert "op_host" not in prompt
-    assert "op_kernel" not in prompt
-    assert "NpuExtension" not in prompt
-    assert "ATen-only npu_ops.cpp" not in prompt
-    assert "adapter evidence" not in prompt
     assert "CPU fallback" in prompt
     assert "不要启动后台检索/后台 agents 后提前返回" in prompt
     assert "modified_files: []" in prompt
@@ -113,46 +94,16 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
     context = {
         **COMMON_CONTEXT,
         "repair_role": "operator_fixer",
-        "phase1_phase3_repair_scope": (
-            "workflow_route=custom_op_with_variants\n"
-            "phase3.run_command=python train.py\n"
-            "phase3.entry_script_path=/tmp/test_project/validate_custom_ops_full.py\n"
-            "phase3.required_report_paths=migration_reports/operator_inventory.json, migration_reports/migration_manifest.json\n"
-            "phase3.required_checks=inventory_manifest_equality, remaining_entries_zero\n"
-            "phase1.operator_unit_count=2\n"
-            "phase1.custom_op_surface.expanded_operator_variants_count=2"
-        ),
-        "strict_custom_op_acceptance_contract": (
-            "Custom-op repair is accepted only when the full Phase 3 validation command has been rerun and current project-local reports pass strict validation.\n"
-            "Required reports:\n"
-            "- migration_reports/operator_inventory.json\n"
-            "- migration_reports/migration_manifest.json\n"
-            "Required checks:\n"
-            "- inventory_manifest_equality\n"
-            "- remaining_entries_zero\n"
-            "Framework acceptance: validate_custom_op_final_gate must pass, full_migration_status must be FULL_PASS, remaining_entries must be 0, and every Phase 1/Phase 3 operator or expanded variant identity must be closed."
-        ),
-        "active_custom_op_full_repair_requirements": (
-            "1. Read operatorRepairContext artifact and treat it as the source of truth.\n"
-            "2. Repair every Phase 1/Phase 3 discovered operator and every expanded operator+variant identity.\n"
-            "3. Rerun the full Phase 3 validation command and produce every required report.\n"
-            "4. Return success only after the strict final gate validates FULL_PASS.\n"
-            "5. Return FAILED/INCOMPLETE if the full repair is not yet closed."
-        ),
-        "operator_custom_op_guidance": OPERATOR_CUSTOM_OP_GUIDANCE(
-            "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md",
-            project_dir="/tmp/test_project",
-            entry_script="python train.py",
+        "operator_custom_op_guidance": (
+            "4. Read bounded operator context: /tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md; "
+            "this context is the only inventory / manifest / final-gate closure source.\n"
+            "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
+            "6. Every in-scope row must have real Ascend OPP artifacts, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+            "7. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证。只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
         ),
     }
     prompt = loader.load_prompt("repair_operator_fixer", context)
-    assert "Phase 1 / Phase 3 Repair Scope" in prompt
-    assert "workflow_route=custom_op_with_variants" in prompt
-    assert "phase1.custom_op_surface.expanded_operator_variants_count=2" in prompt
-    assert "Strict Acceptance Contract" in prompt
-    assert "validate_custom_op_final_gate" in prompt
     assert "bounded operator context" in prompt
-    assert "Active custom-op contract is present" in prompt
     assert "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md" in prompt
     assert "inventory / manifest / final-gate" in prompt.lower()
     assert "freeze manifest rows" in prompt
@@ -160,33 +111,18 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
     assert "remaining_entries == 0" in prompt
     assert "full_migration_status == FULL_PASS" in prompt
     assert "same-run runtime coverage > 0" in prompt
-    assert "CPU baseline runtime against Ascend OPP/custom-op runtime" in prompt
-    assert "strict Ascend C/CANN OPP custom operator producer evidence" in prompt
-    assert "non-empty object list" in prompt
-    assert "any invalid list item must fail closed" in prompt
-    assert "op_host source path" in prompt
-    assert "op_kernel/AscendC source path" in prompt
-    assert "CMakeLists.txt/build.sh" in prompt
-    assert "CANN/OPP build-install logs" in prompt
-    assert "generated header/op_info/kernel_meta/producer/package artifacts" in prompt
-    assert "NpuExtension" in prompt
-    assert "CppExtension" in prompt
-    assert "ATen-only npu_ops.cpp" in prompt
-    assert "not opp_custom_op_artifact_evidence" in prompt
-    assert "adapter evidence" in prompt
+    assert "baseline/custom performance evidence" in prompt
     assert "report-only" in prompt
     assert "MVP-only" in prompt
     assert "zero-call" in prompt
     assert "modified_files 必须列出实际修改文件" in prompt
     assert "FAILED/INCOMPLETE" in prompt
-    assert "self-baseline" in prompt
-    assert "speedup_vs_baseline" in prompt
     assert "cuda_custom_op_skill_test_prompt.md" not in prompt
     assert ".skills" not in prompt
 
 
 def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -> None:
-    guidance = OPERATOR_CUSTOM_OP_GUIDANCE(
+    guidance = repair_loop._operator_custom_op_guidance(
         "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md",
         project_dir="/tmp/test_project",
         entry_script="python validate_custom_ops_full.py",
@@ -196,90 +132,76 @@ def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -
     assert "*_evidence*" in guidance
     assert "stub/dummy/fake placeholder native libraries" in guidance
     assert "synthetic success codes" in guidance
-    assert "strict Ascend C/CANN OPP custom operator producer evidence" in guidance
-    assert "op_host source path" in guidance
-    assert "op_kernel/AscendC source path" in guidance
-    assert "NpuExtension" in guidance
-    assert "ATen-only npu_ops.cpp" in guidance
-    assert "not opp_custom_op_artifact_evidence" in guidance
     assert "FAILED/INCOMPLETE" in guidance
-    assert "CPU `baseline_seconds / custom_seconds`" in guidance
-    assert "same-NPU" in guidance
-    assert "each field may be one object or a non-empty object list" in guidance
-    assert "an empty list or any invalid list item must fail closed" in guidance
 
 
-def test_phase5_prompt_documents_strict_route_evidence_list_contract() -> None:
-    phase5 = (PROMPTS_DIR / "phase_5_validation.md").read_text(encoding="utf-8")
-
-    assert "single object or a non-empty object list" in phase5
-    assert "every object must pass the same strict checks" in phase5
-    assert "empty route-evidence lists" in phase5
-    assert "partially invalid route-evidence lists" in phase5
-    assert "every item must independently satisfy the same strict proof requirements" in phase5
-
-
-def test_custom_op_prompts_document_route_evidence_list_contract() -> None:
-    prompt_names = [
-        "phase_1_5_constraint_summary.md",
-        "phase_3_entry_script.md",
-        "phase_35_static_validate.md",
-        "phase_6_report.md",
-        "phase_error_recovery.md",
-    ]
-
-    for prompt_name in prompt_names:
-        prompt = (PROMPTS_DIR / prompt_name).read_text(encoding="utf-8")
-        assert "non-empty object list" in prompt, prompt_name
-        assert "invalid list" in prompt or "partially invalid" in prompt, prompt_name
-
-
-def test_phase_prompts_require_strict_opp_artifacts_and_final_chinese_table() -> None:
-    phase3 = (PROMPTS_DIR / "phase_3_entry_script.md").read_text(encoding="utf-8")
-    phase6 = (PROMPTS_DIR / "phase_6_report.md").read_text(encoding="utf-8")
-
-    for prompt in (phase3, phase6):
-        assert "strict Ascend C/CANN OPP" in prompt
-        assert "op_host" in prompt
-        assert "op_kernel" in prompt
-        assert "CMakeLists.txt/build.sh" in prompt
-        assert "CANN/OPP build-install" in prompt
-        assert "generated header/op_info/kernel_meta/producer/package artifacts" in prompt
-        assert "NpuExtension" in prompt
-        assert "ATen-only" in prompt
-
-    assert "CPU baseline" in phase3
-    assert "Ascend OPP/custom-op" in phase3
-    assert "final_chinese_per_row_table_parity" in phase3
-    assert "final Chinese summary" in phase6
-    assert "same-NPU/self-baseline placeholder" in phase6
-    assert "| row | semantic operator | public entries / aliases | route evidence type | route evidence summary | OPP artifact | adapter callable | coverage key/count | parity | integration/e2e | CPU baseline vs Ascend OPP/custom-op performance | status | next action |" in phase6
-
-
-def test_dependency_fixer_prompt_requires_actionable_repair_result() -> None:
+def test_dependency_fixer_prompt_contains_constraint_summary_and_handoff() -> None:
+    """dependency_fixer prompt receives constraint_summary, no-CPU-fallback, and native-op handoff guidance."""
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
     prompt = _load_role_prompt(loader, "dependency_fixer")
     assert "dependency_fixer" in prompt
     assert "环境、包、导入、版本、安装和运行依赖问题" in prompt
-    assert "算子、custom-op 实现或 CUDA/NPU 代码改写问题" in prompt
+    assert "算子、custom-op实现或CUDA/NPU代码改写问题" in prompt
     assert "{workspace_root}" not in prompt
     assert "/workspace/docs/cuda_custom_op_skill_test_prompt.md" in prompt
     assert "第5点要求" in prompt
-    assert "只有 active custom-op contract" in prompt
-    assert "普通 CUDA 项目不要生成 OPP/custom-op 产物" in prompt
-    assert "/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md" in prompt
-    assert "/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
-    assert "第一轮修复 session 必须持续工作到真实结果" in prompt
-    assert "不要返回计划" in prompt
-    assert "commands_run" in prompt
-    assert "installed_packages" in prompt
-    assert "environment_changes" in prompt
-    assert "verification" in prompt
-    assert "agent_diagnostics" in prompt
+    assert "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
+    assert "Rule 1: No CPU fallback" in prompt
+    assert "Migration Constraints (from Phase 1.5)" in prompt
+    assert "No CPU Fallback (CRITICAL)" in prompt
+    assert "Native Operator Handoff" in prompt
     assert "ModuleNotFoundError: No module named 'torch_npu'" not in prompt
-    assert "Rule 1: No CPU fallback" not in prompt
+    assert "Execution Failure" not in prompt
+    assert "Error Classification" not in prompt
+    assert "handoff rationale in your `summary`" in prompt
+    assert "dependency closure" in prompt.lower()
     assert "runtime_error_artifact_path" not in prompt
     assert "runtime_card_artifact_path" not in prompt
+
+
+def test_dependency_fixer_prompt_contains_self_verified_closure_guidance() -> None:
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    prompt = _load_role_prompt(loader, "dependency_fixer")
+    assert "Self-Verified Dependency Closure (CRITICAL)" in prompt
+    assert "hints only" in prompt
+    assert "do not constitute verified facts" not in prompt  # that's in error_analyzer
+    assert "Batch In-Scope Dependency/Env Closure" in prompt
+    assert "actual execution command" in prompt.lower()
+    assert "Native/Custom-Op Handoff via Summary" in prompt
+    assert "summary" in prompt
+    assert "agent_diagnostics.handoff_recommended" not in prompt
+    assert "agent_diagnostics.dependency_closure_validated" not in prompt
+
+
+def test_muxi_container_dependency_prompt_uses_summary_for_closure_and_handoff() -> None:
+    content = (PROMPTS_DIR / "repair_dependency_fixer_container_musa.md").read_text(encoding="utf-8")
+    assert "Self-Verified Dependency Closure (CRITICAL)" in content
+    assert "hints only" in content
+    assert "Report the closure validation in `summary`" in content
+    assert "handoff need in your `summary`" in content
+    assert "agent_diagnostics.handoff_recommended" not in content
+    assert "agent_diagnostics.dependency_closure_validated" not in content
+
+
+def test_error_analyzer_prompt_contains_prior_outputs_hints_only() -> None:
+    """error_analyzer prompt warns that prior outputs are hints only."""
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    context = {
+        **COMMON_CONTEXT,
+        "phase_name": "error_analyzer",
+        "repair_role": "error_analyzer",
+        "failed_phase": "phase_5_validation",
+        "entry_script_contract": "{}",
+        "failure_log": "some error",
+        "previous_outputs": "(no history)",
+        "artifact_base_path": "/tmp/artifacts",
+        "raw_attempt_files": "(none)",
+    }
+    prompt_id = "phase_error_recovery"
+    prompt = loader.load_prompt(prompt_id, context)
+    assert "hints only" in prompt
+    assert "do NOT constitute verified facts" in prompt
+    assert "MUST independently verify" in prompt
 
 
 def test_code_adapter_prompt_contains_code_modification_content() -> None:
@@ -315,7 +237,7 @@ def test_non_operator_repair_prompts_contain_assigned_role_value() -> None:
 
 def test_non_operator_repair_prompts_contain_constraint_summary() -> None:
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
-    for role in ("code_adapter",):
+    for role in ("code_adapter", "dependency_fixer"):
         prompt = _load_role_prompt(loader, role)
         assert "Rule 1: No CPU fallback" in prompt, f"{role} prompt missing constraint_summary"
 
@@ -338,3 +260,53 @@ def test_non_operator_repair_prompts_contain_last_review() -> None:
     for role in ("code_adapter",):
         prompt = _load_role_prompt(loader, role)
         assert "(No review available)" in prompt, f"{role} prompt missing last_review"
+
+
+# ── normal-entry prompt / constraint wording regression ──────────────────
+
+_NORMAL_ENTRY_BANNED_PHRASES = (
+    "zero custom operators",
+    "ZERO custom",
+    "custom_op_detected MUST be false",
+    "Do NOT search for custom",
+)
+
+_NORMAL_ENTRY_PROMPT_FILES = (
+    "phase_1_project_analysis_ppu_normal_entry_057.md",
+    "phase_3_entry_script_ppu_normal_entry_057.md",
+    "phase_35_static_validate_ppu_normal_entry_057.md",
+)
+
+
+def _read_normal_entry_file(filename: str) -> str:
+    path = PROMPTS_DIR / filename
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def test_normal_entry_prompts_never_claim_zero_custom_operators() -> None:
+    """Every normal-entry 057 prompt file must NOT contain banned phrases
+    that falsely assert the project has zero custom operators."""
+    for filename in _NORMAL_ENTRY_PROMPT_FILES:
+        content = _read_normal_entry_file(filename)
+        for phrase in _NORMAL_ENTRY_BANNED_PHRASES:
+            assert phrase not in content, (
+                f"{filename} contains banned phrase: {phrase!r}"
+            )
+
+
+def test_normal_entry_constraints_never_claim_zero_custom_operators() -> None:
+    """The normal-entry constraints file must NOT contain banned zero-custom phrasing."""
+    constraints_dir = PROJECT_ROOT / "constraints_normal_entry_057.md"
+    if not constraints_dir.exists():
+        return  # skip if not present
+    content = constraints_dir.read_text(encoding="utf-8")
+    for phrase in _NORMAL_ENTRY_BANNED_PHRASES:
+        assert phrase not in content, (
+            f"constraints_normal_entry_057.md contains banned phrase: {phrase!r}"
+        )
+
+
+def test_normal_entry_prompts_exist() -> None:
+    """Sanity: all expected normal-entry prompt files exist."""
+    for filename in _NORMAL_ENTRY_PROMPT_FILES:
+        assert (PROMPTS_DIR / filename).exists(), f"{filename} is missing"

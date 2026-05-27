@@ -70,33 +70,6 @@ def test_custom_op_phase_prompts_use_source_driven_contract_without_external_req
     assert "group multiple source-discovered units into a family-only row" in phase35
 
 
-def test_phase1_prompt_requires_cuda_native_helper_inventory():
-    content = (PROMPTS_DIR / "phase_1_project_analysis.md").read_text()
-
-    assert "CUDA/native helper exports" in content
-    assert "first-class fine-grained units" in content
-    assert "*_cuda" in content
-    assert "*_gpu" in content
-    assert "storage/compression/memory helpers" in content
-    assert "Family-only rows are invalid" in content
-    assert "native_operator_symbols" in content
-    assert "kernel_launch_sites" in content
-
-
-def test_phase2_prompt_reuses_host_torch_stack_without_heavy_reinstalls():
-    content = (PROMPTS_DIR / "phase_2_venv_create.md").read_text()
-
-    assert "--system-site-packages" in content
-    assert "Probe the host Python" in content
-    assert "torch_npu" in content
-    assert "Inspect dependency files before installation" in content
-    assert "lightweight project dependencies versus heavyweight platform/runtime packages" in content
-    assert "Do not reinstall or upgrade heavyweight platform packages" in content
-    assert "Avoid generic PyPI resolution that pulls CUDA PyTorch dependency wheels" in content
-    assert "Do not run broad `pip install -r requirements.txt` blindly" in content
-    assert "Do not install packages into the global Python environment" in content
-
-
 def test_production_custom_op_prompts_do_not_use_project_specific_examples():
     forbidden_terms = (
         "Deepwave",
@@ -111,7 +84,7 @@ def test_production_custom_op_prompts_do_not_use_project_specific_examples():
         "3D",
     )
 
-    for filename in ("phase_1_project_analysis.md", "phase_1_5_constraint_summary.md", "phase_2_venv_create.md"):
+    for filename in ("phase_1_project_analysis.md", "phase_1_5_constraint_summary.md"):
         content = (PROMPTS_DIR / filename).read_text()
         for term in forbidden_terms:
             assert term not in content, f"{filename} contains project-specific prompt example term {term!r}"
@@ -128,18 +101,16 @@ def test_phase3_and_phase5_prompts_require_complete_performance_report_closure()
     assert "overall_speedup_report" in phase3
     assert "overall_baseline_seconds" in phase3
     assert "overall_all_units_replaced" in phase3
-    assert "overall/end-to-end CPU-baseline vs Ascend OPP/custom-op speedup" in phase5
-    assert "same-NPU/self-baseline placeholder" in phase5
+    assert "overall/end-to-end speedup" in phase5
     assert "migration_reports/performance.json" in phase5
     assert "covers every manifest/source-inventory unit" in phase5
     assert "overall_baseline_seconds" in phase5
-    assert "CPU baseline_seconds / Ascend OPP custom_seconds" in phase5
     assert "overall_all_units_replaced" in phase5
 
 
 def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline_rules():
     expectations = {
-        "phase_error_recovery.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求", "only when the Phase 3 contract is an active custom-op contract"),
+        "phase_error_recovery.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
         "repair_dependency_fixer.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第5点要求"),
     }
 
@@ -159,7 +130,7 @@ def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline
         assert "cuda_custom_op_skill_test_prompt.md" not in content
 
 
-def test_docs_custom_op_skill_prompt_is_owned_by_execution_root():
+def test_root_custom_op_skill_prompt_is_owned_by_execution_root():
     prompt_path = EXECUTION_ROOT / "docs" / "cuda_custom_op_skill_test_prompt.md"
     content = prompt_path.read_text(encoding="utf-8")
 
@@ -193,3 +164,39 @@ def test_extract_json_response_handles_natural_language_plus_json():
     assert result["platform"] == "npu"
     assert result["npu_detected"] is True
     assert result["python_version"] == "3.10.12"
+
+
+def test_extract_json_response_uses_last_valid_fenced_json():
+    from harness.session.manager import extract_json_response
+
+    response = """
+    I first considered this shape:
+    ```json
+    {
+      "env_type": "base_env",
+      "installed_packages": [
+        ...
+      ],
+      ...
+    }
+    ```
+
+    The final answer is:
+    ```json
+    {
+      "env_type": "base_env",
+      "venv_path": "/opt/conda",
+      "python_path": "/opt/conda/bin/python3.10",
+      "installed_packages": ["torch==2.8.0+metax3.5.3.9"],
+      "vendor_stack": {"api_mode": "cuda_compatible"}
+    }
+    ```
+    """
+
+    result = extract_json_response(response)
+
+    assert result["env_type"] == "base_env"
+    assert result["venv_path"] == "/opt/conda"
+    assert result["python_path"] == "/opt/conda/bin/python3.10"
+    assert result["installed_packages"] == ["torch==2.8.0+metax3.5.3.9"]
+    assert result["vendor_stack"]["api_mode"] == "cuda_compatible"

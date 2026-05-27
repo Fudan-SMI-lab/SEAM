@@ -42,13 +42,13 @@ pkill -f 'opencode-ai/bin/.opencode'
 cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
 
 # Hallo 迁移
-bash src/scripts/run_seam.sh 01_Hallo --server_type opencode --server_url http://127.0.0.1:4098
+bash src/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098
 
 # ChaiLab 迁移
-bash src/scripts/run_seam.sh 02_ChaiLab --server_type opencode --server_url http://127.0.0.1:4098
+bash src/scripts/run_e2e_v2.sh 02_ChaiLab --server-url http://127.0.0.1:4098
 
 # 如需更详细的 Phase 5 迭代次数 (默认 8)
-bash src/scripts/run_seam.sh 01_Hallo --server_type opencode --server_url http://127.0.0.1:4098 --max-iter 12
+bash src/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098 --max-iter 12
 ```
 
 ### 参数说明
@@ -176,10 +176,10 @@ cat /sys/fs/cgroup/memory/memory.usage_in_bytes
 **处理**:
 ```bash
 # 使用 --no-review 跳过 Review Gate 重试
-bash src/scripts/run_seam.sh 01_Hallo --server_type opencode --server_url http://127.0.0.1:4098 --no-review
+bash src/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098 --no-review
 
 # 或增大 max-iter
-bash src/scripts/run_seam.sh 01_Hallo --server_type opencode --server_url http://127.0.0.1:4098 --max-iter 12
+bash src/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098 --max-iter 12
 ```
 
 ### 3. Phase 5 单次 entry_script_timeout (20 min) 不够
@@ -269,10 +269,10 @@ Review Gate 拒绝后整改, 达到 max_review_iterations (3) 上限后触顶通
 ```bash
 # 启动 Hallo 迁移
 cd /inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM
-bash src/scripts/run_seam.sh 01_Hallo --server_type opencode --server_url http://127.0.0.1:4098
+bash src/scripts/run_e2e_v2.sh 01_Hallo --server-url http://127.0.0.1:4098
 
 # 启动 ChaiLab 迁移
-bash src/scripts/run_seam.sh 02_ChaiLab --server_type opencode --server_url http://127.0.0.1:4098
+bash src/scripts/run_e2e_v2.sh 02_ChaiLab --server-url http://127.0.0.1:4098
 
 # 查看最新实验输出
 ls -d output_projects/01_Hallo_*/ | tail -1

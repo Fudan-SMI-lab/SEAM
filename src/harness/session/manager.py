@@ -5,16 +5,12 @@ import json
 import logging
 import math
 import os
-import queue
 import re
-import socket
 import sqlite3
-import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -23,26 +19,11 @@ logger = logging.getLogger("harness.session.manager")
 
 RUNNING_TOKENS = {"running", "queued", "processing", "thinking", "in_progress", "active", "busy", "retry", "compacting"}
 COMPACTION_TOKENS = {"compaction", "summary"}
-RUNNING_TOOL_TOKENS = {
-    "step-start",
-    "tool-call",
-    "tool-calls",
-    "tool-invocation",
-    "tool-use",
-    "tool_call",
-    "tool_calls",
-    "tool_invocation",
-    "tool_use",
-}
-COMPLETED_TOOL_TOKENS = {"step-end", "step-finish", "tool-result", "tool-output", "tool_result", "tool_output"}
-TERMINAL_TOOL_TOKENS = {"error", "failed", "failure", "cancelled", "canceled"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
-FALLBACK_AGENT_NAME = "Sisyphus"
+FALLBACK_AGENT_NAME = "Atlas"
 _DEFAULT_HTTP_TIMEOUT = object()
 DEFAULT_SESSION_WAIT_TIMEOUT = 30000.0
 DEFAULT_HARD_ERROR_WAIT_TIMEOUT = 300.0
-DEFAULT_POST_RESPONSE_TIMEOUT = 600.0
-DEFAULT_POST_RESPONSE_PROBE_INTERVAL = 1.0
 
 
 class SessionManagerError(RuntimeError):
@@ -69,25 +50,51 @@ def extract_json_response(text: str) -> dict[str, Any]:
     if not text:
         return {}
 
-    candidates: list[str] = []
-    fenced_blocks = re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    candidates.extend(block.strip() for block in reversed(fenced_blocks) if block.strip())
+    candidates = [match.group(1).strip() for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)]
+    candidates.reverse()
     candidates.append(text.strip())
 
     for candidate in candidates:
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
-
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(candidate[start : end + 1])
-            except json.JSONDecodeError:
-                continue
+        parsed = _parse_json_candidate(candidate)
+        if parsed:
+            return parsed
     return {}
+
+
+def _parse_json_candidate(candidate: str) -> dict[str, Any]:
+    candidate = candidate.strip()
+    if not candidate:
+        return {}
+
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    return _parse_last_json_object(candidate)
+
+
+def _parse_last_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    best: tuple[int, int, dict[str, Any]] | None = None
+
+    for match in re.finditer(r"{", text):
+        start = match.start()
+        try:
+            parsed, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(parsed, dict):
+            continue
+
+        absolute_end = start + end
+        if best is None or absolute_end > best[1] or (absolute_end == best[1] and start < best[0]):
+            best = (start, absolute_end, parsed)
+
+    return best[2] if best is not None else {}
 
 
 @dataclass
@@ -121,8 +128,16 @@ class MigrationSessionManager:
             self._auth_header = "Basic " + base64.b64encode(token).decode()
         self._sessions: dict[str, SessionRecord] = {}
         self._detected_agent: str | None = None
+        self._cached_agent_list: list[str] | None = None
         if auto_detect_agent:
             self._detect_agent()
+
+    @property
+    def available_agents(self) -> list[str]:
+        """Return the cached list of canonical agent names from the OpenCode server."""
+        if self._cached_agent_list is None:
+            self._cached_agent_list = self._fetch_agent_list()
+        return self._cached_agent_list
 
     @property
     def active_agent(self) -> str:
@@ -133,26 +148,110 @@ class MigrationSessionManager:
         return self._work_dir
 
     def _detect_agent(self) -> None:
-        resp = self._http("GET", "/agent")
-        if not resp.get("ok") or not isinstance(resp.get("data"), list):
-            return
-        agent_names: list[str] = []
-        for item in resp["data"]:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", ""))
-            if name:
-                agent_names.append(name)
+        agent_names = self.available_agents
         for name in agent_names:
-            if name.lower() == "sisyphus":
+            if name.lower() == "atlas":
                 self._detected_agent = name
                 return
         for name in agent_names:
-            if "sisyphus" in name.lower():
+            if "atlas" in name.lower():
                 self._detected_agent = name
                 return
         if agent_names:
-            return
+            self._detected_agent = agent_names[0]
+
+    def _fetch_agent_list(self) -> list[str]:
+        """Query /agent and return canonical agent names.
+
+        Returns an empty list when the endpoint is unreachable or returns
+        unexpected data.  The result is cached via ``available_agents``.
+        """
+        resp = self._http("GET", "/agent")
+        if not resp.get("ok") or not isinstance(resp.get("data"), list):
+            return []
+        names: list[str] = []
+        for item in resp["data"]:
+            if isinstance(item, dict):
+                name = str(item.get("name", ""))
+                if name:
+                    names.append(name)
+        return names
+
+    def resolve_agent_name(self, name: str) -> str:
+        """Resolve a partial or exact agent name to its canonical form.
+
+        Resolution order:
+        1. Exact match against cached available agents.
+        2. Case-insensitive exact match.
+        3. Partial (substring) match — returns the single canonical name
+           when unambiguous.
+        4. If multiple partial matches exist, prefers the one whose
+           lowercased name *equals* the lowercased input.
+        5. Raises ``ValueError`` when no match is found or when the
+           name is ambiguous.
+
+        Args:
+            name: Short alias like ``"Atlas"`` or canonical name like
+                  ``"Atlas - Plan Executor"``.
+
+        Returns:
+            The canonical agent name as reported by the server.
+
+        Raises:
+            ValueError: No agents available or no match found.
+        """
+        agents = self.available_agents
+        if not agents:
+            raise ValueError(
+                "Cannot resolve agent name: no agents available from the server. "
+                "Ensure the OpenCode server is running and /agent is reachable."
+            )
+
+        # 1. Exact match
+        if name in agents:
+            return name
+
+        name_lower = name.lower()
+
+        # 2. Case-insensitive exact match
+        for agent in agents:
+            if agent.lower() == name_lower:
+                return agent
+
+        # 3. Partial (substring) match
+        matching = [a for a in agents if name_lower in a.lower()]
+        if len(matching) == 1:
+            return matching[0]
+        if len(matching) > 1:
+            exact_word = [a for a in matching if name_lower == a.lower()]
+            if exact_word:
+                return exact_word[0]
+            raise ValueError(
+                f"Ambiguous agent name '{name}' matches {len(matching)} agents: "
+                f"{sorted(matching)}. Use a more specific name."
+            )
+
+        raise ValueError(
+            f"Agent name '{name}' not found. Available agents: {sorted(agents)}"
+        )
+
+    def override_agent(self, name: str) -> str:
+        """Validate and set *name* as the active agent after resolving aliases.
+
+        This is the preferred way for external callers (CLI, E2E harness) to
+        override the auto-detected agent.  It resolves partial names like
+        ``"Atlas"`` to their canonical form and stores the result.
+
+        Returns:
+            The canonical agent name that was resolved and stored.
+
+        Raises:
+            ValueError: When *name* cannot be resolved (same as
+                        :meth:`resolve_agent_name`).
+        """
+        canonical = self.resolve_agent_name(name)
+        self._detected_agent = canonical
+        return canonical
 
     def create_session(
         self,
@@ -230,8 +329,6 @@ class MigrationSessionManager:
         agent: str = "",
         timeout: int | float | None = None,
         retries: int = 2,
-        *,
-        recovery_wait_timeout: int | float | None = None,
     ) -> str:
         record = self._sessions.get(session_id)
         selected_agent = agent or (record.agent if record else self.active_agent)
@@ -242,13 +339,7 @@ class MigrationSessionManager:
 
         for attempt in range(retries + 1):
             try:
-                return self._send_message_raw(
-                    session_id,
-                    command,
-                    agent=selected_agent,
-                    timeout=timeout,
-                    recovery_wait_timeout=recovery_wait_timeout,
-                )
+                return self._send_message_raw(session_id, command, agent=selected_agent, timeout=timeout)
             except (SessionAuthError, SessionServerError) as exc:
                 last_error = exc
                 self._wait_after_hard_error(session_id, timeout=timeout)
@@ -348,10 +439,7 @@ class MigrationSessionManager:
                 collected: list[str] = []
                 for part in parts:
                     if isinstance(part, dict):
-                        part_type = self._normalize_activity_token(part.get("type"))
-                        if part_type in COMPACTION_TOKENS or part_type in RUNNING_TOOL_TOKENS or part_type in COMPLETED_TOOL_TOKENS:
-                            continue
-                        if part_type in {"reasoning", "tool", "step", "step-start", "step-finish"}:
+                        if str(part.get("type", "")).lower() == "compaction":
                             continue
                         for key in ("text", "content", "message"):
                             nested = part.get(key)
@@ -377,136 +465,6 @@ class MigrationSessionManager:
                     return text
 
         return ""
-
-    def _extract_latest_completed_message_text(
-        self,
-        payload: Any,
-        command_text: str = "",
-    ) -> str:
-        if not isinstance(payload, list):
-            return self._extract_message_text(payload)
-
-        schema_text = self._extract_latest_phase_schema_text(payload, command_text)
-        if schema_text:
-            return schema_text
-
-        completed_text = self._extract_latest_finished_assistant_text(payload)
-        if completed_text:
-            return completed_text
-
-        messages = [message for message in payload if isinstance(message, dict)]
-        messages.sort(key=self._message_sort_time, reverse=True)
-
-        fallback = ""
-        for message in messages:
-            info = message.get("info")
-            role = str(info.get("role", "") if isinstance(info, dict) else message.get("role", "")).lower()
-            if role == "user":
-                continue
-            if self._is_compaction_payload(message):
-                continue
-
-            text = self._extract_message_text(message)
-            if not text:
-                continue
-            if self._is_status_only_completion_text(text):
-                continue
-            if self._is_session_error_completion_text(text):
-                continue
-
-            if not fallback:
-                fallback = text
-        return fallback
-
-    def _extract_latest_phase_schema_text(self, payload: list[Any], command_text: str) -> str:
-        schema_keys = self._phase_schema_keys_for_command(command_text)
-        if not schema_keys:
-            return ""
-        command_time = self._latest_user_command_time(payload, command_text)
-        messages = [message for message in payload if isinstance(message, dict)]
-        messages.sort(key=self._message_sort_time, reverse=True)
-        for message in messages:
-            if command_time and self._message_sort_time(message) <= command_time:
-                continue
-            info = message.get("info")
-            role = str(info.get("role", "") if isinstance(info, dict) else message.get("role", "")).lower()
-            if role and role != "assistant":
-                continue
-            text = self._extract_message_text(message)
-            parsed = extract_json_response(text)
-            if self._phase_schema_matches(parsed, schema_keys):
-                return json.dumps(parsed, ensure_ascii=False)
-        return ""
-
-    def _latest_user_command_time(self, payload: list[Any], command_text: str) -> float:
-        if not command_text.strip():
-            return 0.0
-        messages = [message for message in payload if isinstance(message, dict)]
-        messages.sort(key=self._message_sort_time, reverse=True)
-        command_marker = command_text.strip()[:200]
-        for message in messages:
-            info = message.get("info")
-            role = str(info.get("role", "") if isinstance(info, dict) else message.get("role", "")).lower()
-            if role != "user":
-                continue
-            text = self._extract_message_text(message)
-            if command_marker and command_marker in text:
-                return self._message_sort_time(message)
-        return 0.0
-
-    @staticmethod
-    def _phase_schema_keys_for_command(command_text: str) -> set[str]:
-        normalized = command_text.lower()
-        if "phase_1_project_analysis" in normalized or "phase 1 - project analysis" in normalized:
-            return {"project_dir", "dependencies", "cuda_detected", "entry_script"}
-        if "phase_3_entry_script" in normalized or "phase 3 - entry script" in normalized or "phase 3 - entry script confirmation" in normalized:
-            return {"entry_script_path", "run_command"}
-        return set()
-
-    @staticmethod
-    def _phase_schema_matches(parsed: dict[str, Any], required_keys: set[str]) -> bool:
-        return bool(required_keys) and all(key in parsed for key in required_keys)
-
-    def _extract_latest_finished_assistant_text(self, payload: Any) -> str:
-        if not isinstance(payload, list):
-            payload = [payload]
-
-        messages = [message for message in payload if isinstance(message, dict)]
-        messages.sort(key=self._message_sort_time, reverse=True)
-
-        for message in messages:
-            info = message.get("info")
-            role = str(info.get("role", "") if isinstance(info, dict) else message.get("role", "")).lower()
-            if role and role != "assistant":
-                continue
-            finish = str(info.get("finish", "") if isinstance(info, dict) else message.get("finish", "")).lower()
-            if finish not in {"stop", "success"} and not self._sqlite_payload_has_completed_time(message):
-                continue
-            if self._is_compaction_payload(message):
-                continue
-            text = self._extract_message_text(message)
-            if (
-                text
-                and not self._is_status_only_completion_text(text)
-                and not self._is_session_error_completion_text(text)
-            ):
-                return text
-        return ""
-
-    @staticmethod
-    def _is_status_only_completion_text(text: str) -> bool:
-        normalized = " ".join(text.strip().lower().split())
-        if not normalized:
-            return False
-        return (
-            normalized.startswith("all phase")
-            and ("todo" in normalized or "task" in normalized)
-            and any(marker in normalized for marker in ("complete", "completed", "fully closed", "marked completed"))
-        )
-
-    def _is_session_error_completion_text(self, text: str) -> bool:
-        parsed = extract_json_response(text)
-        return bool(parsed and self._extract_session_payload_error_text(parsed))
 
     def _extract_status_token(self, payload: Any, session_id: str) -> str:
         if not isinstance(payload, dict):
@@ -587,15 +545,11 @@ class MigrationSessionManager:
                     saw_completed = True
             return False if saw_completed else None
         if isinstance(payload, dict):
-            current_tool_signal = self._tool_activity_signal_from_dict(payload)
-            if current_tool_signal is not None:
-                return current_tool_signal
-
-            for key in ("status", "state", "type", "mode", "finish"):
+            for key in ("status", "state", "type", "mode"):
                 value = payload.get(key)
                 if isinstance(value, str):
-                    token = self._normalize_activity_token(value)
-                    if token in {"open", "pending", "todo", "incomplete", "in_progress", "in-progress", "running", "active", "busy"}:
+                    token = value.lower()
+                    if token in {"open", "pending", "todo", "incomplete", "in_progress", "in progress", "running", "active", "busy"}:
                         return True
                     if token in {"done", "complete", "completed", "closed", "resolved", "success", "idle", "stop"}:
                         return False
@@ -627,110 +581,6 @@ class MigrationSessionManager:
             text = self._extract_message_text(payload).lower()
             if self._todo_signal_from_payload(text) is True:
                 return True
-        return None
-
-    @staticmethod
-    def _normalize_activity_token(value: Any) -> str:
-        return str(value or "").strip().lower().replace(" ", "-")
-
-    def _tool_activity_signal_from_dict(self, payload: dict[str, Any]) -> bool | None:
-        parts_signal = self._tool_activity_signal_from_parts(payload.get("parts"))
-        finish_tokens: list[str] = []
-        for key in ("finish", "type", "kind", "part_type", "partType"):
-            value = payload.get(key)
-            if isinstance(value, str):
-                finish_tokens.append(self._normalize_activity_token(value))
-
-        info = payload.get("info")
-        if isinstance(info, dict):
-            for key in ("finish", "type", "state", "status", "mode"):
-                value = info.get(key)
-                if isinstance(value, str):
-                    finish_tokens.append(self._normalize_activity_token(value))
-
-        if parts_signal is False and any(token in RUNNING_TOOL_TOKENS for token in finish_tokens):
-            if not self._extract_message_text(payload):
-                return True
-        if parts_signal is not None:
-            return parts_signal
-
-        if any(token in RUNNING_TOOL_TOKENS for token in finish_tokens):
-            state_tokens = [
-                self._normalize_activity_token(payload.get(key))
-                for key in ("status", "state", "phase", "result_status")
-            ]
-            if any(token in {"done", "complete", "completed", "closed", "resolved", "success"} for token in state_tokens):
-                return False
-            if any(token in TERMINAL_TOOL_TOKENS for token in state_tokens):
-                return False
-            if any(key in payload for key in ("result", "tool_result", "toolResult", "output", "response")):
-                return False
-            return True
-
-        if any(token in COMPLETED_TOOL_TOKENS or token in TERMINAL_TOOL_TOKENS for token in finish_tokens):
-            return False
-
-        for key in ("tool_call", "tool_calls", "toolCall", "toolCalls", "tool_invocation", "toolInvocations"):
-            if key in payload:
-                signal = self._todo_signal_from_payload(payload.get(key))
-                return True if signal is not False else False
-        return None
-
-    def _tool_activity_signal_from_parts(self, parts: Any) -> bool | None:
-        if not isinstance(parts, list):
-            return None
-
-        saw_tool_part = False
-        saw_completed_tool_part = False
-        saw_step_start = False
-        saw_step_finish = False
-        for part in parts:
-            if not isinstance(part, dict):
-                continue
-            part_type = self._normalize_activity_token(part.get("type"))
-            state = part.get("state")
-            state_tokens: list[str] = []
-            if isinstance(state, dict):
-                for key in ("status", "state", "phase", "result_status"):
-                    value = state.get(key)
-                    if isinstance(value, str):
-                        state_tokens.append(self._normalize_activity_token(value))
-            for key in ("status", "state", "phase", "result_status"):
-                value = part.get(key)
-                if isinstance(value, str):
-                    state_tokens.append(self._normalize_activity_token(value))
-
-            if part_type == "step-start":
-                saw_step_start = True
-                continue
-            if part_type in {"step-finish", "step-end"}:
-                saw_step_finish = True
-                continue
-
-            is_tool_part = part_type == "tool" or part_type in RUNNING_TOOL_TOKENS or part_type in COMPLETED_TOOL_TOKENS or "tool" in part
-            if not is_tool_part:
-                continue
-            saw_tool_part = True
-            if any(token in {"running", "queued", "pending", "in-progress", "in_progress", "active", "busy"} for token in state_tokens):
-                return True
-            if any(token in {"done", "complete", "completed", "closed", "resolved", "success"} for token in state_tokens):
-                saw_completed_tool_part = True
-                continue
-            if any(token in TERMINAL_TOOL_TOKENS for token in state_tokens):
-                saw_completed_tool_part = True
-                continue
-            if part_type in COMPLETED_TOOL_TOKENS or any(key in part for key in ("result", "tool_result", "toolResult", "output", "response")):
-                saw_completed_tool_part = True
-                continue
-            if isinstance(state, dict) and any(key in state for key in ("result", "tool_result", "toolResult", "output", "response")):
-                saw_completed_tool_part = True
-                continue
-            return True
-
-        if saw_tool_part:
-            return False if saw_completed_tool_part or saw_step_finish else True
-        if saw_step_start:
-            return False if saw_step_finish else True
         return None
 
     def _candidate_sqlite_paths(self) -> list[Path]:
@@ -959,82 +809,15 @@ class MigrationSessionManager:
             return self._session_completion_from_sqlite(session_id)
 
         data = resp.get("data")
-        latest_completion = self._latest_completed_assistant_signal(data)
-        if latest_completion is not None:
-            return latest_completion
         signal = self._todo_signal_from_payload(data)
         if signal is not None:
             return signal
         return self._session_completion_from_sqlite(session_id)
 
-    def _latest_completed_assistant_signal(self, payload: Any) -> bool | None:
-        raw_messages = payload if isinstance(payload, list) else [payload]
-        messages = [message for message in raw_messages if isinstance(message, dict)]
-        messages.sort(key=self._message_sort_time, reverse=True)
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            info = message.get("info")
-            role = str(info.get("role", "") if isinstance(info, dict) else message.get("role", "")).lower()
-            if role and role != "assistant":
-                return None
-            if self._is_compaction_payload(message):
-                return True
-            if self._sqlite_payload_has_completed_time(message) and self._extract_message_text(message):
-                return False
-            tool_signal = self._tool_activity_signal_from_dict(message)
-            if tool_signal is True:
-                return True
-            if tool_signal is False and not self._extract_message_text(message):
-                continue
-            finish = str(info.get("finish", "") if isinstance(info, dict) else message.get("finish", "")).lower()
-            if finish in {"stop", "success"} and self._extract_message_text(message):
-                return False
-            if role == "assistant" and finish in {"stop", "success"}:
-                continue
-            if role == "assistant" or finish:
-                return None
-        return None
-
-    @staticmethod
-    def _message_sort_time(message: dict[str, Any]) -> float:
-        info = message.get("info")
-        time_data = info.get("time") if isinstance(info, dict) else message.get("time")
-        if isinstance(time_data, dict):
-            for key in ("completed", "updated", "created"):
-                value = time_data.get(key)
-                if isinstance(value, (int, float)):
-                    return float(value)
-                if isinstance(value, str):
-                    try:
-                        return float(value)
-                    except ValueError:
-                        continue
-        for key in ("timeCompleted", "time_created", "timeCreated", "created_at", "updated_at"):
-            value = message.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-            if isinstance(value, str):
-                try:
-                    return float(value)
-                except ValueError:
-                    continue
-        return 0.0
-
-    def wait_for_idle(
-        self,
-        session_id: str,
-        timeout_s: int | float | None = 300,
-        interval_s: float = 2.0,
-        *,
-        baseline_text: str | None = None,
-        command_text: str = "",
-    ) -> bool:
+    def wait_for_idle(self, session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0) -> bool:
         started = time.time()
-        deadline: float | None = None
-        if timeout_s is not None:
-            deadline = started + self._effective_wait_timeout(timeout_s)
-        while deadline is None or time.time() < deadline:
+        effective_timeout = self._effective_wait_timeout(timeout_s)
+        while time.time() - started < effective_timeout:
             status = self._http("GET", "/session/status")
             if not status.get("ok"):
                 error_status = status.get("status")
@@ -1046,19 +829,12 @@ class MigrationSessionManager:
 
             data = status.get("data")
             token = self._extract_status_token(data, session_id)
-            fresh_completion = ""
-            if baseline_text is not None:
-                fresh_completion = self._latest_completed_text_since_baseline(session_id, baseline_text, command_text)
             if token in RUNNING_TOKENS:
-                if fresh_completion:
-                    return True
                 time.sleep(interval_s)
                 continue
 
             todo_state = self._session_has_incomplete_todos(session_id)
             if todo_state is True:
-                if fresh_completion:
-                    return True
                 time.sleep(interval_s)
                 continue
 
@@ -1067,13 +843,12 @@ class MigrationSessionManager:
 
             sqlite_state = self._session_completion_from_sqlite(session_id)
             if sqlite_state is True:
-                if fresh_completion:
-                    return True
                 time.sleep(interval_s)
                 continue
             if sqlite_state is False:
                 return True
-            time.sleep(interval_s)
+            # No running signal found: status OK, no token, no todos, no sqlite → idle.
+            return True
         return False
 
     def _wait_after_hard_error(
@@ -1137,17 +912,11 @@ class MigrationSessionManager:
                 return
             time.sleep(interval_s)
 
-    def _last_message_text_tolerant(self, session_id: str, command_text: str = "") -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
+    def _last_message_text_tolerant(self, session_id: str) -> str:
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 1})
         if not resp.get("ok"):
             return ""
-        return self._extract_latest_completed_message_text(resp.get("data"), command_text)
-
-    def _last_finished_assistant_text_tolerant(self, session_id: str) -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
-        if not resp.get("ok"):
-            return ""
-        return self._extract_latest_finished_assistant_text(resp.get("data"))
+        return self._extract_message_text(resp.get("data"))
 
     def _session_has_incomplete_todos_tolerant(self, session_id: str) -> bool | None:
         try:
@@ -1177,36 +946,14 @@ class MigrationSessionManager:
     def list_sessions(self) -> list[SessionRecord]:
         return list(self._sessions.values())
 
-    def _send_message_raw(
-        self,
-        session_id: str,
-        text: str,
-        agent: str = "",
-        timeout: int | float | None = None,
-        *,
-        recovery_wait_timeout: int | float | None = None,
-    ) -> str:
+    def _send_message_raw(self, session_id: str, text: str, agent: str = "", timeout: int | float | None = None) -> str:
         command_text = text
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if agent:
             payload["agent"] = agent
-        if timeout is not None:
-            _ = self._effective_wait_timeout(timeout)
-        http_timeout = DEFAULT_POST_RESPONSE_TIMEOUT if timeout is not None else None
+        http_timeout = self._effective_wait_timeout(timeout) + 30
         previous_text = self._last_message_text_tolerant(session_id)
-        completion_probe = None
-        if timeout is None:
-            completion_probe = lambda: self._completed_message_response_probe(
-                session_id=session_id,
-                previous_text=previous_text,
-                command_text=command_text,
-            )
-        resp = self._post_message_with_wall_timeout(
-            session_id=session_id,
-            payload=payload,
-            timeout=http_timeout,
-            completion_probe=completion_probe,
-        )
+        resp = self._http("POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout)
         if not resp.get("ok"):
             status = resp.get("status")
             detail = resp.get("details") or resp.get("error") or "request failed"
@@ -1214,17 +961,6 @@ class MigrationSessionManager:
                 raise SessionAuthError(f"POST /session/{session_id}/message unauthorized: {detail}")
             if isinstance(status, int) and status >= 500:
                 raise SessionServerError(f"POST /session/{session_id}/message failed: {detail}")
-            if self._is_timeout_http_response(resp):
-                recovered = self._recover_empty_response_text(
-                    session_id,
-                    timeout,
-                    previous_text,
-                    command_text=command_text,
-                    recovery_wait_timeout=recovery_wait_timeout,
-                )
-                if recovered:
-                    return recovered
-                raise TimeoutError(f"POST /session/{session_id}/message timed out and no completed response was recoverable")
             raise SessionTransportError(f"POST /session/{session_id}/message failed: {detail}")
         data = resp.get("data") or {}
         if not isinstance(data, dict):
@@ -1237,68 +973,21 @@ class MigrationSessionManager:
         if self._is_compaction_payload(data):
             raise SessionCompacted("Compaction response is incomplete")
 
-        payload_error_text = self._extract_session_payload_error_text(data)
-        if payload_error_text:
-            recovered = self._recover_empty_response_text(
-                session_id,
-                timeout,
-                previous_text,
-                command_text=command_text,
-                recovery_wait_timeout=recovery_wait_timeout,
-            )
-            if recovered:
-                return recovered
-            raise RuntimeError(payload_error_text)
-
         finish = str(info.get("finish", "")).lower() if isinstance(info, dict) else ""
-        if self._todo_signal_from_payload(data) is True:
-            recovered = self._recover_empty_response_text(
-                session_id,
-                timeout,
-                previous_text,
-                command_text=command_text,
-                recovery_wait_timeout=recovery_wait_timeout,
-            )
-            if recovered:
-                return recovered
-            raise TimeoutError("Session still running or has incomplete todos")
         if finish and finish not in {"stop", "success"}:
             raise RuntimeError(f"Agent finished unexpectedly: {finish}")
 
         text = self._extract_message_text(data)
         if not text:
-            text = self._recover_empty_response_text(
-                session_id,
-                timeout,
-                previous_text,
-                command_text=command_text,
-                recovery_wait_timeout=recovery_wait_timeout,
-            )
+            text = self._recover_empty_response_text(session_id, timeout, previous_text, command_text=command_text)
             if not text:
                 raise RuntimeError("Empty session response")
             return text
 
-        if not self.wait_for_idle(
-            session_id,
-            timeout_s=recovery_wait_timeout,
-            interval_s=1.0,
-            baseline_text=previous_text,
-            command_text=command_text,
-        ):
+        if not self.wait_for_idle(session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0):
             raise TimeoutError("Session still running or has incomplete todos")
 
-        recovered_schema = self._last_message_text_tolerant(session_id, command_text)
-        if self._is_new_recovered_text(recovered_schema, previous_text, command_text):
-            return recovered_schema
-
         return text
-
-    def _extract_session_payload_error_text(self, payload: dict[str, Any]) -> str:
-        if self._normalize_activity_token(payload.get("type")) == "error":
-            error_text = self._extract_error_text(payload.get("error"))
-            if error_text:
-                return error_text
-        return ""
 
     def _recover_empty_response_text(
         self,
@@ -1306,190 +995,18 @@ class MigrationSessionManager:
         timeout: int | float | None,
         previous_text: str,
         command_text: str,
-        *,
-        recovery_wait_timeout: int | float | None = None,
     ) -> str:
-        if timeout is not None:
-            _ = self._effective_wait_timeout(timeout)
-        effective_recovery_wait_timeout: float | None = None
-        if recovery_wait_timeout is not None:
-            effective_recovery_wait_timeout = self._effective_wait_timeout(recovery_wait_timeout)
-        started = time.time()
-        while True:
-            recovered_text = self._last_finished_or_schema_text_tolerant(session_id, command_text)
-            if self._is_new_recovered_text(recovered_text, previous_text, command_text):
-                return recovered_text
-
-            if effective_recovery_wait_timeout is not None and time.time() - started >= effective_recovery_wait_timeout:
-                break
-
-            if self._session_is_still_running_for_recovery(session_id, previous_text, command_text):
-                time.sleep(1.0)
-                continue
-
-            recovered_text = self._last_message_text_tolerant(session_id, command_text)
-            if self._is_new_recovered_text(recovered_text, previous_text, command_text):
-                return recovered_text
-            return ""
-
-        raise TimeoutError("Session still running or has incomplete todos")
-
-    def _last_finished_or_schema_text_tolerant(self, session_id: str, command_text: str) -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
-        if not resp.get("ok"):
-            return ""
-        data = resp.get("data")
-        if isinstance(data, list):
-            schema_text = self._extract_latest_phase_schema_text(data, command_text)
-            if schema_text:
-                return schema_text
-        return self._extract_latest_finished_assistant_text(data)
-
-    def _latest_completed_text_since_baseline(
-        self,
-        session_id: str,
-        baseline_text: str,
-        command_text: str = "",
-    ) -> str:
-        recovered_text = self._last_finished_or_schema_text_tolerant(session_id, command_text)
-        if self._is_new_recovered_text(recovered_text, baseline_text, command_text):
-            return recovered_text
-        return ""
-
-    def _completed_message_response_probe(
-        self,
-        *,
-        session_id: str,
-        previous_text: str,
-        command_text: str,
-    ) -> dict[str, Any] | None:
-        recovered_text = self._latest_completed_text_since_baseline(session_id, previous_text, command_text)
-        if not recovered_text:
-            return None
-        return {
-            "ok": True,
-            "status": 200,
-            "data": {
-                "info": {"finish": "stop"},
-                "parts": [{"type": "text", "text": recovered_text}],
-            },
-        }
-
-    def _session_is_still_running_for_recovery(
-        self,
-        session_id: str,
-        baseline_text: str | None = None,
-        command_text: str = "",
-    ) -> bool:
-        status = self._http("GET", "/session/status")
-        if status.get("ok"):
-            token = self._extract_status_token(status.get("data"), session_id)
-            fresh_completion = ""
-            if baseline_text is not None:
-                fresh_completion = self._latest_completed_text_since_baseline(session_id, baseline_text, command_text)
-            if token in RUNNING_TOKENS:
-                return False if fresh_completion else True
-            todo_state = self._session_has_incomplete_todos_tolerant(session_id)
-            if todo_state is True:
-                return False if fresh_completion else True
-            if token or todo_state is False:
-                return False
-
-        sqlite_state = self._session_completion_from_sqlite(session_id)
-        if sqlite_state is True:
-            fresh_completion = ""
-            if baseline_text is not None:
-                fresh_completion = self._latest_completed_text_since_baseline(session_id, baseline_text, command_text)
-            return False if fresh_completion else True
-        if sqlite_state is False:
-            return False
-        return True
-
-    @staticmethod
-    def _is_new_recovered_text(recovered_text: str, previous_text: str, command_text: str) -> bool:
+        if not self.wait_for_idle(session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0):
+            raise TimeoutError("Session still running or has incomplete todos")
+        recovered_text = self._last_message_text_tolerant(session_id)
         recovered_stripped = recovered_text.strip()
         if not recovered_stripped:
-            return False
+            return ""
         if recovered_stripped == previous_text.strip():
-            return False
+            return ""
         if recovered_stripped == command_text.strip():
-            return False
-        if MigrationSessionManager._is_partial_progress_text(recovered_stripped):
-            return False
-        return True
-
-    @staticmethod
-    def _is_partial_progress_text(text: str) -> bool:
-        normalized = " ".join(text.strip().lower().replace("\u2019", "'").split())
-        if not normalized:
-            return False
-        partial_markers = (
-            "i read this as",
-            "i'll inspect",
-            "i will inspect",
-            "i've identified",
-            "i have identified",
-            "i've got",
-            "i have got",
-            "i'm pulling",
-            "i am pulling",
-            "i'm going to",
-            "i am going to",
-            "i'll now",
-            "i will now",
-            "next i will",
-            "let me",
-        )
-        return any(marker in normalized for marker in partial_markers)
-
-    def _post_message_with_wall_timeout(
-        self,
-        *,
-        session_id: str,
-        payload: dict[str, Any],
-        timeout: float | None,
-        completion_probe: Callable[[], dict[str, Any] | None] | None = None,
-        probe_interval_s: float = DEFAULT_POST_RESPONSE_PROBE_INTERVAL,
-    ) -> dict[str, Any]:
-        result_queue: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(maxsize=1)
-
-        def request_worker() -> None:
-            try:
-                result: dict[str, Any] | BaseException = self._http(
-                    "POST",
-                    f"/session/{session_id}/message",
-                    body=payload,
-                    timeout=timeout,
-                )
-            except BaseException as exc:  # pragma: no cover - defensive for overridden _http in tests
-                result = exc
-            try:
-                result_queue.put_nowait(result)
-            except queue.Full:
-                pass
-
-        worker = threading.Thread(target=request_worker, name=f"session-post-{session_id}", daemon=True)
-        worker.start()
-        if timeout is None:
-            if completion_probe is None:
-                result = result_queue.get()
-            else:
-                while True:
-                    try:
-                        result = result_queue.get(timeout=max(0.0, probe_interval_s))
-                        break
-                    except queue.Empty:
-                        recovered = completion_probe()
-                        if recovered is not None:
-                            return recovered
-        else:
-            try:
-                result = result_queue.get(timeout=timeout)
-            except queue.Empty:
-                return {"ok": False, "error": f"timed out after {timeout:g} seconds", "timeout": True}
-        if isinstance(result, BaseException):
-            raise result
-        return result
+            return ""
+        return recovered_text
 
     def _http(
         self,
@@ -1531,29 +1048,9 @@ class MigrationSessionManager:
         except urllib.error.HTTPError as exc:
             details = exc.read().decode(errors="replace") if exc.fp else ""
             return {"ok": False, "status": exc.code, "error": str(exc), "details": details}
-        except (TimeoutError, socket.timeout) as exc:
-            logger.debug("HTTP timeout for %s %s: %s", method, path, exc)
-            return {"ok": False, "error": str(exc) or "timed out", "timeout": True}
-        except urllib.error.URLError as exc:
-            reason = getattr(exc, "reason", None)
-            error_text = str(reason or exc)
-            if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in error_text.lower() or "timeout" in error_text.lower():
-                logger.debug("HTTP timeout for %s %s: %s", method, path, exc)
-                return {"ok": False, "error": error_text or "timed out", "timeout": True}
-            logger.debug("HTTP error for %s %s: %s", method, path, exc)
-            return {"ok": False, "error": str(exc)}
         except Exception as exc:  # pragma: no cover - network failure path
             logger.debug("HTTP error for %s %s: %s", method, path, exc)
             return {"ok": False, "error": str(exc)}
-
-    @staticmethod
-    def _is_timeout_http_response(resp: dict[str, Any]) -> bool:
-        if resp.get("timeout") is True:
-            return True
-        if resp.get("status") is not None:
-            return False
-        text = f"{resp.get('error') or ''} {resp.get('details') or ''}".strip().lower()
-        return "timed out" in text or "timeout" in text
 
 
 SessionManager = MigrationSessionManager

@@ -1,13 +1,24 @@
-"""Shared path helpers for root-aware src execution."""
+"""Shared path helpers for root-aware src/ execution."""
 
 from __future__ import annotations
 
+from os import environ
 from pathlib import Path
 
 
+def _parent_workspace_root() -> Path:
+    """Return the workspace directory that contains SEAM."""
+    return src_root().parent.parent
+
+
 def src_root() -> Path:
-    """Return the src package root."""
+    """Return the canonical src/ package root."""
     return Path(__file__).resolve().parent.parent
+
+
+def migration_utils_root() -> Path:
+    """Deprecated alias for src_root(). Use src_root() instead."""
+    return src_root()
 
 
 def execution_root() -> Path:
@@ -21,8 +32,16 @@ def workspace_root() -> Path:
 
 
 def default_output_projects_root() -> Path:
-    """Return the SEAM-local output-project copy destination for E2E runs."""
-    return execution_root() / "output_projects"
+    """Return the output-project copy destination for E2E runs.
+
+    Controlled via ``MIGRATION_OUTPUT_PROJECTS_ROOT`` environment variable.
+    Falls back to ``<workspace>/output_projects`` (outside the repo) so that
+    mutable output directories are not placed inside the controller tree.
+    """
+    env_override = environ.get("MIGRATION_OUTPUT_PROJECTS_ROOT", "").strip()
+    if env_override:
+        return Path(env_override).expanduser().resolve()
+    return _parent_workspace_root() / "output_projects"
 
 
 def legacy_workspace_root() -> Path:

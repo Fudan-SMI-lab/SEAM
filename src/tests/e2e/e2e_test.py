@@ -26,6 +26,7 @@ if str(SCRIPT_DIR) not in sys.path:
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+from core.accelerator_context import extract_accelerator_context
 from core.agent_io_logger import AgentIOLogger
 from core.artifact_store import ArtifactStore
 from core.config_loader import load_framework_config
@@ -38,9 +39,8 @@ from harness.session.manager import SessionManager
 from migrator.rule_based import RuleBasedMigrator
 from tests.e2e.e2e_observer import TelemetryObserver
 
-DEFAULT_SERVER_TYPE = "opencode"
-DEFAULT_SERVER_URL = "http://127.0.0.1:4098"
-DEFAULT_MAX_PHASE5_ITER = 10
+DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
+DEFAULT_MAX_PHASE5_ITER = 5
 EXCLUDED_SNAPSHOT_DIRS = {".git", ".sm-artifacts", ".venv", "__pycache__"}
 
 
@@ -110,13 +110,6 @@ def positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be >= 1")
     return parsed
-
-
-def normalize_server_url(server_url: str, server_type: str) -> str:
-    from harness.server.lifecycle import parse_server_url, validate_server_type
-
-    _ = validate_server_type(server_type)
-    return parse_server_url(server_url).server_url
 
 
 def print_phase_running(phase_number: int, phase_total: int, label: str) -> None:
@@ -252,11 +245,10 @@ def _build_env_context(
 ) -> dict[str, object]:
     env = dict(phase_0_output)
     installed = phase_2_output.get("installed_packages", [])
-    if isinstance(installed, list):
-        for pkg in cast(list[object], installed):
-            if isinstance(pkg, str) and pkg.lower().startswith("torch-npu=="):
-                env["torch_npu_version"] = pkg.split("==", 1)[-1]
-                break
+    accel_ctx = extract_accelerator_context(installed)
+    env["torch_npu_version"] = accel_ctx["torch_npu_version"]
+    env["accelerator_packages"] = accel_ctx["accelerator_packages"]
+    env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
     return env
 
 
@@ -387,8 +379,7 @@ def print_summary(summary: RunSummary) -> None:
 
 def run_e2e(
     *,
-    server_url: str,
-    server_type: str,
+    base_url: str | None,
     max_phase5_iter: int,
     keep_temp_dir: bool,
     agent_name: str | None,
@@ -396,7 +387,7 @@ def run_e2e(
     output_project_dir: Path | None = None,
     user_constraints: str = "",
     server_auto_start: bool = True,
-    server_conflict_action: str = "prompt",
+    server_port: int = 0,
     review_gate: bool = False,
     framework_config_path: str | None = None,
 ) -> int:
@@ -418,20 +409,20 @@ def run_e2e(
     phase_total = 7 if user_constraints else 6
 
     try:
-        _ = normalize_server_url(server_url, server_type)
-        from harness.server.lifecycle import ensure_server
+        if server_auto_start and base_url is None:
+            from harness.server.lifecycle import find_available_port, start_server, stop_server, wait_for_server
 
-        managed_server = ensure_server(
-            work_dir=str(REPO_ROOT),
-            server_url=server_url,
-            server_type=server_type,
-            auto_start=server_auto_start,
-            conflict_action=server_conflict_action,
-        )
-        base_url = managed_server.base_url
-        server_proc = managed_server.process
-        server_status = "reused" if managed_server.reused else "started"
-        log(f"{server_type} server {server_status} at {base_url}")
+            port = server_port if server_port > 0 else find_available_port()
+            base_url = f"http://127.0.0.1:{port}"
+            server_proc = start_server(work_dir=str(REPO_ROOT), port=port)
+            if not wait_for_server(base_url, timeout=30):
+                _ = stop_server(server_proc)
+                server_proc = None
+                raise RuntimeError(f"Server failed to start on {base_url}")
+        else:
+            base_url = base_url or DEFAULT_SERVER_URL
+        check_server_running(base_url)
+        log(f"OpenCode server reachable at {base_url}")
     except Exception as exc:
         print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
         return 1
@@ -450,7 +441,7 @@ def run_e2e(
             log(f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}")
             keep_temp_dir = True
         else:
-            temp_dir = Path(tempfile.mkdtemp(prefix="src-e2e-real-"))
+            temp_dir = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-real-"))
             copy_template(temp_dir)
             log(f"Created temp dir: {temp_dir}")
 
@@ -460,7 +451,12 @@ def run_e2e(
 
         session_mgr = SessionManager(work_dir=str(temp_dir), base_url=base_url)
         if agent_name and agent_name != session_mgr.active_agent:
-            session_mgr._detected_agent = agent_name
+            try:
+                session_mgr.override_agent(agent_name)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Cannot use --agent '{agent_name}': {exc}"
+                ) from exc
         log(f"SessionManager created: detected_agent={session_mgr.active_agent}, overridden={agent_name is not None}")
 
         agent_io_logger = AgentIOLogger.from_env(output_dir, run_id)
@@ -739,9 +735,8 @@ def run_e2e(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the real src E2E workflow against the test project template.")
-    _ = parser.add_argument("--server_type", default=DEFAULT_SERVER_TYPE, choices=[DEFAULT_SERVER_TYPE], help="Server backend type")
-    _ = parser.add_argument("--server_url", default=DEFAULT_SERVER_URL, help=f"Server base URL (default: {DEFAULT_SERVER_URL})")
+    parser = argparse.ArgumentParser(description="Run the real migration_utils E2E workflow against the test project template.")
+    _ = parser.add_argument("--server-url", default=None, help=f"OpenCode server URL (default: {DEFAULT_SERVER_URL})")
     _ = parser.add_argument(
         "--max-phase5-iter",
         type=positive_int,
@@ -763,7 +758,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent",
         type=str,
         default=None,
-        help="Override the auto-detected agent name (e.g., 'Sisyphus').",
+        help="Override the auto-detected agent name (e.g., 'Atlas (Plan Executor)').",
     )
     _ = parser.add_argument(
         "--output-project-dir",
@@ -780,12 +775,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument("--review-gate", action="store_true", help="Enable review gate improvement mode")
     _ = parser.add_argument("--framework-config", type=str, default=None, help="Path to framework config YAML")
     _ = parser.add_argument("--server-no-auto-start", action="store_true", help="Disable auto-start of OpenCode server")
-    _ = parser.add_argument(
-        "--server-conflict-action",
-        choices=["prompt", "start", "error"],
-        default="prompt",
-        help="When the requested port is occupied by another service: prompt, start on another free port, or error.",
-    )
+    _ = parser.add_argument("--server-port", type=int, default=0, help="Specific port for auto-started server (0=auto)")
     return parser
 
 
@@ -801,8 +791,7 @@ def _resolve_user_constraints(raw: str) -> str:
 
 def main() -> int:
     args = build_parser().parse_args()
-    server_url = cast(str, args.server_url)
-    server_type = cast(str, args.server_type)
+    server_url: str | None = args.server_url
     max_phase5_iter = cast(int, args.max_phase5_iter)
     keep_temp_dir = cast(bool, args.keep_temp_dir)
     agent_name = cast(str | None, args.agent)
@@ -812,10 +801,9 @@ def main() -> int:
     review_gate = cast(bool, args.review_gate)
     framework_config_path = cast(str | None, args.framework_config)
     server_no_auto_start = cast(bool, args.server_no_auto_start)
-    server_conflict_action = cast(str, args.server_conflict_action)
+    server_port = cast(int, args.server_port)
     return run_e2e(
-        server_url=server_url,
-        server_type=server_type,
+        base_url=server_url,
         max_phase5_iter=max_phase5_iter,
         keep_temp_dir=keep_temp_dir,
         agent_name=agent_name,
@@ -823,7 +811,7 @@ def main() -> int:
         output_project_dir=output_project_dir,
         user_constraints=user_constraints,
         server_auto_start=not server_no_auto_start,
-        server_conflict_action=server_conflict_action,
+        server_port=server_port,
         review_gate=review_gate,
         framework_config_path=framework_config_path,
     )

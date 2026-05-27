@@ -8,6 +8,11 @@
 # Local/generated artifacts
 /.sm-artifacts/
 **/.sm-artifacts/
+/e2e-reports/
+/.memory/memory/staging/
+/.omo/
+/.sisyphus/
+/fusion_result.json
 logs/
 *.log
 
@@ -56,9 +61,3 @@ checkpoints/
 id_rsa
 id_ed25519
 id_ecdsa
-
-# Generated migration run artifacts
-/e2e-reports/
-/.memory/memory/staging/
-/.sisyphus/
-/fusion_result.json

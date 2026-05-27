@@ -24,9 +24,6 @@ def test_load_framework_config_defaults():
     assert "entry_script_timeout" not in framework
     assert framework["max_iterations"] == 10
     assert cast(dict[str, object], framework["review"])["enabled"] is False
-    assisted = cast(dict[str, object], framework["assisted_verification"])
-    assert assisted["verifier_lifecycle"] == "persistent"
-    assert assisted["verifier_agent"] == "Sisyphus-Junior"
     assert cast(dict[str, object], framework["server"])["auto_start"] is True
     assert cast(dict[str, object], framework["artifacts"])["key_prefix"] == "phase"
     print("PASS: load_framework_config returns correct defaults")

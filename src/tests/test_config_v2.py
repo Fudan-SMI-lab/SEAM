@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from core.config import load_workflow
-from core.types import RuntimeSkillsConfig
+from core.types import RuntimeSkillsConfig, ExperienceConfig
 
 # Get the package root for path resolution
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -64,22 +64,6 @@ def test_phase_type_llm():
     p0 = wf.phases[0]
     assert p0.type == "llm"
     assert p0.agent == "main_engineer"
-
-
-def test_inventory_phases_do_not_inject_dynamic_experiences():
-    wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
-    phases = {phase.id: phase for phase in wf.phases}
-
-    assert phases["phase_1_project_analysis"].retrieve_experience is False
-    assert phases["phase_3_entry_script"].retrieve_experience is False
-
-    repair_loop = wf.sub_workflows["repair_loop"]
-    analyze_error = next(
-        phase
-        for phase in repair_loop.phases
-        if isinstance(phase, dict) and phase.get("id") == "analyze_error"
-    )
-    assert analyze_error.get("retrieve_experience") is True
 
 
 def test_canonical_v2_yaml_has_no_phase_timeouts():
@@ -359,3 +343,186 @@ phases:
 
     with pytest.raises(ValueError, match="runtime_skills.*merge"):
         load_workflow(str(workflow_path))
+
+
+def test_transition_on_stagnation_only(tmp_path: Path):
+    """transition: block with only on_stagnation should produce a TransitionDefinition."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: stagnation_test
+version: "1.0"
+terminals: [complete, error_recovery]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition:
+      on_stagnation: error_recovery
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    phase = wf.phases[0]
+
+    assert phase.transition is not None
+    assert phase.transition.on_stagnation == "error_recovery"
+    assert phase.transition.on_success is None
+    assert phase.transition.on_failure is None
+
+
+def test_transition_on_reject_exhausted_only(tmp_path: Path):
+    """transition: block with only on_reject_exhausted should produce a TransitionDefinition."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: reject_exhausted_test
+version: "1.0"
+terminals: [complete, review_cleanup]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition:
+      on_reject_exhausted: review_cleanup
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    phase = wf.phases[0]
+
+    assert phase.transition is not None
+    assert phase.transition.on_reject_exhausted == "review_cleanup"
+    assert phase.transition.on_success is None
+
+
+def test_transition_all_keys_together(tmp_path: Path):
+    """transition: block with all keys including on_stagnation and on_reject_exhausted."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: full_transition_test
+version: "1.0"
+terminals: [complete, error_recovery, skip_target, stagnation_cleanup, exhausted_cleanup]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition:
+      on_success: complete
+      on_failure: error_recovery
+      on_skip: skip_target
+      on_stagnation: stagnation_cleanup
+      on_reject_exhausted: exhausted_cleanup
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    phase = wf.phases[0]
+    td = phase.transition
+
+    assert td is not None
+    assert td.on_success == "complete"
+    assert td.on_failure == "error_recovery"
+    assert td.on_skip == "skip_target"
+    assert td.on_stagnation == "stagnation_cleanup"
+    assert td.on_reject_exhausted == "exhausted_cleanup"
+
+
+def test_empty_transition_dict_returns_none(tmp_path: Path):
+    """Empty transition: {} should not produce a TransitionDefinition."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: empty_transition_test
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+    transition: {}
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.phases[0].transition is None
+
+
+def test_experience_defaults_to_enabled(tmp_path: Path):
+    """Workflow without experience: section should default to enabled/true."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: no_experience
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.experience.enabled is True
+    assert wf.experience.phase7_enabled is True
+
+
+def test_experience_explicit_disabled(tmp_path: Path):
+    """experience: block with both flags set to false."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: disabled_experience
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+experience:
+  enabled: false
+  phase7_enabled: false
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.experience.enabled is False
+    assert wf.experience.phase7_enabled is False
+
+
+def test_experience_partial_disable(tmp_path: Path):
+    """Only phase7_enabled: false should leave enabled as true."""
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text(
+        """
+name: partial_experience
+version: "1.0"
+terminals: [complete]
+phases:
+  - id: phase_a
+    prompt_template: x
+experience:
+  phase7_enabled: false
+""",
+        encoding="utf-8",
+    )
+
+    wf = load_workflow(str(workflow_path))
+    assert wf.experience.enabled is True
+    assert wf.experience.phase7_enabled is False
+
+
+def test_smoke_workflow_has_experience_disabled():
+    """The auto smoke workflow should have experience disabled."""
+    wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "ppu_migration_v2_auto_vllm018_smoke.yaml"))
+    assert wf.experience.enabled is False
+    assert wf.experience.phase7_enabled is False
+
+
+def test_v2_workflow_has_experience_default():
+    """The canonical v2 workflow should have default experience config."""
+    wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
+    assert wf.experience.enabled is True
+    assert wf.experience.phase7_enabled is True

@@ -2,6 +2,9 @@ name: npu_migration
 version: 1
 description: CUDA to Ascend NPU migration workflow
 
+target_platform:
+  preset: npu_ascend
+
 globals:
   max_retry_per_phase: 3
   artifacts_dir: ".sm-adaptifacts"

@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
-OUTPUT_PROJECTS_DIR="$REPO_ROOT/output_projects"
+OUTPUT_PROJECTS_DIR="${MIGRATION_OUTPUT_PROJECTS_ROOT:-$(dirname "$REPO_ROOT")/output_projects}"
 PROJECT_SEARCH_DIRS=(
     "$REPO_ROOT/original_projects"
     "$REPO_ROOT/cuda_projects"
@@ -16,12 +16,12 @@ PROJECT_SEARCH_DIRS=(
     "$REPO_ROOT/../cuda_projects"
 )
 
-SERVER_TYPE="opencode"
 SERVER_URL="http://127.0.0.1:4098"
-MAX_ITER=""
+MAX_ITER=8
 KEEP_TEMP=true
 REVIEW_GATE=true
 DRY_RUN=false
+SERVER_NO_AUTO_START=false
 EXTRA_ARGS=""
 PROJECT_NAME=""
 
@@ -40,12 +40,12 @@ PROJECT_NAME is resolved root-first under:
   Legacy fallback: ../original_projects/<PROJECT_NAME>/ or ../cuda_projects/<PROJECT_NAME>/
 
 Options:
-  --server_type TYPE     Server backend type (default: opencode)
-  --server_url URL       Server base URL (default: http://127.0.0.1:4098)
-  --max-iter N           Max Phase 5 repair iterations (default: 10)
+  --server-url URL       OpenCode server URL (default: http://127.0.0.1:4098)
+  --max-iter N           Max Phase 5 repair iterations (default: 8)
   --no-review            Disable Review Gate (default: enabled)
   --no-keep-temp         Don't keep output project directory (default: keep)
   --agent NAME           Override auto-detected agent name
+  --server-no-auto-start Disable auto-start of OpenCode server
   --dry-run              Validate setup without running the test or checking server
   --extra 'ARGS...'      Pass extra arguments to e2e_test.py
   -h, --help             Show this help message
@@ -56,12 +56,12 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help) usage ;;
-        --server_type|--server-type) SERVER_TYPE="$2"; shift 2 ;;
-        --server_url) SERVER_URL="$2"; shift 2 ;;
+        --server-url) SERVER_URL="$2"; shift 2 ;;
         --max-iter) MAX_ITER="$2"; shift 2 ;;
         --no-review) REVIEW_GATE=false; shift ;;
         --no-keep-temp) KEEP_TEMP=false; shift ;;
         --agent) EXTRA_ARGS="$EXTRA_ARGS --agent $2"; shift 2 ;;
+        --server-no-auto-start) SERVER_NO_AUTO_START=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         --extra) EXTRA_ARGS="$EXTRA_ARGS $2"; shift 2 ;;
         -*) echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
@@ -102,19 +102,16 @@ resolve_project_dir() {
 PROJECT_DIR="$(resolve_project_dir "$PROJECT_NAME" || true)"
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║        src  E2E  Migration  Test  Launcher       ║${NC}"
+echo -e "${CYAN}║        migration_utils  E2E  Migration  Test  Launcher       ║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
 echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
-if [[ "$SERVER_TYPE" != "opencode" ]]; then
-    echo -e "${RED}Unsupported server_type: $SERVER_TYPE${NC}" >&2
-    exit 1
-fi
-echo -e "${GREEN}Server:${NC}    $SERVER_TYPE at $SERVER_URL"
-echo -e "${GREEN}Max iter:${NC}  ${MAX_ITER:-10 (default)}"
+echo -e "${GREEN}Server:${NC}    $SERVER_URL"
+echo -e "${GREEN}Max iter:${NC}  $MAX_ITER"
 echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
+echo -e "${GREEN}Auto-start:${NC} $( [[ "$SERVER_NO_AUTO_START" == true ]] && echo 'false' || echo 'true' )"
 echo -e "${GREEN}Root:${NC}      $REPO_ROOT"
 echo -e "${GREEN}Output:${NC}    $OUTPUT_PROJECTS_DIR"
 echo -e "${GREEN}Extra:${NC}     ${EXTRA_ARGS:-(none)}"
@@ -153,7 +150,16 @@ fi
 
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
-    echo -e "${YELLOW}⚠  Dry-run mode: skipping server management${NC}"
+    echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
+else
+    echo ""
+    echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
+    if curl -fsS -o /dev/null --max-time 5 "$SERVER_URL/agent" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} Server reachable"
+    else
+        echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
+        exit 1
+    fi
 fi
 
 echo ""
@@ -167,14 +173,14 @@ KEEP_FLAG=""
 if [[ "$KEEP_TEMP" == true ]]; then
     KEEP_FLAG="--keep-temp-dir"
 fi
-MAX_ITER_FLAG=""
-if [[ -n "$MAX_ITER" ]]; then
-    MAX_ITER_FLAG="--max-phase5-iter $MAX_ITER"
-fi
-
 CONSTRAINTS_FLAG=""
 if [[ "$HAS_CONSTRAINTS" == true ]]; then
     CONSTRAINTS_FLAG="--user-constraints $PROJECT_DIR/ADAPTATION_REQUIREMENTS.md"
+fi
+
+NO_AUTO_FLAG=""
+if [[ "$SERVER_NO_AUTO_START" == true ]]; then
+    NO_AUTO_FLAG="--server-no-auto-start"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -183,19 +189,19 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "Would execute:"
     echo "  cd $REPO_ROOT && \\"
     echo "  python src/tests/e2e/e2e_test.py \\"
-    echo "    --server_type $SERVER_TYPE \\"
-    echo "    --server_url $SERVER_URL \\"
+    echo "    --server-url $SERVER_URL \\"
     echo "    --project-dir $PROJECT_DIR \\"
     echo "    --output-project-dir $OUTPUT_PROJECTS_DIR \\"
-    if [[ -n "$MAX_ITER" ]]; then
-        echo "    --max-phase5-iter $MAX_ITER \\"
-    fi
+    echo "    --max-phase5-iter $MAX_ITER \\"
     echo "    $KEEP_FLAG \\"
     if [[ "$REVIEW_GATE" == true ]]; then
         echo "    --review-gate \\"
     fi
     if [[ "$HAS_CONSTRAINTS" == true ]]; then
-        echo "    --user-constraints $PROJECT_DIR/ADAPTATION_REQUIREMENTS.md \\"
+        echo "    --user-constraints $PROJECT_DIR/ADAPTATION_REQUIREMENTS.md \\" 
+    fi
+    if [[ -n "$NO_AUTO_FLAG" ]]; then
+        echo "    $NO_AUTO_FLAG \\"
     fi
     echo "    $EXTRA_ARGS"
     exit 0
@@ -203,14 +209,14 @@ fi
 
 cd "$REPO_ROOT"
 python src/tests/e2e/e2e_test.py \
-    --server_type "$SERVER_TYPE" \
-    --server_url "$SERVER_URL" \
+    --server-url "$SERVER_URL" \
     --project-dir "$PROJECT_DIR" \
     --output-project-dir "$OUTPUT_PROJECTS_DIR" \
-    $MAX_ITER_FLAG \
+    --max-phase5-iter "$MAX_ITER" \
     $KEEP_FLAG \
     $REVIEW_FLAG \
     $CONSTRAINTS_FLAG \
+    $NO_AUTO_FLAG \
     $EXTRA_ARGS
 
 EXIT_CODE=$?

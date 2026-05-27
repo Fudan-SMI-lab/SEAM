@@ -18,23 +18,15 @@ from typing import Any, Callable, Protocol, TypedDict, cast
 from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
-from core.custom_op_opp_preflight import (
-    format_custom_op_opp_preflight_failure,
-    has_custom_op_contract,
-    validate_custom_op_opp_preflight,
-)
-from core.custom_op_variants import apply_expanded_variant_contract, expanded_variant_contract_from_contract
+from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx
 from core.paths import workspace_root
 from core.prompt_loader import PromptLoader
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
+from core.platform_policy import PlatformPolicy
 from validators.validate_entry_script import validate as validate_entry_script
-from validators.validate_validation_final import (
-    custom_op_final_gate_unit_ledger,
-    validate as validate_validation_final,
-    validate_custom_op_final_gate,
-)
+from validators.validate_validation_final import validate as validate_validation_final, validate_custom_op_final_gate
 
 JsonDict = dict[str, object]
 ConfigDict = dict[str, object]
@@ -87,189 +79,33 @@ _REPAIR_PROMPT_IDS = {
     "code_adapter": "repair_code_adapter",
     "operator_fixer": "repair_operator_fixer",
 }
+_REPAIR_PROMPT_IDS_CONTAINER = {
+    "dependency_fixer": "repair_dependency_fixer_container",
+    "code_adapter": "repair_code_adapter_container",
+    "operator_fixer": "repair_operator_fixer_container",
+}
 
 
 def _workspace_root() -> str:
     return str(workspace_root())
 
 
-def _operator_generic_guidance(*, project_dir: str, entry_script: str) -> str:
+def _operator_generic_guidance(
+    *,
+    project_dir: str,
+    entry_script: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> str:
+    native_label = platform_policy.guidance_native_label if platform_policy else "Ascend NPU"
+    native_framework = platform_policy.guidance_native_framework if platform_policy else "torch_npu/PyTorch primitives"
     return (
-        "4. No active custom-op contract is present. This is a generic operator-incompatibility repair. Focus on the unsupported or missing "
-        "Ascend NPU operator named by the runtime error, using NPU-native replacements, supported "
-        "torch_npu/PyTorch primitives, or local code changes. Do not generate OPP/custom-op artifacts, "
-        "do not add CPU fallback, and do not turn this into a broader workplan.\n"
+        f"4. This is a generic operator-incompatibility repair. Focus on the unsupported or missing "
+        f"{native_label} operator named by the runtime error, using {native_label}-native replacements, supported "
+        f"{native_framework}, or local code changes. Do not add CPU fallback and do not "
+        "turn this into a broader workplan.\n"
         f"5. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证, 只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics。"
     )
-
-
-def _operator_custom_op_phase1_phase3_scope(
-    *,
-    phase3_contract: dict[str, object] | None,
-    project_dir: str,
-    entry_script: str,
-) -> str:
-    if not _operator_repair_has_custom_op_contract(phase3_contract):
-        return "No active custom-op contract is present. Generic operator repair scope only; follow the runtime error and keep the fix local."
-    contract = cast(dict[str, object], phase3_contract or {})
-    lines = [
-        "Active custom-op contract repair scope",
-        f"project_dir={project_dir}",
-        f"entry_script={entry_script}",
-        f"phase3.run_command={contract.get('run_command', entry_script or '(not provided)')}",
-        f"phase3.entry_script_path={contract.get('entry_script_path', '(not provided)')}",
-        f"phase3.entry_script_kind={contract.get('entry_script_kind', '(not provided)')}",
-        f"phase3.reports_dir={contract.get('reports_dir', '(not provided)')}",
-    ]
-    required_reports = contract.get('required_report_paths')
-    if isinstance(required_reports, list) and required_reports:
-        lines.append('phase3.required_report_paths=' + ', '.join(str(item) for item in required_reports[:20]))
-    required_checks = contract.get('required_checks')
-    if isinstance(required_checks, list) and required_checks:
-        lines.append('phase3.required_checks=' + ', '.join(str(item) for item in required_checks[:20]))
-    schema = contract.get('operator_inventory_schema')
-    if isinstance(schema, dict):
-        for key in ('fine_grained_operator_units', 'operator_units', 'operators', 'rows'):
-            value = schema.get(key)
-            if isinstance(value, list) and value:
-                lines.append(f'phase3.operator_inventory_schema.{key}_count={len(value)}')
-                lines.append('phase3.operator_inventory_schema.' + key + '_sample=' + ', '.join(str(item) for item in value[:20]))
-                break
-    return "\n".join(lines)
-
-
-def _operator_custom_op_acceptance_contract_text(
-    *,
-    phase3_contract: dict[str, object] | None,
-) -> str:
-    if not _operator_repair_has_custom_op_contract(phase3_contract):
-        return "No active custom-op contract is present. Return ordinary operator repair JSON only; the strict custom-op final gate is not active."
-    contract = cast(dict[str, object], phase3_contract or {})
-    required_reports = contract.get('required_report_paths')
-    if not isinstance(required_reports, list) or not required_reports:
-        required_reports = [
-            'migration_reports/operator_inventory.json',
-            'migration_reports/migration_manifest.json',
-            'migration_reports/runtime_coverage.json',
-            'migration_reports/performance.json',
-            'migration_reports/build.json',
-            'migration_reports/custom_op_final_gate.json',
-            'migration_reports/summary.json',
-        ]
-    required_checks = contract.get('required_checks')
-    if not isinstance(required_checks, list) or not required_checks:
-        required_checks = [
-            'inventory_manifest_equality',
-            'closed_pass_entries_equals_manifest_entries',
-            'remaining_entries_zero',
-            'full_migration_status_full_pass',
-            'same_run_runtime_coverage',
-            'no_fallback_no_zero_call_no_builtin_contamination',
-        ]
-    lines = [
-        'Custom-op repair is accepted only when the full Phase 3 validation command has been rerun and current project-local reports pass strict validation.',
-        'Required reports:',
-        *(f'- {item}' for item in required_reports),
-        'Required checks:',
-        *(f'- {item}' for item in required_checks),
-        'Framework acceptance: validate_custom_op_final_gate must pass, full_migration_status must be FULL_PASS, remaining_entries must be 0, and every Phase 1/Phase 3 operator or expanded variant identity must be closed.',
-    ]
-    return "\n".join(str(line) for line in lines)
-
-
-def _operator_custom_op_target_units(phase3_contract: dict[str, object] | None) -> list[str]:
-    if not _operator_repair_has_custom_op_contract(phase3_contract):
-        return []
-    contract = cast(dict[str, object], phase3_contract or {})
-    overlay = expanded_variant_contract_from_contract(contract)
-    inventory = overlay.get("expanded_variant_inventory")
-    if isinstance(inventory, dict):
-        units = _string_list_from_inventory_values(inventory.get("unit_identities"))
-        if units:
-            return units
-    schema = contract.get("operator_inventory_schema")
-    if isinstance(schema, dict):
-        for key in ("fine_grained_operator_units", "operator_units", "operators", "rows"):
-            units = _string_list_from_inventory_values(schema.get(key))
-            if units:
-                return units
-    return []
-
-
-def _operator_custom_op_progress_block(
-    *,
-    phase3_contract: dict[str, object] | None,
-    project_dir: str,
-) -> str:
-    if not _operator_repair_has_custom_op_contract(phase3_contract):
-        return "(No active custom-op contract.)"
-    project_path = Path(project_dir).resolve()
-    reports_dir = project_path / "migration_reports"
-    gate_path = reports_dir / "custom_op_final_gate.json"
-    gate: dict[str, object] = {}
-    gate_status = f"missing at {gate_path}"
-    if gate_path.exists() and gate_path.stat().st_size <= _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
-        try:
-            gate_data = json.loads(gate_path.read_text(encoding="utf-8"))
-            if isinstance(gate_data, dict):
-                gate = cast(dict[str, object], gate_data)
-                status_parts = []
-                for key in ("status", "full_migration_status", "inventory_count", "closed_pass_entries", "remaining_entries"):
-                    if key in gate:
-                        status_parts.append(f"{key}={gate[key]}")
-                gate_status = ", ".join(status_parts) or f"present at {gate_path}"
-            else:
-                gate_status = f"non-object at {gate_path}"
-        except (OSError, json.JSONDecodeError) as exc:
-            gate_status = f"malformed at {gate_path}: {exc}"
-    target_units = _operator_custom_op_target_units(phase3_contract)
-    ledger = custom_op_final_gate_unit_ledger(gate, target_units=target_units, project_root=project_path)
-    strict_units = cast(list[str], ledger.get("strict_pass_units") or [])
-    remaining_units = cast(list[str], ledger.get("remaining_units") or [])
-    lines = [
-        f"- total_target_operator_variant_inventory: {len(target_units) if target_units else ledger.get('total_count', 'unknown')}",
-        f"- completed_evidence_count: {len(strict_units)}",
-        "- completed_evidence_units: " + (", ".join(strict_units) if strict_units else "none proven by current reports"),
-        f"- remaining_or_unknown_count: {len(remaining_units) if target_units else ledger.get('remaining_count', 'unknown')}",
-        "- remaining_operator_variant_gaps: " + (", ".join(remaining_units) if remaining_units else "none listed by strict per-unit ledger"),
-        f"- custom_op_final_gate_report: {gate_status}",
-    ]
-    raw_units = ledger.get("units")
-    detail_count = 0
-    if isinstance(raw_units, list):
-        for item in raw_units:
-            if not isinstance(item, dict) or item.get("status") == "strict_pass":
-                continue
-            unit = str(item.get("unit_identity") or "").strip()
-            missing = item.get("missing_evidence")
-            missing_items = [str(value) for value in missing[:6]] if isinstance(missing, list) else []
-            detail = "; ".join(missing_items) if missing_items else "strict evidence incomplete"
-            lines.append(f"- remaining_detail[{unit}]: {detail}")
-            detail_count += 1
-            if detail_count >= 20:
-                lines.append("- remaining_detail: truncated; inspect custom_op_final_gate strict ledger for the full list")
-                break
-    return "\n".join(lines)[:8000]
-
-
-def _string_list_from_inventory_values(value: object) -> list[str]:
-    units: list[str] = []
-    if not isinstance(value, list):
-        return units
-    for item in value:
-        unit = ""
-        if isinstance(item, str):
-            unit = item.strip()
-        elif isinstance(item, dict):
-            for key in ("unit_identity", "row_id", "name", "operator", "op_name", "id"):
-                raw = item.get(key)
-                if isinstance(raw, str) and raw.strip():
-                    unit = raw.strip()
-                    break
-        if unit and unit not in units:
-            units.append(unit)
-    return units
 
 
 def _operator_custom_op_guidance(
@@ -277,11 +113,66 @@ def _operator_custom_op_guidance(
     *,
     project_dir: str,
     entry_script: str,
+    platform_policy: PlatformPolicy | None = None,
 ) -> str:
+    perf_mode = "full"
+    perf_mode_note = ""
+    if platform_policy is not None:
+        perf_mode = platform_policy.custom_op_evidence.performance_validation
+        if perf_mode == "presence_only":
+            perf_mode_note = (
+                f"\nPerformance validation mode: {perf_mode}. "
+                "You must still provide real baseline/custom timing presence, route proof, and device proof, "
+                "but speedup_vs_baseline fields are not required to be present or positive."
+            )
+        elif perf_mode == "disabled":
+            perf_mode_note = (
+                f"\nPerformance validation mode: {perf_mode}. "
+                "Performance validation is skipped. All other gates still apply."
+            )
+
+    schema_checklist = (
+        "\nFinal-gate evidence object schema (every in-scope row MUST satisfy):\n"
+        "- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, "
+        "project_relative_path, runtime_loaded_module_file, build_provenance={command, log_path}\n"
+        "- adapter_evidence: object/dict with imported=true, passed=true\n"
+        "- parity_evidence: object/dict with verified=true, passed=true\n"
+        "- integration_e2e_evidence: object/dict with project_api_invoked=true, custom_op_route_executed=true, "
+        "native_custom_op_route_executed=true\n"
+        "- same_run_runtime_coverage: object/dict with same_run=true, custom_call_count > 0, "
+        "project_api_route=true, native_custom_op_route_executed=true\n"
+        "- performance_evidence: object/dict with baseline_seconds > 0, custom_seconds > 0, "
+        "baseline_device (string), custom_device (string), project_api_invoked=true"
+    )
+    if perf_mode == "full":
+        schema_checklist += ", speedup_vs_baseline > 0"
+    schema_checklist += (
+        "\n- no_fallback_no_zero_call_no_builtin_contamination: object/dict with "
+        "fallback_detected=false, zero_call_detected=false, builtin_contamination_detected=false, "
+        "baseline_only_detected=false, stub_detected=false (ALL must be explicit `false`, not absent)\n"
+        "Top-level: inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, "
+        "full_migration_status == FULL_PASS\n"
+        "Script exit code 0 alone is NOT sufficient; the final-gate schema MUST validate."
+    )
+
+    if platform_policy is not None and platform_policy.id != "npu_ascend":
+        native_label = platform_policy.guidance_native_label
+        native_artifact_desc = f"real on-disk {native_label} compiled artifacts"
+        native_build_desc = f"project-local build provenance/logs with {native_label} build or link evidence"
+        native_path_desc = "runtime-loaded compiled artifact paths (not .py)"
+        return (
+            f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
+            "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
+            f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation."
+            + schema_checklist + perf_mode_note + "\n"
+            f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
+            "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
+        )
     return (
-        f"4. Active custom-op contract is present. Read bounded operator context: {operator_repair_context_artifact_path}; this context combines Phase 1 source discovery, the Phase 3 entry-script contract, the full validation command, expanded variant scope when present, and current migration_reports inventory / manifest / final-gate closure. Use it as the repair source of truth.\n"
-        "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. For custom-op projects, keep looping on every Phase 1/Phase 3 operator row and rerun the full Phase 3 validation script after repair. For custom-op+variant projects, keep looping on every operator+variant identity and rerun the full variant-aware validation script after repair. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
-        "6. Every in-scope row must have strict Ascend C/CANN OPP custom operator producer evidence: op_host source path, op_kernel/AscendC source path, CMakeLists.txt/build.sh or equivalent OPP build script, project-local CANN/OPP build-install logs, install/provenance evidence, generated header/op_info/kernel_meta/producer/package artifacts, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and performance evidence that compares real CPU baseline runtime against Ascend OPP/custom-op runtime. For this active custom-op contract, missing per-row `public_api_route_evidence` or `framework_integration_route_evidence` is a contract failure: each field may be one object or a non-empty object list, but every object must independently prove same-run public API or framework integration invocation, positive custom call count, native custom-op/OPP execution, and identity correlation to the manifest row; an empty list or any invalid list item must fail closed. Direct-only, builtin-only, fallback, zero-call, report-only, synthetic/mock, benchmark-only, ATen-only, NpuExtension-only, CppExtension-only, Python-shim, baseline-only, and stub route evidence is not valid. torch_npu.utils.cpp_extension.NpuExtension, torch.utils.cpp_extension.CppExtension, ATen-only npu_ops.cpp, and libtorch/torch_cpu/torch_npu-only builds are not opp_custom_op_artifact_evidence; NpuExtension may only be adapter evidence when separate strict OPP producer evidence exists. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Do not use same-NPU, self-baseline, diagnostic, or placeholder 1.0 speedup evidence; `speedup_vs_baseline` must approximately equal CPU `baseline_seconds / custom_seconds` for the Ascend OPP/custom-op route. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+        f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n"
+        "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
+        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation."
+        + schema_checklist + perf_mode_note + "\n"
         f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
     )
@@ -301,9 +192,6 @@ _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
     r"remaining_entries",
     r"opp_custom_op_artifact_evidence",
     r"same_run_runtime_coverage",
-    r"public_api_route_evidence",
-    r"framework_integration_route_evidence",
-    r"route evidence",
     r"custom_call_count",
     r"custom_call_count_total",
     r"zero_call_detected",
@@ -312,11 +200,28 @@ _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
     r"FULL_MIGRATION_INCOMPLETE",
     r"operator evidence",
     r"custom[-_ ]op evidence",
-    r"custom[-_ ]op opp preflight failed",
-    r"ascend c/cann opp is the only accepted custom[-_ ]op target",
-    r"generated opp inventory",
-    r"generated operators not covered by final gate rows",
-    r"counts must cover all generated opp operator entries",
+)
+_CUSTOM_OP_STRONG_OPERATOR_EVIDENCE_PATTERNS = (
+    r"custom[-_ ]op final evidence gate failed",
+    r"custom_op_final_gate",
+    r"full_migration_status",
+    r"closed_pass_entries",
+    r"remaining_entries",
+    r"opp_custom_op_artifact_evidence",
+    r"same_run_runtime_coverage",
+    r"custom_call_count",
+    r"custom_call_count_total",
+    r"zero_call_detected",
+    r"builtin_contamination_detected",
+    r"no_fallback_no_zero_call_no_builtin_contamination",
+    r"FULL_MIGRATION_INCOMPLETE",
+)
+_CUSTOM_OP_NEGATIVE_EVIDENCE_PATTERNS = (
+    r"no\s+custom[-_ ]?op(?:erator)?s?\b",
+    r"custom[-_ ]?op(?:erator)?s?\s*[:=]\s*(?:none|false|no)\b",
+    r"custom_op_detected\s*[:=]\s*false\b",
+    r"custom[-_ ]op evidence gate (?:is )?not activated",
+    r"without\s+custom[-_ ]?op(?:erator)?s?\b",
 )
 _CUSTOM_OP_SHARED_OBJECT_PATTERNS = (
     r"\.so\b",
@@ -348,77 +253,19 @@ def _flatten_for_routing(value: object) -> str:
 
 
 def _has_custom_op_contract_fields(contract: dict[str, object]) -> bool:
-    return has_custom_op_contract(contract)
-
-
-def _parse_contract_json(value: object) -> dict[str, object] | None:
-    if isinstance(value, dict):
-        return cast(dict[str, object], value)
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text or not text.startswith("{"):
-        return None
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(parsed, dict):
-        return cast(dict[str, object], parsed)
-    return None
-
-
-def _active_custom_op_contract(
-    *,
-    phase3_contract: dict[str, object] | None = None,
-    prompt_context: dict[str, object] | None = None,
-) -> bool:
-    if isinstance(phase3_contract, dict):
-        return _has_custom_op_contract_fields(phase3_contract)
-    if isinstance(prompt_context, dict):
-        parsed_contract = _parse_contract_json(prompt_context.get("entry_script_contract"))
-        if parsed_contract is not None:
-            return _has_custom_op_contract_fields(parsed_contract)
-    return False
-
-
-def _is_flash_attention_backend_error(text: str) -> bool:
-    lowered = text.lower()
-    return "flashattention2" in lowered or "flash_attn" in lowered or "flash-attn" in lowered
-
-
-def _route_flash_attention_backend_failure(
-    classification: dict[str, object],
-    *,
-    error_text: str,
-    history: list[object] | None,
-    prompt_context: dict[str, object] | None,
-) -> dict[str, object] | None:
-    combined = "\n".join(
-        part for part in (
-            error_text,
-            _flatten_for_routing(history or []),
-            _flatten_for_routing(classification),
-            _flatten_for_routing(prompt_context or {}),
-        ) if part
+    if contract.get("entry_script_kind") == "custom_op_full_validation":
+        return True
+    return any(
+        field in contract
+        for field in (
+            "reports_dir",
+            "required_report_paths",
+            "required_checks",
+            "operator_discovery_sources",
+            "operator_inventory_schema",
+            "validation_obligations",
+        )
     )
-    if not _is_flash_attention_backend_error(combined):
-        return None
-    if str(classification.get("repair_role", "")) != "operator_fixer" and str(classification.get("category", "")) != "operator":
-        return classification
-
-    routed = dict(classification)
-    routed["category"] = "migration logic"
-    routed["repair_role"] = "code_adapter"
-    routed["root_cause"] = str(
-        routed.get("root_cause")
-        or "Transformers FlashAttention2 is enabled but flash_attn is unavailable on the NPU runtime"
-    )
-    routed["suggested_fix"] = (
-        "Disable the flash_attn-backed path at the model load/config site and use "
-        'attn_implementation="sdpa" when supported, otherwise "eager"; do not create OPP/custom-op artifacts.'
-    )
-    return routed
 
 
 def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: list[object] | None = None, classification: dict[str, object] | None = None, phase3_contract: dict[str, object] | None = None, prompt_context: dict[str, object] | None = None) -> bool:
@@ -427,11 +274,19 @@ def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: li
     if not combined:
         return False
 
-    has_custom_contract = _active_custom_op_contract(
-        phase3_contract=phase3_contract,
-        prompt_context=prompt_context,
-    )
+    has_custom_contract = False
+    if isinstance(phase3_contract, dict):
+        has_custom_contract = _has_custom_op_contract_fields(phase3_contract)
+    elif isinstance(prompt_context, dict):
+        contract_text = _flatten_for_routing(prompt_context.get("entry_script_contract", "")).lower()
+        has_custom_contract = any(key in contract_text for key in ("custom_op_full_validation", "required_report_paths", "required_checks", "migration_reports"))
+
     if not has_custom_contract:
+        return False
+
+    has_strong_evidence = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_STRONG_OPERATOR_EVIDENCE_PATTERNS)
+    has_negative_evidence = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_NEGATIVE_EVIDENCE_PATTERNS)
+    if has_negative_evidence and not has_strong_evidence:
         return False
 
     if any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS):
@@ -443,16 +298,6 @@ def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: li
 
 
 def force_custom_op_operator_routing_if_needed(classification: dict[str, object], *, error_text: str = "", history: list[object] | None = None, phase3_contract: dict[str, object] | None = None, prompt_context: dict[str, object] | None = None) -> dict[str, object]:
-    if not _active_custom_op_contract(phase3_contract=phase3_contract, prompt_context=prompt_context):
-        flash_routing = _route_flash_attention_backend_failure(
-            classification,
-            error_text=error_text,
-            history=history,
-            prompt_context=prompt_context,
-        )
-        if flash_routing is not None:
-            return flash_routing
-
     if not _has_custom_op_operator_evidence_signal(
         error_text=error_text,
         history=history,
@@ -481,8 +326,6 @@ class ReviewGateState:
 
 
 def _get_timeout(config: ConfigDict | None, key: str, default: int | None = None) -> int | None:
-    if key.startswith("session_timeout"):
-        return None
     framework_config = config.get("framework") if config else None
     if isinstance(framework_config, dict):
         framework_settings = cast(ConfigDict, framework_config)
@@ -522,12 +365,16 @@ class RepairLoopEngine:
         prompt_loader: PromptLoader,
         validator: ValidatorEngine,
         config: ConfigDict | None = None,
+        exec_backend: object = None,
+        platform_policy: PlatformPolicy | None = None,
     ) -> None:
         self.session_mgr = session_mgr
         self.artifact_store = artifact_store
         self.prompt_loader = prompt_loader
         self.validator = validator
         self.config = config
+        self.exec_backend = exec_backend
+        self.platform_policy = platform_policy
         self.validator.register_validator("validation_final", validate_validation_final)
         self.validator.register_validator("repair_classification", self._validate_classification)
 
@@ -747,6 +594,7 @@ class RepairLoopEngine:
 
         entry_script_timeout = _get_timeout(self.config, "entry_script_timeout")
         script_cwd, env_vars, cmd_argv, use_shell = self._prepare_entry_command(entry_script, project_dir)
+
         with tempfile.TemporaryDirectory(prefix="repair-loop-") as tmp_dir:
             stdout_log_path = os.path.join(tmp_dir, "out.log")
             stderr_log_path = os.path.join(tmp_dir, "err.log")
@@ -754,19 +602,33 @@ class RepairLoopEngine:
             for iteration in range(1, max_iterations + 1):
                 review_result: dict[str, object] | None = None
                 error_text = ""
-                completed_returncode: int | None = None
-                preflight_result = validate_custom_op_opp_preflight(active_phase3_contract, project_dir)
-                if preflight_result is not None and preflight_result.get("passed") is not True:
-                    final_stdout = ""
-                    final_stderr = format_custom_op_opp_preflight_failure(preflight_result)
-                    final_exit_code = 1
-                    completed_returncode = 1
-                    error_text = final_stderr
-                    self._log(f"[Iter {iteration}] Validation FAILED (custom-op OPP preflight)", logger)
-                else:
-                    self._log(f"[Iter {iteration}/{max_iterations}] Running entry script...", logger)
-                    try:
-                        run_start = time.monotonic()
+                self._log(f"[Iter {iteration}/{max_iterations}] Running entry script...", logger)
+                try:
+                    run_start = time.monotonic()
+
+                    if isinstance(self.exec_backend, ContainerBackend):
+                        try:
+                            exec_result = self.exec_backend.run(
+                                command=" ".join(cmd_argv) if use_shell else cmd_argv,
+                                cwd=script_cwd,
+                                env=env_vars if env_vars else None,
+                                timeout=entry_script_timeout,
+                            )
+                            final_exit_code = exec_result.exit_code
+                            final_stdout = exec_result.stdout
+                            final_stderr = exec_result.stderr
+                            execution_duration = exec_result.duration
+                        except subprocess.TimeoutExpired:
+                            final_exit_code = 124
+                            final_stdout = ""
+                            final_stderr = f"Execution timed out after {entry_script_timeout}s"
+                            execution_duration = entry_script_timeout if entry_script_timeout else 0
+                        except Exception as exc:
+                            final_exit_code = 1
+                            final_stdout = ""
+                            final_stderr = str(exc)
+                            execution_duration = round(time.monotonic() - run_start, 1)
+                    else:
                         run_env = os.environ.copy()
                         run_env.update(env_vars)
 
@@ -799,195 +661,194 @@ class RepairLoopEngine:
                         final_stdout = self._read_tail(stdout_log_path)
                         final_stderr = self._read_tail(stderr_log_path)
                         final_exit_code = completed.returncode
-                        completed_returncode = completed.returncode
 
-                        if completed_returncode == 0:
-                            gate_result = self._validate_custom_op_final_gate_for_contract(
-                                active_phase3_contract, project_dir
+                    if final_exit_code == 0:
+                        gate_result = self._validate_custom_op_final_gate_for_contract(
+                            active_phase3_contract, project_dir
+                        )
+                        if gate_result is not None and gate_result.get("passed") is not True:
+                            final_exit_code = 1
+                            gate_errors = gate_result.get("errors")
+                            if isinstance(gate_errors, list) and gate_errors:
+                                concise_gate_errors = "; ".join(str(error) for error in gate_errors[:5])
+                            else:
+                                concise_gate_errors = "custom-op final gate failed"
+                            final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed: {concise_gate_errors}".strip()
+                            error_text = self._combine_error(final_stdout, final_stderr)
+                            self._log(
+                                f"[Iter {iteration}] Validation FAILED (custom-op final gate) - {concise_gate_errors}",
+                                logger,
                             )
-                            if gate_result is not None and gate_result.get("passed") is not True:
-                                final_exit_code = 1
-                                gate_errors = gate_result.get("errors")
-                                if isinstance(gate_errors, list) and gate_errors:
-                                    concise_gate_errors = "; ".join(str(error) for error in gate_errors[:5])
-                                else:
-                                    concise_gate_errors = "custom-op final gate failed"
-                                final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed: {concise_gate_errors}".strip()
-                                error_text = self._combine_error(final_stdout, final_stderr)
+                        else:
+                            self._log(f"[Iter {iteration}] Validation SUCCESS (exit 0)", logger)
+
+                            review_result = None
+                        if final_exit_code == 0 and enable_review_gate and review_callable is not None:
+                            try:
+                                classification_for_review = (
+                                    cast(dict[str, object], cast(object, last_classification))
+                                    if last_classification is not None
+                                    else {}
+                                )
+                                raw_dir = str(getattr(self.artifact_store, "raw_dir", ""))
+                                existing_attempts = sorted(
+                                    p for p in os.listdir(raw_dir) if p.startswith("phase_5_validation_attempt") and p.endswith(".json")
+                                ) if os.path.isdir(raw_dir) else []
+                                last_artifact_path = (
+                                    os.path.join(raw_dir, existing_attempts[-1])
+                                    if existing_attempts else "(no previous attempt available)"
+                                )
+                                review_payload: dict[str, object] = {
+                                    "iteration": iteration,
+                                    "error_text": "",
+                                    "classification": classification_for_review,
+                                    "repair_role": context.repair_role,
+                                    "fix_instruction": last_fix_instruction,
+                                    "fix_response": last_fix_response,
+                                    "fix_metadata": last_fix_metadata,
+                                    "history": list(context.history),
+                                    "last_artifact_path": last_artifact_path,
+                                    "attempt_log_content": self._load_attempt_log_content(last_artifact_path),
+                                    "execution_duration": str(execution_duration),
+                                    "gate_state_summary": {
+                                        "best_passing_version": gate_state.best_passing_version,
+                                        "review_reject_reasons": list(gate_state.review_reject_reasons),
+                                        "improvement_iterations": gate_state.improvement_iterations,
+                                        "max_review_iterations": max_review_iterations,
+                                        "history": list(context.history),
+                                    },
+                                }
+                                review_result = review_callable(review_payload)
                                 self._log(
-                                    f"[Iter {iteration}] Validation FAILED (custom-op final gate) - {concise_gate_errors}",
+                                    f"[Iter {iteration}] Review verdict: {review_result.get('verdict', 'unknown')}",
                                     logger,
                                 )
-                            else:
-                                self._log(f"[Iter {iteration}] Validation SUCCESS (exit 0)", logger)
+                            except Exception as e:
+                                self._log(f"[Iter {iteration}] Review step failed: {e}", logger)
 
-                                review_result = None
-                            if final_exit_code == 0 and enable_review_gate and review_callable is not None:
-                                try:
-                                    classification_for_review = (
-                                        cast(dict[str, object], cast(object, last_classification))
-                                        if last_classification is not None
-                                        else {}
+                        if review_result is not None:
+                            last_review = review_result
+
+                        if review_result is not None:
+                            verdict = str(review_result.get("verdict", "")).lower()
+                            session_error = review_result.get("session_error")
+
+                            if verdict == "session_error" or session_error:
+                                reason = str(session_error or review_result.get("reasoning", "Review session failed"))
+                                self._log(
+                                    f"[Iter {iteration}] Review gate: SESSION_ERROR - {reason}",
+                                    logger,
+                                )
+                                context.iteration_count = iteration
+                                context.last_error = f"Review gate session error: {reason}"
+                                final_exit_code = 1
+                                final_stderr = f"{final_stderr}\n{context.last_error}".strip()
+                                status = "review_failed"
+                                break
+
+                            if verdict == "reject":
+                                self._log(
+                                    f"[Iter {iteration}] Review gate: REJECT (verdict '{verdict}')",
+                                    logger,
+                                )
+                                snapshot = self._snapshot_project_files(project_dir, f"iter{iteration}")
+                                gate_state.best_passing_version = {
+                                    "iteration": iteration,
+                                    "exit_code": final_exit_code,
+                                    "modified_files": last_fix_metadata.get("modified_files", []),
+                                    "fix_summary": str(last_fix_metadata.get("summary", "")),
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "snapshot_path": snapshot["snapshot_path"],
+                                }
+                                gate_state.review_reject_reasons.append(
+                                    str(review_result.get("reasoning", ""))
+                                )
+                                gate_state.improvement_iterations += 1
+
+                                improvement_result = self._run_improvement_iteration(
+                                    gate_state=gate_state,
+                                    project_dir=project_dir,
+                                    entry_script=entry_script,
+                                    constraint_summary=constraint_summary,
+                                    logger=logger,
+                                )
+
+                                if improvement_result.get("status") == "success":
+                                    improvement_message = (
+                                        f"[Iter {iteration}] Improvement applied: "
+                                        f"role={improvement_result.get('repair_role', 'N/A')}, "
+                                        f"area={improvement_result.get('improvement_area', 'N/A')}"
                                     )
-                                    raw_dir = str(getattr(self.artifact_store, "raw_dir", ""))
-                                    existing_attempts = sorted(
-                                        p for p in os.listdir(raw_dir) if p.startswith("phase_5_validation_attempt") and p.endswith(".json")
-                                    ) if os.path.isdir(raw_dir) else []
-                                    last_artifact_path = (
-                                        os.path.join(raw_dir, existing_attempts[-1])
-                                        if existing_attempts else "(no previous attempt available)"
-                                    )
-                                    review_payload: dict[str, object] = {
-                                        "iteration": iteration,
-                                        "error_text": "",
-                                        "classification": classification_for_review,
-                                        "repair_role": context.repair_role,
-                                        "fix_instruction": last_fix_instruction,
-                                        "fix_response": last_fix_response,
-                                        "fix_metadata": last_fix_metadata,
-                                        "history": list(context.history),
-                                        "last_artifact_path": last_artifact_path,
-                                        "attempt_log_content": self._load_attempt_log_content(last_artifact_path),
-                                        "execution_duration": str(execution_duration),
-                                        "gate_state_summary": {
-                                            "best_passing_version": gate_state.best_passing_version,
-                                            "review_reject_reasons": list(gate_state.review_reject_reasons),
-                                            "improvement_iterations": gate_state.improvement_iterations,
-                                            "max_review_iterations": max_review_iterations,
-                                            "history": list(context.history),
-                                        },
-                                    }
-                                    review_result = review_callable(review_payload)
                                     self._log(
-                                        f"[Iter {iteration}] Review verdict: {review_result.get('verdict', 'unknown')}",
+                                        improvement_message,
                                         logger,
                                     )
-                                except Exception as e:
-                                    self._log(f"[Iter {iteration}] Review step failed: {e}", logger)
 
-                            if review_result is not None:
-                                last_review = review_result
-
-                            if review_result is not None:
-                                verdict = str(review_result.get("verdict", "")).lower()
-                                session_error = review_result.get("session_error")
-
-                                if verdict == "session_error" or session_error:
-                                    reason = str(session_error or review_result.get("reasoning", "Review session failed"))
+                                if gate_state.improvement_iterations >= max_review_iterations:
                                     self._log(
-                                        f"[Iter {iteration}] Review gate: SESSION_ERROR - {reason}",
+                                        f"[Iter {iteration}] Review gate: Max iterations ({max_review_iterations}) reached, marking passed_with_reviews",
                                         logger,
                                     )
                                     context.iteration_count = iteration
-                                    context.last_error = f"Review gate session error: {reason}"
-                                    final_exit_code = 1
-                                    final_stderr = f"{final_stderr}\n{context.last_error}".strip()
-                                    status = "review_failed"
+                                    status = "passed_with_reviews"
                                     break
-
-                                if verdict == "reject":
+                                else:
                                     self._log(
-                                        f"[Iter {iteration}] Review gate: REJECT (verdict '{verdict}')",
+                                        f"[Iter {iteration}] Review gate: Improvement mode activated (iteration {gate_state.improvement_iterations}/{max_review_iterations})",
                                         logger,
                                     )
-                                    snapshot = self._snapshot_project_files(project_dir, f"iter{iteration}")
-                                    gate_state.best_passing_version = {
+                                    context.iteration_count = iteration
+                                    iteration_record_exit0: IterationRecord = {
                                         "iteration": iteration,
-                                        "exit_code": completed_returncode,
-                                        "modified_files": last_fix_metadata.get("modified_files", []),
-                                        "fix_summary": str(last_fix_metadata.get("summary", "")),
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                                        "snapshot_path": snapshot["snapshot_path"],
+                                        "exit_code": final_exit_code,
+                                        "stdout": final_stdout,
+                                        "stderr": final_stderr,
+                                        "error": "",
+                                        "classification": last_classification or {
+                                            "category": "",
+                                            "root_cause": "",
+                                            "suggested_fix": "",
+                                            "repair_role": context.repair_role,
+                                            "raw_response": "",
+                                        },
+                                        "fix_attempt": {
+                                            "status": "review_rejected",
+                                            "repair_role": context.repair_role,
+                                            "instruction": last_fix_instruction,
+                                            "response": last_fix_response,
+                                            "modified_files": last_fix_metadata.get("modified_files", []),
+                                            "fix_summary": str(last_fix_metadata.get("summary", "")),
+                                        },
+                                        "error_analyzer_session_id": analyzer_session_id,
                                     }
-                                    gate_state.review_reject_reasons.append(
-                                        str(review_result.get("reasoning", ""))
-                                    )
-                                    gate_state.improvement_iterations += 1
+                                    self._record_iteration(iteration, context, iteration_record_exit0)
+                                    continue
 
-                                    improvement_result = self._run_improvement_iteration(
-                                        gate_state=gate_state,
-                                        project_dir=project_dir,
-                                        entry_script=entry_script,
-                                        constraint_summary=constraint_summary,
-                                        logger=logger,
-                                    )
+                        if final_exit_code == 0:
+                            context.iteration_count = iteration
+                            status = "success"
+                            break
 
-                                    if improvement_result.get("status") == "success":
-                                        improvement_message = (
-                                            f"[Iter {iteration}] Improvement applied: "
-                                            f"role={improvement_result.get('repair_role', 'N/A')}, "
-                                            f"area={improvement_result.get('improvement_area', 'N/A')}"
-                                        )
-                                        self._log(
-                                            improvement_message,
-                                            logger,
-                                        )
-
-                                    if gate_state.improvement_iterations >= max_review_iterations:
-                                        self._log(
-                                            f"[Iter {iteration}] Review gate: Max iterations ({max_review_iterations}) reached, marking passed_with_reviews",
-                                            logger,
-                                        )
-                                        context.iteration_count = iteration
-                                        status = "passed_with_reviews"
-                                        break
-                                    else:
-                                        self._log(
-                                            f"[Iter {iteration}] Review gate: Improvement mode activated (iteration {gate_state.improvement_iterations}/{max_review_iterations})",
-                                            logger,
-                                        )
-                                        context.iteration_count = iteration
-                                        iteration_record_exit0: IterationRecord = {
-                                            "iteration": iteration,
-                                            "exit_code": completed_returncode,
-                                            "stdout": final_stdout,
-                                            "stderr": final_stderr,
-                                            "error": "",
-                                            "classification": last_classification or {
-                                                "category": "",
-                                                "root_cause": "",
-                                                "suggested_fix": "",
-                                                "repair_role": context.repair_role,
-                                                "raw_response": "",
-                                            },
-                                            "fix_attempt": {
-                                                "status": "review_rejected",
-                                                "repair_role": context.repair_role,
-                                                "instruction": last_fix_instruction,
-                                                "response": last_fix_response,
-                                                "modified_files": last_fix_metadata.get("modified_files", []),
-                                                "fix_summary": str(last_fix_metadata.get("summary", "")),
-                                            },
-                                            "error_analyzer_session_id": analyzer_session_id,
-                                        }
-                                        self._record_iteration(iteration, context, iteration_record_exit0)
-                                        continue
-
-                            if final_exit_code == 0:
-                                context.iteration_count = iteration
-                                status = "success"
-                                break
-
-                        if final_exit_code == 0 and completed_returncode == 0:
-                            pass
-                        elif completed_returncode is not None and completed_returncode < 0:
-                            error_text = (
-                                f"Entry script terminated by Signal {abs(completed_returncode)}. "
-                                "Likely caused by OOM or system limits."
-                            )
-                        else:
-                            error_text = self._combine_error(final_stdout, final_stderr)
-                    except subprocess.TimeoutExpired:
-                        final_stdout = self._read_tail(stdout_log_path)
-                        final_stderr = self._read_tail(stderr_log_path)
-                        final_exit_code = 1
-                        error_text = (f"Execution timed out after {entry_script_timeout}s. "
-                                      f"STDOUT: {final_stdout}\nSTDERR: {final_stderr}")
-                    except OSError as exc:
-                        final_stdout = ""
-                        final_stderr = str(exc)
-                        final_exit_code = 1
-                        error_text = f"Entry script execution failed: {exc}"
+                    if final_exit_code == 0:
+                        pass
+                    elif final_exit_code < 0:
+                        error_text = (
+                            f"Entry script terminated by Signal {abs(final_exit_code)}. "
+                            "Likely caused by OOM or system limits."
+                        )
+                    else:
+                        error_text = self._combine_error(final_stdout, final_stderr)
+                except subprocess.TimeoutExpired:
+                    final_stdout = self._read_tail(stdout_log_path)
+                    final_stderr = self._read_tail(stderr_log_path)
+                    final_exit_code = 1
+                    error_text = (f"Execution timed out after {entry_script_timeout}s. "
+                                  f"STDOUT: {final_stdout}\nSTDERR: {final_stderr}")
+                except OSError as exc:
+                    final_stdout = ""
+                    final_stderr = str(exc)
+                    final_exit_code = 1
+                    error_text = f"Entry script execution failed: {exc}"
                 error_signature = self._normalize_error_signature(error_text)
                 self._log(
                     f"[Iter {iteration}] Validation FAILED (exit {final_exit_code}) - {error_text[:200]}",
@@ -1007,6 +868,10 @@ class RepairLoopEngine:
                     last_review=last_review,
                     env_context=env_context or {},
                     phase3_contract=active_phase3_contract,
+                    cmd_argv=cmd_argv,
+                    use_shell=use_shell,
+                    script_cwd=script_cwd,
+                    env_vars=env_vars,
                 )
                 last_classification = classification
                 self._log(
@@ -1091,6 +956,10 @@ class RepairLoopEngine:
                         last_review=last_review,
                         env_context=env_context or {},
                         phase3_contract=active_phase3_contract,
+                        cmd_argv=cmd_argv,
+                        use_shell=use_shell,
+                        script_cwd=script_cwd,
+                        env_vars=env_vars,
                     )
                     last_fix_instruction = repair_prompt
                     repair_response: str | None = None
@@ -1235,6 +1104,10 @@ class RepairLoopEngine:
         last_review: dict[str, object] | None = None,
         env_context: dict[str, object] | None = None,
         phase3_contract: dict[str, object] | None = None,
+        cmd_argv: list[str] | None = None,
+        use_shell: bool = False,
+        script_cwd: str | None = None,
+        env_vars: dict[str, str] | None = None,
     ) -> ClassificationDict:
         prompt_context: dict[str, str] = {
             "phase_name": _PHASE_ID,
@@ -1254,12 +1127,14 @@ class RepairLoopEngine:
             "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
-            "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
-            "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
-            "operator_repair_progress_block": "(No current custom-op repair progress block is available in this repair-loop context.)",
-            "active_custom_op_full_repair_requirements": "",
         }
-        analyzer_prompt = self.prompt_loader.load_prompt("phase_error_recovery", prompt_context)
+        exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
+        prompt_context.update(_get_exec_ctx(
+            getattr(self, "exec_backend", None), command=exec_cmd, cwd=script_cwd,
+            env=env_vars,
+        ))
+        analyzer_prompt_id = "phase_error_recovery_container" if isinstance(getattr(self, "exec_backend", None), ContainerBackend) else "phase_error_recovery"
+        analyzer_prompt = self.prompt_loader.load_prompt(analyzer_prompt_id, prompt_context)
         max_send_retries = 2
         retry_delays = [5, 15]
         raw_response: str | None = None
@@ -1479,7 +1354,6 @@ class RepairLoopEngine:
             return "unsafe_run_command"
         updated_contract = dict(active_contract)
         updated_contract["run_command"] = run_command
-        updated_contract["project_dir"] = project_dir
         if entry_script_path:
             updated_contract["entry_script_path"] = entry_script_path
         elif not updated_contract.get("entry_script_path"):
@@ -1549,11 +1423,10 @@ class RepairLoopEngine:
             result["errors"] = ["custom-op final gate report must be a JSON object"]
             return result
         gate_map = cast(dict[str, object], gate_data)
-        variant_overlay = expanded_variant_contract_from_contract(contract)
-        apply_expanded_variant_contract(gate_map, variant_overlay, include_required_checks=False)
         validation = validate_custom_op_final_gate(
             gate_map,
             project_root=reports_dir.parent,
+            platform_policy=self.platform_policy,
         )
         result["passed"] = validation["passed"]
         result["errors"] = validation["errors"]
@@ -1919,11 +1792,16 @@ class RepairLoopEngine:
         last_review: dict[str, object] | None = None,
         env_context: dict[str, object] | None = None,
         phase3_contract: dict[str, object] | None = None,
+        cmd_argv: list[str] | None = None,
+        use_shell: bool = False,
+        script_cwd: str | None = None,
+        env_vars: dict[str, str] | None = None,
     ) -> str:
         repair_role = classification["repair_role"]
-        prompt_id = _REPAIR_PROMPT_IDS.get(repair_role, "repair_code_adapter")
-        if repair_role == "operator_fixer" and _operator_repair_has_custom_op_contract(phase3_contract):
-            prompt_id = "repair_custom_op_variant_service"
+        if isinstance(getattr(self, "exec_backend", None), ContainerBackend):
+            prompt_id = _REPAIR_PROMPT_IDS_CONTAINER.get(repair_role, "repair_code_adapter_container")
+        else:
+            prompt_id = _REPAIR_PROMPT_IDS.get(repair_role, "repair_code_adapter")
         context: dict[str, str] = {
             "repair_role": repair_role,
             "entry_script": entry_script,
@@ -1941,11 +1819,11 @@ class RepairLoopEngine:
             "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
-            "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
-            "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
-            "operator_repair_progress_block": "(No current custom-op repair progress block is available in this repair-loop context.)",
-            "active_custom_op_full_repair_requirements": "",
         }
+        exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
+        context.update(_get_exec_ctx(
+            getattr(self, "exec_backend", None), command=exec_cmd, cwd=script_cwd, env=env_vars,
+        ))
         if repair_role in {"dependency_fixer", "operator_fixer"}:
             runtime_error_path, runtime_card_path = write_repair_runtime_artifacts(
                 artifact_dir=str(getattr(self.artifact_store, "artifact_dir", project_dir)),
@@ -1972,34 +1850,14 @@ class RepairLoopEngine:
                     operator_context_path,
                     project_dir=project_dir,
                     entry_script=entry_script,
-                )
-                context["phase1_phase3_repair_scope"] = _operator_custom_op_phase1_phase3_scope(
-                    phase3_contract=phase3_contract,
-                    project_dir=project_dir,
-                    entry_script=entry_script,
-                )
-                context["strict_custom_op_acceptance_contract"] = _operator_custom_op_acceptance_contract_text(
-                    phase3_contract=phase3_contract,
-                )
-                context["operator_repair_progress_block"] = _operator_custom_op_progress_block(
-                    phase3_contract=phase3_contract,
-                    project_dir=project_dir,
-                )
-                context["active_custom_op_full_repair_requirements"] = (
-                    "1. Read operatorRepairContext artifact and treat it as the source of truth.\n"
-                    "2. Repair every Phase 1/Phase 3 discovered operator and every expanded operator+variant identity.\n"
-                    "3. Rerun the full Phase 3 validation command and produce every required report.\n"
-                    "4. Return success only after the strict final gate validates FULL_PASS.\n"
-                    "5. Return FAILED/INCOMPLETE if the full repair is not yet closed."
+                    platform_policy=self.platform_policy,
                 )
             else:
                 context["operator_custom_op_guidance"] = _operator_generic_guidance(
                     project_dir=project_dir,
                     entry_script=entry_script,
+                    platform_policy=self.platform_policy,
                 )
-                context["phase1_phase3_repair_scope"] = "No active custom-op contract is present. Generic operator repair scope only; follow the runtime error and keep the fix local."
-                context["strict_custom_op_acceptance_contract"] = "No active custom-op contract is present. Return ordinary operator repair JSON only; the strict custom-op final gate is not active."
-                context["active_custom_op_full_repair_requirements"] = ""
         return self.prompt_loader.load_prompt(prompt_id, context)
 
     @staticmethod
@@ -2077,7 +1935,11 @@ class RepairLoopEngine:
             "constraint_summary": constraint_summary,
             "improvement_history": "\n".join(f"- {r}" for r in history_lines) if history_lines else "(none)",
         }
-        imp_prompt = self.prompt_loader.load_prompt("phase_review_improvement", prompt_context)
+        prompt_context.update(_get_exec_ctx(
+            getattr(self, "exec_backend", None), command=shlex.split(entry_script),
+        ))
+        imp_prompt_id = "phase_review_improvement_container" if isinstance(getattr(self, "exec_backend", None), ContainerBackend) else "phase_review_improvement"
+        imp_prompt = self.prompt_loader.load_prompt(imp_prompt_id, prompt_context)
         analyzer_session_id = self.session_mgr.get_or_create("error_analyzer", "persistent")
         try:
             raw = self.session_mgr.send_command(
@@ -2105,6 +1967,22 @@ class RepairLoopEngine:
             f"Please execute the necessary modifications to address this improvement.\n"
             f"Project directory: {project_dir}\n"
             f"\n"
+        )
+        imp_exec_ctx = _get_exec_ctx(
+            getattr(self, "exec_backend", None), command=shlex.split(entry_script),
+        )
+        if imp_exec_ctx.get("execution_backend_mode") == "container":
+            improvement_instruction += (
+                f"**Container Execution Context**:\n"
+                f"- Execution mode: {imp_exec_ctx['execution_backend_mode']}\n"
+                f"- Actual execution command: {imp_exec_ctx['actual_execution_command']}\n"
+                f"- Container: {imp_exec_ctx['container_name_or_id']}\n"
+                f"\n"
+                f"When validating manually, use `actual_execution_command` — do NOT run "
+                f"`{entry_script}` directly on the host.\n"
+                f"\n"
+            )
+        improvement_instruction += (
             f"End your response with a JSON code block:\n"
             f'```{ "json" }\n'
             f'{{"modified_files": [...], "summary": "..."}}\n'

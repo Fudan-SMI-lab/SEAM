@@ -10,8 +10,6 @@ from .experience_registry import ExperienceRegistry
 class ExperienceStore:
 
     repo_root: str
-    memory_root: str
-    memory_dir: str
     staging_dir: str
     cases_dir: str
     promotions_dir: str
@@ -26,13 +24,11 @@ class ExperienceStore:
 
     def __init__(self, repo_root: str) -> None:
         self.repo_root = repo_root
-        self.memory_root = os.path.join(repo_root, ".memory")
-        self.memory_dir = os.path.join(self.memory_root, "memory")
-        self.staging_dir = os.path.join(self.memory_dir, "staging")
-        self.cases_dir = os.path.join(self.memory_dir, "cases")
-        self.promotions_dir = os.path.join(self.memory_dir, "promotions")
-        self.index_path = os.path.join(self.memory_dir, "index", "cases.jsonl")
-        self.skills_dir = os.path.join(self.memory_root, "skills")
+        self.staging_dir = os.path.join(repo_root, "memory", "staging")
+        self.cases_dir = os.path.join(repo_root, "memory", "cases")
+        self.promotions_dir = os.path.join(repo_root, "memory", "promotions")
+        self.index_path = os.path.join(repo_root, "memory", "index", "cases.jsonl")
+        self.skills_dir = os.path.join(repo_root, ".memory", "skills")
         self.registry = ExperienceRegistry(repo_root)
         self.local_skills_dir = self.registry.local_skills_dir
         self.catalog_path = self.registry.catalog_path
