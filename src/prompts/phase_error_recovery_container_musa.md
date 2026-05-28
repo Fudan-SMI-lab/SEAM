@@ -77,7 +77,7 @@ Identify the first real exception, compare against history, and route exactly on
   "category": "dependency",
   "root_cause": "specific explanation",
   "suggested_fix": "concrete corrective action",
-  "repair_role": "dependency_fixer",
+  "repair_role": "<selected repair role from available roles below>",
   "entry_script_action": {
     "needed": false,
     "action": "none",
@@ -87,3 +87,5 @@ Identify the first real exception, compare against history, and route exactly on
   }
 }
 ```
+
+{repair_role_descriptions}
