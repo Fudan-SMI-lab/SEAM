@@ -1,3 +1,8 @@
+# CUDA/C++ custom op 到 Ascend NPU custom op 全量迁移任务的skill的prompt
+
+
+# cuda_custom_op_skill_test_prompt
+
 完成 CUDA/C++ custom op 到 Ascend NPU custom op 的全量迁移任务，做到以下的8个要求。
 
 迁移规范：本文下列 8 个要求是本任务的强制执行规则；如果当前 workspace root 下存在 `.skills/cuda-custom-op-to-npu-custom-op/`，其中的 checklist、template、validation gate、report parity、fallback 检查、coverage 检查和性能检查也必须落实。
