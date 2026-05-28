@@ -1698,11 +1698,12 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
     )))
 
     assert result["success"] is False
-    assert result["repair_session_ids"] == {"operator_fixer": "session-2"}
-    assert ("operator_fixer", "persistent") in session_mgr.get_or_create_calls
+    assert result["repair_session_ids"] == {"final_gate_report_fixer": "session-2"}
+    assert ("final_gate_report_fixer", "persistent") in session_mgr.get_or_create_calls
     assert ("code_adapter", "persistent") not in session_mgr.get_or_create_calls
+    assert ("operator_fixer", "persistent") not in session_mgr.get_or_create_calls
     assert result["error_history"][0].get("error_category") == "operator"
-    assert result["error_history"][0].get("repair_role") == "operator_fixer"
+    assert result["error_history"][0].get("repair_role") == "final_gate_report_fixer"
 
 
 def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: Path) -> None:

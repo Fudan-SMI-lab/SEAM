@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -19,9 +20,9 @@ from harness.session.manager import extract_json_response
 
 from core.artifact_store import ArtifactStore
 from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx
-from core.paths import workspace_root
+from core.paths import migration_utils_root, workspace_root
 from core.prompt_loader import PromptLoader
-from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
+from core.runtime_artifacts import sanitize_project_name, write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
 from core.platform_policy import PlatformPolicy
@@ -73,21 +74,187 @@ class IterationRecord(TypedDict):
 
 _ANALYZER_ROLE = "error_analyzer"
 _PHASE_ID = "phase_5_validation"
-_REPAIR_ROLES = {"dependency_fixer", "code_adapter", "operator_fixer"}
+_REPAIR_ROLES = {"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"}
 _REPAIR_PROMPT_IDS = {
     "dependency_fixer": "repair_dependency_fixer",
     "code_adapter": "repair_code_adapter",
     "operator_fixer": "repair_operator_fixer",
+    "final_gate_report_fixer": "repair_final_gate_report_fixer",
 }
 _REPAIR_PROMPT_IDS_CONTAINER = {
     "dependency_fixer": "repair_dependency_fixer_container",
     "code_adapter": "repair_code_adapter_container",
     "operator_fixer": "repair_operator_fixer_container",
+    "final_gate_report_fixer": "repair_final_gate_report_fixer_container",
 }
 
 
 def _workspace_root() -> str:
     return str(workspace_root())
+
+
+def _build_final_gate_validator_python_script(
+    *,
+    project_dir: str,
+    platform_policy: PlatformPolicy | None,
+) -> str:
+    """Build the Python validator script body (no shell wrapper).
+
+    This is the inner script that ``validate_custom_op_final_gate`` runs against
+    ``<project_dir>/migration_reports/custom_op_final_gate.json`` using the
+    *full platform policy* (including overrides).
+    """
+    report_path = str(Path(project_dir) / "migration_reports" / "custom_op_final_gate.json")
+    project_root = str(Path(project_dir))
+
+    # Serialize the full platform policy to JSON, preserving custom overrides.
+    # Bytes fields (native_binary_tokens) are base64-encoded so the JSON is
+    # safe for embedding in shell heredocs.
+    if platform_policy is not None:
+        policy_dict = asdict(platform_policy)
+
+        def _encode_visitor(obj: Any) -> Any:
+            if isinstance(obj, bytes):
+                return "__B64__" + base64.b64encode(obj).decode("ascii")
+            if isinstance(obj, dict):
+                return {k: _encode_visitor(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_encode_visitor(v) for v in obj]
+            return obj
+
+        policy_dict = _encode_visitor(policy_dict)
+        policy_json = json.dumps(policy_dict, separators=(",", ":"))
+    else:
+        policy_json = "null"
+
+    policy_b64 = base64.b64encode(policy_json.encode()).decode()
+
+    python_lines = [
+        "import base64, json",
+        "from validators.validate_validation_final import validate_custom_op_final_gate",
+        "from core.platform_policy import PlatformPolicy, CustomOpEvidenceConfig",
+        "",
+        "# Reconstruct platform policy (preserves custom overrides)",
+        f"policy_raw = json.loads(base64.b64decode({policy_b64!r}).decode())",
+        "",
+        "def _decode(obj):",
+        "    if isinstance(obj, dict):",
+        "        for k in list(obj.keys()):",
+        "            obj[k] = _decode(obj[k])",
+        "        return obj",
+        "    if isinstance(obj, list):",
+        "        return [_decode(v) for v in obj]",
+        '    if isinstance(obj, str) and obj.startswith("__B64__"):',
+        "        return base64.b64decode(obj[7:])",
+        "    return obj",
+        "",
+        "_decode(policy_raw)",
+        "if policy_raw is not None:",
+        "    evidence_d = policy_raw.pop('custom_op_evidence', {})",
+        "    policy = PlatformPolicy(custom_op_evidence=CustomOpEvidenceConfig(**evidence_d), **policy_raw)",
+        "else:",
+        "    policy = None",
+        "",
+        f"data = json.load(open({report_path!r}))",
+        f"result = validate_custom_op_final_gate(data, project_root={project_root!r}, platform_policy=policy)",
+        'passed = result["passed"]',
+        'error_count = len(result["errors"])',
+        'print(f"passed={passed}")',
+        'print(f"error_count={error_count}")',
+        'for e in result["errors"]: print(e)',
+    ]
+    return "\n".join(python_lines)
+
+
+def _build_final_gate_validator_command(
+    *,
+    project_dir: str,
+    platform_policy: PlatformPolicy | None,
+    runner_path: str | None = None,
+) -> str:
+    """Build a directly-runnable shell command that validates the final gate report.
+
+    When *runner_path* is provided (absolute path to a pre-written runner
+    script), returns a concise ``bash "<runner_path>"`` command suitable for
+    prompt injection without exposing framework internals.
+
+    When *runner_path* is None (backward-compatible default), returns the
+    full inline Python heredoc command.
+
+    The command runs ``validate_custom_op_final_gate`` against
+    ``<project_dir>/migration_reports/custom_op_final_gate.json`` using the
+    *full platform policy* (including overrides) and prints ``passed=``,
+    ``error_count=``, and each error line.
+    """
+    if runner_path is not None:
+        return f"bash {shlex.quote(runner_path)}"
+
+    mu_root = str(migration_utils_root())
+    python_script = _build_final_gate_validator_python_script(
+        project_dir=project_dir,
+        platform_policy=platform_policy,
+    )
+    return (
+        f'cd "{mu_root}" && PYTHONPATH="{mu_root}" python3 << \'PYEOF\'\n'
+        f"{python_script}\n"
+        f"PYEOF"
+    )
+
+
+def _write_final_gate_validator_runner(
+    *,
+    artifact_dir: str,
+    project_dir: str,
+    platform_policy: PlatformPolicy | None,
+) -> str:
+    """Write a shell runner script under ``<artifact_dir>/runtime/`` that
+    validates the final gate report.
+
+    Returns the **absolute, resolved** path to the runner script. Callers
+    should feed the result to ``_build_final_gate_validator_command(…,
+    runner_path=…)`` to obtain a concise prompt-visible command.
+
+    The script is executable (chmod 0o700) and self-contained: it changes
+    directory to ``migration_utils_root()`` and runs the validator heredoc.
+    """
+    runtime_dir = Path(artifact_dir) / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    project_name = sanitize_project_name(project_dir)
+    script_path = runtime_dir / f"finalGateValidator_{project_name}.sh"
+
+    mu_root = str(migration_utils_root())
+    python_script = _build_final_gate_validator_python_script(
+        project_dir=project_dir,
+        platform_policy=platform_policy,
+    )
+    content = "\n".join([
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        f'cd "{mu_root}" && PYTHONPATH="{mu_root}" python3 << \'PYEOF\'',
+        python_script,
+        "PYEOF",
+        "",
+    ])
+    script_path.write_text(content, encoding="utf-8")
+    script_path.chmod(0o700)
+    return str(script_path.resolve())
+
+
+_FINAL_GATE_VALIDATOR_CONTRACT_SUMMARY = (
+    "The validator enforces strict report/schema requirements on "
+    "migration_reports/custom_op_final_gate.json. Fix row counts, inventory, "
+    "manifest alignment, performance_report structure, source_inventory "
+    "metadata, and JSON schema compliance. Do NOT fabricate or modify "
+    "evidence-level content (artifacts, runtime coverage, custom calls, "
+    "no-fallback proofs). If evidence-level errors remain after schema "
+    "repair, report them as operator blockers in your summary — they are "
+    "outside the report-fixer scope."
+)
+
+
+def _final_gate_validator_contract_summary() -> str:
+    """Return a concise validator contract summary for report fixer prompts."""
+    return _FINAL_GATE_VALIDATOR_CONTRACT_SUMMARY
 
 
 def _operator_generic_guidance(
@@ -180,8 +347,91 @@ def _operator_custom_op_guidance(
 
 def _operator_repair_has_custom_op_contract(phase3_contract: dict[str, object] | None) -> bool:
     return isinstance(phase3_contract, dict) and _has_custom_op_contract_fields(phase3_contract)
+
+
+def _operator_routing_override_enabled(config: ConfigDict | None) -> bool:
+    """Check whether custom-op operator routing override is enabled via config.
+
+    Checks in order:
+    1. ``custom_op_operator_routing_override_enabled`` as a direct top-level key
+       (workflow globals or direct config form).
+    2. ``framework.custom_op_operator_routing_override_enabled`` as a nested key
+       (framework config form).
+
+    When any is explicitly ``False``, the routing override is skipped.
+    When absent or ``True``, the override is active (default).
+
+    Accepts string values: ``"false"``, ``"0"``, ``"no"`` → False;
+    ``"true"``, ``"1"``, ``"yes"`` → True.
+    """
+    direct = _parse_config_bool(config and config.get("custom_op_operator_routing_override_enabled"))
+    if direct is not None:
+        return direct
+    framework_cfg = config.get("framework") if config else None
+    if isinstance(framework_cfg, dict):
+        nested = _parse_config_bool(framework_cfg.get("custom_op_operator_routing_override_enabled"))
+        if nested is not None:
+            return nested
+    return True
+
+
+def _parse_config_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"false", "0", "no", "off", ""}:
+            return False
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        return None
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
+
+
+def _repair_role_descriptions_text(available_roles: set[str] | None = None) -> str:
+    """Generate repair role descriptions + output field semantics markdown.
+
+    When *available_roles* is None or empty, defaults to the three basic roles
+    (dependency_fixer, code_adapter, operator_fixer).  When the set includes
+    ``final_gate_report_fixer``, the report fixer role and its descriptions
+    are also included.
+    """
+    roles = set(available_roles or ())
+    has_report = "final_gate_report_fixer" in roles  # only when explicitly provided
+
+    lines = ["## Repair Roles"]
+    lines.append("- `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.")
+    lines.append("- `code_adapter`: Fix Python-level API/device/tensor migration, device placement, backend strings. Must prioritize native accelerator solutions.")
+    lines.append("- `operator_fixer`: Fix shared-object, native-symbol, compiler, custom-kernel, custom-op final-gate evidence-level issues (artifacts, runtime coverage, custom calls, no-fallback evidence).")
+    if has_report:
+        lines.append("- `final_gate_report_fixer`: Fix entry-script report aggregation logic, manifest/source-inventory/performance-report schema alignment, and final-gate JSON structure without touching evidence-level operator content.")
+
+    if has_report:
+        lines.append("")
+        lines.append("## Routing Boundary")
+        lines.append("- Report schema/aggregation/count/emission failures (rows, inventory, performance_report, manifest mismatches) → `final_gate_report_fixer`.")
+        lines.append("- Native artifacts, runtime coverage, custom calls, no-fallback evidence, shared-object/symbol/compiler issues → `operator_fixer`.")
+
+    lines.append("")
+    lines.append("## Output Field Semantics")
+    lines.append("- `category`: One of `environment`, `dependency`, `pathing`, `migration logic`, `operator`, `validation`, `unknown`.")
+    lines.append("- `root_cause`: Specific explanation with supporting evidence.")
+    lines.append("- `suggested_fix`: Concrete corrective action for downstream repair agent.")
+    role_list = ["`dependency_fixer`", "`code_adapter`", "`operator_fixer`"]
+    if has_report:
+        role_list.append("`final_gate_report_fixer`")
+    lines.append(f"- `repair_role`: One of {', '.join(role_list)}.")
+    lines.append("- `entry_script_action.needed`: `true` to revise the Phase 3 entry-script command, `false` otherwise.")
+    lines.append("- `entry_script_action.action`: `\"none\"`, `\"regenerate\"`, or `\"modify\"`.")
+    lines.append("- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`.")
+
+    return "\n".join(lines)
 _STAGNATION_THRESHOLD = 3
-__all__ = ["RepairLoopEngine", "SessionManagerLike", "ReviewGateState", "_get_timeout", "force_custom_op_operator_routing_if_needed"]
+__all__ = ["RepairLoopEngine", "SessionManagerLike", "ReviewGateState", "_build_final_gate_validator_command", "_final_gate_validator_contract_summary", "_get_timeout", "_operator_routing_override_enabled", "_repair_role_descriptions_text", "_write_final_gate_validator_runner", "force_custom_op_operator_routing_if_needed"]
 
 
 _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
@@ -240,6 +490,39 @@ _CUSTOM_OP_CONTEXT_PATTERNS = (
     r"final[-_ ]gate",
 )
 
+# Patterns that indicate report schema/aggregation failures (not evidence/runtime).
+# These route to final_gate_report_fixer instead of operator_fixer.
+_CUSTOM_OP_REPORT_SCHEMA_PATTERNS = (
+    r"rows must be a non-empty list",
+    r"rows length must equal",
+    r"rows must exactly match",
+    r"source_inventory must (?:include|contain|match)",
+    r"source_inventory\.discovery_complete",
+    r"source_inventory\.out_of_scope_source_groups",
+    r"source_inventory\.discovery_sources_checked",
+    r"performance_report must be an object",
+    r"performance_report must contain per-unit",
+    r"performance_report must match",
+    r"performance_report must prove",
+    r"performance_report\.complete",
+    r"performance_report\.unit_count",
+    r"performance_report\.path",
+    r"full_migration_status must be",
+    r"inventory_count.*must match",
+    r"remaining_entries must be",
+    r"custom-op final gate report missing",
+    r"custom-op final gate report too large",
+    r"custom-op final gate report could not be",
+    r"custom-op final gate report must be a JSON object",
+    r"migration_reports/migration_manifest\.json must exist",
+    r"migration_reports/migration_manifest\.json must contain",
+    r"migration_reports/migration_manifest\.json is too large",
+    r"migration_reports/migration_manifest\.json could not be read",
+    r"migration_reports/migration_manifest\.json unit",
+    r"source_inventory\.entries\[",
+    r"performance_report\.entries\[",
+)
+
 
 def _flatten_for_routing(value: object) -> str:
     if value is None:
@@ -292,12 +575,31 @@ def _has_custom_op_operator_evidence_signal(*, error_text: str = "", history: li
     if any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS):
         return True
 
+    # Also detect custom-op context when report schema patterns match
+    if any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_REPORT_SCHEMA_PATTERNS):
+        return True
+
     has_shared_object_failure = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_SHARED_OBJECT_PATTERNS)
     has_custom_context = any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_CONTEXT_PATTERNS)
     return has_shared_object_failure and has_custom_context
 
 
-def force_custom_op_operator_routing_if_needed(classification: dict[str, object], *, error_text: str = "", history: list[object] | None = None, phase3_contract: dict[str, object] | None = None, prompt_context: dict[str, object] | None = None) -> dict[str, object]:
+def _has_custom_op_report_schema_signal(
+    *,
+    error_text: str = "",
+    history: list[object] | None = None,
+    classification: dict[str, object] | None = None,
+) -> bool:
+    text_parts = [error_text, _flatten_for_routing(history or []), _flatten_for_routing(classification or {})]
+    combined = "\n".join(part for part in text_parts if part).lower()
+    if not combined:
+        return False
+    return any(re.search(pattern, combined, re.IGNORECASE) for pattern in _CUSTOM_OP_REPORT_SCHEMA_PATTERNS)
+
+
+def force_custom_op_operator_routing_if_needed(classification: dict[str, object], *, error_text: str = "", history: list[object] | None = None, phase3_contract: dict[str, object] | None = None, prompt_context: dict[str, object] | None = None, enable_override: bool = True, available_roles: set[str] | None = None) -> dict[str, object]:
+    if not enable_override:
+        return classification
     if not _has_custom_op_operator_evidence_signal(
         error_text=error_text,
         history=history,
@@ -307,7 +609,39 @@ def force_custom_op_operator_routing_if_needed(classification: dict[str, object]
     ):
         return classification
 
+    has_custom_contract = isinstance(phase3_contract, dict) and _has_custom_op_contract_fields(phase3_contract)
+    if has_custom_contract and _has_custom_op_report_schema_signal(
+        error_text=error_text,
+        history=history,
+        classification=classification,
+    ):
+        # Route to final_gate_report_fixer only when it is available in the workflow
+        if available_roles is None or "final_gate_report_fixer" in available_roles:
+            routed = dict(classification)
+            routed["category"] = "operator"
+            routed["repair_role"] = "final_gate_report_fixer"
+            if not str(routed.get("root_cause", "")).strip():
+                routed["root_cause"] = "Custom-op final gate report schema/aggregation does not meet the required structure"
+            if not str(routed.get("suggested_fix", "")).strip():
+                routed["suggested_fix"] = "Fix the entry script/report aggregation logic so the final gate report matches the required schema"
+            return routed
+
     routed = dict(classification)
+    if str(routed.get("repair_role", "")) == "final_gate_report_fixer":
+        # Analyzer already selected final_gate_report_fixer — preserve it
+        # only if the role is available in the workflow.
+        if available_roles is None or "final_gate_report_fixer" in available_roles:
+            routed["category"] = "operator"
+            if not str(routed.get("root_cause", "")).strip():
+                routed["root_cause"] = "Custom-op final gate report schema/aggregation does not meet the required structure"
+            if not str(routed.get("suggested_fix", "")).strip():
+                routed["suggested_fix"] = "Fix the entry script/report aggregation logic so the final gate report matches the required schema"
+            return routed
+    # Only force-route to operator_fixer when the role is actually available.
+    # If available_roles is a concrete set and excludes operator_fixer, do not
+    # force-route — let the caller handle the unavailable fallback.
+    if available_roles is not None and "operator_fixer" not in available_roles:
+        return classification
     routed["category"] = "operator"
     routed["repair_role"] = "operator_fixer"
     if not str(routed.get("root_cause", "")).strip():
@@ -670,13 +1004,15 @@ class RepairLoopEngine:
                             final_exit_code = 1
                             gate_errors = gate_result.get("errors")
                             if isinstance(gate_errors, list) and gate_errors:
-                                concise_gate_errors = "; ".join(str(error) for error in gate_errors[:5])
+                                error_count = len(gate_errors)
+                                full_gate_error_text = "; ".join(str(error) for error in gate_errors)
+                                final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed [{error_count} errors]: {full_gate_error_text}".strip()
                             else:
-                                concise_gate_errors = "custom-op final gate failed"
-                            final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed: {concise_gate_errors}".strip()
+                                final_stderr = f"{final_stderr}\nCustom-op final evidence gate failed".strip()
+                                error_count = 0
                             error_text = self._combine_error(final_stdout, final_stderr)
                             self._log(
-                                f"[Iter {iteration}] Validation FAILED (custom-op final gate) - {concise_gate_errors}",
+                                f"[Iter {iteration}] Validation FAILED (custom-op final gate, {error_count} errors)",
                                 logger,
                             )
                         else:
@@ -1127,6 +1463,7 @@ class RepairLoopEngine:
             "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
             "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
             "workspace_root": _workspace_root(),
+            "repair_role_descriptions": _repair_role_descriptions_text(_REPAIR_ROLES),
         }
         exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
         prompt_context.update(_get_exec_ctx(
@@ -1199,7 +1536,7 @@ class RepairLoopEngine:
                     '- `"category"`: one of [environment, dependency, pathing, migration logic, operator, unknown]\n'
                     '- `"root_cause"`: specific explanation\n'
                     '- `"suggested_fix"`: concrete corrective action\n'
-                    '- `"repair_role"`: dependency_fixer, code_adapter, or operator_fixer\n'
+                    '- `"repair_role"`: dependency_fixer, code_adapter, operator_fixer, or final_gate_report_fixer\n'
                     "Keep your existing reasoning unchanged — just append the JSON at the end."
                 )
                 raw_response = self.session_mgr.send_command(
@@ -1224,6 +1561,8 @@ class RepairLoopEngine:
             error_text=error_text,
             history=history,
             phase3_contract=phase3_contract,
+            enable_override=_operator_routing_override_enabled(self.config),
+            available_roles=_REPAIR_ROLES,
         )))
         validation = self.validator.validate(
             "repair_classification",
@@ -1824,7 +2163,7 @@ class RepairLoopEngine:
         context.update(_get_exec_ctx(
             getattr(self, "exec_backend", None), command=exec_cmd, cwd=script_cwd, env=env_vars,
         ))
-        if repair_role in {"dependency_fixer", "operator_fixer"}:
+        if repair_role in {"dependency_fixer", "operator_fixer", "final_gate_report_fixer"}:
             runtime_error_path, runtime_card_path = write_repair_runtime_artifacts(
                 artifact_dir=str(getattr(self.artifact_store, "artifact_dir", project_dir)),
                 project_dir=project_dir,
@@ -1838,6 +2177,18 @@ class RepairLoopEngine:
             )
             context["runtime_error_artifact_path"] = runtime_error_path
             context["runtime_card_artifact_path"] = runtime_card_path
+            if repair_role == "final_gate_report_fixer":
+                runner_path = _write_final_gate_validator_runner(
+                    artifact_dir=str(getattr(self.artifact_store, "artifact_dir", project_dir)),
+                    project_dir=project_dir,
+                    platform_policy=self.platform_policy,
+                )
+                context["final_gate_validator_command"] = _build_final_gate_validator_command(
+                    project_dir=project_dir,
+                    platform_policy=self.platform_policy,
+                    runner_path=runner_path,
+                )
+                context["final_gate_validator_contract_summary"] = _final_gate_validator_contract_summary()
         if repair_role == "operator_fixer":
             if _operator_repair_has_custom_op_contract(phase3_contract):
                 operator_context_path = write_operator_repair_context_artifact(

@@ -62,6 +62,25 @@ class PromptLoader:
         if not str(context.get("constraint_summary", "")).strip():
             template = re.sub(r",\s*\{constraint_summary\},\s*", ", ", template)
 
+        # Default repair_role_descriptions to the three basic roles when not provided
+        if "repair_role_descriptions" not in context:
+            context = dict(context)
+            context["repair_role_descriptions"] = (
+                "## Repair Roles\n"
+                "- `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.\n"
+                "- `code_adapter`: Fix Python-level API/device/tensor migration, device placement, backend strings.\n"
+                "- `operator_fixer`: Fix shared-object, native-symbol, compiler, custom-kernel, custom-op final-gate evidence-level issues.\n"
+                "\n"
+                "## Output Field Semantics\n"
+                "- `category`: One of `environment`, `dependency`, `pathing`, `migration logic`, `operator`, `validation`, `unknown`.\n"
+                "- `root_cause`: Specific explanation with supporting evidence.\n"
+                "- `suggested_fix`: Concrete corrective action for downstream repair agent.\n"
+                "- `repair_role`: One of `dependency_fixer`, `code_adapter`, `operator_fixer`.\n"
+                "- `entry_script_action.needed`: `true` to revise the Phase 3 entry-script command, `false` otherwise.\n"
+                "- `entry_script_action.action`: `\"none\"`, `\"regenerate\"`, or `\"modify\"`.\n"
+                "- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`."
+            )
+
         placeholders: list[str] = re.findall(r"\{(\w+)\}", template)
 
         missing_keys = [k for k in placeholders if k not in context]
