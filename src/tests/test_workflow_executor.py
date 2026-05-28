@@ -30,7 +30,7 @@ from validators.validate_entry_static import validate as validate_entry_static
 
 
 def write_runtime_skill(root: Path, name: str, content: str | None = None) -> Path:
-    skill_dir = root / "skills" / name
+    skill_dir = root / ".memory" / "skills" / name
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
     skill_path.write_text(content or f"# {name}\n\nUse this guidance.", encoding="utf-8")
