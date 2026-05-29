@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from functools import lru_cache
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -17,12 +17,15 @@ WORKFLOW_PATH = PROJECT_ROOT / "workflows" / "npu_migration_v1.yaml"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable-next=wrong-import-position; silent
 from harness.session.manager import SessionManager, extract_json_response
 
 
 @lru_cache(maxsize=1)
 def server_available(base_url: str = BASE_URL, timeout: float = 1.0) -> bool:
-    request = urllib.request.Request(f"{base_url.rstrip('/')}/agent", headers={"Accept": "application/json"})
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/agent", headers={"Accept": "application/json"}
+    )
     session_mgr: SessionManager | None = None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -31,7 +34,9 @@ def server_available(base_url: str = BASE_URL, timeout: float = 1.0) -> bool:
                 return False
 
         session_mgr = SessionManager(base_url=base_url, timeout=max(timeout, 5.0))
-        session_id = session_mgr.create_session(role="integration-healthcheck", lifecycle="ephemeral")
+        session_id = session_mgr.create_session(
+            role="integration-healthcheck", lifecycle="ephemeral"
+        )
         response_text = session_mgr.send_command(
             session_id,
             'Return exactly this JSON and nothing else: {"ok": true}',

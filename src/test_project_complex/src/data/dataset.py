@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitOverride=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
-
+# pyright: reportAny=false, reportExplicitAny=false,
+# reportImplicitOverride=false, reportUnknownArgumentType=false,
+# reportUnknownMemberType=false, reportUnknownVariableType=false
 from pathlib import Path
 from typing import Any, Callable
 
-import numpy as np
-import torch
+import numpy as np  # pylint: disable=import-error; silent
+import torch  # pylint: disable=import-error; silent
 import yaml
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset  # pylint: disable=import-error; silent
 
 
+# pylint: disable-next=too-many-instance-attributes; silent
 class SyntheticClassificationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     """Synthetic vision dataset with light metadata bootstrapping."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments; silent
         self,
         *,
         num_samples: int,
@@ -34,7 +36,9 @@ class SyntheticClassificationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]])
 
         rng = np.random.default_rng(seed)
         labels = rng.integers(0, num_classes, size=num_samples, dtype=np.int64)
-        images = rng.normal(0.0, 0.65, size=(num_samples, channels, image_size, image_size)).astype(np.float32)
+        images = rng.normal(0.0, 0.65, size=(num_samples, channels, image_size, image_size)).astype(
+            np.float32
+        )
 
         for index, label in enumerate(labels):
             offset = (float(label) + 1.0) / float(num_classes)

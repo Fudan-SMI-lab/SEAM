@@ -1,6 +1,7 @@
 # pyright: reportUnusedCallResult=false
 
 """Verification test for PromptLoader (T6)."""
+
 import sys
 import tempfile
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.prompt_loader import PromptLoader
+from core.prompt_loader import PromptLoader  # pylint: disable=wrong-import-position; silent
 
 
 def test_load_and_substitute():
@@ -50,8 +51,11 @@ def test_missing_file_raises():
 
 def test_list_prompts():
     with tempfile.TemporaryDirectory() as tmpdir:
+        # pylint: disable-next=unspecified-encoding; silent
         Path(tmpdir, "alpha.md").write_text("# Alpha")
+        # pylint: disable-next=unspecified-encoding; silent
         Path(tmpdir, "beta.md").write_text("# Beta")
+        # pylint: disable-next=unspecified-encoding; silent
         Path(tmpdir, "skip.txt").write_text("not a prompt")
 
         loader = PromptLoader(prompts_dir=tmpdir)

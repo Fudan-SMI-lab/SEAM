@@ -1,7 +1,6 @@
-from pathlib import Path
 import subprocess
 import sys
-
+from pathlib import Path
 
 MIGRATION_UTILS_ROOT = Path(__file__).resolve().parents[2]
 EXECUTION_ROOT = MIGRATION_UTILS_ROOT.parent
@@ -37,11 +36,14 @@ def test_migration_utils_module_entrypoint_still_shows_v2_help() -> None:
 
 # ── new: --server-no-auto-start and parser regressions ──
 
+
 def test_v1_e2e_test_accepts_server_no_auto_start() -> None:
     completed = subprocess.run(
         [sys.executable, "src/tests/e2e/e2e_test.py", "--server-no-auto-start", "--help"],
         cwd=EXECUTION_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert completed.returncode == 0, f"stderr: {completed.stderr}"
 
@@ -57,7 +59,9 @@ def test_v1_parser_server_url_default_is_none() -> None:
     completed = subprocess.run(
         [sys.executable, "-c", code],
         cwd=EXECUTION_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert completed.returncode == 0, f"stderr: {completed.stderr}"
     assert completed.stdout.strip() == "None", f"Expected None, got {completed.stdout.strip()!r}"
@@ -68,7 +72,9 @@ def test_v2_parser_accepts_server_no_auto_start() -> None:
     completed = subprocess.run(
         [sys.executable, "-m", "tests.e2e.e2e_test_v2", "--server-no-auto-start", "--help"],
         cwd=EXECUTION_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert completed.returncode == 0, f"stderr: {completed.stderr}"
 
@@ -84,7 +90,9 @@ def test_v2_parser_server_url_default_is_none() -> None:
     completed = subprocess.run(
         [sys.executable, "-c", code],
         cwd=EXECUTION_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert completed.returncode == 0, f"stderr: {completed.stderr}"
     assert completed.stdout.strip() == "None", f"Expected None, got {completed.stdout.strip()!r}"

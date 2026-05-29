@@ -1,4 +1,8 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false
+# pyright: reportMissingTypeArgument=false,
+# reportUnknownParameterType=false, reportUnknownVariableType=false,
+# reportUnknownMemberType=false, reportUnknownArgumentType=false,
+# reportUnannotatedClassAttribute=false
+# pylint: disable-next=line-too-long; silent
 """Experience dispatcher — orchestrates sequential refinement of candidates with independent timeouts."""
 
 import logging
@@ -11,7 +15,7 @@ from core.experience_store import ExperienceStore
 logger = logging.getLogger(__name__)
 
 
-class ExperienceDispatcher:
+class ExperienceDispatcher:  # pylint: disable=too-few-public-methods; silent
     """Sequential dispatcher that refines candidates one at a time with independent timeouts."""
 
     refine_timeout_sec = 3600
@@ -55,19 +59,21 @@ class ExperienceDispatcher:
                 )
                 results.append(refined)
                 logger.info("Refined candidate %s successfully", cid)
-            except Exception as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught; silent
                 logger.warning("Failed to refine candidate %s: %s", cid, exc)
                 continue
 
         for exp in results:
             try:
                 self.store.check_and_auto_promote(exp, run_id)
-            except Exception as exc:
-                logger.warning("Auto-promote failed for experience %s: %s",
-                               exp.get("title", "unknown"), exc)
+            except Exception as exc:  # pylint: disable=broad-exception-caught; silent
+                logger.warning(
+                    "Auto-promote failed for experience %s: %s", exp.get("title", "unknown"), exc
+                )
 
         return results
 
+    # pylint: disable-next=too-many-branches,too-many-locals; silent
     def _load_artifact_contexts(self, candidates: list[dict]) -> dict[str, dict]:
         """Load artifact evidence and source file content for each candidate.
 
@@ -153,11 +159,13 @@ class ExperienceDispatcher:
         candidate_paths = []
         if path.startswith(("validated/", "raw/")) or path == "execution_journal.jsonl":
             candidate_paths.append(os.path.join(self.artifact_dir, path))
-        candidate_paths.extend([
-            os.path.join(self.artifact_dir, "validated", path),
-            os.path.join(self.artifact_dir, "raw", path),
-            os.path.join(self.artifact_dir, path),
-        ])
+        candidate_paths.extend(
+            [
+                os.path.join(self.artifact_dir, "validated", path),
+                os.path.join(self.artifact_dir, "raw", path),
+                os.path.join(self.artifact_dir, path),
+            ]
+        )
         for candidate_path in candidate_paths:
             if os.path.isfile(candidate_path):
                 try:

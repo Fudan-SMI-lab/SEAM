@@ -2,16 +2,17 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
-
-from typing import Any
 
 from core.runtime_skill_resolver import RuntimeSkillResolver
 from core.types import RuntimeSkillsConfig
 
 
-def write_skill(root: Path, name: str, markdown: str | None = None, data: dict[str, Any] | None = None) -> Path:
+def write_skill(
+    root: Path, name: str, markdown: str | None = None, data: dict[str, Any] | None = None
+) -> Path:
     skill_dir = root / ".memory" / "skills" / name
     skill_dir.mkdir(parents=True)
     if markdown is not None:
@@ -21,7 +22,9 @@ def write_skill(root: Path, name: str, markdown: str | None = None, data: dict[s
     return skill_dir
 
 
-def write_local_skill(root: Path, name: str, markdown: str | None = None, data: dict[str, Any] | None = None) -> Path:
+def write_local_skill(
+    root: Path, name: str, markdown: str | None = None, data: dict[str, Any] | None = None
+) -> Path:
     skill_dir = root / ".skills" / name
     skill_dir.mkdir(parents=True)
     if markdown is not None:
@@ -47,7 +50,7 @@ def test_resolves_markdown_skill_before_json_fallback(tmp_path: Path):
     assert bundle.paths == [str(tmp_path / ".memory" / "skills" / "npu-skill" / "SKILL.md")]
     assert "## Explicit Runtime Skills" in bundle.markdown
     assert "# Rendered Skill" not in bundle.markdown
-    assert bundle.missing == []
+    assert bundle.missing == []  # pylint: disable=use-implicit-booleaness-not-comparison; silent
 
 
 def test_falls_back_to_skill_data_json(tmp_path: Path):
@@ -157,7 +160,7 @@ def test_phase_none_merge_disables_runtime_skills(tmp_path: Path):
         phase_config=RuntimeSkillsConfig(merge="none"),
     )
 
-    assert bundle.names == []
+    assert bundle.names == []  # pylint: disable=use-implicit-booleaness-not-comparison; silent
     assert bundle.markdown == ""
 
 
@@ -183,7 +186,7 @@ def test_missing_policy_ignore_suppresses_warning(tmp_path: Path):
     )
 
     assert bundle.missing == ["missing-skill"]
-    assert bundle.warnings == []
+    assert bundle.warnings == []  # pylint: disable=use-implicit-booleaness-not-comparison; silent
 
 
 def test_invalid_merge_policy_rejected_by_resolver(tmp_path: Path):

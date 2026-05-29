@@ -7,22 +7,21 @@ from typing import Literal, Protocol, cast
 
 import pytest
 
-from . import BASE_URL, cleanup_remote_sessions, server_available
 from core.artifact_store import ArtifactStore
 from core.phase_runner import PhaseRunner
 from core.prompt_loader import PromptLoader
 from core.validator_engine import ValidatorEngine
 from harness.session.manager import SessionManager
 
+from . import BASE_URL, cleanup_remote_sessions, server_available
+
 pytestmark = pytest.mark.skipif(not server_available(), reason="No OpenCode server")
 
 
 class PhaseRunnerSessionManager(Protocol):
-    def get_or_create(self, role: str, lifecycle: str) -> str:
-        ...
+    def get_or_create(self, role: str, lifecycle: str) -> str: ...
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
-        ...
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str: ...
 
 
 class SessionManagerAdapter:
@@ -116,11 +115,21 @@ def test_run_phase_0_to_3_with_real_session_manager(tmp_path: Path) -> None:
     assert outputs["phase_3_entry_script"]["entry_script_path"] == str(project_dir / "train.py")
     assert outputs["phase_35_static_validate"]["validation_passed"] is True
 
-    assert artifact_store.load_phase_output("0_env_detect") == _without_meta(outputs["phase_0_env_detect"])
-    assert artifact_store.load_phase_output("1_project_analysis") == _without_meta(outputs["phase_1_project_analysis"])
-    assert artifact_store.load_phase_output("2_venv_create") == _without_meta(outputs["phase_2_venv_create"])
-    assert artifact_store.load_phase_output("3_entry_script") == _without_meta(outputs["phase_3_entry_script"])
-    assert artifact_store.load_phase_output("35_static_validate") == _without_meta(outputs["phase_35_static_validate"])
+    assert artifact_store.load_phase_output("0_env_detect") == _without_meta(
+        outputs["phase_0_env_detect"]
+    )
+    assert artifact_store.load_phase_output("1_project_analysis") == _without_meta(
+        outputs["phase_1_project_analysis"]
+    )
+    assert artifact_store.load_phase_output("2_venv_create") == _without_meta(
+        outputs["phase_2_venv_create"]
+    )
+    assert artifact_store.load_phase_output("3_entry_script") == _without_meta(
+        outputs["phase_3_entry_script"]
+    )
+    assert artifact_store.load_phase_output("35_static_validate") == _without_meta(
+        outputs["phase_35_static_validate"]
+    )
     journal = artifact_store.get_journal()
     assert [entry["phase_id"] for entry in journal if entry["status"] == "succeeded"] == [
         "phase_0_env_detect",

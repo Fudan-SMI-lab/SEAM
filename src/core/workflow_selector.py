@@ -52,7 +52,6 @@ Integration notes for later wiring
 
 from __future__ import annotations
 
-import json
 import logging
 from copy import deepcopy
 from pathlib import Path
@@ -61,7 +60,7 @@ from typing import Any
 import yaml
 
 from .config import _read_yaml
-from .paths import resolve_relative_path, execution_root
+from .paths import execution_root, resolve_relative_path
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +95,7 @@ def is_selector_file(path: str | Path) -> bool:
     return is_selector_yaml(raw)
 
 
-def resolve_workflow_from_selector(
+def resolve_workflow_from_selector(  # pylint: disable=too-many-locals; silent
     selector_path: str,
     session_mgr: Any,
     prompt_loader: Any,
@@ -156,9 +155,7 @@ def resolve_workflow_from_selector(
     effective_fallback = selector_cfg.pop("fallback", raw.get("fallback"))
 
     # Resolve and validate candidate workflow paths
-    candidates = _resolve_candidates(
-        raw["candidate_workflows"], selector_dir, selector_path
-    )
+    candidates = _resolve_candidates(raw["candidate_workflows"], selector_dir, selector_path)
 
     # Agent-based selection
     selected_path = _select_workflow_via_agent(
@@ -221,16 +218,12 @@ def _validate_selector_schema(raw: dict[str, Any], path: str) -> None:
     """Ensure the selector YAML has the required shape."""
     candidates = raw.get("candidate_workflows")
     if not candidates or not isinstance(candidates, list) or len(candidates) == 0:
-        raise ValueError(
-            f"Selector '{path}': 'candidate_workflows' must be a non-empty list"
-        )
+        raise ValueError(f"Selector '{path}': 'candidate_workflows' must be a non-empty list")
 
     seen_paths: set[str] = set()
     for i, entry in enumerate(candidates):
         if not isinstance(entry, dict):
-            raise ValueError(
-                f"Selector '{path}': candidate_workflows[{i}] must be a mapping"
-            )
+            raise ValueError(f"Selector '{path}': candidate_workflows[{i}] must be a mapping")
         entry_path = entry.get("path")
         if not entry_path or not isinstance(entry_path, str) or not entry_path.strip():
             raise ValueError(
@@ -238,23 +231,17 @@ def _validate_selector_schema(raw: dict[str, Any], path: str) -> None:
                 f"non-empty string 'path'"
             )
         if entry_path in seen_paths:
-            raise ValueError(
-                f"Selector '{path}': duplicate candidate path '{entry_path}'"
-            )
+            raise ValueError(f"Selector '{path}': duplicate candidate path '{entry_path}'")
         seen_paths.add(entry_path)
 
     fallback = raw.get("fallback")
     if fallback is not None:
         if not isinstance(fallback, str) or not fallback.strip():
-            raise ValueError(
-                f"Selector '{path}': 'fallback' must be a non-empty string when set"
-            )
+            raise ValueError(f"Selector '{path}': 'fallback' must be a non-empty string when set")
 
     overrides = raw.get("overrides")
     if overrides is not None and not isinstance(overrides, dict):
-        raise ValueError(
-            f"Selector '{path}': 'overrides' must be a mapping when set"
-        )
+        raise ValueError(f"Selector '{path}': 'overrides' must be a mapping when set")
 
 
 def _resolve_candidates(
@@ -275,11 +262,13 @@ def _resolve_candidates(
     for i, entry in enumerate(candidate_entries):
         raw_path = entry["path"].strip()
         candidate_path = _resolve_candidate_path(raw_path, selector_dir, selector_path, i)
-        resolved.append({
-            "path": candidate_path,
-            "raw_path": raw_path,
-            "description": str(entry.get("description", candidate_path.stem)),
-        })
+        resolved.append(
+            {
+                "path": candidate_path,
+                "raw_path": raw_path,
+                "description": str(entry.get("description", candidate_path.stem)),
+            }
+        )
     return resolved
 
 
@@ -308,6 +297,7 @@ def _resolve_candidate_path(
     )
 
 
+# pylint: disable-next=too-many-arguments,too-many-branches,too-many-locals; silent
 def _select_workflow_via_agent(
     *,
     candidates: list[dict[str, Any]],
@@ -320,6 +310,7 @@ def _select_workflow_via_agent(
     selector_config: dict[str, Any] | None = None,
 ) -> Path:
     """Ask an agent to pick a candidate; fall back when output is invalid."""
+    # pylint: disable-next=import-outside-toplevel; silent
     from harness.session.manager import extract_json_response
 
     if selector_config is None:
@@ -333,9 +324,7 @@ def _select_workflow_via_agent(
     # Build candidate list text
     candidate_lines: list[str] = []
     for i, c in enumerate(candidates):
-        candidate_lines.append(
-            f"{i + 1}. **{c['raw_path']}** — {c['description']}"
-        )
+        candidate_lines.append(f"{i + 1}. **{c['raw_path']}** — {c['description']}")
     candidates_text = "\n".join(candidate_lines)
 
     # Build project context summary text
@@ -359,7 +348,7 @@ def _select_workflow_via_agent(
     except TypeError:
         # Graceful fallback: fake session managers may not accept ``agent``.
         sid = session_mgr.get_or_create(role="workflow_selector", lifecycle="ephemeral")
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught; silent
         # Graceful fallback: create_session if get_or_create missing
         create = getattr(session_mgr, "create_session", None)
         if callable(create):
@@ -379,9 +368,8 @@ def _select_workflow_via_agent(
                     title=f"migration-workflow-selector-{selector_name}",
                 )
         else:
-            raise RuntimeError(
-                "Session manager has no get_or_create or create_session method"
-            )
+            # pylint: disable-next=raise-missing-from; silent
+            raise RuntimeError("Session manager has no get_or_create or create_session method")
 
     # Send prompt and parse
     try:
@@ -400,10 +388,8 @@ def _select_workflow_via_agent(
         selected_raw = _validate_agent_selection(parsed, candidates, selector_path)
         if selected_raw:
             return selected_raw
-    except Exception as exc:
-        logger.warning(
-            "Agent workflow selection failed for '%s': %s", selector_path, exc
-        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught; silent
+        logger.warning("Agent workflow selection failed for '%s': %s", selector_path, exc)
 
     # Fallback path
     return _resolve_fallback(fallback, candidates, selector_path)
@@ -419,9 +405,7 @@ def _validate_agent_selection(
     Returns the resolved Path on success, None if output is invalid.
     """
     if not isinstance(parsed, dict):
-        logger.warning(
-            "Agent selection output for '%s' is not a dict: %r", selector_path, parsed
-        )
+        logger.warning("Agent selection output for '%s' is not a dict: %r", selector_path, parsed)
         return None
 
     selected_str = parsed.get("selected_workflow")
@@ -441,6 +425,7 @@ def _validate_agent_selection(
             return c["path"]
         if selected_str == str(c["path"]):
             return c["path"]
+        # pylint: disable-next=consider-using-in; silent
         if selected_str == c["path"].stem or selected_str == c["path"].name:
             return c["path"]
 
@@ -470,9 +455,7 @@ def _resolve_fallback(
 
     for c in candidates:
         if fallback == c["raw_path"] or fallback == str(c["path"]):
-            logger.info(
-                "Using configured fallback '%s' for selector '%s'", fallback, selector_path
-            )
+            logger.info("Using configured fallback '%s' for selector '%s'", fallback, selector_path)
             return c["path"]
 
     raise ValueError(
@@ -484,6 +467,7 @@ def _resolve_fallback(
 def _format_project_summary(project_context: dict[str, Any]) -> str:
     """Build a compact text summary of the project context."""
     if not project_context:
+        # pylint: disable-next=line-too-long; silent
         return "(No project context provided — make your best guess based on workflow descriptions alone.)"
 
     # Start with a project name / path if available
@@ -564,9 +548,10 @@ def _materialize_merged_workflow(
     resolved_dir.mkdir(parents=True, exist_ok=True)
 
     # Sanitize the selector name for use as filename
-    safe_name = "".join(
-        c if c.isalnum() or c in "._-" else "_" for c in selector_name
-    ).strip("_") or "selected_workflow"
+    safe_name = (
+        "".join(c if c.isalnum() or c in "._-" else "_" for c in selector_name).strip("_")
+        or "selected_workflow"
+    )
 
     out_path = resolved_dir / f"{safe_name}.yaml"
 

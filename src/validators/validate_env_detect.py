@@ -7,6 +7,7 @@ CUDA-compatible fields with NPU-compatibility fallbacks.
 from core.validator_engine import ValidationDict
 
 
+# pylint: disable-next=too-many-branches; silent
 def validate(data: dict[str, object]) -> ValidationDict:
     errors: list[str] = []
 
@@ -35,6 +36,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
         accelerator_detected = data.get("accelerator_detected")
         if not isinstance(platform_detected, bool) and not isinstance(accelerator_detected, bool):
             errors.append(
+                # pylint: disable-next=line-too-long; silent
                 f"{platform_key}_detected or accelerator_detected must be a boolean for platform={platform_key}"
             )
 

@@ -1,18 +1,19 @@
 """Tests for container-specific Phase 5 execution-context visibility."""
 
 from __future__ import annotations
+
 import shlex
-import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from core.config import load_workflow
 from core.execution_backend import (
     ContainerBackend,
-    ExecResult,
     LocalBackend,
+)
+from core.execution_backend import (
     get_execution_context as _get_exec_ctx,
 )
 from core.types import ExecutionBackendConfig
@@ -21,23 +22,27 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS_DIR = ROOT / "workflows"
 PROMPTS_DIR = ROOT / "prompts"
 
-PHASE5_CONTAINER_PROMPTS = frozenset({
-    "phase_error_recovery_container",
-    "repair_dependency_fixer_container",
-    "repair_code_adapter_container",
-    "repair_operator_fixer_container",
-    "phase_5_review_container",
-    "phase_review_improvement_container",
-})
+PHASE5_CONTAINER_PROMPTS = frozenset(
+    {
+        "phase_error_recovery_container",
+        "repair_dependency_fixer_container",
+        "repair_code_adapter_container",
+        "repair_operator_fixer_container",
+        "phase_5_review_container",
+        "phase_review_improvement_container",
+    }
+)
 
-PHASE5_ORIGINAL_PROMPTS = frozenset({
-    "phase_error_recovery",
-    "repair_dependency_fixer",
-    "repair_code_adapter",
-    "repair_operator_fixer",
-    "phase_5_review",
-    "phase_review_improvement",
-})
+PHASE5_ORIGINAL_PROMPTS = frozenset(
+    {
+        "phase_error_recovery",
+        "repair_dependency_fixer",
+        "repair_code_adapter",
+        "repair_operator_fixer",
+        "phase_5_review",
+        "phase_review_improvement",
+    }
+)
 
 # ── Original prompt files unchanged ─────────────────────────────────────
 
@@ -79,12 +84,14 @@ class TestContainerPromptsExist:
         assert "host_project_dir" in content
         assert "container_project_dir" in content
 
-    _ENTRY_SCRIPT_PROMPTS = frozenset({
-        "phase_error_recovery_container",
-        "repair_dependency_fixer_container",
-        "repair_code_adapter_container",
-        "repair_operator_fixer_container",
-    })
+    _ENTRY_SCRIPT_PROMPTS = frozenset(
+        {
+            "phase_error_recovery_container",
+            "repair_dependency_fixer_container",
+            "repair_code_adapter_container",
+            "repair_operator_fixer_container",
+        }
+    )
 
     @pytest.mark.parametrize("name", sorted(PHASE5_CONTAINER_PROMPTS))
     def test_entry_script_placeholder_presence(self, name):
@@ -227,8 +234,8 @@ class TestGetExecutionContext:
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "abc123"
-        backend._initialized = True
+        backend._container_id = "abc123"  # pylint: disable=protected-access; silent
+        backend._initialized = True  # pylint: disable=protected-access; silent
 
         ctx = backend.get_execution_context(command=".venv/bin/python run.py")
         assert ctx["execution_backend_mode"] == "container"
@@ -243,8 +250,8 @@ class TestGetExecutionContext:
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "pod-42"
-        backend._initialized = True
+        backend._container_id = "pod-42"  # pylint: disable=protected-access; silent
+        backend._initialized = True  # pylint: disable=protected-access; silent
 
         ctx = backend.get_execution_context(command=".venv/bin/python run.py")
         assert "podman" in ctx["actual_execution_command"]
@@ -263,11 +270,13 @@ class TestGetExecutionContext:
         assert "will be created on first execution" in ctx["actual_execution_command"]
 
     def test_container_backend_existing_container_shows_name(self, tmp_path):
-        cfg = ExecutionBackendConfig.from_dict({
-            "mode": "container",
-            "source": "existing_container",
-            "container_name": "my-dev-01",
-        })
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "my-dev-01",
+            }
+        )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
 
@@ -277,13 +286,17 @@ class TestGetExecutionContext:
 
     def test_container_backend_describe_command_no_cwd(self, tmp_path):
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest", "runtime": "docker",
-             "container_workdir": "/workspace"}
+            {
+                "mode": "container",
+                "image": "test:latest",
+                "runtime": "docker",
+                "container_workdir": "/workspace",
+            }
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "c1"
-        backend._initialized = True
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
+        backend._initialized = True  # pylint: disable=protected-access; silent
 
         desc = backend.describe_command("python main.py")
         assert "docker exec" in desc
@@ -291,17 +304,14 @@ class TestGetExecutionContext:
         assert "/workspace" in desc
         assert "c1" in desc
 
+    # pylint: disable-next=unused-argument; silent
     def test_container_backend_describe_command_with_env(self, tmp_path):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
         backend = ContainerBackend(cfg)
-        backend._container_id = "c1"
-        backend._initialized = True
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
+        backend._initialized = True  # pylint: disable=protected-access; silent
 
-        desc = backend.describe_command(
-            "python main.py", env={"FOO": "bar", "BAZ": "qux"}
-        )
+        desc = backend.describe_command("python main.py", env={"FOO": "bar", "BAZ": "qux"})
         assert "-e" in desc
         assert "FOO=bar" in desc
         assert "BAZ=qux" in desc
@@ -312,8 +322,8 @@ class TestGetExecutionContext:
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "c1"
-        backend._initialized = True
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
+        backend._initialized = True  # pylint: disable=protected-access; silent
 
         subdir = tmp_path / "subdir"
         subdir.mkdir()
@@ -321,12 +331,10 @@ class TestGetExecutionContext:
         assert "/workspace/subdir" in desc
 
     def test_container_backend_no_command_placeholder(self, tmp_path):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
         ctx = backend.get_execution_context()
         assert ctx["container_name_or_id"] == "c1"
@@ -341,7 +349,9 @@ class TestContainerPromptRendering:
     """Verify container prompt placeholders are populated correctly."""
 
     def _fake_loader(self) -> MagicMock:
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.prompt_loader import PromptLoader
+
         loader = MagicMock(spec=PromptLoader)
 
         def _load(prompt_id: str, context: dict) -> str:
@@ -365,8 +375,8 @@ class TestContainerPromptRendering:
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "docker-ctx-99"
-        backend._initialized = True
+        backend._container_id = "docker-ctx-99"  # pylint: disable=protected-access; silent
+        backend._initialized = True  # pylint: disable=protected-access; silent
 
         loader = self._fake_loader()
         entry_script = ".venv/bin/python run_test.py"
@@ -394,12 +404,10 @@ class TestContainerPromptRendering:
         assert "docker-ctx-99" in rendered
 
     def test_container_prompt_renders_entry_script(self, tmp_path):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
         loader = self._fake_loader()
         entry = "python app.py"
@@ -424,6 +432,7 @@ class TestContainerPromptRendering:
         rendered = loader.load_prompt("repair_dependency_fixer_container", ctx)
         assert entry in rendered
 
+    # pylint: disable-next=unused-argument; silent
     def test_local_context_does_not_leak_into_container_prompts(self, tmp_path):
         ctx = _get_exec_ctx(None, command="echo test")
         assert ctx["execution_backend_mode"] == "local"
@@ -439,12 +448,16 @@ class TestCommandDescriptionAccuracy:
 
     def test_list_command_no_bash_c(self, tmp_path):
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest", "runtime": "docker",
-             "container_workdir": "/workspace"}
+            {
+                "mode": "container",
+                "image": "test:latest",
+                "runtime": "docker",
+                "container_workdir": "/workspace",
+            }
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
         desc = backend.describe_command(["python", "train.py", "--epochs", "10"])
         assert "bash" not in desc
@@ -455,39 +468,40 @@ class TestCommandDescriptionAccuracy:
 
     def test_list_command_with_cwd(self, tmp_path):
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest", "runtime": "docker",
-             "container_workdir": "/workspace"}
+            {
+                "mode": "container",
+                "image": "test:latest",
+                "runtime": "docker",
+                "container_workdir": "/workspace",
+            }
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
         subdir = tmp_path / "experiments"
         subdir.mkdir()
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
         desc = backend.describe_command(["python", "train.py"], cwd=str(subdir))
         assert "bash" not in desc
         assert "/workspace/experiments" in desc
 
-    def test_list_command_with_env(self, tmp_path):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest"}
-        )
+    def test_list_command_with_env(self, tmp_path):  # pylint: disable=unused-argument; silent
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
         backend = ContainerBackend(cfg)
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
-        desc = backend.describe_command(
-            ["python", "train.py"], env={"CUDA_VISIBLE_DEVICES": "0"}
-        )
+        desc = backend.describe_command(["python", "train.py"], env={"CUDA_VISIBLE_DEVICES": "0"})
         assert "bash" not in desc
         assert "-e" in desc
         assert "CUDA_VISIBLE_DEVICES=0" in desc
 
+    # pylint: disable-next=unused-argument; silent
     def test_string_command_shows_bash_c(self, tmp_path):
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest", "runtime": "docker"}
         )
         backend = ContainerBackend(cfg)
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
         desc = backend.describe_command("python train.py && echo done")
         assert "bash" in desc
@@ -495,12 +509,16 @@ class TestCommandDescriptionAccuracy:
 
     def test_get_execution_context_uses_argv_for_list(self, tmp_path):
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest", "runtime": "docker",
-             "container_workdir": "/workspace"}
+            {
+                "mode": "container",
+                "image": "test:latest",
+                "runtime": "docker",
+                "container_workdir": "/workspace",
+            }
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
         ctx = backend.get_execution_context(command=["python", "train.py"])
         assert "bash" not in ctx["actual_execution_command"]
@@ -508,12 +526,16 @@ class TestCommandDescriptionAccuracy:
 
     def test_get_execution_context_uses_bash_c_for_string(self, tmp_path):
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest", "runtime": "docker",
-             "container_workdir": "/workspace"}
+            {
+                "mode": "container",
+                "image": "test:latest",
+                "runtime": "docker",
+                "container_workdir": "/workspace",
+            }
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "c1"
+        backend._container_id = "c1"  # pylint: disable=protected-access; silent
 
         ctx = backend.get_execution_context(command="python train.py && echo done")
         assert "bash" in ctx["actual_execution_command"]
@@ -521,13 +543,18 @@ class TestCommandDescriptionAccuracy:
 
     def test_rendered_context_uses_argv_style(self, tmp_path):
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "ascendhub:24.03", "runtime": "docker",
-             "container_workdir": "/workspace"}
+            {
+                "mode": "container",
+                "image": "ascendhub:24.03",
+                "runtime": "docker",
+                "container_workdir": "/workspace",
+            }
         )
         backend = ContainerBackend(cfg)
         backend.set_project_dir(str(tmp_path))
-        backend._container_id = "ctx-llm-1"
+        backend._container_id = "ctx-llm-1"  # pylint: disable=protected-access; silent
 
+        # pylint: disable-next=protected-access; silent
         loader = TestContainerPromptRendering()._fake_loader()
         entry_script = ".venv/bin/python run_test.py"
         exec_cmd = shlex.split(entry_script)
@@ -554,4 +581,3 @@ class TestCommandDescriptionAccuracy:
         assert "exec -i" in rendered or "docker exec" in rendered
         assert ".venv/bin/python" in rendered
         assert "run_test.py" in rendered
-

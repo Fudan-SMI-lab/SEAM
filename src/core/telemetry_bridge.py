@@ -16,7 +16,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class TelemetryBridge:
+class TelemetryBridge:  # pylint: disable=too-many-instance-attributes; silent
     """Record workflow execution telemetry metrics."""
 
     def __init__(self, output_dir: str) -> None:
@@ -24,7 +24,9 @@ class TelemetryBridge:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._run_started = time.monotonic()
         self._run_started_iso = _utc_now()
-        self._phase_timings: dict[str, dict] = {}  # phase_id -> {started_at, ended_at, duration, status}
+        self._phase_timings: dict[
+            str, dict
+        ] = {}  # phase_id -> {started_at, ended_at, duration, status}
         self._commands: list[dict] = []
         self._events: list[dict] = []
         self._active_phase: str | None = None
@@ -57,7 +59,7 @@ class TelemetryBridge:
         metric["duration_seconds"] = round(duration, 3)
         metric["status"] = status
 
-    def on_command(
+    def on_command(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         session_id: str,
         phase_id: str,

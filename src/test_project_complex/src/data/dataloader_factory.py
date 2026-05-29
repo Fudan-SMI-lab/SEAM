@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 # pyright: reportAny=false, reportExplicitAny=false, reportMissingTypeStubs=false
-
 from pathlib import Path
 from typing import Any
 
-import torch
-from torch.utils.data import DataLoader
-from torchvision import transforms
+import torch  # pylint: disable=import-error; silent
+from torch.utils.data import DataLoader  # pylint: disable=import-error; silent
+from torchvision import transforms  # pylint: disable=import-error; silent
 
 from .dataset import SyntheticClassificationDataset
 

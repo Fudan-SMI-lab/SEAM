@@ -45,7 +45,7 @@ def load_framework_config(config_path: str | None = None) -> dict[str, object]:
 def _interpolate_env(obj: object) -> object:
     """Recursively replace ``{VAR_NAME}`` in all string values."""
     if isinstance(obj, str):
-        return re.sub(r'\{(\w+)\}', lambda m: os.environ.get(m.group(1), ''), obj)
+        return re.sub(r"\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), obj)
     if isinstance(obj, dict):
         return {k: _interpolate_env(v) for k, v in cast("dict[object, object]", obj).items()}
     if isinstance(obj, list):

@@ -1,11 +1,10 @@
+# pylint: disable-next=line-too-long; silent
 """Focused tests for execution_environment_context prompt placeholder and base-aware prompt wiring."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from core.execution_backend import (
     ContainerBackend,
@@ -36,7 +35,9 @@ class TestGetExecutionEnvironmentContext:
         assert "execution_backend_mode" in result
         assert "local" in result
         assert "target runtime" in result.lower()
-        assert "Phase 5" not in result, "get_execution_environment_context must not leak explicit Phase 5"
+        assert "Phase 5" not in result, (
+            "get_execution_environment_context must not leak explicit Phase 5"
+        )
         assert "host/local" in result or "host" in result.lower()
 
     def test_local_backend_returns_local_context(self):
@@ -46,28 +47,36 @@ class TestGetExecutionEnvironmentContext:
 
     def test_container_mode_returns_container_context(self):
         cfg = ExecutionBackendConfig(
-            mode="container", source="image", image="test:latest",
+            mode="container",
+            source="image",
+            image="test:latest",
             container_workdir="/workspace",
         )
         backend = ContainerBackend(cfg)
+        # pylint: disable-next=protected-access; silent
         backend._host_project_dir = "/home/user/project"
-        backend._container_id = "abc123"
+        backend._container_id = "abc123"  # pylint: disable=protected-access; silent
 
         result = get_execution_environment_context(backend, probe_facts=None)
         assert "execution_backend_mode" in result
         assert "container" in result
         assert "target runtime" in result.lower()
-        assert "Phase 5" not in result, "get_execution_environment_context must not leak explicit Phase 5"
+        assert "Phase 5" not in result, (
+            "get_execution_environment_context must not leak explicit Phase 5"
+        )
         assert "container" in result.lower()
 
     def test_container_mode_with_probe_facts(self):
         cfg = ExecutionBackendConfig(
-            mode="container", source="image", image="test:latest",
+            mode="container",
+            source="image",
+            image="test:latest",
             container_workdir="/workspace",
         )
         backend = ContainerBackend(cfg)
+        # pylint: disable-next=protected-access; silent
         backend._host_project_dir = "/home/user/project"
-        backend._container_id = "abc123"
+        backend._container_id = "abc123"  # pylint: disable=protected-access; silent
 
         probe = {
             "status": "ok",
@@ -84,12 +93,15 @@ class TestGetExecutionEnvironmentContext:
 
     def test_container_mode_with_failed_probe(self):
         cfg = ExecutionBackendConfig(
-            mode="container", source="image", image="test:latest",
+            mode="container",
+            source="image",
+            image="test:latest",
             container_workdir="/workspace",
         )
         backend = ContainerBackend(cfg)
+        # pylint: disable-next=protected-access; silent
         backend._host_project_dir = "/home/user/project"
-        backend._container_id = "abc123"
+        backend._container_id = "abc123"  # pylint: disable=protected-access; silent
 
         probe = {"status": "probe_failed", "error": "timeout"}
         result = get_execution_environment_context(backend, probe_facts=probe)
@@ -102,12 +114,15 @@ class TestGetExecutionEnvironmentContext:
 
     def test_container_context_mentions_container_probe(self):
         cfg = ExecutionBackendConfig(
-            mode="container", source="image", image="test:latest",
+            mode="container",
+            source="image",
+            image="test:latest",
             container_workdir="/workspace",
         )
         backend = ContainerBackend(cfg)
+        # pylint: disable-next=protected-access; silent
         backend._host_project_dir = "/home/user/project"
-        backend._container_id = "abc123"
+        backend._container_id = "abc123"  # pylint: disable=protected-access; silent
 
         probe = {"status": "ok", "python_version": "3.10.12"}
         result = get_execution_environment_context(backend, probe_facts=probe)
@@ -192,7 +207,9 @@ class TestPhase3GenericExecutionBackendWording:
 
     def test_mentions_target_execution_environment(self):
         content = (PROMPTS_DIR / f"{BASEAWARE_PHASE3}.md").read_text(encoding="utf-8")
-        assert "target execution environment" in content or "execution environment" in content.lower()
+        assert (
+            "target execution environment" in content or "execution environment" in content.lower()
+        )
 
     def test_no_docker_exec_prohibition(self):
         content = (PROMPTS_DIR / f"{BASEAWARE_PHASE3}.md").read_text(encoding="utf-8")
@@ -222,7 +239,8 @@ class TestPhase35BaseAwareVariant:
 
 class TestBaseAwareWorkflowPromptWiring:
     def _load_yaml(self):
-        import yaml
+        import yaml  # pylint: disable=import-outside-toplevel; silent
+
         return yaml.safe_load(
             (WORKFLOWS_DIR / "ppu_migration_v2_auto_vllm018_smoke_baseaware.yaml").read_text()
         )
@@ -258,15 +276,21 @@ class TestBaseAwareWorkflowPromptWiring:
 
 class TestPhaseRunnerAlwaysProvidesContext:
     def test_basaware_prompt_has_local_default_when_no_orchestrator(self):
-        from core.prompt_loader import PromptLoader
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.phase_runner import PhaseRunner
+        # pylint: disable-next=import-outside-toplevel; silent
+        from core.prompt_loader import PromptLoader
 
         prompt_loader = PromptLoader(str(PROMPTS_DIR))
         runner = PhaseRunner(
-            MagicMock(), MagicMock(), prompt_loader, MagicMock(),
-            workflow=None, framework_config=None,
+            MagicMock(),
+            MagicMock(),
+            prompt_loader,
+            MagicMock(),
+            workflow=None,
+            framework_config=None,
         )
-        prompt_ctx = runner._build_prompt_context(
+        prompt_ctx = runner._build_prompt_context(  # pylint: disable=protected-access; silent
             runner.phase_specs["phase_2_venv_create"],
             {"previous_outputs": {}},
         )
@@ -274,15 +298,21 @@ class TestPhaseRunnerAlwaysProvidesContext:
         assert "local" in prompt_ctx["execution_environment_context"]
 
     def test_basaware_phase3_prompt_has_local_default(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.phase_runner import PhaseRunner
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.prompt_loader import PromptLoader
 
         prompt_loader = PromptLoader(str(PROMPTS_DIR))
         runner = PhaseRunner(
-            MagicMock(), MagicMock(), prompt_loader, MagicMock(),
-            workflow=None, framework_config=None,
+            MagicMock(),
+            MagicMock(),
+            prompt_loader,
+            MagicMock(),
+            workflow=None,
+            framework_config=None,
         )
-        prompt_ctx = runner._build_prompt_context(
+        prompt_ctx = runner._build_prompt_context(  # pylint: disable=protected-access; silent
             runner.phase_specs["phase_3_entry_script"],
             {"previous_outputs": {}},
         )
@@ -290,15 +320,21 @@ class TestPhaseRunnerAlwaysProvidesContext:
         assert "local" in prompt_ctx["execution_environment_context"]
 
     def test_basaware_phase35_prompt_has_local_default(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.phase_runner import PhaseRunner
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.prompt_loader import PromptLoader
 
         prompt_loader = PromptLoader(str(PROMPTS_DIR))
         runner = PhaseRunner(
-            MagicMock(), MagicMock(), prompt_loader, MagicMock(),
-            workflow=None, framework_config=None,
+            MagicMock(),
+            MagicMock(),
+            prompt_loader,
+            MagicMock(),
+            workflow=None,
+            framework_config=None,
         )
-        prompt_ctx = runner._build_prompt_context(
+        prompt_ctx = runner._build_prompt_context(  # pylint: disable=protected-access; silent
             runner.phase_specs["phase_35_static_validate"],
             {"previous_outputs": {}},
         )
@@ -306,15 +342,18 @@ class TestPhaseRunnerAlwaysProvidesContext:
         assert "local" in prompt_ctx["execution_environment_context"]
 
 
-class TestContainerContextHasPython3Command:
+class TestContainerContextHasPython3Command:  # pylint: disable=too-few-public-methods; silent
     def test_container_context_reports_probe_interpreter(self):
         cfg = ExecutionBackendConfig(
-            mode="container", source="image", image="test:latest",
+            mode="container",
+            source="image",
+            image="test:latest",
             container_workdir="/workspace",
         )
         backend = ContainerBackend(cfg)
+        # pylint: disable-next=protected-access; silent
         backend._host_project_dir = "/home/user/project"
-        backend._container_id = "abc123"
+        backend._container_id = "abc123"  # pylint: disable=protected-access; silent
 
         probe = {
             "status": "ok",
@@ -339,6 +378,7 @@ class TestAcceleratorContextExtraction:
 
     def test_torch_npu_version_with_equals(self):
         """torch-npu==2.1.0 → torch_npu_version = '2.1.0'."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu==2.1.0"])
@@ -348,6 +388,7 @@ class TestAcceleratorContextExtraction:
 
     def test_torch_npu_version_with_underscore(self):
         """torch_npu==2.1.0 → torch_npu_version = '2.1.0'."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch_npu==2.1.0"])
@@ -355,6 +396,7 @@ class TestAcceleratorContextExtraction:
 
     def test_torch_npu_version_ge(self):
         """torch-npu>=2.1.0 → torch_npu_version = '2.1.0' (any comparator works)."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu>=2.1.0"])
@@ -362,6 +404,7 @@ class TestAcceleratorContextExtraction:
 
     def test_no_torch_npu_returns_none(self):
         """When no torch-npu/torch_npu package, torch_npu_version is None."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["numpy==1.24.0", "requests"])
@@ -371,6 +414,7 @@ class TestAcceleratorContextExtraction:
     def test_torch_npu_bare_no_version_returns_none(self):
         """Bare 'torch-npu' without version: accelerator_packages includes it,
         but torch_npu_version is None because the legacy code required a version."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu"])
@@ -381,6 +425,7 @@ class TestAcceleratorContextExtraction:
     # ── PPU packages ───────────────────────────────────────────────────
 
     def test_ppukernel_versioned(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["ppukernel==1.2.3"])
@@ -388,6 +433,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_package_versions"]["ppukernel"] == "1.2.3"
 
     def test_torch_ppu_versioned(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-ppu==0.1.0"])
@@ -395,6 +441,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_package_versions"]["torch_ppu"] == "0.1.0"
 
     def test_torch_ppu_underscore_form(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch_ppu==0.2.0"])
@@ -402,6 +449,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_package_versions"]["torch_ppu"] == "0.2.0"
 
     def test_ppuccl(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["ppuccl==1.0.0"])
@@ -409,6 +457,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_package_versions"]["ppuccl"] == "1.0.0"
 
     def test_bare_ppu_package_name(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["ppu"])
@@ -419,6 +468,7 @@ class TestAcceleratorContextExtraction:
 
     def test_ppu_smoke_scenario(self):
         """Simulate a PPU smoke installed_packages: vllm, torch, ppukernel, ppuccl, cuda."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         pkgs = [
@@ -444,6 +494,7 @@ class TestAcceleratorContextExtraction:
     # ── Mixed NPU + PPU ───────────────────────────────────────────────
 
     def test_mixed_npu_and_ppu(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         pkgs = [
@@ -457,12 +508,17 @@ class TestAcceleratorContextExtraction:
 
         assert result["torch_npu_version"] == "2.1.0"
         assert set(result["accelerator_packages"]) >= {
-            "torch_npu", "torch_ppu", "ppukernel", "vllm", "torch",
+            "torch_npu",
+            "torch_ppu",
+            "ppukernel",
+            "vllm",
+            "torch",
         }
 
     # ── Edge cases ─────────────────────────────────────────────────────
 
     def test_empty_list(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context([])
@@ -471,6 +527,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_package_versions"] == {}
 
     def test_none_input(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(None)
@@ -479,6 +536,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_package_versions"] == {}
 
     def test_non_string_entries_ignored(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu==2.1.0", 42, None, ["ppukernel"]])
@@ -487,7 +545,9 @@ class TestAcceleratorContextExtraction:
         assert len(result["accelerator_packages"]) == 1
 
     def test_all_fields_json_serializable(self):
-        import json
+        import json  # pylint: disable=import-outside-toplevel; silent
+
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu==2.1.0", "ppukernel==1.0.0"])
@@ -499,6 +559,7 @@ class TestAcceleratorContextExtraction:
 
     def test_hyphen_underscore_equivalence(self):
         """torch-npu and torch_npu normalize to the same name."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu==2.1.0", "torch_npu==2.2.0"])
@@ -507,6 +568,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_packages"].count("torch_npu") == 1
 
     def test_triton_package(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["triton==2.1.0"])
@@ -514,6 +576,7 @@ class TestAcceleratorContextExtraction:
         assert result["accelerator_package_versions"]["triton"] == "2.1.0"
 
     def test_cuda_ecosystem_packages(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.accelerator_context import extract_accelerator_context
 
         pkgs = ["cuda", "cudnn==8.9.0", "nccl==2.18.0"]
@@ -528,9 +591,10 @@ class TestAcceleratorContextExtraction:
 
 class TestOrchestratorBuildEnvContext:
     def test_includes_legacy_torch_npu_version(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.orchestrator import Orchestrator
 
-        result = Orchestrator._build_env_context(
+        result = Orchestrator._build_env_context(  # pylint: disable=protected-access; silent
             {"os": "Linux"},
             {"installed_packages": ["torch-npu==2.1.0"]},
         )
@@ -538,9 +602,10 @@ class TestOrchestratorBuildEnvContext:
         assert result["os"] == "Linux"
 
     def test_includes_accelerator_packages(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.orchestrator import Orchestrator
 
-        result = Orchestrator._build_env_context(
+        result = Orchestrator._build_env_context(  # pylint: disable=protected-access; silent
             {"os": "Linux"},
             {"installed_packages": ["ppukernel==1.0.0", "torch-ppu==0.1.0"]},
         )
@@ -549,18 +614,20 @@ class TestOrchestratorBuildEnvContext:
         assert "torch_ppu" in result["accelerator_packages"]
 
     def test_includes_accelerator_package_versions(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.orchestrator import Orchestrator
 
-        result = Orchestrator._build_env_context(
+        result = Orchestrator._build_env_context(  # pylint: disable=protected-access; silent
             {"os": "Linux"},
             {"installed_packages": ["ppukernel==1.0.0"]},
         )
         assert result["accelerator_package_versions"]["ppukernel"] == "1.0.0"
 
     def test_empty_accelerator_packages_when_no_match(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.orchestrator import Orchestrator
 
-        result = Orchestrator._build_env_context(
+        result = Orchestrator._build_env_context(  # pylint: disable=protected-access; silent
             {"os": "Linux"},
             {"installed_packages": ["numpy==1.24.0", "requests"]},
         )
@@ -570,17 +637,20 @@ class TestOrchestratorBuildEnvContext:
 
     def test_ppu_smoke_scenario(self):
         """Full PPU smoke scenario: no torch-npu, has ppukernel, vllm, torch, cuda."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.orchestrator import Orchestrator
 
-        result = Orchestrator._build_env_context(
+        result = Orchestrator._build_env_context(  # pylint: disable=protected-access; silent
             {"os": "Linux"},
-            {"installed_packages": [
-                "vllm==0.18.0",
-                "torch==2.9.0",
-                "ppukernel==1.0.0",
-                "ppuccl==1.0.0",
-                "cuda",
-            ]},
+            {
+                "installed_packages": [
+                    "vllm==0.18.0",
+                    "torch==2.9.0",
+                    "ppukernel==1.0.0",
+                    "ppuccl==1.0.0",
+                    "cuda",
+                ]
+            },
         )
         assert result["torch_npu_version"] is None
         assert "vllm" in result["accelerator_packages"]
@@ -593,30 +663,36 @@ class TestOrchestratorBuildEnvContext:
 
 class TestWorkflowExecutorBuildEnvContext:
     def test_includes_legacy_torch_npu_version(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.workflow_executor import WorkflowExecutor
 
         wfe = WorkflowExecutor.__new__(WorkflowExecutor)
-        result = wfe._build_env_context({
-            "phase_0_env_detect": {"os": "Linux"},
-            "phase_2_venv_create": {"installed_packages": ["torch-npu==2.1.0"]},
-        })
+        result = wfe._build_env_context(  # pylint: disable=protected-access; silent
+            {
+                "phase_0_env_detect": {"os": "Linux"},
+                "phase_2_venv_create": {"installed_packages": ["torch-npu==2.1.0"]},
+            }
+        )
         assert result["torch_npu_version"] == "2.1.0"
         assert result["os"] == "Linux"
 
     def test_includes_accelerator_packages_and_versions(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.workflow_executor import WorkflowExecutor
 
         wfe = WorkflowExecutor.__new__(WorkflowExecutor)
-        result = wfe._build_env_context({
-            "phase_0_env_detect": {},
-            "phase_2_venv_create": {
-                "installed_packages": [
-                    "torch-ppu==0.1.0",
-                    "ppukernel==1.0.0",
-                    "numpy==1.24.0",
-                ],
-            },
-        })
+        result = wfe._build_env_context(  # pylint: disable=protected-access; silent
+            {
+                "phase_0_env_detect": {},
+                "phase_2_venv_create": {
+                    "installed_packages": [
+                        "torch-ppu==0.1.0",
+                        "ppukernel==1.0.0",
+                        "numpy==1.24.0",
+                    ],
+                },
+            }
+        )
         assert result["torch_npu_version"] is None
         assert "torch_ppu" in result["accelerator_packages"]
         assert "ppukernel" in result["accelerator_packages"]
@@ -624,33 +700,42 @@ class TestWorkflowExecutorBuildEnvContext:
         assert result["accelerator_package_versions"]["ppukernel"] == "1.0.0"
 
     def test_no_phase2_returns_empty(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.workflow_executor import WorkflowExecutor
 
         wfe = WorkflowExecutor.__new__(WorkflowExecutor)
-        result = wfe._build_env_context({
-            "phase_0_env_detect": {"os": "Linux"},
-        })
+        result = wfe._build_env_context(  # pylint: disable=protected-access; silent
+            {
+                "phase_0_env_detect": {"os": "Linux"},
+            }
+        )
         assert result["torch_npu_version"] is None
         assert result["accelerator_packages"] == []
         assert result["accelerator_package_versions"] == {}
 
     def test_npu_ppu_mixed_behavior_identical_to_orchestrator(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.orchestrator import Orchestrator
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.workflow_executor import WorkflowExecutor
 
         packages = ["torch-npu==2.1.0", "torch-ppu==0.1.0", "ppukernel==1.0.0", "vllm==0.18.0"]
 
-        orch_result = Orchestrator._build_env_context(
+        orch_result = Orchestrator._build_env_context(  # pylint: disable=protected-access; silent
             {"os": "Linux"},
             {"installed_packages": packages},
         )
 
         wfe = WorkflowExecutor.__new__(WorkflowExecutor)
-        wf_result = wfe._build_env_context({
-            "phase_0_env_detect": {"os": "Linux"},
-            "phase_2_venv_create": {"installed_packages": packages},
-        })
+        wf_result = wfe._build_env_context(  # pylint: disable=protected-access; silent
+            {
+                "phase_0_env_detect": {"os": "Linux"},
+                "phase_2_venv_create": {"installed_packages": packages},
+            }
+        )
 
         assert orch_result["torch_npu_version"] == wf_result["torch_npu_version"]
         assert set(orch_result["accelerator_packages"]) == set(wf_result["accelerator_packages"])
-        assert orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]
+        assert (
+            orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]
+        )

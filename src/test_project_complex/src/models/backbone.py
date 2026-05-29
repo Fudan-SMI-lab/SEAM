@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitOverride=false, reportUnknownMemberType=false
-
+# pyright: reportAny=false, reportExplicitAny=false,
+# reportImplicitOverride=false, reportUnknownMemberType=false
 from typing import Any
 
-import torch
-from torch import nn
+import torch  # pylint: disable=import-error; silent
+from torch import nn  # pylint: disable=import-error; silent
 
 
-class ConvBackbone(nn.Module):
+class ConvBackbone(nn.Module):  # pylint: disable=too-few-public-methods; silent
     """Compact convolutional backbone with explicit CUDA assumptions."""
 
     def __init__(self, input_channels: int, channels: list[int], dropout: float) -> None:

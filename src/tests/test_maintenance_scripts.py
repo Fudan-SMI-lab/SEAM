@@ -7,9 +7,12 @@ from typing import cast
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.paths import execution_root
+from core.paths import execution_root  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from scripts.e2e_smoke_test import MockSessionManager
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_entry_static import validate as validate_entry_static
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_env_detect import validate as validate_env_detect
 
 

@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 
-class YamlRuleBasedMigrator:
+class YamlRuleBasedMigrator:  # pylint: disable=too-many-instance-attributes; silent
     def __init__(self, strategy: dict[str, Any] | None = None) -> None:
         self.strategy = strategy or {}
         self.strategy_id = str(self.strategy.get("id", "report_only"))
@@ -132,7 +132,7 @@ class YamlRuleBasedMigrator:
                 if self.rewrite_enabled and report["total_replacements"] > 0:
                     with open(filepath, "w", encoding="utf-8") as f:
                         f.write(new_code)
-            except Exception as exc:
+            except Exception as exc:  # pylint: disable=broad-exception-caught; silent
                 aggregate["files"][filepath] = {
                     "error": str(exc),
                     "strategy": self.strategy_id,

@@ -1,4 +1,8 @@
-# pyright: reportPrivateUsage=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnusedCallResult=false, reportUnusedParameter=false
+# pylint: disable=line-too-long
+# pylint: disable=too-many-lines; silent
+# pyright: reportPrivateUsage=false, reportUnknownArgumentType=false,
+# reportUnknownLambdaType=false, reportUnusedCallResult=false,
+# reportUnusedParameter=false
 
 import json
 import sys
@@ -13,12 +17,18 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.artifact_store import ArtifactStore
-from core.prompt_loader import PromptLoader
-from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, force_custom_op_operator_routing_if_needed
+from core.artifact_store import ArtifactStore  # pylint: disable=wrong-import-position; silent
+from core.prompt_loader import PromptLoader  # pylint: disable=wrong-import-position; silent
+from core.repair_loop import (  # pylint: disable=wrong-import-position; silent
+    ClassificationDict,
+    RepairLoopEngine,
+    ReviewGateState,
+    force_custom_op_operator_routing_if_needed,
+)
+# pylint: disable-next=wrong-import-position; silent
 from core.runtime_artifacts import write_operator_repair_context_artifact
-from core.types import RepairContext
-from core.validator_engine import ValidatorEngine
+from core.types import RepairContext  # pylint: disable=wrong-import-position; silent
+from core.validator_engine import ValidatorEngine  # pylint: disable=wrong-import-position; silent
 
 
 class MockSessionManager:
@@ -46,7 +56,9 @@ class MockSessionManager:
         return json.dumps({"status": "ok", "session_id": session_id})
 
 
-def build_engine(base_dir: Path, session_mgr: MockSessionManager) -> tuple[RepairLoopEngine, ArtifactStore]:
+def build_engine(
+    base_dir: Path, session_mgr: MockSessionManager
+) -> tuple[RepairLoopEngine, ArtifactStore]:
     artifact_store = ArtifactStore(str(base_dir), "testrun")
     engine = RepairLoopEngine(
         session_mgr=session_mgr,
@@ -57,13 +69,13 @@ def build_engine(base_dir: Path, session_mgr: MockSessionManager) -> tuple[Repai
     return engine, artifact_store
 
 
-class SessionManagerMock:
+class SessionManagerMock:  # pylint: disable=too-few-public-methods; silent
     def __init__(self) -> None:
         self.get_or_create: MagicMock = MagicMock()
         self.send_command: MagicMock = MagicMock()
 
 
-class ArtifactStoreMock:
+class ArtifactStoreMock:  # pylint: disable=too-few-public-methods; silent
     def __init__(self) -> None:
         self.save_phase_output: MagicMock = MagicMock()
         self.write_journal: MagicMock = MagicMock()
@@ -71,12 +83,12 @@ class ArtifactStoreMock:
         self.mark_validated: MagicMock = MagicMock()
 
 
-class PromptLoaderMock:
+class PromptLoaderMock:  # pylint: disable=too-few-public-methods; silent
     def __init__(self) -> None:
         self.load_prompt: MagicMock = MagicMock()
 
 
-class ValidatorMock:
+class ValidatorMock:  # pylint: disable=too-few-public-methods; silent
     def __init__(self) -> None:
         self.register_validator: MagicMock = MagicMock()
         self.validate: MagicMock = MagicMock()
@@ -128,7 +140,9 @@ class RunResult(TypedDict):
     error_analyzer_session_id: str
 
 
-def test_repair_loop_detects_stagnation_and_reuses_repair_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_detects_stagnation_and_reuses_repair_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session_mgr = MockSessionManager(
         {
             "category": "dependency",
@@ -140,9 +154,15 @@ def test_repair_loop_detects_stagnation_and_reuses_repair_session(tmp_path: Path
     engine, artifact_store = build_engine(tmp_path, session_mgr)
 
     outcomes = [
-        CompletedProcess(args="python train.py", returncode=1, stdout="", stderr="ModuleNotFoundError: torch_npu"),
-        CompletedProcess(args="python train.py", returncode=1, stdout="", stderr="ModuleNotFoundError: torch_npu"),
-        CompletedProcess(args="python train.py", returncode=1, stdout="", stderr="ModuleNotFoundError: torch_npu"),
+        CompletedProcess(
+            args="python train.py", returncode=1, stdout="", stderr="ModuleNotFoundError: torch_npu"
+        ),
+        CompletedProcess(
+            args="python train.py", returncode=1, stdout="", stderr="ModuleNotFoundError: torch_npu"
+        ),
+        CompletedProcess(
+            args="python train.py", returncode=1, stdout="", stderr="ModuleNotFoundError: torch_npu"
+        ),
     ]
 
     def fake_run(*_args: object, **kwargs: object) -> CompletedProcess[str]:
@@ -159,7 +179,9 @@ def test_repair_loop_detects_stagnation_and_reuses_repair_session(tmp_path: Path
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    result = cast(RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=5)))
+    result = cast(
+        RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=5))
+    )
     error_history = result["error_history"]
 
     assert result["success"] is False
@@ -189,7 +211,9 @@ def test_repair_loop_detects_stagnation_and_reuses_repair_session(tmp_path: Path
     ]
 
 
-def test_repair_loop_exits_on_max_iterations_with_different_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_exits_on_max_iterations_with_different_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session_mgr = MockSessionManager(
         {
             "category": "code",
@@ -201,8 +225,12 @@ def test_repair_loop_exits_on_max_iterations_with_different_errors(tmp_path: Pat
     engine, artifact_store = build_engine(tmp_path, session_mgr)
 
     outcomes = [
-        CompletedProcess(args="python train.py", returncode=1, stdout="", stderr="TypeError: first"),
-        CompletedProcess(args="python train.py", returncode=1, stdout="", stderr="TypeError: second"),
+        CompletedProcess(
+            args="python train.py", returncode=1, stdout="", stderr="TypeError: first"
+        ),
+        CompletedProcess(
+            args="python train.py", returncode=1, stdout="", stderr="TypeError: second"
+        ),
     ]
 
     def fake_run(*_args: object, **_kwargs: object) -> CompletedProcess[str]:
@@ -210,7 +238,9 @@ def test_repair_loop_exits_on_max_iterations_with_different_errors(tmp_path: Pat
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    result = cast(RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=2)))
+    result = cast(
+        RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=2))
+    )
     error_history = result["error_history"]
 
     assert result["success"] is False
@@ -239,7 +269,7 @@ def test_direct_operator_repair_prompt_is_slim_and_writes_runtime_artifacts(tmp_
     engine, artifact_store = build_engine(tmp_path, session_mgr)
     project_dir = str(tmp_path / "demo project!")
 
-    prompt = engine._build_repair_prompt(
+    prompt = engine._build_repair_prompt(  # pylint: disable=protected-access; silent
         entry_script="python main.py",
         project_dir=project_dir,
         iteration=1,
@@ -280,7 +310,9 @@ def test_direct_operator_repair_prompt_is_slim_and_writes_runtime_artifacts(tmp_
     assert "(No analyzer-selected experience cards)" in card_text
 
 
-def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_context(tmp_path: Path) -> None:
+def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_context(
+    tmp_path: Path,
+) -> None:
     session_mgr = MockSessionManager(
         {
             "category": "operator",
@@ -292,7 +324,7 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     engine, artifact_store = build_engine(tmp_path, session_mgr)
     project_dir = str(tmp_path / "demo custom project!")
 
-    prompt = engine._build_repair_prompt(
+    prompt = engine._build_repair_prompt(  # pylint: disable=protected-access; silent
         entry_script="python validate.py",
         project_dir=project_dir,
         iteration=1,
@@ -331,7 +363,9 @@ def test_direct_operator_repair_prompt_with_custom_op_contract_writes_bounded_co
     assert "FULL_PASS is required" in context_text
 
 
-def test_operator_repair_context_prefers_phase3_contract_units_over_stale_reports(tmp_path: Path) -> None:
+def test_operator_repair_context_prefers_phase3_contract_units_over_stale_reports(
+    tmp_path: Path,
+) -> None:
     session_mgr = MockSessionManager(
         {
             "category": "operator",
@@ -354,7 +388,7 @@ def test_operator_repair_context_prefers_phase3_contract_units_over_stale_report
         "fine_grained_operator_units": ["family:kernel_a", "family:kernel_b"],
     }
 
-    engine._build_repair_prompt(
+    engine._build_repair_prompt(  # pylint: disable=protected-access; silent
         entry_script="python validate.py",
         project_dir=str(project_dir),
         iteration=1,
@@ -380,7 +414,9 @@ def test_operator_repair_context_prefers_phase3_contract_units_over_stale_report
     assert "stale_family" not in context_text
 
 
-def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tmp_path: Path) -> None:
+def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(
+    tmp_path: Path,
+) -> None:
     session_mgr = MockSessionManager(
         {
             "category": "dependency",
@@ -392,7 +428,7 @@ def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tm
     engine, artifact_store = build_engine(tmp_path, session_mgr)
     project_dir = str(tmp_path / "demo dependency project!")
 
-    prompt = engine._build_repair_prompt(
+    prompt = engine._build_repair_prompt(  # pylint: disable=protected-access; silent
         entry_script="python main.py",
         project_dir=project_dir,
         iteration=1,
@@ -432,7 +468,9 @@ def test_direct_dependency_repair_prompt_is_slim_and_writes_runtime_artifacts(tm
     assert "(No analyzer-selected experience cards)" in card_text
 
 
-def test_repair_loop_reuses_error_analyzer_session_across_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_reuses_error_analyzer_session_across_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session_mgr = MockSessionManager(
         {
             "category": "operator",
@@ -448,8 +486,12 @@ def test_repair_loop_reuses_error_analyzer_session_across_runs(tmp_path: Path, m
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
-    first = cast(RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=3)))
-    second = cast(RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=3)))
+    first = cast(
+        RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=3))
+    )
+    second = cast(
+        RunResult, cast(object, engine.run("python train.py", str(tmp_path), max_iterations=3))
+    )
 
     assert first["success"] is True
     assert second["success"] is True
@@ -460,7 +502,9 @@ def test_repair_loop_reuses_error_analyzer_session_across_runs(tmp_path: Path, m
     ]
 
 
-def test_repair_loop_passes_logger_to_analyzer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_passes_logger_to_analyzer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session_mgr = MockSessionManager(
         {
             "category": "dependency",
@@ -471,15 +515,29 @@ def test_repair_loop_passes_logger_to_analyzer(tmp_path: Path, monkeypatch: pyte
     )
     engine, _ = build_engine(tmp_path, session_mgr)
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **kwargs: CompletedProcess(
-        args="", returncode=0, stdout="", stderr="",
-    ))
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **kwargs: CompletedProcess(
+            args="",
+            returncode=0,
+            stdout="",
+            stderr="",
+        ),
+    )
 
     log_messages: list[str] = []
-    result = cast(RunResult, cast(object, engine.run(
-        "python train.py", str(tmp_path), max_iterations=1,
-        logger=log_messages.append,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                "python train.py",
+                str(tmp_path),
+                max_iterations=1,
+                logger=log_messages.append,
+            ),
+        ),
+    )
 
     assert len(log_messages) >= 1
     assert any("SUCCESS" in m for m in log_messages)
@@ -487,13 +545,22 @@ def test_repair_loop_passes_logger_to_analyzer(tmp_path: Path, monkeypatch: pyte
 
 
 def test_format_history_summary_empty_and_nonempty() -> None:
-    from core.repair_loop import ClassificationDict, RepairLoopEngine
+    # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
+    from core.repair_loop import RepairLoopEngine
+
+    # pylint: disable-next=protected-access; silent
     assert RepairLoopEngine._format_history_summary([]) == "(No previous repair attempts)"
     history: list[dict[str, object]] = [
-        {"iteration": 1, "exit_code": 1, "error_category": "dependency",
-         "repair_role": "dependency_fixer", "modified_files": ["requirements.txt"],
-         "fix_summary": "Installed torch_npu"},
+        {
+            "iteration": 1,
+            "exit_code": 1,
+            "error_category": "dependency",
+            "repair_role": "dependency_fixer",
+            "modified_files": ["requirements.txt"],
+            "fix_summary": "Installed torch_npu",
+        },
     ]
+    # pylint: disable-next=protected-access; silent
     result = RepairLoopEngine._format_history_summary(history)
     assert "Iter 1" in result
     assert "dependency" in result
@@ -503,34 +570,45 @@ def test_format_history_summary_empty_and_nonempty() -> None:
 
 def test_error_analyzer_json_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     call_count = 0
+
+    # pylint: disable-next=unused-argument; silent
     def mock_send(session_id: str, command: str, timeout: int = 600) -> str:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
             return "I will analyze the error..."  # no JSON
+        # pylint: disable-next=line-too-long; silent
         return '{"category": "dependency", "root_cause": "missing", "suggested_fix": "install", "repair_role": "dependency_fixer"}'
 
     session_mgr = MockSessionManager({})
     session_mgr.send_command = mock_send  # type: ignore
 
     engine, _ = build_engine(tmp_path, session_mgr)
-    monkeypatch.setattr("subprocess.run", lambda *_args, **kw: CompletedProcess(
-        args="", returncode=1, stdout="", stderr="ImportError",
-    ))
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **kw: CompletedProcess(
+            args="",
+            returncode=1,
+            stdout="",
+            stderr="ImportError",
+        ),
+    )
 
     _ = cast(RunResult, cast(object, engine.run("x", str(tmp_path), max_iterations=2)))
     assert call_count >= 2  # first call + retry
 
 
 def test_repair_loop_run_accepts_review_callable() -> None:
-    import inspect
+    import inspect  # pylint: disable=import-outside-toplevel; silent
 
     sig = inspect.signature(RepairLoopEngine.run)
     assert "review_callable" in sig.parameters
     assert "constraint_summary" in sig.parameters
 
 
-def test_repair_loop_review_callable_is_called(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_review_callable_is_called(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Failed validation path does not invoke the reviewer."""
     call_args: list[dict[str, object]] = []
 
@@ -572,21 +650,25 @@ def test_repair_loop_review_callable_is_called(tmp_path: Path, monkeypatch: pyte
         constraint_summary="R1",
     )
 
-    assert call_args == []
+    assert call_args == []  # pylint: disable=use-implicit-booleaness-not-comparison; silent
 
 
 def test_repair_loop_constraint_summary_in_prompt() -> None:
-    import inspect
+    import inspect  # pylint: disable=import-outside-toplevel; silent
 
+    # pylint: disable-next=protected-access; silent
     sig = inspect.signature(RepairLoopEngine._analyze_error)
     assert "constraint_summary" in sig.parameters
     assert "last_review" in sig.parameters
 
 
-def test_repair_loop_review_gate_reject_snapshots_and_tracks_counter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_review_gate_reject_snapshots_and_tracks_counter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Review gate reject snapshots project files and tracks improvement counter."""
     review_reject_count = 0
 
+    # pylint: disable-next=unused-argument; silent
     def mock_review(ctx: dict[str, object]) -> dict[str, object]:
         nonlocal review_reject_count
         review_reject_count += 1
@@ -609,22 +691,30 @@ def test_repair_loop_review_gate_reject_snapshots_and_tracks_counter(tmp_path: P
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
 
     outcomes = [
-        CompletedProcess(args="python train.py", returncode=1, stdout="", stderr="RuntimeError: test error"),
+        CompletedProcess(
+            args="python train.py", returncode=1, stdout="", stderr="RuntimeError: test error"
+        ),
         CompletedProcess(args="python train.py", returncode=0, stdout="ok", stderr=""),
         CompletedProcess(args="python train.py", returncode=0, stdout="ok", stderr=""),
     ]
 
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: outcomes.pop(0))
 
-    result = cast(RunResult, cast(object, engine.run(
-        "python train.py",
-        str(tmp_path),
-        max_iterations=5,
-        review_callable=mock_review,
-        constraint_summary="R1",
-        enable_review_gate=True,
-        max_review_iterations=2,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                "python train.py",
+                str(tmp_path),
+                max_iterations=5,
+                review_callable=mock_review,
+                constraint_summary="R1",
+                enable_review_gate=True,
+                max_review_iterations=2,
+            ),
+        ),
+    )
 
     assert result["success"] is True
     assert result["status"] == "passed_with_reviews"
@@ -634,11 +724,15 @@ def test_repair_loop_review_gate_reject_snapshots_and_tracks_counter(tmp_path: P
     assert gate_summary.get("review_rejections") == 2
     assert gate_summary.get("improvement_iterations") == 2
     assert gate_summary.get("last_passing_version_path") is not None
-    assert str(gate_summary.get("last_passing_version_path", "")).endswith("passing_version_iter3.json")
+    assert str(gate_summary.get("last_passing_version_path", "")).endswith(
+        "passing_version_iter3.json"
+    )
 
 
-def test_review_gate_disabled_identical_behavior(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import inspect
+def test_review_gate_disabled_identical_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import inspect  # pylint: disable=import-outside-toplevel; silent
 
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
@@ -650,12 +744,18 @@ def test_review_gate_disabled_identical_behavior(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr("subprocess.run", fake_run)
 
     sig = inspect.signature(RepairLoopEngine.run)
-    result = cast(RunResult, cast(object, engine.run(
-        entry_script="python dummy.py",
-        project_dir=str(tmp_path),
-        max_iterations=2,
-        enable_review_gate=False,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                entry_script="python dummy.py",
+                project_dir=str(tmp_path),
+                max_iterations=2,
+                enable_review_gate=False,
+            ),
+        ),
+    )
 
     assert cast(bool, sig.parameters["enable_review_gate"].default) is False
     assert result["success"] is True
@@ -664,14 +764,18 @@ def test_review_gate_disabled_identical_behavior(tmp_path: Path, monkeypatch: py
     session_mgr.send_command.assert_not_called()
 
 
-def test_review_gate_no_rejection_continues_normally(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_review_gate_no_rejection_continues_normally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     session_mgr.send_command.return_value = '{"status": "ok"}'
     (tmp_path / "dummy.py").write_text("print('ok')\n", encoding="utf-8")
 
     outcomes = [
-        CompletedProcess(args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom"),
+        CompletedProcess(
+            args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom"
+        ),
         CompletedProcess(args="python dummy.py", returncode=0, stdout="ok", stderr=""),
     ]
 
@@ -679,18 +783,26 @@ def test_review_gate_no_rejection_continues_normally(tmp_path: Path, monkeypatch
         return outcomes.pop(0)
 
     monkeypatch.setattr("subprocess.run", fake_run)
-    monkeypatch.setattr(engine, "_analyze_error", lambda **_kwargs: {
-        "category": "code",
-        "root_cause": "bad call",
-        "suggested_fix": "update code",
-        "repair_role": "code_adapter",
-        "raw_response": "{}",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_analyze_error",
+        lambda **_kwargs: {
+            "category": "code",
+            "root_cause": "bad call",
+            "suggested_fix": "update code",
+            "repair_role": "code_adapter",
+            "raw_response": "{}",
+        },
+    )
     monkeypatch.setattr(engine, "_build_repair_prompt", lambda **_kwargs: "repair prompt")
-    monkeypatch.setattr(engine, "_extract_fix_summary", lambda *_args, **_kwargs: {
-        "modified_files": ["dummy.py"],
-        "summary": "Adjusted the failing path.",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_extract_fix_summary",
+        lambda *_args, **_kwargs: {
+            "modified_files": ["dummy.py"],
+            "summary": "Adjusted the failing path.",
+        },
+    )
 
     review_calls: list[dict[str, object]] = []
 
@@ -704,13 +816,19 @@ def test_review_gate_no_rejection_continues_normally(tmp_path: Path, monkeypatch
             "reasoning": "looks good",
         }
 
-    result = cast(RunResult, cast(object, engine.run(
-        entry_script="python dummy.py",
-        project_dir=str(tmp_path),
-        max_iterations=2,
-        enable_review_gate=True,
-        review_callable=mock_review,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                entry_script="python dummy.py",
+                project_dir=str(tmp_path),
+                max_iterations=2,
+                enable_review_gate=True,
+                review_callable=mock_review,
+            ),
+        ),
+    )
 
     assert result["success"] is True
     assert result["status"] == "success"
@@ -731,33 +849,48 @@ def test_review_gate_no_rejection_continues_normally(tmp_path: Path, monkeypatch
         "repair_role": "code_adapter",
         "raw_response": "{}",
     }
-    assert cast(list[dict[str, object]], review_calls[0]["history"])[0]["repair_role"] == "code_adapter"
+    assert (
+        cast(list[dict[str, object]], review_calls[0]["history"])[0]["repair_role"]
+        == "code_adapter"
+    )
 
 
-def test_review_gate_session_error_fails_closed_on_exit_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_review_gate_session_error_fails_closed_on_exit_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     session_mgr.send_command.return_value = '{"status": "ok"}'
     (tmp_path / "dummy.py").write_text("print('ok')\n", encoding="utf-8")
 
     outcomes = [
-        CompletedProcess(args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom"),
+        CompletedProcess(
+            args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom"
+        ),
         CompletedProcess(args="python dummy.py", returncode=0, stdout="ok", stderr=""),
     ]
 
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: outcomes.pop(0))
-    monkeypatch.setattr(engine, "_analyze_error", lambda **_kwargs: {
-        "category": "code",
-        "root_cause": "bad call",
-        "suggested_fix": "update code",
-        "repair_role": "code_adapter",
-        "raw_response": "{}",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_analyze_error",
+        lambda **_kwargs: {
+            "category": "code",
+            "root_cause": "bad call",
+            "suggested_fix": "update code",
+            "repair_role": "code_adapter",
+            "raw_response": "{}",
+        },
+    )
     monkeypatch.setattr(engine, "_build_repair_prompt", lambda **_kwargs: "repair prompt")
-    monkeypatch.setattr(engine, "_extract_fix_summary", lambda *_args, **_kwargs: {
-        "modified_files": ["dummy.py"],
-        "summary": "Adjusted the failing path.",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_extract_fix_summary",
+        lambda *_args, **_kwargs: {
+            "modified_files": ["dummy.py"],
+            "summary": "Adjusted the failing path.",
+        },
+    )
 
     review_calls: list[dict[str, object]] = []
 
@@ -769,13 +902,19 @@ def test_review_gate_session_error_fails_closed_on_exit_zero(tmp_path: Path, mon
             "reasoning": "Review session command failed: Compaction response is incomplete",
         }
 
-    result = cast(RunResult, cast(object, engine.run(
-        entry_script="python dummy.py",
-        project_dir=str(tmp_path),
-        max_iterations=2,
-        enable_review_gate=True,
-        review_callable=mock_review,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                entry_script="python dummy.py",
+                project_dir=str(tmp_path),
+                max_iterations=2,
+                enable_review_gate=True,
+                review_callable=mock_review,
+            ),
+        ),
+    )
 
     assert len(review_calls) == 1
     assert result["success"] is False
@@ -784,14 +923,18 @@ def test_review_gate_session_error_fails_closed_on_exit_zero(tmp_path: Path, mon
     assert "review_gate_summary" not in result
 
 
-def test_review_gate_rejection_saves_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_review_gate_rejection_saves_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     session_mgr.send_command.return_value = '{"status": "ok"}'
     (tmp_path / "dummy.py").write_text("x = 1\n", encoding="utf-8")
 
     outcomes = [
-        CompletedProcess(args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom"),
+        CompletedProcess(
+            args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom"
+        ),
         CompletedProcess(args="python dummy.py", returncode=0, stdout="ok", stderr=""),
     ]
 
@@ -799,24 +942,34 @@ def test_review_gate_rejection_saves_version(tmp_path: Path, monkeypatch: pytest
         return outcomes.pop(0)
 
     monkeypatch.setattr("subprocess.run", fake_run)
-    monkeypatch.setattr(engine, "_analyze_error", lambda **_kwargs: {
-        "category": "code",
-        "root_cause": "bad call",
-        "suggested_fix": "update code",
-        "repair_role": "code_adapter",
-        "raw_response": "{}",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_analyze_error",
+        lambda **_kwargs: {
+            "category": "code",
+            "root_cause": "bad call",
+            "suggested_fix": "update code",
+            "repair_role": "code_adapter",
+            "raw_response": "{}",
+        },
+    )
     monkeypatch.setattr(engine, "_build_repair_prompt", lambda **_kwargs: "repair prompt")
-    monkeypatch.setattr(engine, "_extract_fix_summary", lambda *_args, **_kwargs: {
-        "modified_files": ["dummy.py"],
-        "summary": "Adjusted the failing path.",
-    })
-    improvement_mock = MagicMock(return_value={
-        "status": "success",
-        "repair_role": "code_adapter",
-        "improvement_area": "device placement",
-        "suggested_direction": "avoid CPU fallback",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_extract_fix_summary",
+        lambda *_args, **_kwargs: {
+            "modified_files": ["dummy.py"],
+            "summary": "Adjusted the failing path.",
+        },
+    )
+    improvement_mock = MagicMock(
+        return_value={
+            "status": "success",
+            "repair_role": "code_adapter",
+            "improvement_area": "device placement",
+            "suggested_direction": "avoid CPU fallback",
+        }
+    )
     monkeypatch.setattr(engine, "_run_improvement_iteration", improvement_mock)
 
     review_calls = [0]
@@ -854,7 +1007,9 @@ def test_review_gate_rejection_saves_version(tmp_path: Path, monkeypatch: pytest
     improvement_mock.assert_called_once()
 
 
-def test_review_gate_max_iterations_reached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_review_gate_max_iterations_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     session_mgr.send_command.return_value = '{"status": "ok"}'
@@ -867,12 +1022,16 @@ def test_review_gate_max_iterations_reached(tmp_path: Path, monkeypatch: pytest.
         return CompletedProcess(args="python dummy.py", returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr("subprocess.run", fake_run)
-    monkeypatch.setattr(engine, "_run_improvement_iteration", lambda **_kwargs: {
-        "status": "success",
-        "repair_role": "operator_fixer",
-        "improvement_area": "operator coverage",
-        "suggested_direction": "stay on accelerator",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_run_improvement_iteration",
+        lambda **_kwargs: {
+            "status": "success",
+            "repair_role": "operator_fixer",
+            "improvement_area": "operator coverage",
+            "suggested_direction": "stay on accelerator",
+        },
+    )
 
     review_calls = [0]
 
@@ -903,6 +1062,7 @@ def test_review_gate_max_iterations_reached(tmp_path: Path, monkeypatch: pytest.
 
 
 def test_review_gate_improvement_iteration_returns_result(tmp_path: Path) -> None:
+    # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
     from core.repair_loop import ReviewGateState
 
     engine, session_mgr, _artifact_store, prompt_loader, _validator = build_mocked_engine()
@@ -913,6 +1073,7 @@ def test_review_gate_improvement_iteration_returns_result(tmp_path: Path) -> Non
     session_mgr.send_command.side_effect = [
         """analysis
 ```json
+# pylint: disable-next=line-too-long; silent  # pylint: disable=line-too-long; silent
 {"repair_role": "operator_fixer", "improvement_area": "fallback handling", "suggested_direction": "keep tensors on NPU", "priority": "high"}
 ```
 """,
@@ -923,7 +1084,7 @@ def test_review_gate_improvement_iteration_returns_result(tmp_path: Path) -> Non
 """,
     ]
 
-    result = engine._run_improvement_iteration(
+    result = engine._run_improvement_iteration(  # pylint: disable=protected-access; silent
         gate_state=ReviewGateState(review_reject_reasons=["CPU fallback detected"]),
         project_dir=str(tmp_path),
         entry_script="python dummy.py",
@@ -937,6 +1098,7 @@ def test_review_gate_improvement_iteration_returns_result(tmp_path: Path) -> Non
 
 
 def test_review_gate_result_structure() -> None:
+    # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
     from core.repair_loop import ReviewGateState
 
     engine, _session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
@@ -952,7 +1114,7 @@ def test_review_gate_result_structure() -> None:
         history=[{"iteration": 1, "exit_code": 1}],
     )
 
-    result = engine._build_result(
+    result = engine._build_result(  # pylint: disable=protected-access; silent
         status="passed_with_reviews",
         analyzer_session_id="analyzer-1",
         repair_session_ids={"code_adapter": "repair-1"},
@@ -975,8 +1137,11 @@ def test_review_gate_result_structure() -> None:
     }
 
 
-def test_analyze_error_timeout_returns_default_classification(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_analyze_error_timeout_returns_default_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """_analyze_error with TimeoutError retries 3 times then returns communication_error default."""
+    # pylint: disable-next=unused-variable; silent
     engine, session_mgr, _artifact_store, prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
 
@@ -989,7 +1154,7 @@ def test_analyze_error_timeout_returns_default_classification(monkeypatch: pytes
     session_mgr.send_command.side_effect = failing_send
     monkeypatch.setattr("time.sleep", MagicMock())
 
-    result = engine._analyze_error(
+    result = engine._analyze_error(  # pylint: disable=protected-access; silent
         analyzer_session_id="x",
         entry_script="t.py",
         project_dir="/tmp",
@@ -1004,7 +1169,9 @@ def test_analyze_error_timeout_returns_default_classification(monkeypatch: pytes
 
 
 def test_analyze_error_connection_refused_returns_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pylint: disable-next=line-too-long; silent
     """_analyze_error with ConnectionRefusedError retries 3 times then returns default classification."""
+    # pylint: disable-next=unused-variable; silent
     engine, session_mgr, _artifact_store, prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
 
@@ -1017,7 +1184,7 @@ def test_analyze_error_connection_refused_returns_default(monkeypatch: pytest.Mo
     session_mgr.send_command.side_effect = failing_send
     monkeypatch.setattr("time.sleep", MagicMock())
 
-    result = engine._analyze_error(
+    result = engine._analyze_error(  # pylint: disable=protected-access; silent
         analyzer_session_id="x",
         entry_script="t.py",
         project_dir="/tmp",
@@ -1033,6 +1200,7 @@ def test_analyze_error_connection_refused_returns_default(monkeypatch: pytest.Mo
 
 def test_analyze_error_success_no_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     """_analyze_error with valid JSON response succeeds on first call, no retries needed."""
+    # pylint: disable-next=unused-variable; silent
     engine, session_mgr, _artifact_store, prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
 
@@ -1040,12 +1208,13 @@ def test_analyze_error_success_no_retries(monkeypatch: pytest.MonkeyPatch) -> No
 
     def success_send(*_args: object, **_kwargs: object) -> str:
         call_count[0] += 1
+        # pylint: disable-next=line-too-long; silent
         return '{"category": "dependency", "root_cause": "missing pkg", "suggested_fix": "pip install", "repair_role": "dependency_fixer"}'
 
     session_mgr.send_command.side_effect = success_send
     monkeypatch.setattr("time.sleep", MagicMock())
 
-    result = engine._analyze_error(
+    result = engine._analyze_error(  # pylint: disable=protected-access; silent
         analyzer_session_id="x",
         entry_script="t.py",
         project_dir="/tmp",
@@ -1060,13 +1229,17 @@ def test_analyze_error_success_no_retries(monkeypatch: pytest.MonkeyPatch) -> No
     assert result["root_cause"] == "missing pkg"
 
 
-def test_analyze_error_session_error_returns_communication_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_analyze_error_session_error_returns_communication_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
-    session_mgr.send_command.return_value = '{"ok": false, "error": "Compaction response is incomplete"}'
+    session_mgr.send_command.return_value = (
+        '{"ok": false, "error": "Compaction response is incomplete"}'
+    )
     monkeypatch.setattr("time.sleep", MagicMock())
 
-    result = engine._analyze_error(
+    result = engine._analyze_error(  # pylint: disable=protected-access; silent
         analyzer_session_id="analyzer-1",
         entry_script="t.py",
         project_dir="/tmp",
@@ -1082,7 +1255,10 @@ def test_analyze_error_session_error_returns_communication_error(monkeypatch: py
     session_mgr.send_command.assert_called_once()
 
 
-def test_repair_call_timeout_retries_and_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_call_timeout_retries_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # pylint: disable-next=line-too-long; silent
     """run() repair send_command with TimeoutError retries 3 times per iteration, then continues to next."""
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
@@ -1090,6 +1266,7 @@ def test_repair_call_timeout_retries_and_continues(tmp_path: Path, monkeypatch: 
 
     repair_call_count = [0]
 
+    # pylint: disable-next=unused-argument; silent
     def mock_send(session_id: str, command: str, timeout: int = 600) -> str:
         # Analyzer calls succeed; repair calls always timeout
         if session_id == "repair-1":
@@ -1099,23 +1276,39 @@ def test_repair_call_timeout_retries_and_continues(tmp_path: Path, monkeypatch: 
 
     session_mgr.send_command.side_effect = mock_send
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(
-        args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom",
-    ))
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess(
+            args="python dummy.py",
+            returncode=1,
+            stdout="",
+            stderr="RuntimeError: boom",
+        ),
+    )
     monkeypatch.setattr("time.sleep", MagicMock())
-    monkeypatch.setattr(engine, "_analyze_error", lambda **_kwargs: {
-        "category": "code",
-        "root_cause": "bad call",
-        "suggested_fix": "update code",
-        "repair_role": "code_adapter",
-        "raw_response": "{}",
-    })
+    monkeypatch.setattr(
+        engine,
+        "_analyze_error",
+        lambda **_kwargs: {
+            "category": "code",
+            "root_cause": "bad call",
+            "suggested_fix": "update code",
+            "repair_role": "code_adapter",
+            "raw_response": "{}",
+        },
+    )
 
-    result = cast(RunResult, cast(object, engine.run(
-        entry_script="python dummy.py",
-        project_dir=str(tmp_path),
-        max_iterations=2,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                entry_script="python dummy.py",
+                project_dir=str(tmp_path),
+                max_iterations=2,
+            ),
+        ),
+    )
 
     # 3 retries per iteration × 2 iterations = 6 repair calls total
     assert repair_call_count[0] == 6
@@ -1128,68 +1321,109 @@ def test_repair_call_timeout_retries_and_continues(tmp_path: Path, monkeypatch: 
         assert str(entry.get("repair_role")) == "code_adapter"
 
 
-def test_repair_session_error_marks_fix_attempt_communication_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_session_error_marks_fix_attempt_communication_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     (tmp_path / "dummy.py").write_text("x = 1\n", encoding="utf-8")
 
+    # pylint: disable-next=unused-argument; silent
     def mock_send(session_id: str, _command: str, timeout: int = 600) -> str:
         if session_id == "repair-1":
             return '{"ok": false, "error": "Compaction response is incomplete"}'
         return "{}"
 
     session_mgr.send_command.side_effect = mock_send
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(
-        args="python dummy.py", returncode=1, stdout="", stderr="RuntimeError: boom",
-    ))
-    monkeypatch.setattr(engine, "_analyze_error", lambda **_kwargs: {
-        "category": "operator",
-        "root_cause": "bad op",
-        "suggested_fix": "fix op",
-        "repair_role": "operator_fixer",
-        "raw_response": "{}",
-    })
-    extract_summary = MagicMock(return_value={"modified_files": ["dummy.py"], "summary": "should not run"})
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess(
+            args="python dummy.py",
+            returncode=1,
+            stdout="",
+            stderr="RuntimeError: boom",
+        ),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_analyze_error",
+        lambda **_kwargs: {
+            "category": "operator",
+            "root_cause": "bad op",
+            "suggested_fix": "fix op",
+            "repair_role": "operator_fixer",
+            "raw_response": "{}",
+        },
+    )
+    extract_summary = MagicMock(
+        return_value={"modified_files": ["dummy.py"], "summary": "should not run"}
+    )
     monkeypatch.setattr(engine, "_extract_fix_summary", extract_summary)
 
-    result = cast(RunResult, cast(object, engine.run(
-        entry_script="python dummy.py",
-        project_dir=str(tmp_path),
-        max_iterations=1,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                entry_script="python dummy.py",
+                project_dir=str(tmp_path),
+                max_iterations=1,
+            ),
+        ),
+    )
 
     assert result["success"] is False
     assert result["status"] == "max_iterations"
     assert result["error_history"][0].get("repair_role") == "operator_fixer"
-    assert "Compaction response is incomplete" in str(result["error_history"][0].get("fix_summary", ""))
+    assert "Compaction response is incomplete" in str(
+        result["error_history"][0].get("fix_summary", "")
+    )
     extract_summary.assert_not_called()
 
 
-def test_repair_call_success_unchanged_flow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_call_success_unchanged_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """run() with successful subprocess exit 0 → no repair calls made, status is 'success'."""
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     (tmp_path / "dummy.py").write_text("print('ok')\n", encoding="utf-8")
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(
-        args="python dummy.py", returncode=0, stdout="ok", stderr="",
-    ))
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_args, **_kwargs: CompletedProcess(
+            args="python dummy.py",
+            returncode=0,
+            stdout="ok",
+            stderr="",
+        ),
+    )
 
-    result = cast(RunResult, cast(object, engine.run(
-        entry_script="python dummy.py",
-        project_dir=str(tmp_path),
-        max_iterations=3,
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                entry_script="python dummy.py",
+                project_dir=str(tmp_path),
+                max_iterations=3,
+            ),
+        ),
+    )
 
     # No repair session should be created, no send_command calls
     session_mgr.send_command.assert_not_called()
     assert result["success"] is True
     assert result["status"] == "success"
     assert result["iteration_count"] == 1
+    # pylint: disable-next=use-implicit-booleaness-not-comparison; silent
     assert result["error_history"] == []
+    # pylint: disable-next=use-implicit-booleaness-not-comparison; silent
     assert result["repair_session_ids"] == {}
 
 
-def _custom_op_phase3_contract(project_dir: Path, *, revision_allowed: bool = False) -> dict[str, object]:
+def _custom_op_phase3_contract(
+    project_dir: Path, *, revision_allowed: bool = False
+) -> dict[str, object]:
     reports_dir = project_dir / "migration_reports"
     return {
         "entry_script_path": str(project_dir / "validate.py"),
@@ -1279,60 +1513,62 @@ def _custom_op_gate_report() -> dict[str, object]:
                 }
             ],
         },
-        "rows": [{
-            "row_id": "op_1",
-            "unit_identity": "op_1",
-            "variant_or_signature": "op_1(float32)",
-            "inventory_granularity": "fine_grained",
-            "status": "PASS",
-            "native_operator_symbols": ["op_1_forward"],
-            "kernel_functions": ["op_1_kernel"],
-            "kernel_launch_sites": ["csrc/op_1.cpp:launch"],
-            "public_entry_mapping": {"python_api": "pkg.op_1"},
-            "source_evidence": ["csrc/op_1.cpp"],
-            "opp_custom_op_artifact_evidence": {
-                "path": "opp/op_1/libop_1.so",
-                "runtime_loaded_artifact_path": "opp/op_1/libop_1.so",
-                "project_local": True,
-                "built": True,
-                "native_artifact": True,
-                "compiled_extension": True,
-                "build_provenance": {
-                    "command": "bash opp/op_1/build.sh",
-                    "log_path": "migration_reports/build.log",
+        "rows": [
+            {
+                "row_id": "op_1",
+                "unit_identity": "op_1",
+                "variant_or_signature": "op_1(float32)",
+                "inventory_granularity": "fine_grained",
+                "status": "PASS",
+                "native_operator_symbols": ["op_1_forward"],
+                "kernel_functions": ["op_1_kernel"],
+                "kernel_launch_sites": ["csrc/op_1.cpp:launch"],
+                "public_entry_mapping": {"python_api": "pkg.op_1"},
+                "source_evidence": ["csrc/op_1.cpp"],
+                "opp_custom_op_artifact_evidence": {
+                    "path": "opp/op_1/libop_1.so",
+                    "runtime_loaded_artifact_path": "opp/op_1/libop_1.so",
+                    "project_local": True,
+                    "built": True,
+                    "native_artifact": True,
+                    "compiled_extension": True,
+                    "build_provenance": {
+                        "command": "bash opp/op_1/build.sh",
+                        "log_path": "migration_reports/build.log",
+                    },
                 },
-            },
-            "adapter_evidence": {"imported": True},
-            "parity_evidence": {"passed": True},
-            "integration_e2e_evidence": {
-                "passed": True,
-                "project_api_invoked": True,
-                "custom_op_route_executed": True,
-                "native_custom_op_route_executed": True,
-            },
-            "same_run_runtime_coverage": {
-                "custom_call_count": 2,
-                "same_run": True,
-                "project_api_route": True,
-                "native_custom_op_route_executed": True,
-            },
-            "performance_evidence": {
-                "baseline_seconds": 0.02,
-                "custom_seconds": 0.01,
-                "speedup_vs_baseline": 2.0,
-                "project_api_invoked": True,
-                "baseline_device": "cuda",
-                "custom_device": "npu",
-            },
-            "no_fallback_no_zero_call_no_builtin_contamination": {
-                "passed": True,
-                "fallback_detected": False,
-                "zero_call_detected": False,
-                "builtin_contamination_detected": False,
-                "baseline_only_detected": False,
-                "stub_detected": False,
-            },
-        }],
+                "adapter_evidence": {"imported": True},
+                "parity_evidence": {"passed": True},
+                "integration_e2e_evidence": {
+                    "passed": True,
+                    "project_api_invoked": True,
+                    "custom_op_route_executed": True,
+                    "native_custom_op_route_executed": True,
+                },
+                "same_run_runtime_coverage": {
+                    "custom_call_count": 2,
+                    "same_run": True,
+                    "project_api_route": True,
+                    "native_custom_op_route_executed": True,
+                },
+                "performance_evidence": {
+                    "baseline_seconds": 0.02,
+                    "custom_seconds": 0.01,
+                    "speedup_vs_baseline": 2.0,
+                    "project_api_invoked": True,
+                    "baseline_device": "cuda",
+                    "custom_device": "npu",
+                },
+                "no_fallback_no_zero_call_no_builtin_contamination": {
+                    "passed": True,
+                    "fallback_detected": False,
+                    "zero_call_detected": False,
+                    "builtin_contamination_detected": False,
+                    "baseline_only_detected": False,
+                    "stub_detected": False,
+                },
+            }
+        ],
     }
 
 
@@ -1349,41 +1585,53 @@ def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
     )
 
 
-def test_operator_repair_context_artifact_includes_inventory_goal_and_entry_rules(tmp_path: Path) -> None:
+def test_operator_repair_context_artifact_includes_inventory_goal_and_entry_rules(
+    tmp_path: Path,
+) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
-    (reports_dir / "operator_inventory.json").write_text(json.dumps({
-        "operators": [
+    (reports_dir / "operator_inventory.json").write_text(
+        json.dumps(
             {
-                "unit_identity": "nms_custom:float32",
-                "name": "nms_custom:float32",
-                "variant_or_signature": "nms(float32)",
-                "inventory_granularity": "fine_grained",
-                "native_operator_symbols": ["nms_custom_forward"],
-                "kernel_functions": ["nms_kernel"],
-                "kernel_launch_sites": ["csrc/nms.cpp:launch_nms"],
-                "public_entry_mapping": {"python_api": "ops.nms"},
-                "source_file": "csrc/nms.cpp",
-                "status": "OPEN",
-            },
+                "operators": [
+                    {
+                        "unit_identity": "nms_custom:float32",
+                        "name": "nms_custom:float32",
+                        "variant_or_signature": "nms(float32)",
+                        "inventory_granularity": "fine_grained",
+                        "native_operator_symbols": ["nms_custom_forward"],
+                        "kernel_functions": ["nms_kernel"],
+                        "kernel_launch_sites": ["csrc/nms.cpp:launch_nms"],
+                        "public_entry_mapping": {"python_api": "ops.nms"},
+                        "source_file": "csrc/nms.cpp",
+                        "status": "OPEN",
+                    },
+                    {
+                        "unit_identity": "roi_align:float32",
+                        "name": "roi_align:float32",
+                        "variant_or_signature": "roi_align(float32)",
+                        "inventory_granularity": "fine_grained",
+                        "native_operator_symbols": ["roi_align_forward"],
+                        "kernel_functions": ["roi_align_kernel"],
+                        "kernel_launch_sites": ["csrc/roi.cpp:launch_roi"],
+                        "public_entry_mapping": {"python_api": "ops.roi_align"},
+                        "source_file": "csrc/roi.cpp",
+                        "status": "PASS",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (reports_dir / "migration_manifest.json").write_text(
+        json.dumps(
             {
-                "unit_identity": "roi_align:float32",
-                "name": "roi_align:float32",
-                "variant_or_signature": "roi_align(float32)",
-                "inventory_granularity": "fine_grained",
-                "native_operator_symbols": ["roi_align_forward"],
-                "kernel_functions": ["roi_align_kernel"],
-                "kernel_launch_sites": ["csrc/roi.cpp:launch_roi"],
-                "public_entry_mapping": {"python_api": "ops.roi_align"},
-                "source_file": "csrc/roi.cpp",
-                "status": "PASS",
-            },
-        ]
-    }), encoding="utf-8")
-    (reports_dir / "migration_manifest.json").write_text(json.dumps({
-        "manifest_entries": 2,
-        "entries": [{"op_name": "nms_custom:float32"}, {"op_name": "roi_align:float32"}],
-    }), encoding="utf-8")
+                "manifest_entries": 2,
+                "entries": [{"op_name": "nms_custom:float32"}, {"op_name": "roi_align:float32"}],
+            }
+        ),
+        encoding="utf-8",
+    )
     gate = _custom_op_gate_report()
     gate["inventory_count"] = 2
     gate["manifest_entries"] = 2
@@ -1407,7 +1655,10 @@ def test_operator_repair_context_artifact_includes_inventory_goal_and_entry_rule
     assert "kernel_launch_sites=csrc/nms.cpp:launch_nms" in text
     assert "public_entry_mapping=python_api" in text
     assert "Inventory / Manifest / Final-Gate Closure" in text
-    assert "inventory → manifest → final gate" in text.lower() or "inventory / manifest / final-gate" in text.lower()
+    assert (
+        "inventory → manifest → final gate" in text.lower()
+        or "inventory / manifest / final-gate" in text.lower()
+    )
     assert "source_inventory is the authoritative source-discovery proof" in text
     assert "re-discover or re-close instead of passing" in text
     assert "FULL_PASS is required" in text
@@ -1421,17 +1672,23 @@ def test_operator_repair_context_artifact_includes_inventory_goal_and_entry_rule
     assert "custom_op_final_gate" in text
 
 
-def test_repair_loop_custom_op_gate_blocks_exit_zero_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    session_mgr = MockSessionManager({
-        "category": "validation",
-        "root_cause": "final gate missing",
-        "suggested_fix": "write full custom-op evidence",
-        "repair_role": "code_adapter",
-    })
+def test_repair_loop_custom_op_gate_blocks_exit_zero_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_mgr = MockSessionManager(
+        {
+            "category": "validation",
+            "root_cause": "final gate missing",
+            "suggested_fix": "write full custom-op evidence",
+            "repair_role": "code_adapter",
+        }
+    )
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0)
+    )
 
     result = engine.run(
         f"{sys.executable} {tmp_path / 'validate.py'}",
@@ -1446,16 +1703,22 @@ def test_repair_loop_custom_op_gate_blocks_exit_zero_when_missing(tmp_path: Path
     assert session_mgr.send_command_calls
 
 
-def test_repair_loop_valid_custom_op_gate_allows_exit_zero_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repair_loop_valid_custom_op_gate_allows_exit_zero_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     session_mgr = MockSessionManager({})
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
     _write_native_custom_op_gate_artifacts(tmp_path)
-    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_report()), encoding="utf-8")
+    (reports_dir / "custom_op_final_gate.json").write_text(
+        json.dumps(_custom_op_gate_report()), encoding="utf-8"
+    )
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0)
+    )
 
     result = engine.run(
         f"{sys.executable} {tmp_path / 'validate.py'}",
@@ -1466,23 +1729,32 @@ def test_repair_loop_valid_custom_op_gate_allows_exit_zero_success(tmp_path: Pat
 
     assert result["success"] is True
     assert result["status"] == "success"
+    # pylint: disable-next=use-implicit-booleaness-not-comparison; silent
     assert session_mgr.send_command_calls == []
 
 
-def test_repair_loop_custom_op_gate_blocks_oversized_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    session_mgr = MockSessionManager({
-        "category": "validation",
-        "root_cause": "final gate report too large",
-        "suggested_fix": "rewrite bounded final gate evidence",
-        "repair_role": "code_adapter",
-    })
+def test_repair_loop_custom_op_gate_blocks_oversized_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_mgr = MockSessionManager(
+        {
+            "category": "validation",
+            "root_cause": "final gate report too large",
+            "suggested_fix": "rewrite bounded final gate evidence",
+            "repair_role": "code_adapter",
+        }
+    )
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
-    _ = (reports_dir / "custom_op_final_gate.json").write_text("{" + " " * (5 * 1024 * 1024), encoding="utf-8")
+    _ = (reports_dir / "custom_op_final_gate.json").write_text(
+        "{" + " " * (5 * 1024 * 1024), encoding="utf-8"
+    )
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0)
+    )
 
     result = engine.run(
         f"{sys.executable} {tmp_path / 'validate.py'}",
@@ -1498,7 +1770,7 @@ def test_repair_loop_custom_op_gate_blocks_oversized_report(tmp_path: Path, monk
 def test_extract_fix_summary_session_error_skips_followup() -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
 
-    result = engine._extract_fix_summary(
+    result = engine._extract_fix_summary(  # pylint: disable=protected-access; silent
         "repair-1",
         '{"ok": false, "error": "Compaction response is incomplete"}',
         max_retries=2,
@@ -1511,8 +1783,11 @@ def test_extract_fix_summary_session_error_skips_followup() -> None:
 
 def test_extract_fix_summary_followup_session_error_returns_summary() -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
-    session_mgr.send_command.return_value = '{"ok": false, "error": "Compaction response is incomplete"}'
+    session_mgr.send_command.return_value = (
+        '{"ok": false, "error": "Compaction response is incomplete"}'
+    )
 
+    # pylint: disable-next=protected-access; silent
     result = engine._extract_fix_summary("repair-1", "not json", max_retries=1)
 
     assert result.get("modified_files") == []
@@ -1523,9 +1798,11 @@ def test_extract_fix_summary_followup_session_error_returns_summary() -> None:
 def test_improvement_analyzer_session_error_fails() -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
-    session_mgr.send_command.return_value = '{"ok": false, "error": "Compaction response is incomplete"}'
+    session_mgr.send_command.return_value = (
+        '{"ok": false, "error": "Compaction response is incomplete"}'
+    )
 
-    result = engine._run_improvement_iteration(
+    result = engine._run_improvement_iteration(  # pylint: disable=protected-access; silent
         gate_state=ReviewGateState(review_reject_reasons=["bad"]),
         project_dir="/tmp/project",
         entry_script="python main.py",
@@ -1540,11 +1817,12 @@ def test_improvement_repair_session_error_fails() -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     session_mgr.send_command.side_effect = [
+        # pylint: disable-next=line-too-long; silent
         '{"repair_role": "code_adapter", "improvement_area": "device", "suggested_direction": "fix fallback"}',
         '{"ok": false, "error": "Compaction response is incomplete"}',
     ]
 
-    result = engine._run_improvement_iteration(
+    result = engine._run_improvement_iteration(  # pylint: disable=protected-access; silent
         gate_state=ReviewGateState(review_reject_reasons=["bad"]),
         project_dir="/tmp/project",
         entry_script="python main.py",
@@ -1573,7 +1851,7 @@ def test_repair_loop_entry_script_action_blocked_without_phase3_flag(tmp_path: P
         },
     }
 
-    result = engine._maybe_apply_entry_script_action(
+    result = engine._maybe_apply_entry_script_action(  # pylint: disable=protected-access; silent
         classification=cast(ClassificationDict, cast(object, classification)),
         active_contract={"entry_script_path": "old.py", "run_command": "python old.py"},
         project_dir=str(tmp_path),
@@ -1605,7 +1883,7 @@ def test_repair_loop_entry_script_action_safe_revision_recomputes_command(tmp_pa
         },
     }
 
-    result = engine._maybe_apply_entry_script_action(
+    result = engine._maybe_apply_entry_script_action(  # pylint: disable=protected-access; silent
         classification=cast(ClassificationDict, cast(object, classification)),
         active_contract={
             "entry_script_path": str(tmp_path / "old.py"),
@@ -1619,9 +1897,12 @@ def test_repair_loop_entry_script_action_safe_revision_recomputes_command(tmp_pa
 
     assert result is not None
     assert result["applied"] is True
-    cwd, env_vars, cmd_argv, use_shell = engine._prepare_entry_command(str(result["run_command"]), str(tmp_path))
+    # pylint: disable-next=protected-access; silent
+    cwd, env_vars, cmd_argv, use_shell = engine._prepare_entry_command(
+        str(result["run_command"]), str(tmp_path)
+    )
     assert cwd == str(tmp_path)
-    assert env_vars == {}
+    assert env_vars == {}  # pylint: disable=use-implicit-booleaness-not-comparison; silent
     assert cmd_argv[-1] == str(revised)
     assert use_shell is False
 
@@ -1643,7 +1924,9 @@ def test_repair_loop_entry_script_action_safe_revision_recomputes_command(tmp_pa
         "python new.py & python other.py",
     ],
 )
-def test_repair_loop_entry_script_action_blocks_unsafe_command(tmp_path: Path, run_command: str) -> None:
+def test_repair_loop_entry_script_action_blocks_unsafe_command(
+    tmp_path: Path, run_command: str
+) -> None:
     engine, _session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     classification = {
         "category": "validation",
@@ -1660,7 +1943,7 @@ def test_repair_loop_entry_script_action_blocks_unsafe_command(tmp_path: Path, r
         },
     }
 
-    result = engine._maybe_apply_entry_script_action(
+    result = engine._maybe_apply_entry_script_action(  # pylint: disable=protected-access; silent
         classification=cast(ClassificationDict, cast(object, classification)),
         active_contract={
             "entry_script_path": "old.py",
@@ -1677,25 +1960,36 @@ def test_repair_loop_entry_script_action_blocks_unsafe_command(tmp_path: Path, r
     assert result["blocked_reason"] == "unsafe_run_command"
 
 
-
-def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    session_mgr = MockSessionManager({
-        "category": "pathing",
-        "root_cause": "Path.relative_to(PROJECT_DIR) is stale",
-        "suggested_fix": "Adjust path handling",
-        "repair_role": "code_adapter",
-    })
+def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_mgr = MockSessionManager(
+        {
+            "category": "pathing",
+            "root_cause": "Path.relative_to(PROJECT_DIR) is stale",
+            "suggested_fix": "Adjust path handling",
+            "repair_role": "code_adapter",
+        }
+    )
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0)
+    )
 
-    result = cast(RunResult, cast(object, engine.run(
-        f"{sys.executable} {tmp_path / 'validate.py'}",
-        str(tmp_path),
-        max_iterations=1,
-        phase3_contract=_custom_op_phase3_contract(tmp_path),
-    )))
+    result = cast(
+        RunResult,
+        cast(
+            object,
+            engine.run(
+                f"{sys.executable} {tmp_path / 'validate.py'}",
+                str(tmp_path),
+                max_iterations=1,
+                phase3_contract=_custom_op_phase3_contract(tmp_path),
+            ),
+        ),
+    )
 
     assert result["success"] is False
     assert result["repair_session_ids"] == {"operator_fixer": "session-2"}
@@ -1706,15 +2000,17 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
 
 
 def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: Path) -> None:
-    session_mgr = MockSessionManager({
-        "category": "pathing",
-        "root_cause": "PROJECT_DIR relative import is wrong",
-        "suggested_fix": "Fix sys.path setup",
-        "repair_role": "code_adapter",
-    })
+    session_mgr = MockSessionManager(
+        {
+            "category": "pathing",
+            "root_cause": "PROJECT_DIR relative import is wrong",
+            "suggested_fix": "Fix sys.path setup",
+            "repair_role": "code_adapter",
+        }
+    )
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
 
-    classification = engine._analyze_error(
+    classification = engine._analyze_error(  # pylint: disable=protected-access; silent
         analyzer_session_id="session-1",
         entry_script="python train.py",
         project_dir=str(tmp_path),
@@ -1745,20 +2041,29 @@ def test_custom_op_negative_evidence_without_contract_does_not_force_operator() 
     assert routed["category"] == "dependency"
     assert routed["repair_role"] == "dependency_fixer"
 
-def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_report()), encoding="utf-8")
-    session_mgr = MockSessionManager({
-        "category": "validation",
-        "root_cause": "final gate missing",
-        "suggested_fix": "write canonical evidence",
-        "repair_role": "code_adapter",
-    })
+    (outside / "custom_op_final_gate.json").write_text(
+        json.dumps(_custom_op_gate_report()), encoding="utf-8"
+    )
+    session_mgr = MockSessionManager(
+        {
+            "category": "validation",
+            "root_cause": "final gate missing",
+            "suggested_fix": "write canonical evidence",
+            "repair_role": "code_adapter",
+        }
+    )
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
     contract = _custom_op_phase3_contract(tmp_path)
     contract["reports_dir"] = str(outside)
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
+    monkeypatch.setattr(
+        "subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0)
+    )
 
     result = engine.run(
         str(contract["run_command"]),
@@ -1768,4 +2073,6 @@ def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, 
     )
 
     assert result["success"] is False
-    assert str(tmp_path / "migration_reports" / "custom_op_final_gate.json") in str(result["final_stderr"])
+    assert str(tmp_path / "migration_reports" / "custom_op_final_gate.json") in str(
+        result["final_stderr"]
+    )

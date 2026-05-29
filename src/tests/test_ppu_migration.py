@@ -1,9 +1,9 @@
 # pyright: reportUnusedCallResult=false
 
+# pylint: disable-next=line-too-long; silent
 """Tests for PPU migration support: prompts, workflow YAML, rule-based migrator, validator compatibility, and executor."""
 
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -12,39 +12,44 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.config import load_workflow
-from core.prompt_loader import PromptLoader
-from core.workflow_executor import WorkflowExecutor
+from core.config import load_workflow  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from core.types import PhaseDefinition, WorkflowDefinition
+# pylint: disable-next=wrong-import-position; silent
+from core.workflow_executor import WorkflowExecutor
 
 ROOT = PROJECT_ROOT
 WORKFLOWS_DIR = ROOT / "workflows"
 PROMPTS_DIR = ROOT / "prompts"
 
-PPU_PROMPT_FILES = frozenset({
-    "phase_0_env_detect_ppu",
-    "phase_1_project_analysis_ppu",
-    "phase_1_5_constraint_summary_ppu",
-    "phase_2_venv_create_ppu",
-    "phase_3_entry_script_ppu",
-    "phase_35_static_validate_ppu",
-    "phase_error_recovery_container_ppu",
-    "repair_dependency_fixer_container_ppu",
-    "repair_code_adapter_container_ppu",
-    "repair_operator_fixer_container_ppu",
-    "phase_5_review_container_ppu",
-    "phase_review_improvement_container_ppu",
-    "phase_6_report_ppu",
-})
+PPU_PROMPT_FILES = frozenset(
+    {
+        "phase_0_env_detect_ppu",
+        "phase_1_project_analysis_ppu",
+        "phase_1_5_constraint_summary_ppu",
+        "phase_2_venv_create_ppu",
+        "phase_3_entry_script_ppu",
+        "phase_35_static_validate_ppu",
+        "phase_error_recovery_container_ppu",
+        "repair_dependency_fixer_container_ppu",
+        "repair_code_adapter_container_ppu",
+        "repair_operator_fixer_container_ppu",
+        "phase_5_review_container_ppu",
+        "phase_review_improvement_container_ppu",
+        "phase_6_report_ppu",
+    }
+)
 
-PPU_CONTAINER_PHASE5_PROMPTS = frozenset({
-    "phase_error_recovery_container_ppu",
-    "repair_dependency_fixer_container_ppu",
-    "repair_code_adapter_container_ppu",
-    "repair_operator_fixer_container_ppu",
-    "phase_5_review_container_ppu",
-    "phase_review_improvement_container_ppu",
-})
+PPU_CONTAINER_PHASE5_PROMPTS = frozenset(
+    {
+        "phase_error_recovery_container_ppu",
+        "repair_dependency_fixer_container_ppu",
+        "repair_code_adapter_container_ppu",
+        "repair_operator_fixer_container_ppu",
+        "phase_5_review_container_ppu",
+        "phase_review_improvement_container_ppu",
+    }
+)
 
 FORBIDDEN_PPU_PHRASES = (
     "AscendC",
@@ -52,14 +57,22 @@ FORBIDDEN_PPU_PHRASES = (
 )
 
 PYPI_DANGER_PACKAGES = (
-    "torch", "vllm", "sglang", "sgl-kernel", "flash_attn",
-    "flashinfer-python", "deep_gemm", "deep_ep", "flash_mla",
-    "triton", "xgrammar", "torchao",
+    "torch",
+    "vllm",
+    "sglang",
+    "sgl-kernel",
+    "flash_attn",
+    "flashinfer-python",
+    "deep_gemm",
+    "deep_ep",
+    "flash_mla",
+    "triton",
+    "xgrammar",
+    "torchao",
 )
 
 
-class TestPPUPromptFilesExist:
-
+class TestPPUPromptFilesExist:  # pylint: disable=too-few-public-methods; silent
     @pytest.mark.parametrize("name", sorted(PPU_PROMPT_FILES))
     def test_ppu_prompt_file_exists(self, name):
         p = PROMPTS_DIR / f"{name}.md"
@@ -67,7 +80,6 @@ class TestPPUPromptFilesExist:
 
 
 class TestPPUPromptContent:
-
     @pytest.mark.parametrize("name", sorted(PPU_PROMPT_FILES))
     def test_ppu_prompts_no_affirmative_npu_targets(self, name):
         content = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
@@ -75,9 +87,10 @@ class TestPPUPromptContent:
             lower = line.lower()
             for term in ("torch_npu", "torch.npu"):
                 if term.lower() in lower:
-                    assert any(neg in lower for neg in ("do not", "not ", "not install", "do not install", "not use")), (
-                        f"{name}: '{term}' found outside negation context: {line.strip()}"
-                    )
+                    assert any(
+                        neg in lower
+                        for neg in ("do not", "not ", "not install", "do not install", "not use")
+                    ), f"{name}: '{term}' found outside negation context: {line.strip()}"
 
     @pytest.mark.parametrize("name", sorted(PPU_PROMPT_FILES))
     def test_ppu_prompts_no_ascendc_targets(self, name):
@@ -86,12 +99,14 @@ class TestPPUPromptContent:
             lower = line.lower()
             if "ascendc" in lower:
                 stripped = line.strip()
-                ascendc_field = "ascendc_available" in stripped and not ("ascendc" in stripped.replace("ascendc_available", ""))
+                # pylint: disable-next=line-too-long; silent
+                ascendc_field = "ascendc_available" in stripped and "ascendc" not in stripped.replace("ascendc_available", "")
                 if ascendc_field:
                     continue  # field name "ascendc_available" is OK as compat key
-                assert any(neg in lower for neg in ("do not", "not ", "must not", "not require", "does not use")), (
-                    f"{name}: 'AscendC' found outside negation context: {stripped}"
-                )
+                assert any(
+                    neg in lower
+                    for neg in ("do not", "not ", "must not", "not require", "does not use")
+                ), f"{name}: 'AscendC' found outside negation context: {stripped}"
 
     def test_env_detect_ppu_states_cuda_compatible(self):
         content = (PROMPTS_DIR / "phase_0_env_detect_ppu.md").read_text(encoding="utf-8")
@@ -114,9 +129,10 @@ class TestPPUPromptContent:
         assert "cpu otherwise" not in content.lower(), (
             "PPU env_detect must not suggest platform=cpu; validator only accepts ppu/cuda/npu"
         )
-        assert "platform" not in content.lower().split("cpu")[0].lower() or '"cpu"' not in content.lower(), (
-            "PPU env_detect must not list cpu as a valid platform value"
-        )
+        assert (
+            "platform" not in content.lower().split("cpu")[0].lower()
+            or '"cpu"' not in content.lower()
+        ), "PPU env_detect must not list cpu as a valid platform value"
 
     def test_venv_create_ppu_warnings_against_public_pypi(self):
         content = (PROMPTS_DIR / "phase_2_venv_create_ppu.md").read_text(encoding="utf-8")
@@ -124,8 +140,14 @@ class TestPPUPromptContent:
             assert pkg in content, f"PPU venv prompt should warn about {pkg}"
 
     def test_dependency_fixer_container_ppu_has_pypi_protection(self):
-        content = (PROMPTS_DIR / "repair_dependency_fixer_container_ppu.md").read_text(encoding="utf-8")
-        assert "dry-run" in content.lower() or "dry_run" in content.lower() or "dry run" in content.lower()
+        content = (PROMPTS_DIR / "repair_dependency_fixer_container_ppu.md").read_text(
+            encoding="utf-8"
+        )
+        assert (
+            "dry-run" in content.lower()
+            or "dry_run" in content.lower()
+            or "dry run" in content.lower()
+        )
         for pkg in ("vllm", "sglang", "flash_attn", "triton", "torch"):
             assert pkg in content, f"Dependency fixer must mention {pkg} risk"
 
@@ -133,9 +155,14 @@ class TestPPUPromptContent:
         content = (PROMPTS_DIR / "repair_code_adapter_container_ppu.md").read_text(encoding="utf-8")
         assert "Do NOT change `torch.cuda` to `torch.npu`" in content
         assert "AscendC" not in content, "code_adapter PPU must not contain AscendC"
-        for placeholder in ("{execution_backend_mode}", "{actual_execution_command}",
-                            "{container_name_or_id}", "{container_workdir}",
-                            "{host_project_dir}", "{container_project_dir}"):
+        for placeholder in (
+            "{execution_backend_mode}",
+            "{actual_execution_command}",
+            "{container_name_or_id}",
+            "{container_workdir}",
+            "{host_project_dir}",
+            "{container_project_dir}",
+        ):
             assert placeholder in content, f"Container PPU prompt missing {placeholder}"
 
     def test_phase_3_ppu_entry_script_forbids_container_runtime(self):
@@ -145,7 +172,9 @@ class TestPPUPromptContent:
         assert "in-container" in content.lower() or "inside" in content.lower()
 
     def test_operator_fixer_ppu_wraps_custom_op_guidance(self):
-        content = (PROMPTS_DIR / "repair_operator_fixer_container_ppu.md").read_text(encoding="utf-8")
+        content = (PROMPTS_DIR / "repair_operator_fixer_container_ppu.md").read_text(
+            encoding="utf-8"
+        )
         assert "PPU" in content
         assert "AscendC" not in content or "NOT follow AscendC" in content, (
             "operator_fixer PPU must not affirmatively follow AscendC guidance"
@@ -160,7 +189,6 @@ class TestPPUPromptContent:
 
 
 class TestPPUWorkflowYAML:
-
     def test_ppu_workflow_loads(self):
         wf_path = str(WORKFLOWS_DIR / "ppu_migration_v2_container.yaml")
         wf = load_workflow(wf_path)
@@ -215,9 +243,13 @@ class TestPPUWorkflowYAML:
         wf_path = str(WORKFLOWS_DIR / "ppu_migration_v2_container.yaml")
         with open(wf_path, encoding="utf-8") as f:
             content = f.read()
-        for orig in ("phase_error_recovery", "repair_dependency_fixer",
-                      "repair_code_adapter", "repair_operator_fixer",
-                      "phase_5_review"):
+        for orig in (
+            "phase_error_recovery",
+            "repair_dependency_fixer",
+            "repair_code_adapter",
+            "repair_operator_fixer",
+            "phase_5_review",
+        ):
             assert f'"{orig}"' not in content and f"'{orig}'" not in content, (
                 f"PPU workflow must not reference original NPU prompt {orig}"
             )
@@ -225,9 +257,14 @@ class TestPPUWorkflowYAML:
     def test_ppu_container_workflow_uses_source_image(self):
         """PPU workflows MUST create new containers from images.
         Must not contain even commented-out 'existing_container' references."""
-        for wf_name in ("ppu_migration_v2_container.yaml", "ppu_migration_v2_container_vllm018_smoke.yaml"):
+        for wf_name in (
+            "ppu_migration_v2_container.yaml",
+            "ppu_migration_v2_container_vllm018_smoke.yaml",
+        ):
             content = (WORKFLOWS_DIR / wf_name).read_text(encoding="utf-8")
-            assert "source: image" in content, f"{wf_name} must have 'source: image' as active config"
+            assert "source: image" in content, (
+                f"{wf_name} must have 'source: image' as active config"
+            )
             assert "existing_container" not in content, (
                 f"{wf_name}: PPU workflows must not contain 'existing_container' "
                 "anywhere (even in comments) — copy-paste risk"
@@ -248,86 +285,98 @@ class TestPPUWorkflowYAML:
 
 
 class TestValidatorCompatibility:
-
     @pytest.fixture
     def validator(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from validators.validate_env_detect import validate
+
         return validate
 
     def test_npu_schema_still_passes(self, validator):
-        result = validator({
-            "platform": "npu",
-            "npu_detected": True,
-            "python_version": "3.10.12",
-            "cann_version": "8.0.RC1",
-            "ascendc_available": False,
-            "driver_version": "25.0.rc1.1",
-        })
+        result = validator(
+            {
+                "platform": "npu",
+                "npu_detected": True,
+                "python_version": "3.10.12",
+                "cann_version": "8.0.RC1",
+                "ascendc_available": False,
+                "driver_version": "25.0.rc1.1",
+            }
+        )
         assert result["passed"] is True
         assert not result["errors"]
 
     def test_cuda_schema_still_passes(self, validator):
-        result = validator({
-            "platform": "cuda",
-            "npu_detected": False,
-            "python_version": "3.10.12",
-            "cann_version": "n/a",
-            "ascendc_available": False,
-            "driver_version": "not_applicable",
-        })
+        result = validator(
+            {
+                "platform": "cuda",
+                "npu_detected": False,
+                "python_version": "3.10.12",
+                "cann_version": "n/a",
+                "ascendc_available": False,
+                "driver_version": "not_applicable",
+            }
+        )
         assert result["passed"] is True
 
     def test_ppu_schema_passes(self, validator):
-        result = validator({
-            "platform": "ppu",
-            "ppu_detected": True,
-            "cuda_api_available": True,
-            "python_version": "3.10.12",
-            "device_name": "PPU-ZW810",
-            "npu_detected": False,
-            "cann_version": "n/a",
-            "ascendc_available": False,
-            "driver_version": "not_applicable",
-        })
+        result = validator(
+            {
+                "platform": "ppu",
+                "ppu_detected": True,
+                "cuda_api_available": True,
+                "python_version": "3.10.12",
+                "device_name": "PPU-ZW810",
+                "npu_detected": False,
+                "cann_version": "n/a",
+                "ascendc_available": False,
+                "driver_version": "not_applicable",
+            }
+        )
         assert result["passed"] is True, f"PPU schema failed: {result['errors']}"
 
     def test_invalid_platform_fails(self, validator):
         for bad_platform in ("gpu", "xpu", "tpu", "ppu-npu"):
-            result = validator({
-                "platform": bad_platform,
-                "npu_detected": False,
-                "ppu_detected": True,
-                "cuda_api_available": True,
-                "python_version": "3.10.12",
-                "cann_version": "n/a",
-                "ascendc_available": False,
-                "driver_version": "n/a",
-            })
+            result = validator(
+                {
+                    "platform": bad_platform,
+                    "npu_detected": False,
+                    "ppu_detected": True,
+                    "cuda_api_available": True,
+                    "python_version": "3.10.12",
+                    "cann_version": "n/a",
+                    "ascendc_available": False,
+                    "driver_version": "n/a",
+                }
+            )
             assert result["passed"] is False, f"platform={bad_platform} should fail"
 
     def test_ppu_missing_required_fields_fails(self, validator):
-        result = validator({
-            "platform": "ppu",
-            "npu_detected": False,
-        })
+        result = validator(
+            {
+                "platform": "ppu",
+                "npu_detected": False,
+            }
+        )
         assert result["passed"] is False
 
 
 class TestPPURuleBasedMigrator:
-
     @pytest.fixture
     def migrator(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from migrator.rule_based_ppu import PPURuleBasedMigrator
+
         return PPURuleBasedMigrator()
 
     def test_does_not_convert_torch_cuda(self, migrator):
         code = "import torch\nx = torch.cuda.is_available()"
-        result, report = migrator.migrate(code)
+        result, report = migrator.migrate(code)  # pylint: disable=unused-variable; silent
         assert result == code, "PPU migrator must not change torch.cuda code"
 
     def test_does_not_convert_cuda_methods(self, migrator):
         code = "model.cuda()\ntensor.cuda(device=0)"
-        result, report = migrator.migrate(code)
+        result, report = migrator.migrate(code)  # pylint: disable=unused-variable; silent
         assert result == code, "PPU migrator must not change .cuda() calls"
 
     def test_does_not_inject_torch_npu(self, migrator):
@@ -338,7 +387,7 @@ class TestPPURuleBasedMigrator:
 
     def test_no_invented_commands(self, migrator):
         code = 'subprocess.run(["nvidia-smi"])'
-        result, report = migrator.migrate(code)
+        result, report = migrator.migrate(code)  # pylint: disable=unused-variable; silent
         assert "ppu-device-query" not in result
         assert result == code
 
@@ -351,7 +400,7 @@ class TestPPURuleBasedMigrator:
 
     def test_report_shape_compatible(self, migrator):
         code = 'subprocess.run(["nvidia-smi"])\nx = torch.cuda.is_available()'
-        result, report = migrator.migrate(code)
+        result, report = migrator.migrate(code)  # pylint: disable=unused-variable; silent
         assert "rules" in report
         assert "total_replacements" in report
         assert "inject_torch_npu" in report["rules"]
@@ -367,13 +416,12 @@ class TestPPURuleBasedMigrator:
 
     def test_no_nccl_to_hccl_replacement(self, migrator):
         code = 'dist.init_process_group("nccl")'
-        result, report = migrator.migrate(code)
+        result, report = migrator.migrate(code)  # pylint: disable=unused-variable; silent
         assert '"nccl"' in result
         assert "hccl" not in result
 
 
 class TestWorkflowExecutorPPUSelection:
-
     @pytest.fixture
     def temp_dir(self, tmp_path):
         return str(tmp_path)
@@ -383,17 +431,26 @@ class TestWorkflowExecutorPPUSelection:
         workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=[])
         return WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=temp_dir, output_dir=temp_dir,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
     def test_ppu_rule_based_migration_operation(self, executor, temp_dir):
         code = "import torch\nx = torch.cuda.is_available()\nsubprocess.run(['nvidia-smi'])"
         (Path(temp_dir) / "sample.py").write_text(code)
         phase = PhaseDefinition(
-            id="test", name="test", prompt_template="", output_schema={},
-            type="builtin", params={"operation": "ppu_rule_based_migration", "pattern": "*.py"},
+            id="test",
+            name="test",
+            prompt_template="",
+            output_schema={},
+            type="builtin",
+            params={"operation": "ppu_rule_based_migration", "pattern": "*.py"},
         )
+        # pylint: disable-next=protected-access; silent
         status, result = executor._execute_builtin_phase(phase, {}, {})
         assert status == "success"
         assert result["operation"] == "ppu_rule_based_migration"
@@ -406,42 +463,56 @@ class TestWorkflowExecutorPPUSelection:
         code = "import torch\nx = torch.cuda.is_available()\nsubprocess.run(['nvidia-smi'])"
         (Path(temp_dir) / "sample.py").write_text(code)
         phase = PhaseDefinition(
-            id="test", name="test", prompt_template="", output_schema={},
-            type="builtin", params={
+            id="test",
+            name="test",
+            prompt_template="",
+            output_schema={},
+            type="builtin",
+            params={
                 "operation": "rule_based_migration",
                 "backend": "ppu",
                 "pattern": "*.py",
             },
         )
+        # pylint: disable-next=protected-access; silent
         status, result = executor._execute_builtin_phase(phase, {}, {})
         assert status == "success"
         assert result.get("backend") == "ppu"
         content = (Path(temp_dir) / "sample.py").read_text()
         assert content == code
 
-    def test_rule_based_migration_without_backend_uses_report_only_safe_default(self, executor, temp_dir):
+    def test_rule_based_migration_without_backend_uses_report_only_safe_default(
+        self, executor, temp_dir
+    ):
         original = "import torch\nx = torch.cuda.is_available()\n"
         (Path(temp_dir) / "sample.py").write_text(original)
         phase = PhaseDefinition(
-            id="test", name="test", prompt_template="", output_schema={},
-            type="builtin", params={
+            id="test",
+            name="test",
+            prompt_template="",
+            output_schema={},
+            type="builtin",
+            params={
                 "operation": "rule_based_migration",
                 "pattern": "*.py",
             },
         )
+        # pylint: disable-next=protected-access; silent
         status, result = executor._execute_builtin_phase(phase, {}, {})
         assert status == "success"
         assert result["operation"] == "rule_based_migration"
         content = (Path(temp_dir) / "sample.py").read_text()
-        assert content == original, "Without explicit backend, report_only safe default must not modify files"
+        assert content == original, (
+            "Without explicit backend, report_only safe default must not modify files"
+        )
         assert result.get("strategy") == "report_only"
 
 
+# pylint: disable-next=line-too-long; silent
 VLLM018_IMAGE = "egslingjun-registry.cn-wulanchabu.cr.aliyuncs.com/egslingjun/inference-xpu-pytorch:26.04-v2.1.0-vllm0.18.0-torch2.9-cu130-20260508"
 
 
 class TestPPUSmokeWorkflow:
-
     def test_smoke_workflow_loads(self):
         wf_path = str(WORKFLOWS_DIR / "ppu_migration_v2_container_vllm018_smoke.yaml")
         wf = load_workflow(wf_path)
@@ -452,9 +523,7 @@ class TestPPUSmokeWorkflow:
         wf = load_workflow(wf_path)
         backend = wf.execution_backend
         assert backend is not None
-        assert backend.image == VLLM018_IMAGE, (
-            f"Expected vLLM 0.18 image, got {backend.image}"
-        )
+        assert backend.image == VLLM018_IMAGE, f"Expected vLLM 0.18 image, got {backend.image}"
 
     def test_smoke_workflow_prompts_are_ppu(self):
         wf_path = str(WORKFLOWS_DIR / "ppu_migration_v2_container_vllm018_smoke.yaml")
@@ -480,12 +549,14 @@ class TestPPUSmokeWorkflow:
         wf_path = str(WORKFLOWS_DIR / "ppu_migration_v2_container_vllm018_smoke.yaml")
         with open(wf_path, encoding="utf-8") as f:
             content = f.read()
-        for orig in ("phase_error_recovery\"", "repair_dependency_fixer\"",
-                      "repair_code_adapter\"", "repair_operator_fixer\"",
-                      "phase_5_review\""):
-            assert orig not in content, (
-                f"Smoke workflow must not reference NPU prompt {orig}"
-            )
+        for orig in (
+            'phase_error_recovery"',
+            'repair_dependency_fixer"',
+            'repair_code_adapter"',
+            'repair_operator_fixer"',
+            'phase_5_review"',
+        ):
+            assert orig not in content, f"Smoke workflow must not reference NPU prompt {orig}"
         assert "cuda-custom-op-to-npu-custom-op" not in content
 
     def test_smoke_workflow_main_phases_use_ppu_prompts(self):
@@ -500,9 +571,16 @@ class TestPPUSmokeWorkflow:
                 )
 
     def test_smoke_project_files_exist(self):
-        project_root = Path(__file__).resolve().parent.parent.parent.parent / "application_migration_cases" / "SEAM_PPU_SMOKE"
+        project_root = (
+            Path(__file__).resolve().parent.parent.parent.parent
+            / "application_migration_cases"
+            / "SEAM_PPU_SMOKE"
+        )
         if not project_root.is_dir():
-            pytest.skip("External corpus application_migration_cases/SEAM_PPU_SMOKE is absent — skip smoke project file check")
+            pytest.skip(
+                # pylint: disable-next=line-too-long; silent
+                "External corpus application_migration_cases/SEAM_PPU_SMOKE is absent — skip smoke project file check"
+            )
         for fname in ("README.md", "requirements.txt", "smoke_validate.py", "ppu_target.py"):
             fpath = project_root / fname
             assert fpath.exists(), f"Smoke project file missing: {fpath}"
@@ -521,11 +599,14 @@ class TestPPUPromptBaseEnvFirst:
     def test_phase_2_venv_create_venv_not_mandatory(self):
         content = (PROMPTS_DIR / "phase_2_venv_create_ppu.md").read_text(encoding="utf-8")
         assert "Create or reuse a virtual environment" not in content, (
+            # pylint: disable-next=line-too-long; silent
             "Phase 2 PPU prompt must not mandate 'Create or reuse a virtual environment' as a strict instruction"
         )
 
     def test_repair_dependency_base_env_first(self):
-        content = (PROMPTS_DIR / "repair_dependency_fixer_container_ppu.md").read_text(encoding="utf-8")
+        content = (PROMPTS_DIR / "repair_dependency_fixer_container_ppu.md").read_text(
+            encoding="utf-8"
+        )
         lower = content.lower()
         assert "base" in lower and ("environment" in lower or "env" in lower), (
             "Dependency fixer must mention base environment"
@@ -539,9 +620,7 @@ class TestPPUPromptBaseEnvFirst:
         assert "actual_execution_command" in content, (
             "Code adapter must reference actual_execution_command"
         )
-        assert ".venv/bin/python" not in content, (
-            "Code adapter must not hardcode .venv/bin/python"
-        )
+        assert ".venv/bin/python" not in content, "Code adapter must not hardcode .venv/bin/python"
 
     def test_phase3_entry_script_base_env(self):
         content = (PROMPTS_DIR / "phase_3_entry_script_ppu.md").read_text(encoding="utf-8")
@@ -549,6 +628,6 @@ class TestPPUPromptBaseEnvFirst:
         assert "base python" in lower or "base env" in lower or "container base" in lower, (
             "Phase 3 PPU prompt must reference base Python/env as default"
         )
-        assert ".venv" not in content.lower().split("explicitly")[0].lower() or "only if" in lower, (
-            "Phase 3 should not mandate .venv; it is optional"
-        )
+        assert (
+            ".venv" not in content.lower().split("explicitly")[0].lower() or "only if" in lower
+        ), "Phase 3 should not mandate .venv; it is optional"

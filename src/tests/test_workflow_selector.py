@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -18,20 +16,19 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.workflow_selector import (
-    is_selector_yaml,
-    is_selector_file,
-    resolve_workflow_from_selector,
-    _validate_selector_schema,
+from core.workflow_selector import (  # pylint: disable=wrong-import-position; silent
+    _deep_merge_overrides,
+    _format_project_summary,
+    _materialize_merged_workflow,
     _resolve_candidates,
+    _resolve_fallback,
     _select_workflow_via_agent,
     _validate_agent_selection,
-    _resolve_fallback,
-    _format_project_summary,
-    _deep_merge_overrides,
-    _materialize_merged_workflow,
+    _validate_selector_schema,
+    is_selector_file,
+    is_selector_yaml,
+    resolve_workflow_from_selector,
 )
-
 
 # ── Helper factories ────────────────────────────────────────────────────
 
@@ -80,16 +77,19 @@ class FakeSessionManager:
         self.commands_sent: list[tuple[str, str]] = []
         self.last_agent: str | None = None
 
-    def get_or_create(self, role: str, lifecycle: str = "ephemeral", agent: str = "", **kwargs: object) -> str:
+    def get_or_create(
+        # pylint: disable-next=unused-argument; silent
+        self, role: str, lifecycle: str = "ephemeral", agent: str = "", **kwargs: object
+    ) -> str:
         self.last_agent = agent or None
         sid = f"fake-session-{role}"
         self.sessions_created.append(sid)
         return sid
 
     def create_session(
-        self,
+        self,  # pylint: disable=unused-argument; silent
         role: str = "",
-        lifecycle: str = "ephemeral",
+        lifecycle: str = "ephemeral",  # pylint: disable=unused-argument; silent
         title: str = "",
         agent: str = "",
         **kwargs: object,
@@ -99,7 +99,10 @@ class FakeSessionManager:
         self.sessions_created.append(sid)
         return sid
 
-    def send_command(self, session_id: str, command: str, timeout: int = 120, agent: str = "", **kwargs: object) -> str:
+    def send_command(
+        # pylint: disable-next=unused-argument; silent
+        self, session_id: str, command: str, timeout: int = 120, agent: str = "", **kwargs: object
+    ) -> str:
         if self.raise_on_send:
             raise RuntimeError("Simulated send_command failure")
         self.last_agent = agent or None
@@ -107,7 +110,7 @@ class FakeSessionManager:
         return self.agent_response
 
 
-class FakePromptLoader:
+class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
     """Prompt loader that returns a pre-set template or captures calls."""
 
     def __init__(self, template: str = "") -> None:
@@ -145,7 +148,9 @@ class TestIsSelectorYaml:
 class TestIsSelectorFile:
     def test_detects_selector_file(self, tmp_path: Path) -> None:
         selector = tmp_path / "selector.yaml"
-        _write_yaml(selector, {"kind": "workflow_selector", "candidate_workflows": [{"path": "wf.yaml"}]})
+        _write_yaml(
+            selector, {"kind": "workflow_selector", "candidate_workflows": [{"path": "wf.yaml"}]}
+        )
         assert is_selector_file(str(selector))
 
     def test_rejects_normal_workflow_file(self, tmp_path: Path) -> None:
@@ -155,7 +160,9 @@ class TestIsSelectorFile:
 
     def test_detects_workflow_selector_with_dash(self, tmp_path: Path) -> None:
         selector = tmp_path / "selector.yaml"
-        _write_yaml(selector, {"kind": "workflow-selector", "candidate_workflows": [{"path": "wf.yaml"}]})
+        _write_yaml(
+            selector, {"kind": "workflow-selector", "candidate_workflows": [{"path": "wf.yaml"}]}
+        )
         assert is_selector_file(str(selector))
 
     def test_raises_on_missing_file(self, tmp_path: Path) -> None:
@@ -336,9 +343,10 @@ class TestValidateAgentSelection:
     def test_not_in_candidate_list(self, tmp_path: Path) -> None:
         wf = _write_yaml(tmp_path / "wf.yaml", _make_minimal_workflow_yaml())
         candidates = [{"path": wf, "raw_path": "wf.yaml", "description": ""}]
-        assert _validate_agent_selection(
-            {"selected_workflow": "unknown.yaml"}, candidates, "s.yaml"
-        ) is None
+        assert (
+            _validate_agent_selection({"selected_workflow": "unknown.yaml"}, candidates, "s.yaml")
+            is None
+        )
 
 
 # ── Tests: _resolve_fallback ────────────────────────────────────────────
@@ -486,8 +494,8 @@ class TestDeepMergeOverrides:
         }
         result = _deep_merge_overrides(base, overrides)
         assert result["execution_backend"]["mode"] == "container"  # preserved
-        assert result["execution_backend"]["runtime"] == "podman"   # replaced
-        assert result["execution_backend"]["timeout"] == 3600        # added
+        assert result["execution_backend"]["runtime"] == "podman"  # replaced
+        assert result["execution_backend"]["timeout"] == 3600  # added
         # env_vars: FOO.was.overwritten because whole dict replaced?
         # Actually, since both values are dicts, they merge recursively.
         assert result["execution_backend"]["env_vars"] == {"FOO": "bar", "BAZ": "qux"}
@@ -523,9 +531,7 @@ class TestMaterializeMergedWorkflow:
 
 
 class TestResolveWorkflowFromSelector:
-    def test_end_to_end_agent_selects_first_candidate(
-        self, tmp_path: Path
-    ) -> None:
+    def test_end_to_end_agent_selects_first_candidate(self, tmp_path: Path) -> None:
         """Full pipeline: valid selector → agent picks first → materialize."""
         # Write two candidate workflows
         wf_a = _write_yaml(tmp_path / "workflows" / "npu.yaml", _make_minimal_workflow_yaml("npu"))
@@ -580,12 +586,12 @@ class TestResolveWorkflowFromSelector:
         }
         _write_yaml(selector, selector_data)
 
-        session_mgr = FakeSessionManager(
-            agent_response=json.dumps({"selected_workflow": str(wf)})
-        )
+        session_mgr = FakeSessionManager(agent_response=json.dumps({"selected_workflow": str(wf)}))
         prompt_loader = FakePromptLoader()
         result = resolve_workflow_from_selector(
-            str(selector), session_mgr, prompt_loader,
+            str(selector),
+            session_mgr,
+            prompt_loader,
             output_dir=tmp_path / "output",
         )
 
@@ -614,7 +620,9 @@ class TestResolveWorkflowFromSelector:
         session_mgr = FakeSessionManager(raise_on_send=True)
         prompt_loader = FakePromptLoader()
         result = resolve_workflow_from_selector(
-            str(selector), session_mgr, prompt_loader,
+            str(selector),
+            session_mgr,
+            prompt_loader,
             output_dir=tmp_path / "output",
         )
 
@@ -639,7 +647,9 @@ class TestResolveWorkflowFromSelector:
 
         with pytest.raises(ValueError, match="no 'fallback' is configured"):
             resolve_workflow_from_selector(
-                str(selector), session_mgr, prompt_loader,
+                str(selector),
+                session_mgr,
+                prompt_loader,
                 output_dir=tmp_path / "output",
             )
 
@@ -664,7 +674,9 @@ class TestResolveWorkflowFromSelector:
         session_mgr = FakeSessionManager(agent_response="hello, pick NPU!")
         prompt_loader = FakePromptLoader()
         result = resolve_workflow_from_selector(
-            str(selector), session_mgr, prompt_loader,
+            str(selector),
+            session_mgr,
+            prompt_loader,
             output_dir=tmp_path / "output",
         )
 
@@ -683,9 +695,7 @@ class TestResolveWorkflowFromSelector:
         }
         _write_yaml(selector, selector_data)
 
-        session_mgr = FakeSessionManager(
-            agent_response=json.dumps({"selected_workflow": str(wf)})
-        )
+        session_mgr = FakeSessionManager(agent_response=json.dumps({"selected_workflow": str(wf)}))
         prompt_loader = FakePromptLoader()
 
         project_ctx = {
@@ -697,7 +707,9 @@ class TestResolveWorkflowFromSelector:
         }
 
         resolve_workflow_from_selector(
-            str(selector), session_mgr, prompt_loader,
+            str(selector),
+            session_mgr,
+            prompt_loader,
             project_context=project_ctx,
             output_dir=tmp_path / "output",
         )
@@ -712,11 +724,14 @@ class TestResolveWorkflowFromSelector:
         wf = _write_yaml(tmp_path / "normal.yaml", _make_minimal_workflow_yaml())
         with pytest.raises(ValueError, match="not a workflow selector"):
             resolve_workflow_from_selector(
-                str(wf), FakeSessionManager(), FakePromptLoader(),
+                str(wf),
+                FakeSessionManager(),
+                FakePromptLoader(),
                 output_dir=tmp_path,
             )
 
     def test_agent_selection_json_fenced_block(self, tmp_path: Path) -> None:
+        # pylint: disable-next=line-too-long; silent
         """Agent response with JSON in a markdown fenced block (extract_json_response handles it)."""
         wf = _write_yaml(tmp_path / "wf.yaml", _make_minimal_workflow_yaml())
 
@@ -729,12 +744,14 @@ class TestResolveWorkflowFromSelector:
         _write_yaml(selector, selector_data)
 
         # Simulate what extract_json_response handles: fenced JSON block
-        response = f"I think we should use:\n```json\n{{\"selected_workflow\": \"{str(wf)}\"}}\n```"
+        response = f'I think we should use:\n```json\n{{"selected_workflow": "{str(wf)}"}}\n```'
         session_mgr = FakeSessionManager(agent_response=response)
         prompt_loader = FakePromptLoader()
 
         result = resolve_workflow_from_selector(
-            str(selector), session_mgr, prompt_loader,
+            str(selector),
+            session_mgr,
+            prompt_loader,
             output_dir=tmp_path / "output",
         )
         assert result.exists()
@@ -751,14 +768,16 @@ class TestResolveWorkflowFromSelector:
         }
         _write_yaml(selector, selector_data)
 
-        session_mgr = FakeSessionManager(
-            agent_response=json.dumps({"selected_workflow": str(wf)})
-        )
+        session_mgr = FakeSessionManager(agent_response=json.dumps({"selected_workflow": str(wf)}))
         prompt_loader = FakePromptLoader()
 
         out = tmp_path / "output"
-        r1 = resolve_workflow_from_selector(str(selector), session_mgr, prompt_loader, output_dir=out)
-        r2 = resolve_workflow_from_selector(str(selector), session_mgr, prompt_loader, output_dir=out)
+        r1 = resolve_workflow_from_selector(
+            str(selector), session_mgr, prompt_loader, output_dir=out
+        )
+        r2 = resolve_workflow_from_selector(
+            str(selector), session_mgr, prompt_loader, output_dir=out
+        )
         assert r1 == r2
 
     # ── _select_workflow_via_agent unit tests ─────────────────────────
@@ -801,9 +820,7 @@ class TestResolveWorkflowFromSelector:
         )
         assert result == wf
 
-    def test_selector_agent_config_is_passed_to_session_manager(
-        self, tmp_path: Path
-    ) -> None:
+    def test_selector_agent_config_is_passed_to_session_manager(self, tmp_path: Path) -> None:
         """selector.agent config is forwarded to get_or_create and send_command."""
         wf = _write_yaml(tmp_path / "wf.yaml", _make_minimal_workflow_yaml())
         candidates = [{"path": wf, "raw_path": "wf.yaml", "description": "test"}]
@@ -826,9 +843,7 @@ class TestResolveWorkflowFromSelector:
         assert result == wf
         assert session_mgr.last_agent == "build"
 
-    def test_selector_fallback_overrides_top_level_fallback(
-        self, tmp_path: Path
-    ) -> None:
+    def test_selector_fallback_overrides_top_level_fallback(self, tmp_path: Path) -> None:
         """selector.fallback takes precedence over top-level fallback."""
         wf_a = _write_yaml(tmp_path / "npu.yaml", _make_minimal_workflow_yaml("npu"))
         wf_b = _write_yaml(tmp_path / "ppu.yaml", _make_minimal_workflow_yaml("ppu"))
@@ -851,7 +866,9 @@ class TestResolveWorkflowFromSelector:
         session_mgr = FakeSessionManager(raise_on_send=True)
         prompt_loader = FakePromptLoader()
         result = resolve_workflow_from_selector(
-            str(selector), session_mgr, prompt_loader,
+            str(selector),
+            session_mgr,
+            prompt_loader,
             output_dir=tmp_path / "output",
         )
         loaded = yaml.safe_load(result.read_text())
@@ -880,9 +897,7 @@ class TestResolveWorkflowFromSelector:
         assert result == wf
         assert session_mgr.last_agent is None  # No agent override
 
-    def test_top_level_fallback_works_when_selector_block_absent(
-        self, tmp_path: Path
-    ) -> None:
+    def test_top_level_fallback_works_when_selector_block_absent(self, tmp_path: Path) -> None:
         """Top-level fallback is used when no selector block is present."""
         wf_a = _write_yaml(tmp_path / "npu.yaml", _make_minimal_workflow_yaml("npu"))
         wf_b = _write_yaml(tmp_path / "ppu.yaml", _make_minimal_workflow_yaml("ppu"))
@@ -902,7 +917,9 @@ class TestResolveWorkflowFromSelector:
         session_mgr = FakeSessionManager(raise_on_send=True)
         prompt_loader = FakePromptLoader()
         result = resolve_workflow_from_selector(
-            str(selector), session_mgr, prompt_loader,
+            str(selector),
+            session_mgr,
+            prompt_loader,
             output_dir=tmp_path / "output",
         )
         loaded = yaml.safe_load(result.read_text())
@@ -922,9 +939,7 @@ class TestWorkflowSelectPromptContent:
         assert prompt_path.exists(), f"Prompt template not found: {prompt_path}"
         return prompt_path.read_text(encoding="utf-8")
 
-    def test_prompt_requires_device_exploration_before_selection(
-        self, _prompt_text: str
-    ) -> None:
+    def test_prompt_requires_device_exploration_before_selection(self, _prompt_text: str) -> None:
         """The prompt must instruct the agent to explore device/environment FIRST."""
         assert "explore the " in _prompt_text.lower() or "explore" in _prompt_text.lower()
         assert "device" in _prompt_text.lower()
@@ -942,9 +957,7 @@ class TestWorkflowSelectPromptContent:
             "/usr/local/metax",
         ]
         for signal in must_contain:
-            assert signal in _prompt_text, (
-                f"Prompt missing Muxi device signal: {signal!r}"
-            )
+            assert signal in _prompt_text, f"Prompt missing Muxi device signal: {signal!r}"
 
     def test_prompt_includes_muxi_env_variable_checks(self, _prompt_text: str) -> None:
         """Prompt must mention MUSA/MACA environment variable checks."""

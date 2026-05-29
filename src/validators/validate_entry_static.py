@@ -18,6 +18,8 @@ CUSTOM_OP_BOOLEAN_FIELDS = (
     "script_checks_no_fallback",
 )
 
+
+# pylint: disable-next=too-many-branches; silent
 def validate(data: dict[str, object]) -> ValidationDict:
     """Validate Phase 3.5 static analysis output.
 
@@ -77,7 +79,9 @@ def validate(data: dict[str, object]) -> ValidationDict:
         if _custom_static_required(data):
             missing_fields = [field for field in CUSTOM_OP_BOOLEAN_FIELDS if field not in data]
             if missing_fields:
-                errors.append("custom-op static validation missing booleans: " + ", ".join(missing_fields))
+                errors.append(
+                    "custom-op static validation missing booleans: " + ", ".join(missing_fields)
+                )
             for field in CUSTOM_OP_BOOLEAN_FIELDS:
                 if field in data and data.get(field) is not True:
                     errors.append(f"{field} must be true for custom-op static validation")

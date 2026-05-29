@@ -8,14 +8,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
-import pytest
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable-next=wrong-import-position; silent
 from tests.e2e.e2e_test_v3 import _build_project_context
 
 
@@ -59,33 +58,60 @@ class TestSelectorIntegrationFlow:
 
     def test_selector_resolution_materializes_correctly(self, tmp_path: Path) -> None:
         """Simulate what run_e2e_v3 does: detect selector, resolve, update path."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
 
         wf = tmp_path / "wf.yaml"
-        wf.write_text(yaml.dump({
-            "name": "test_wf", "version": "1.0",
-            "phases": [{"id": "p0", "name": "p0", "type": "llm",
-                         "prompt_template": "t.md", "agent": "main",
-                         "transitions": {"on_success": "complete"}}],
-            "terminals": ["complete"],
-            "agents": {"main": {"role": "main", "lifecycle": "persistent"}},
-        }), encoding="utf-8")
+        wf.write_text(
+            yaml.dump(
+                {
+                    "name": "test_wf",
+                    "version": "1.0",
+                    "phases": [
+                        {
+                            "id": "p0",
+                            "name": "p0",
+                            "type": "llm",
+                            "prompt_template": "t.md",
+                            "agent": "main",
+                            "transitions": {"on_success": "complete"},
+                        }
+                    ],
+                    "terminals": ["complete"],
+                    "agents": {"main": {"role": "main", "lifecycle": "persistent"}},
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = tmp_path / "selector.yaml"
-        selector.write_text(yaml.dump({
-            "kind": "workflow_selector",
-            "name": "test-sel",
-            "candidate_workflows": [{"path": str(wf)}],
-            "fallback": str(wf),
-        }), encoding="utf-8")
+        selector.write_text(
+            yaml.dump(
+                {
+                    "kind": "workflow_selector",
+                    "name": "test-sel",
+                    "candidate_workflows": [{"path": str(wf)}],
+                    "fallback": str(wf),
+                }
+            ),
+            encoding="utf-8",
+        )
 
         class _FakeSM:
-            def get_or_create(self, role: str, lifecycle: str = "ephemeral", agent: str = "", **kw: object) -> str:
+            def get_or_create(
+                # pylint: disable-next=unused-argument; silent
+                self, role: str, lifecycle: str = "ephemeral", agent: str = "", **kw: object
+            ) -> str:
                 return "fake-sid"
-            def send_command(self, sid: str, cmd: str, timeout: int = 120, agent: str = "", **kw: object) -> str:
+
+            def send_command(
+                # pylint: disable-next=unused-argument; silent
+                self, sid: str, cmd: str, timeout: int = 120, agent: str = "", **kw: object
+            ) -> str:
                 return json.dumps({"selected_workflow": str(wf)})
 
-        class _FakePL:
+        class _FakePL:  # pylint: disable=too-few-public-methods; silent
+            # pylint: disable-next=unused-argument; silent
             def load_prompt(self, template_name: str, context: dict) -> str:
                 return "prompt"
 
@@ -93,7 +119,9 @@ class TestSelectorIntegrationFlow:
         assert not is_selector_file(str(wf))
 
         materialized = resolve_workflow_from_selector(
-            str(selector), _FakeSM(), _FakePL(),
+            str(selector),
+            _FakeSM(),
+            _FakePL(),
             project_context={"language": "Python"},
             output_dir=tmp_path / "output",
         )
@@ -103,43 +131,72 @@ class TestSelectorIntegrationFlow:
 
     def test_selector_override_preserved_in_output(self, tmp_path: Path) -> None:
         """Overrides from selector are merged into materialized workflow."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.workflow_selector import resolve_workflow_from_selector
 
         wf = tmp_path / "base.yaml"
-        wf.write_text(yaml.dump({
-            "name": "base", "version": "1.0",
-            "phases": [{"id": "p0", "name": "p0", "type": "llm",
-                         "prompt_template": "t.md", "agent": "main",
-                         "transitions": {"on_success": "complete"}}],
-            "terminals": ["complete"],
-            "agents": {"main": {"role": "main", "lifecycle": "persistent"}},
-            "globals": {"max_repair_iterations": 5},
-            "experience": {"enabled": False},
-        }), encoding="utf-8")
+        wf.write_text(
+            yaml.dump(
+                {
+                    "name": "base",
+                    "version": "1.0",
+                    "phases": [
+                        {
+                            "id": "p0",
+                            "name": "p0",
+                            "type": "llm",
+                            "prompt_template": "t.md",
+                            "agent": "main",
+                            "transitions": {"on_success": "complete"},
+                        }
+                    ],
+                    "terminals": ["complete"],
+                    "agents": {"main": {"role": "main", "lifecycle": "persistent"}},
+                    "globals": {"max_repair_iterations": 5},
+                    "experience": {"enabled": False},
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = tmp_path / "sel.yaml"
-        selector.write_text(yaml.dump({
-            "kind": "workflow_selector",
-            "name": "override-test",
-            "candidate_workflows": [{"path": str(wf)}],
-            "overrides": {
-                "experience": {"enabled": True},
-                "globals": {"review_gate_enabled": True},
-            },
-        }), encoding="utf-8")
+        selector.write_text(
+            yaml.dump(
+                {
+                    "kind": "workflow_selector",
+                    "name": "override-test",
+                    "candidate_workflows": [{"path": str(wf)}],
+                    "overrides": {
+                        "experience": {"enabled": True},
+                        "globals": {"review_gate_enabled": True},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
 
         class _FakeSM:
-            def get_or_create(self, role: str, lifecycle: str = "ephemeral", agent: str = "", **kw: object) -> str:
+            def get_or_create(
+                # pylint: disable-next=unused-argument; silent
+                self, role: str, lifecycle: str = "ephemeral", agent: str = "", **kw: object
+            ) -> str:
                 return "sid"
-            def send_command(self, sid: str, cmd: str, timeout: int = 120, agent: str = "", **kw: object) -> str:
+
+            def send_command(
+                # pylint: disable-next=unused-argument; silent
+                self, sid: str, cmd: str, timeout: int = 120, agent: str = "", **kw: object
+            ) -> str:
                 return json.dumps({"selected_workflow": str(wf)})
 
-        class _FakePL:
+        class _FakePL:  # pylint: disable=too-few-public-methods; silent
+            # pylint: disable-next=unused-argument; silent
             def load_prompt(self, template_name: str, context: dict) -> str:
                 return "prompt"
 
         materialized = resolve_workflow_from_selector(
-            str(selector), _FakeSM(), _FakePL(),
+            str(selector),
+            _FakeSM(),
+            _FakePL(),
             output_dir=tmp_path / "output",
         )
         loaded = yaml.safe_load(materialized.read_text())
@@ -152,14 +209,17 @@ class TestSmokeSelectorYaml:
     """Verify the smoke selector YAML is well-formed and loadable."""
 
     def test_smoke_selector_exists_and_has_valid_kind(self) -> None:
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.workflow_selector import is_selector_file
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         assert smoke_path.exists(), f"Expected smoke selector at {smoke_path}"
         assert is_selector_file(str(smoke_path))
 
     def test_smoke_selector_candidates_exist(self) -> None:
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
@@ -172,7 +232,8 @@ class TestSmokeSelectorYaml:
     def test_smoke_selector_has_overrides_disabled(self) -> None:
         """Smoke selector overrides must disable experience, disable review gate,
         and set max_repair_iterations to 8."""
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
@@ -186,7 +247,8 @@ class TestSmokeSelectorYaml:
         assert raw["overrides"]["globals"].get("review_gate_enabled") is False
 
     def test_smoke_selector_has_fallback(self) -> None:
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
@@ -194,7 +256,8 @@ class TestSmokeSelectorYaml:
 
     def test_smoke_selector_fallback_is_not_npu(self) -> None:
         """Smoke selector fallback must not be NPU migration."""
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
@@ -211,12 +274,15 @@ class TestSmokeSelectorYaml:
 
     def test_smoke_selector_has_agent_config(self) -> None:
         """Smoke selector should specify a stable agent for selection."""
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
         selector_cfg = raw.get("selector", {})
-        assert isinstance(selector_cfg, dict), "Smoke selector should have a 'selector' config block"
+        assert isinstance(selector_cfg, dict), (
+            "Smoke selector should have a 'selector' config block"
+        )
         assert "agent" in selector_cfg, "Smoke selector should specify selector.agent"
         assert selector_cfg["agent"], "Selector agent should not be empty"
 
@@ -224,13 +290,15 @@ class TestSmokeSelectorYaml:
 
     def test_smoke_selector_includes_muxi_musa_candidates(self) -> None:
         """Smoke selector MUST include at least one Muxi/MUSA candidate workflow."""
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
         candidates = raw["candidate_workflows"]
         musa_candidates = [
-            c for c in candidates
+            c
+            for c in candidates
             if "musa" in c.get("path", "").lower()
             or "muxi" in c.get("path", "").lower()
             or "musa" in c.get("description", "").lower()
@@ -244,7 +312,8 @@ class TestSmokeSelectorYaml:
     def test_smoke_selector_has_no_target_platform_hint(self) -> None:
         """Smoke selector MUST NOT contain target_platform_hint, accelerator_family,
         or any deterministic platform forcing keys in selector or root."""
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
@@ -272,7 +341,8 @@ class TestSmokeSelectorYaml:
     def test_smoke_selector_has_no_platform_priority_field(self) -> None:
         """Neither the selector root nor overrides must encode a priority list
         of platforms (e.g. ['muxi', 'npu', 'ppu']) that would force ordering."""
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())
@@ -285,7 +355,8 @@ class TestSmokeSelectorYaml:
 
     def test_smoke_selector_fallback_is_neutral(self) -> None:
         """Fallback must be experience_memory_test.yaml — a neutral, non-platform workflow."""
-        import yaml as _yaml
+        import yaml as _yaml  # pylint: disable=import-outside-toplevel,reimported; silent
+
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
         raw = _yaml.safe_load(smoke_path.read_text())

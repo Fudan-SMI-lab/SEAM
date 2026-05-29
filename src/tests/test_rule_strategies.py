@@ -1,4 +1,5 @@
 """Tests for rule_strategies: resolver, factory, precedence, backward compat."""
+
 import sys
 from pathlib import Path
 
@@ -7,13 +8,14 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from rule_strategies import (
-    resolve_rule_migration_strategy,
+# pylint: disable-next=wrong-import-position; silent
+from migrator.yaml_rule_based import YamlRuleBasedMigrator
+from rule_strategies import (  # pylint: disable=wrong-import-position; silent
     create_migrator_for_strategy,
     create_migrator_resolved,
     get_legacy_backend_map,
+    resolve_rule_migration_strategy,
 )
-from migrator.yaml_rule_based import YamlRuleBasedMigrator
 
 
 class TestResolveRuleMigrationStrategy:
@@ -138,14 +140,14 @@ class TestCreateMigratorForStrategy:
     def test_cuda_to_npu_migrator_modifies(self):
         migrator = create_migrator_for_strategy("cuda_to_npu")
         code = "import torch\nx = torch.cuda.is_available()"
-        result, report = migrator.migrate(code)
+        result, report = migrator.migrate(code)  # pylint: disable=unused-variable; silent
         assert "torch.npu.is_available()" in result
         assert "import torch_npu" in result
 
     def test_preserve_cuda_migrator_preserves(self):
         migrator = create_migrator_for_strategy("preserve_cuda_report_only")
         code = "import torch\nx = torch.cuda.is_available()"
-        result, report = migrator.migrate(code)
+        result, report = migrator.migrate(code)  # pylint: disable=unused-variable; silent
         assert result == code
         assert "import torch_npu" not in result
 
@@ -220,14 +222,19 @@ class TestPlatformPolicyDefaultStrategy:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.platform_policy import BUILTIN_PRESETS
-        self.presets = BUILTIN_PRESETS
+
+        self.presets = BUILTIN_PRESETS  # pylint: disable=attribute-defined-outside-init; silent
 
     def test_npu_ascend_default_is_cuda_to_npu(self):
         assert self.presets["npu_ascend"].default_rule_migration_strategy == "cuda_to_npu"
 
     def test_ppu_default_is_preserve_cuda_report_only(self):
-        assert self.presets["ppu_cuda_compatible"].default_rule_migration_strategy == "preserve_cuda_report_only"
+        assert (
+            self.presets["ppu_cuda_compatible"].default_rule_migration_strategy
+            == "preserve_cuda_report_only"
+        )
 
     def test_generic_default_is_report_only(self):
         assert self.presets["generic_accelerator"].default_rule_migration_strategy == "report_only"

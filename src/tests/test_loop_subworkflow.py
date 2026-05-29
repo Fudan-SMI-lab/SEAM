@@ -1,10 +1,17 @@
 """Tests for loop sub-workflow, review gate, and dispatch routing."""
-import pytest
-import tempfile
-from unittest.mock import MagicMock, patch
-from pathlib import Path
 
-from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition, SubWorkflowDefinition
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from core.types import (
+    PhaseDefinition,
+    RuntimeSkillsConfig,
+    SubWorkflowDefinition,
+    WorkflowDefinition,
+)
 from core.workflow_executor import WorkflowExecutor
 
 
@@ -23,7 +30,7 @@ def temp_dir():
 
 
 @pytest.fixture
-def loop_workflow(temp_dir):
+def loop_workflow(temp_dir):  # pylint: disable=redefined-outer-name,unused-argument; silent
     """Create a workflow with a loop phase."""
     swf = SubWorkflowDefinition(
         id="repair_loop",
@@ -43,11 +50,17 @@ def loop_workflow(temp_dir):
         blocks={},
     )
     return WorkflowDefinition(
-        name="loop_test", version="1.0",
+        name="loop_test",
+        version="1.0",
         phases=[
             PhaseDefinition(
-                id="loop_phase", name="Loop", prompt_template="", output_schema={},
-                type="loop", sub_workflow="repair_loop", max_iterations=3,
+                id="loop_phase",
+                name="Loop",
+                prompt_template="",
+                output_schema={},
+                type="loop",
+                sub_workflow="repair_loop",
+                max_iterations=3,
                 transitions={"on_success": "complete"},
             ),
         ],
@@ -56,7 +69,7 @@ def loop_workflow(temp_dir):
     )
 
 
-class MockResult:
+class MockResult:  # pylint: disable=too-few-public-methods; silent
     def __init__(self, returncode=0, stdout="", stderr=""):
         self.returncode = returncode
         self.stdout = stdout
@@ -64,6 +77,7 @@ class MockResult:
 
 
 class TestLoopSubworkflow:
+    # pylint: disable-next=redefined-outer-name; silent
     def test_mini_phase_propagates_builtin_operation(self, temp_dir):
         session_mgr = MagicMock()
         artifact_store = MagicMock()
@@ -72,14 +86,22 @@ class TestLoopSubworkflow:
 
         workflow = WorkflowDefinition(name="loop_test", version="1.0", phases=[], terminals=[])
         executor = WorkflowExecutor(
-            workflow, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            workflow,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
-        mini = executor._mini_phase({"id": "stagnation_check", "type": "builtin", "operation": "stagnation_check"})
+        mini = executor._mini_phase(  # pylint: disable=protected-access; silent
+            {"id": "stagnation_check", "type": "builtin", "operation": "stagnation_check"}
+        )
 
         assert mini.params == {"operation": "stagnation_check"}
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_loop_phase_runs_max_iterations(self, loop_workflow, temp_dir):
         session_mgr = MagicMock()
         artifact_store = MagicMock()
@@ -87,8 +109,13 @@ class TestLoopSubworkflow:
         validator = MagicMock()
 
         executor = WorkflowExecutor(
-            loop_workflow, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            loop_workflow,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         mock_result = MockResult(returncode=1, stdout="", stderr="Error: module not found")
@@ -100,6 +127,7 @@ class TestLoopSubworkflow:
         loop_result = result["state"].get("loop_phase", {})
         assert loop_result.get("iterations") == 3
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_stop_conditions_evaluated(self, loop_workflow, temp_dir):
         session_mgr = MagicMock()
         artifact_store = MagicMock()
@@ -107,17 +135,24 @@ class TestLoopSubworkflow:
         validator = MagicMock()
 
         executor = WorkflowExecutor(
-            loop_workflow, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            loop_workflow,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         loop_state = {"script_exit_code": 0, "review_verdict": "accept"}
-        result = executor._check_stop_conditions(
+        result = executor._check_stop_conditions(  # pylint: disable=protected-access; silent
             loop_workflow.sub_workflows["repair_loop"].stop_conditions,
-            loop_state, {},
+            loop_state,
+            {},
         )
         assert result == "success"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_stagnation_stop_condition(self, loop_workflow, temp_dir):
         """Stagnation stop condition should match when threshold reached."""
         session_mgr = MagicMock()
@@ -126,14 +161,20 @@ class TestLoopSubworkflow:
         validator = MagicMock()
 
         executor = WorkflowExecutor(
-            loop_workflow, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            loop_workflow,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         loop_state = {"stagnation_count": 2, "last_error_signature": "sig"}
-        result = executor._check_stop_conditions(
+        result = executor._check_stop_conditions(  # pylint: disable=protected-access; silent
             loop_workflow.sub_workflows["repair_loop"].stop_conditions,
-            loop_state, {},
+            loop_state,
+            {},
         )
         assert result == "stagnation"
 
@@ -191,7 +232,7 @@ class TestLoopSubworkflow:
             output_dir=str(tmp_path),
         )
 
-        executor._run_sub_workflow(
+        executor._run_sub_workflow(  # pylint: disable=protected-access; silent
             sub_workflow,
             loop_vars={},
             state={},
@@ -211,7 +252,7 @@ class TestLoopSubworkflow:
 
 
 class TestDispatchRouting:
-    def test_dispatch_finds_route(self, temp_dir):
+    def test_dispatch_finds_route(self, temp_dir):  # pylint: disable=redefined-outer-name; silent
         """Dispatch should resolve route_field and find matching phase."""
         wf = WorkflowDefinition(name="disp", version="1.0", phases=[], terminals=[])
         session_mgr = MagicMock()
@@ -219,12 +260,20 @@ class TestDispatchRouting:
         prompt_loader = MagicMock()
         validator = MagicMock()
         executor = WorkflowExecutor(
-            wf, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            wf,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         phase = PhaseDefinition(
-            id="dispatch", name="Dispatch", prompt_template="", output_schema={},
+            id="dispatch",
+            name="Dispatch",
+            prompt_template="",
+            output_schema={},
             type="dispatch",
         )
         phase.params = {
@@ -232,13 +281,17 @@ class TestDispatchRouting:
             "routes": {"code_adapter": "fix_code", "dependency_fixer": "fix_dep"},
         }
 
-        target = executor._execute_dispatch_phase(
-            phase, {}, {},
-            loop_vars={}, loop_state={},
+        target = executor._execute_dispatch_phase(  # pylint: disable=protected-access; silent
+            phase,
+            {},
+            {},
+            loop_vars={},
+            loop_state={},
             step_outputs={"error_analysis": {"repair_role": "code_adapter"}},
         )
         assert target == "fix_code"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_dispatch_unknown_route(self, temp_dir):
         """Unknown route should return None."""
         wf = WorkflowDefinition(name="disp", version="1.0", phases=[], terminals=[])
@@ -247,12 +300,20 @@ class TestDispatchRouting:
         prompt_loader = MagicMock()
         validator = MagicMock()
         executor = WorkflowExecutor(
-            wf, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            wf,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         phase = PhaseDefinition(
-            id="dispatch", name="Dispatch", prompt_template="", output_schema={},
+            id="dispatch",
+            name="Dispatch",
+            prompt_template="",
+            output_schema={},
             type="dispatch",
         )
         phase.params = {
@@ -260,16 +321,19 @@ class TestDispatchRouting:
             "routes": {"code_adapter": "fix_code"},
         }
 
-        target = executor._execute_dispatch_phase(
-            phase, {}, {},
-            loop_vars={}, loop_state={},
+        target = executor._execute_dispatch_phase(  # pylint: disable=protected-access; silent
+            phase,
+            {},
+            {},
+            loop_vars={},
+            loop_state={},
             step_outputs={"error_analysis": {"repair_role": "unknown_role"}},
         )
         assert target is None
 
 
 class TestReviewGate:
-    def test_review_phase_accept(self, temp_dir):
+    def test_review_phase_accept(self, temp_dir):  # pylint: disable=redefined-outer-name; silent
         """Review verdict 'accept' should result in success status."""
         wf = WorkflowDefinition(name="review", version="1.0", phases=[], terminals=["complete"])
         session_mgr = MagicMock()
@@ -277,8 +341,13 @@ class TestReviewGate:
         prompt_loader = MagicMock()
         validator = MagicMock()
         executor = WorkflowExecutor(
-            wf, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            wf,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         prompt_loader.load_prompt.return_value = '{"verdict": "accept", "reasoning": "looks good"}'
@@ -286,21 +355,30 @@ class TestReviewGate:
         session_mgr.send_command.return_value = '{"verdict": "accept", "reasoning": "looks good"}'
 
         phase = PhaseDefinition(
-            id="review", name="Review", prompt_template="review_prompt", output_schema={},
-            type="review", agent="main_engineer",
+            id="review",
+            name="Review",
+            prompt_template="review_prompt",
+            output_schema={},
+            type="review",
+            agent="main_engineer",
         )
 
         loop_state = {"script_stderr": "some error", "iteration": 1}
 
-        result = executor._execute_review_phase(
-            phase, {}, {},
-            loop_vars={}, loop_state=loop_state, loop_history=[],
-            sub_workflow_def=None, verdicts_cfg={},
+        result = executor._execute_review_phase(  # pylint: disable=protected-access; silent
+            phase,
+            {},
+            {},
+            loop_vars={},
+            loop_state=loop_state,
+            loop_history=[],
+            sub_workflow_def=None,
+            verdicts_cfg={},
         )
         assert result["status"] == "success"
         assert result["verdict"] == "accept"
 
-    def test_review_phase_reject(self, temp_dir):
+    def test_review_phase_reject(self, temp_dir):  # pylint: disable=redefined-outer-name; silent
         """Review verdict 'reject' should trigger snapshot and return continue status."""
         wf = WorkflowDefinition(name="review", version="1.0", phases=[], terminals=["complete"])
         session_mgr = MagicMock()
@@ -308,18 +386,29 @@ class TestReviewGate:
         prompt_loader = MagicMock()
         validator = MagicMock()
         executor = WorkflowExecutor(
-            wf, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            wf,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
         artifact_store.mark_validated.return_value = "path"
 
         prompt_loader.load_prompt.return_value = "review template"
         session_mgr.get_or_create.return_value = "session_123"
-        session_mgr.send_command.return_value = '{"verdict": "reject", "reasoning": "cpu fallback detected"}'
+        session_mgr.send_command.return_value = (
+            '{"verdict": "reject", "reasoning": "cpu fallback detected"}'
+        )
 
         phase = PhaseDefinition(
-            id="review", name="Review", prompt_template="review_prompt", output_schema={},
-            type="review", agent="main_engineer",
+            id="review",
+            name="Review",
+            prompt_template="review_prompt",
+            output_schema={},
+            type="review",
+            agent="main_engineer",
         )
 
         loop_state = {"script_stderr": "NpuUtilization: 0%", "iteration": 2}
@@ -328,14 +417,21 @@ class TestReviewGate:
             "reject": {"action": "continue", "increment": "review_reject_count", "snapshot": True},
         }
 
+        # pylint: disable-next=protected-access; silent
         executor.hook_manager._dispatch_builtin = MagicMock()
-        result = executor._execute_review_phase(
-            phase, {}, {},
-            loop_vars={}, loop_state=loop_state, loop_history=[],
-            sub_workflow_def=None, verdicts_cfg=verdicts_cfg,
+        result = executor._execute_review_phase(  # pylint: disable=protected-access; silent
+            phase,
+            {},
+            {},
+            loop_vars={},
+            loop_state=loop_state,
+            loop_history=[],
+            sub_workflow_def=None,
+            verdicts_cfg=verdicts_cfg,
         )
         assert result["verdict"] == "reject"
         assert loop_state.get("review_reject_count", 0) >= 1
+        # pylint: disable-next=protected-access; silent
         executor.hook_manager._dispatch_builtin.assert_called_once()
 
     def test_review_verdict_routing(self):
@@ -353,8 +449,8 @@ class TestReviewGate:
         assert reject_config["action"] == "continue"
 
 
-class TestLoopStateManagement:
-    def test_loop_state_sharing(self, temp_dir):
+class TestLoopStateManagement:  # pylint: disable=too-few-public-methods; silent
+    def test_loop_state_sharing(self, temp_dir):  # pylint: disable=redefined-outer-name; silent
         """Loop state variables should be shared between steps."""
         wf = WorkflowDefinition(name="ls", version="1.0", phases=[], terminals=[])
         session_mgr = MagicMock()
@@ -362,18 +458,30 @@ class TestLoopStateManagement:
         prompt_loader = MagicMock()
         validator = MagicMock()
         executor = WorkflowExecutor(
-            wf, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            wf,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         loop_state = {"exit_code": 1, "error": "module not found"}
 
-        phase = PhaseDefinition(id="shell", name="S", prompt_template="", output_schema={},
-                               type="shell", on_failure="continue")
+        phase = PhaseDefinition(
+            id="shell",
+            name="S",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="continue",
+        )
         phase.command = "echo test"
 
         mock_result = MockResult(returncode=0, stdout="test\n", stderr="")
         with patch("core.workflow_executor.subprocess.run", return_value=mock_result):
+            # pylint: disable-next=protected-access,unused-variable; silent
             status, output = executor._execute_shell_phase(
                 phase, {}, {}, loop_vars=None, loop_state=loop_state
             )
@@ -383,6 +491,7 @@ class TestLoopStateManagement:
 
 
 class TestConditionallySkippedPhase:
+    # pylint: disable-next=redefined-outer-name; silent
     def test_condition_true_proceeds(self, temp_dir):
         wf = WorkflowDefinition(name="cond", version="1.0", phases=[], terminals=["complete"])
         session_mgr = MagicMock()
@@ -390,17 +499,25 @@ class TestConditionallySkippedPhase:
         prompt_loader = MagicMock()
         validator = MagicMock()
         executor = WorkflowExecutor(
-            wf, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            wf,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         condition = "iteration > 0"
-        result = executor._evaluate_condition(
-            condition, state={}, context={},
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
+            condition,
+            state={},
+            context={},
             loop_state={"iteration": 1},
         )
         assert result is True
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_condition_false_proceeds(self, temp_dir):
         wf = WorkflowDefinition(name="cond", version="1.0", phases=[], terminals=["complete"])
         session_mgr = MagicMock()
@@ -408,13 +525,20 @@ class TestConditionallySkippedPhase:
         prompt_loader = MagicMock()
         validator = MagicMock()
         executor = WorkflowExecutor(
-            wf, session_mgr, artifact_store, prompt_loader, validator,
-            project_dir=temp_dir, output_dir=temp_dir,
+            wf,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=temp_dir,
+            output_dir=temp_dir,
         )
 
         condition = "iteration > 10"
-        result = executor._evaluate_condition(
-            condition, state={}, context={},
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
+            condition,
+            state={},
+            context={},
             loop_state={"iteration": 1},
         )
         assert result is False

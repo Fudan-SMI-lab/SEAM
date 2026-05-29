@@ -1,25 +1,28 @@
 """Tests for phase-boundary prompt injection."""
+
 import sys
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.phase_boundary import inject_phase_boundary, _resolve_config, _bool_from_config
+# pylint: disable-next=wrong-import-position; silent
 from core.config_loader import load_framework_config
-
+# pylint: disable-next=wrong-import-position; silent
+from core.phase_boundary import _bool_from_config, _resolve_config, inject_phase_boundary
 
 # ── Config resolution ──────────────────────────────────────────────────
 
+
 def test_resolve_full_framework_config() -> None:
-    cfg = _resolve_config({
-        "framework": {
-            "phase_boundary_guidance": {"enabled": False},
-            "omo_mode_directives": {"enabled": False, "scope": "current_phase"},
+    cfg = _resolve_config(
+        {
+            "framework": {
+                "phase_boundary_guidance": {"enabled": False},
+                "omo_mode_directives": {"enabled": False, "scope": "current_phase"},
+            }
         }
-    })
+    )
     assert "phase_boundary_guidance" in cfg
     assert cfg["phase_boundary_guidance"] == {"enabled": False}
     assert "framework" not in cfg
@@ -27,58 +30,90 @@ def test_resolve_full_framework_config() -> None:
 
 def test_resolve_full_framework_config_with_extra_top_level_keys() -> None:
     """Framework key is unwrapped even when other top-level keys co-exist."""
-    cfg = _resolve_config({
-        "framework": {
-            "phase_boundary_guidance": {"enabled": False},
-        },
-        "other": {"key": "value"},
-    })
+    cfg = _resolve_config(
+        {
+            "framework": {
+                "phase_boundary_guidance": {"enabled": False},
+            },
+            "other": {"key": "value"},
+        }
+    )
     assert "phase_boundary_guidance" in cfg
     assert "framework" not in cfg
     assert "other" not in cfg  # framework key consumed; rest dropped
 
 
 def test_resolve_unwrapped_config() -> None:
-    cfg = _resolve_config({
-        "phase_boundary_guidance": {"enabled": False},
-        "omo_mode_directives": {"enabled": False},
-    })
+    cfg = _resolve_config(
+        {
+            "phase_boundary_guidance": {"enabled": False},
+            "omo_mode_directives": {"enabled": False},
+        }
+    )
     assert "phase_boundary_guidance" in cfg
 
 
 def test_resolve_flat_legacy_config() -> None:
-    cfg = _resolve_config({
-        "phase_boundary_guidance_enabled": False,
-        "omo_mode_directives_enabled": False,
-    })
+    cfg = _resolve_config(
+        {
+            "phase_boundary_guidance_enabled": False,
+            "omo_mode_directives_enabled": False,
+        }
+    )
     assert "phase_boundary_guidance_enabled" in cfg
 
 
 def test_resolve_none() -> None:
+    # pylint: disable-next=use-implicit-booleaness-not-comparison; silent
     assert _resolve_config(None) == {}
 
 
 # ── Bool extraction ────────────────────────────────────────────────────
 
+
 def test_bool_from_nested_dict() -> None:
-    assert _bool_from_config({"phase_boundary_guidance": {"enabled": False}},
-                             "phase_boundary_guidance", "enabled") is False
-    assert _bool_from_config({"phase_boundary_guidance": {"enabled": True}},
-                             "phase_boundary_guidance", "enabled") is True
+    assert (
+        _bool_from_config(
+            {"phase_boundary_guidance": {"enabled": False}}, "phase_boundary_guidance", "enabled"
+        )
+        is False
+    )
+    assert (
+        _bool_from_config(
+            {"phase_boundary_guidance": {"enabled": True}}, "phase_boundary_guidance", "enabled"
+        )
+        is True
+    )
 
 
 def test_bool_from_flat_key_fallback() -> None:
-    assert _bool_from_config({"phase_boundary_guidance_enabled": False},
-                             "phase_boundary_guidance", "enabled") is False
+    assert (
+        _bool_from_config(
+            {"phase_boundary_guidance_enabled": False}, "phase_boundary_guidance", "enabled"
+        )
+        is False
+    )
 
 
 def test_bool_string_values() -> None:
-    assert _bool_from_config({"phase_boundary_guidance_enabled": "false"},
-                             "phase_boundary_guidance", "enabled") is False
-    assert _bool_from_config({"phase_boundary_guidance_enabled": "no"},
-                             "phase_boundary_guidance", "enabled") is False
-    assert _bool_from_config({"phase_boundary_guidance_enabled": "0"},
-                             "phase_boundary_guidance", "enabled") is False
+    assert (
+        _bool_from_config(
+            {"phase_boundary_guidance_enabled": "false"}, "phase_boundary_guidance", "enabled"
+        )
+        is False
+    )
+    assert (
+        _bool_from_config(
+            {"phase_boundary_guidance_enabled": "no"}, "phase_boundary_guidance", "enabled"
+        )
+        is False
+    )
+    assert (
+        _bool_from_config(
+            {"phase_boundary_guidance_enabled": "0"}, "phase_boundary_guidance", "enabled"
+        )
+        is False
+    )
 
 
 def test_bool_defaults_true() -> None:
@@ -86,6 +121,7 @@ def test_bool_defaults_true() -> None:
 
 
 # ── Boundary injection: content ────────────────────────────────────────
+
 
 def test_inject_boundary_appends_short_guidance() -> None:
     prompt = "## Phase 2 - Environment Setup\n\nDo the thing."
@@ -111,6 +147,7 @@ def test_inject_boundary_no_output_path_notice() -> None:
 
 
 # ── Boundary injection: config shapes ──────────────────────────────────
+
 
 def test_disabled_via_full_framework_config() -> None:
     """Disabled via the top-level framework shape from load_framework_config()."""
@@ -186,6 +223,7 @@ def test_omo_directives_config_does_not_affect_presence() -> None:
 
 
 # ── Boundary injection: content assertions ─────────────────────────────
+
 
 def test_allows_current_phase_substeps() -> None:
     result = inject_phase_boundary("prompt")

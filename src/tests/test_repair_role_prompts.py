@@ -5,8 +5,8 @@ from typing import cast
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core import repair_loop
-from core.prompt_loader import PromptLoader
+from core import repair_loop  # pylint: disable=wrong-import-position; silent
+from core.prompt_loader import PromptLoader  # pylint: disable=wrong-import-position; silent
 
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
 
@@ -23,9 +23,12 @@ COMMON_CONTEXT = {
     "constraint_summary": "Rule 1: No CPU fallback",
     "last_review": "(No review available)",
     "env_context": "{}",
+    # pylint: disable-next=line-too-long; silent
     "runtime_error_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md",
+    # pylint: disable-next=line-too-long; silent
     "runtime_card_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md",
     "workspace_root": "/workspace",
+    # pylint: disable-next=line-too-long; silent
     "operator_custom_op_guidance": "4. This is a generic operator-incompatibility repair.\n5. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证, 只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics。",
 }
 
@@ -95,16 +98,23 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
         **COMMON_CONTEXT,
         "repair_role": "operator_fixer",
         "operator_custom_op_guidance": (
+            # pylint: disable-next=line-too-long; silent
             "4. Read bounded operator context: /tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md; "
             "this context is the only inventory / manifest / final-gate closure source.\n"
+            # pylint: disable-next=line-too-long; silent
             "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
+            # pylint: disable-next=line-too-long; silent
             "6. Every in-scope row must have real Ascend OPP artifacts, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
+            # pylint: disable-next=line-too-long; silent
             "7. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证。只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
         ),
     }
     prompt = loader.load_prompt("repair_operator_fixer", context)
     assert "bounded operator context" in prompt
-    assert "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md" in prompt
+    assert (
+        "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md"
+        in prompt
+    )
     assert "inventory / manifest / final-gate" in prompt.lower()
     assert "freeze manifest rows" in prompt
     assert "inventory_count == manifest_entries == closed_pass_entries" in prompt
@@ -122,6 +132,7 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
 
 
 def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -> None:
+    # pylint: disable-next=protected-access; silent
     guidance = repair_loop._operator_custom_op_guidance(
         "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md",
         project_dir="/tmp/test_project",
@@ -136,6 +147,7 @@ def test_generated_custom_op_guidance_rejects_evidence_only_marker_artifacts() -
 
 
 def test_dependency_fixer_prompt_contains_constraint_summary_and_handoff() -> None:
+    # pylint: disable-next=line-too-long; silent
     """dependency_fixer prompt receives constraint_summary, no-CPU-fallback, and native-op handoff guidance."""
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
     prompt = _load_role_prompt(loader, "dependency_fixer")
@@ -145,7 +157,11 @@ def test_dependency_fixer_prompt_contains_constraint_summary_and_handoff() -> No
     assert "{workspace_root}" not in prompt
     assert "/workspace/docs/cuda_custom_op_skill_test_prompt.md" in prompt
     assert "第5点要求" in prompt
-    assert "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md" in prompt
+    assert (
+        # pylint: disable-next=line-too-long; silent
+        "可以参考的文档：历史运行报错：/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md,运行经验文档：/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md"
+        in prompt
+    )
     assert "Rule 1: No CPU fallback" in prompt
     assert "Migration Constraints (from Phase 1.5)" in prompt
     assert "No CPU Fallback (CRITICAL)" in prompt
@@ -174,7 +190,9 @@ def test_dependency_fixer_prompt_contains_self_verified_closure_guidance() -> No
 
 
 def test_muxi_container_dependency_prompt_uses_summary_for_closure_and_handoff() -> None:
-    content = (PROMPTS_DIR / "repair_dependency_fixer_container_musa.md").read_text(encoding="utf-8")
+    content = (PROMPTS_DIR / "repair_dependency_fixer_container_musa.md").read_text(
+        encoding="utf-8"
+    )
     assert "Self-Verified Dependency Closure (CRITICAL)" in content
     assert "hints only" in content
     assert "Report the closure validation in `summary`" in content
@@ -209,18 +227,14 @@ def test_code_adapter_prompt_contains_code_modification_content() -> None:
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
     prompt = _load_role_prompt(loader, "code_adapter")
     for keyword in ("torch.npu", "CUDA", "device"):
-        assert keyword.lower() in prompt.lower(), (
-            f"code_adapter prompt missing '{keyword}'"
-        )
+        assert keyword.lower() in prompt.lower(), f"code_adapter prompt missing '{keyword}'"
 
 
 def test_non_operator_repair_prompts_contain_apply_fix_directly() -> None:
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
     for role in ("code_adapter",):
         prompt = _load_role_prompt(loader, role)
-        assert "Apply the fix directly" in prompt, (
-            f"{role} prompt missing 'Apply the fix directly'"
-        )
+        assert "Apply the fix directly" in prompt, f"{role} prompt missing 'Apply the fix directly'"
         assert "minimal" not in prompt.lower() or "minimal code" not in prompt.lower(), (
             f"{role} prompt should not have 'minimal editing' language"
         )
@@ -230,9 +244,7 @@ def test_non_operator_repair_prompts_contain_assigned_role_value() -> None:
     loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
     for role in ("code_adapter",):
         prompt = _load_role_prompt(loader, role)
-        assert role in prompt, (
-            f"Loaded prompt for {role} should contain the role name in output"
-        )
+        assert role in prompt, f"Loaded prompt for {role} should contain the role name in output"
 
 
 def test_non_operator_repair_prompts_contain_constraint_summary() -> None:
@@ -289,9 +301,7 @@ def test_normal_entry_prompts_never_claim_zero_custom_operators() -> None:
     for filename in _NORMAL_ENTRY_PROMPT_FILES:
         content = _read_normal_entry_file(filename)
         for phrase in _NORMAL_ENTRY_BANNED_PHRASES:
-            assert phrase not in content, (
-                f"{filename} contains banned phrase: {phrase!r}"
-            )
+            assert phrase not in content, f"{filename} contains banned phrase: {phrase!r}"
 
 
 def test_normal_entry_constraints_never_claim_zero_custom_operators() -> None:

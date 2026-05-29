@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 
@@ -7,11 +6,11 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.artifact_store import ArtifactStore
-from core.phase_runner import PhaseRunner
-from core.prompt_loader import PromptLoader
-from core.validator_engine import ValidatorEngine
-from migrator.rule_based import RuleBasedMigrator
+from core.artifact_store import ArtifactStore  # pylint: disable=wrong-import-position; silent
+from core.phase_runner import PhaseRunner  # pylint: disable=wrong-import-position; silent
+from core.prompt_loader import PromptLoader  # pylint: disable=wrong-import-position; silent
+from core.validator_engine import ValidatorEngine  # pylint: disable=wrong-import-position; silent
+from migrator.rule_based import RuleBasedMigrator  # pylint: disable=wrong-import-position; silent
 
 
 def build_runner(base_dir):
@@ -114,9 +113,12 @@ def test_run_phase_4_empty_project(tmp_path):
 def test_run_phase_4_fails_missing_project_dir(tmp_path):
     runner, artifact_store = build_runner(tmp_path)
 
-    artifact_store.mark_validated("phase_3_entry_script", {
-        "entry_script_path": "/some/path.py",
-    })
+    artifact_store.mark_validated(
+        "phase_3_entry_script",
+        {
+            "entry_script_path": "/some/path.py",
+        },
+    )
 
     migrator = RuleBasedMigrator()
     with pytest.raises(ValueError, match="project_dir not found"):

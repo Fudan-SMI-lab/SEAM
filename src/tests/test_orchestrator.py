@@ -1,4 +1,8 @@
-# pyright: reportArgumentType=false, reportMissingParameterType=false, reportUnannotatedClassAttribute=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnknownMemberType=false, reportUnknownParameterType=false, reportUnusedParameter=false
+# pylint: disable=too-many-lines; silent
+# pyright: reportArgumentType=false, reportMissingParameterType=false,
+# reportUnannotatedClassAttribute=false, reportUnknownArgumentType=false,
+# reportUnknownLambdaType=false, reportUnknownMemberType=false,
+# reportUnknownParameterType=false, reportUnusedParameter=false
 
 import sys
 import types
@@ -9,10 +13,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.types import PhaseDefinition, WorkflowDefinition, ExecutionBackendConfig
-from core.orchestrator import Orchestrator
-from migrator.rule_based import RuleBasedMigrator
-from migrator.rule_based_ppu import PPURuleBasedMigrator
+from core.orchestrator import Orchestrator  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
+from core.types import ExecutionBackendConfig, PhaseDefinition, WorkflowDefinition
+# pylint: disable-next=wrong-import-position; silent
 from migrator.yaml_rule_based import YamlRuleBasedMigrator
 
 
@@ -25,7 +29,10 @@ class MockSessionManager:
         return "main-session"
 
     def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
-        self.calls.append(("send_command", {"session_id": session_id, "command": command, "timeout": timeout}))
+        self.calls.append(
+            ("send_command", {"session_id": session_id, "command": command, "timeout": timeout})
+        )
+        # pylint: disable-next=line-too-long; silent
         return "Failure Summary\nObserved Evidence\nMost Likely Root Cause\nRecommended Fix\nRetry Decision\nstop"
 
     def cleanup_all(self) -> int:
@@ -39,20 +46,79 @@ def build_workflow() -> WorkflowDefinition:
         version="2.0",
         globals={"max_retry_per_phase": 2},
         phases=[
-            PhaseDefinition("phase_0", "Phase 0", "", {}, None, {"on_success": "phase_1", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_1", "Phase 1", "", {}, None, {"on_success": "phase_2", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_2", "Phase 2", "", {}, None, {"on_success": "phase_3", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_3", "Phase 3", "", {}, None, {"on_success": "phase_4", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_4", "Phase 4", "", {}, None, {"on_success": "phase_5", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_5", "Phase 5", "", {}, None, {"on_success": "phase_6", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_6", "Phase 6", "", {}, None, {"on_success": "complete", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_error_recovery", "Error Recovery", "", {}, None, {"on_success": "failed", "on_failure": "failed"}),
+            PhaseDefinition(
+                "phase_0",
+                "Phase 0",
+                "",
+                {},
+                None,
+                {"on_success": "phase_1", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_1",
+                "Phase 1",
+                "",
+                {},
+                None,
+                {"on_success": "phase_2", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_2",
+                "Phase 2",
+                "",
+                {},
+                None,
+                {"on_success": "phase_3", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_3",
+                "Phase 3",
+                "",
+                {},
+                None,
+                {"on_success": "phase_4", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_4",
+                "Phase 4",
+                "",
+                {},
+                None,
+                {"on_success": "phase_5", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_5",
+                "Phase 5",
+                "",
+                {},
+                None,
+                {"on_success": "phase_6", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_6",
+                "Phase 6",
+                "",
+                {},
+                None,
+                {"on_success": "complete", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_error_recovery",
+                "Error Recovery",
+                "",
+                {},
+                None,
+                {"on_success": "failed", "on_failure": "failed"},
+            ),
         ],
         terminals=["complete", "failed"],
     )
 
 
-def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
+# pylint: disable-next=too-many-locals,too-many-statements; silent
+def test_run_workflow_wires_components_and_executes_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     call_order: list[str] = []
     journal_entries: list[dict[str, object]] = []
     prompt_loader_dirs: list[str] = []
@@ -77,7 +143,9 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
         def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
             return self.saved.get(phase_id)
 
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str:
+        def save_phase_output(
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
             self.saved[phase_id] = data
             return f"raw/{phase_id}-{attempt}.json"
 
@@ -85,7 +153,7 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
             self.saved[phase_id] = data
             return f"validated/{phase_id}.json"
 
-    class FakePromptLoader:
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
         def __init__(self, prompts_dir: str) -> None:
             call_order.append("prompt_loader_init")
             self.prompts_dir = prompts_dir
@@ -94,7 +162,7 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
         def load_prompt(self, phase_id: str, context: dict[str, str] | None = None) -> str:
             return f"prompt:{phase_id}:{context}"
 
-    class FakeValidatorEngine:
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
         def __init__(self) -> None:
             call_order.append("validator_engine_init")
 
@@ -134,49 +202,108 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
             return self.terminal
 
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, session_mgr, artifact_store, prompt_loader, validator, *, workflow=None, framework_config=None) -> None:
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(  # pylint: disable=too-many-arguments; silent
+            self,
+            session_mgr,  # pylint: disable=unused-argument; silent
+            artifact_store,  # pylint: disable=unused-argument; silent
+            prompt_loader,  # pylint: disable=unused-argument; silent
+            validator,  # pylint: disable=unused-argument; silent
+            *,
+            workflow=None,
+            framework_config=None,
+        ) -> None:
             call_order.append("phase_runner_init")
             phase_runner_init_args.append((workflow, framework_config))
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def run_phase_0_to_3(self, project_dir: str, session_mgr, artifact_store) -> dict[str, dict[str, object]]:
+
+        def set_container_context(self, ctx) -> None:  # pylint: disable=function-redefined; silent
+            pass
+
+        # pylint: disable-next=function-redefined; silent
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def run_phase_0_to_3(
+            # pylint: disable-next=unused-argument; silent
+            self, project_dir: str, session_mgr, artifact_store
+        ) -> dict[str, dict[str, object]]:
             call_order.append("run_phase_0_to_3")
             return {
                 "phase_0_env_detect": {"platform": "linux"},
                 "phase_1_project_analysis": {"project_dir": project_dir},
                 "phase_2_venv_create": {"venv_path": f"{project_dir}/.venv"},
-                "phase_3_entry_script": {"entry_script_path": f"{project_dir}/train.py", "run_command": "python train.py"},
+                "phase_3_entry_script": {
+                    "entry_script_path": f"{project_dir}/train.py",
+                    "run_command": "python train.py",
+                },
             }
 
-        def run_phase_0_to_1(self, project_dir: str, session_mgr, artifact_store, user_constraints: str = "") -> dict[str, dict[str, object]]:
+        def run_phase_0_to_1(
+            # pylint: disable-next=unused-argument; silent
+            self, project_dir: str, session_mgr, artifact_store, user_constraints: str = ""
+        ) -> dict[str, dict[str, object]]:
             call_order.append("run_phase_0_to_1")
             return {
                 "phase_0_env_detect": {"platform": "linux"},
                 "phase_1_project_analysis": {"project_dir": project_dir},
             }
 
-        def run_phase_1_5(self, main_session_id, session_mgr, artifact_store, *, project_dir, user_constraints, phase_1_output=None) -> str:
+        def run_phase_1_5(  # pylint: disable=too-many-arguments; silent
+            self,
+            main_session_id,  # pylint: disable=unused-argument; silent
+            session_mgr,  # pylint: disable=unused-argument; silent
+            artifact_store,  # pylint: disable=unused-argument; silent
+            *,
+            project_dir,  # pylint: disable=unused-argument; silent
+            user_constraints,  # pylint: disable=unused-argument; silent
+            phase_1_output=None,  # pylint: disable=unused-argument; silent
+        ) -> str:
             call_order.append("run_phase_1_5")
             return "Rule 1: No CPU fallback"
 
-        def run_phase_2_to_3(self, project_dir: str, session_mgr, artifact_store, prior_outputs, constraint_summary: str = "") -> dict[str, dict[str, object]]:
+        # pylint: disable-next=too-many-arguments,too-many-positional-arguments; silent
+        def run_phase_2_to_3(
+            self,
+            project_dir: str,
+            session_mgr,  # pylint: disable=unused-argument; silent
+            artifact_store,  # pylint: disable=unused-argument; silent
+            prior_outputs,  # pylint: disable=unused-argument; silent
+            constraint_summary: str = "",  # pylint: disable=unused-argument; silent
+        ) -> dict[str, dict[str, object]]:
             call_order.append("run_phase_2_to_3")
             return {
                 "phase_2_venv_create": {"venv_path": f"{project_dir}/.venv"},
-                "phase_3_entry_script": {"entry_script_path": f"{project_dir}/train.py", "run_command": "python train.py"},
+                "phase_3_entry_script": {
+                    "entry_script_path": f"{project_dir}/train.py",
+                    "run_command": "python train.py",
+                },
             }
 
+        # pylint: disable-next=unused-argument; silent
         def run_phase_4(self, artifact_store, migrator) -> dict[str, object]:
             call_order.append("run_phase_4")
-            return {"files_migrated": 1, "files_skipped": 0, "replacement_counts": {}, "total_replacements": 1}
+            return {
+                "files_migrated": 1,
+                "files_skipped": 0,
+                "replacement_counts": {},
+                "total_replacements": 1,
+            }
 
+        # pylint: disable-next=unused-argument; silent
         def run_phase_6(self, project_dir: str, artifact_store, session_mgr) -> dict[str, object]:
             call_order.append("run_phase_6")
             return {"phase_id": "phase_6_report", "report_paths": [], "migration_summary": {}}
 
-        def run_review_check(self, review_session_id, session_mgr, phase_0_to_3_outputs, project_dir, repair_context) -> dict[str, object]:
+        # pylint: disable-next=too-many-arguments,too-many-positional-arguments; silent
+        def run_review_check(
+            # pylint: disable-next=unused-argument; silent
+            self, review_session_id, session_mgr, phase_0_to_3_outputs, project_dir, repair_context
+        ) -> dict[str, object]:
             call_order.append("run_review_check")
             return {
                 "verdict": "accept",
@@ -186,8 +313,17 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
                 "reasoning": "",
             }
 
-    class FakeRepairLoopEngine:
-        def __init__(self, session_mgr, artifact_store, prompt_loader, validator, config=None, exec_backend=None, platform_policy=None) -> None:
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
+            self,
+            session_mgr,  # pylint: disable=unused-argument; silent
+            artifact_store,  # pylint: disable=unused-argument; silent
+            prompt_loader,  # pylint: disable=unused-argument; silent
+            validator,  # pylint: disable=unused-argument; silent
+            config=None,  # pylint: disable=unused-argument; silent
+            exec_backend=None,
+            platform_policy=None,  # pylint: disable=unused-argument; silent
+        ) -> None:
             call_order.append("repair_loop_init")
             self._received_exec_backend = exec_backend
 
@@ -195,16 +331,16 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
         def _format_history_summary(history: list[dict[str, object]]) -> str:
             return str(history)
 
-        def run(
+        def run(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
             self,
             entry_script: str,
-            project_dir: str,
+            project_dir: str,  # pylint: disable=unused-argument; silent
             review_callable=None,
-            constraint_summary: str = "",
+            constraint_summary: str = "",  # pylint: disable=unused-argument; silent
             env_context: dict[str, object] | None = None,
             phase3_contract: dict[str, object] | None = None,
             enable_review_gate: bool = False,
-            max_review_iterations: int = 3,
+            max_review_iterations: int = 3,  # pylint: disable=unused-argument; silent
         ) -> dict[str, object]:
             del env_context
             phase3_contracts.append(phase3_contract)
@@ -213,7 +349,7 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
                 review_callable({})
             return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
 
-    class FakeRuleBasedMigrator:
+    class FakeRuleBasedMigrator:  # pylint: disable=too-few-public-methods; silent
         def __init__(self) -> None:
             call_order.append("rule_based_migrator_init")
 
@@ -227,10 +363,14 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeRuleBasedMigrator())
+    monkeypatch.setattr(
+        "core.orchestrator.create_migrator_resolved", lambda **kw: FakeRuleBasedMigrator()
+    )
 
     session_mgr = MockSessionManager()
-    orchestrator = Orchestrator(session_mgr=session_mgr, project_dir="/repo/project", workflow_path="workflow.yaml")
+    orchestrator = Orchestrator(
+        session_mgr=session_mgr, project_dir="/repo/project", workflow_path="workflow.yaml"
+    )
 
     result = orchestrator.run_workflow("/repo/project", user_constraints="Zero CPU fallback")
 
@@ -243,10 +383,27 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
             "phase_0_env_detect": {"platform": "linux"},
             "phase_1_project_analysis": {"project_dir": "/repo/project"},
             "phase_2_venv_create": {"venv_path": "/repo/project/.venv"},
-            "phase_3_entry_script": {"entry_script_path": "/repo/project/train.py", "run_command": "python train.py"},
-            "phase_4_rule_migration": {"files_migrated": 1, "files_skipped": 0, "replacement_counts": {}, "total_replacements": 1},
-            "phase_5_validation": {"success": True, "status": "success", "iteration_count": 1, "errors": []},
-            "phase_6_report": {"phase_id": "phase_6_report", "report_paths": [], "migration_summary": {}},
+            "phase_3_entry_script": {
+                "entry_script_path": "/repo/project/train.py",
+                "run_command": "python train.py",
+            },
+            "phase_4_rule_migration": {
+                "files_migrated": 1,
+                "files_skipped": 0,
+                "replacement_counts": {},
+                "total_replacements": 1,
+            },
+            "phase_5_validation": {
+                "success": True,
+                "status": "success",
+                "iteration_count": 1,
+                "errors": [],
+            },
+            "phase_6_report": {
+                "phase_id": "phase_6_report",
+                "report_paths": [],
+                "migration_summary": {},
+            },
             "constraint_summary": "Rule 1: No CPU fallback",
         },
         "terminal_state": "complete",
@@ -285,14 +442,19 @@ def test_run_workflow_wires_components_and_executes_in_order(monkeypatch: pytest
     assert phase_runner_init_args[0][0] is not None
     assert phase_runner_init_args[0][0].name == "mock-workflow"
     assert phase_runner_init_args[0][1] is fw_config
-    assert phase3_contracts == [{"entry_script_path": "/repo/project/train.py", "run_command": "python train.py"}]
+    assert phase3_contracts == [
+        {"entry_script_path": "/repo/project/train.py", "run_command": "python train.py"}
+    ]
 
 
-def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_workflow_stops_before_phase6_when_phase5_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     call_order: list[str] = []
     journal_entries: list[dict[str, object]] = []
 
     class FakeArtifactStore:
+        # pylint: disable-next=unused-argument; silent
         def __init__(self, base_dir: str, run_id: str) -> None:
             self.saved: dict[str, dict[str, object]] = {}
 
@@ -303,7 +465,10 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
         def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
             return self.saved.get(phase_id)
 
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str:
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
             self.saved[phase_id] = data
             return f"raw/{phase_id}.json"
 
@@ -311,17 +476,19 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
             self.saved[phase_id] = data
             return f"validated/{phase_id}.json"
 
-    class FakePromptLoader:
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
         def __init__(self, prompts_dir: str) -> None:
             pass
 
+        # pylint: disable-next=unused-argument; silent
         def load_prompt(self, phase_id: str, context: dict[str, str] | None = None) -> str:
             return "recovery prompt"
 
-    class FakeValidatorEngine:
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
         pass
 
     class FakeStateMachine:
+        # pylint: disable-next=unused-argument; silent
         def __init__(self, workflow: WorkflowDefinition) -> None:
             self.current_phase = "phase_0"
             self.terminal = None
@@ -355,37 +522,63 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
             return self.terminal
 
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def run_phase_0_to_1(self, project_dir: str, session_mgr, artifact_store, user_constraints: str = "") -> dict[str, dict[str, object]]:
+        def run_phase_0_to_1(
+            # pylint: disable-next=unused-argument; silent
+            self, project_dir: str, session_mgr, artifact_store, user_constraints: str = ""
+        ) -> dict[str, dict[str, object]]:
             return {
                 "phase_0_env_detect": {"platform": "linux"},
                 "phase_1_project_analysis": {"project_dir": project_dir},
             }
 
-        def run_phase_1_5(self, *args, **kwargs) -> str:
+        def run_phase_1_5(self, *args, **kwargs) -> str:  # pylint: disable=unused-argument; silent
             return ""
 
-        def run_phase_2_to_3(self, project_dir: str, session_mgr, artifact_store, prior_outputs, constraint_summary: str = "") -> dict[str, dict[str, object]]:
+        # pylint: disable-next=too-many-arguments,too-many-positional-arguments; silent
+        def run_phase_2_to_3(
+            self,
+            project_dir: str,
+            session_mgr,  # pylint: disable=unused-argument; silent
+            artifact_store,  # pylint: disable=unused-argument; silent
+            prior_outputs,  # pylint: disable=unused-argument; silent
+            constraint_summary: str = "",  # pylint: disable=unused-argument; silent
+        ) -> dict[str, dict[str, object]]:
             return {
                 "phase_2_venv_create": {"venv_path": f"{project_dir}/.venv"},
-                "phase_3_entry_script": {"entry_script_path": f"{project_dir}/train.py", "run_command": "python train.py"},
+                "phase_3_entry_script": {
+                    "entry_script_path": f"{project_dir}/train.py",
+                    "run_command": "python train.py",
+                },
             }
 
+        # pylint: disable-next=unused-argument; silent
         def run_phase_4(self, artifact_store, migrator) -> dict[str, object]:
-            return {"files_migrated": 1, "files_skipped": 0, "replacement_counts": {}, "total_replacements": 1}
+            return {
+                "files_migrated": 1,
+                "files_skipped": 0,
+                "replacement_counts": {},
+                "total_replacements": 1,
+            }
 
+        # pylint: disable-next=unused-argument; silent
         def run_phase_6(self, project_dir: str, artifact_store, session_mgr) -> dict[str, object]:
             call_order.append("run_phase_6")
             return {"phase_id": "phase_6_report"}
 
+        # pylint: disable-next=unused-argument; silent
         def run_review_check(self, *args, **kwargs) -> dict[str, object]:
             return {"verdict": "accept"}
 
-    class FakeRepairLoopEngine:
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
         def __init__(self, *args, **kwargs) -> None:
             pass
 
@@ -393,16 +586,25 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
         def _format_history_summary(history: list[dict[str, object]]) -> str:
             return str(history)
 
+        # pylint: disable-next=unused-argument; silent
         def run(self, *args, **kwargs) -> dict[str, object]:
             call_order.append("run_phase_5_failure")
-            return {"success": False, "status": "max_iterations", "iteration_count": 3, "errors": ["still failing"]}
+            return {
+                "success": False,
+                "status": "max_iterations",
+                "iteration_count": 3,
+                "errors": ["still failing"],
+            }
 
-    class FakeRuleBasedMigrator:
+    class FakeRuleBasedMigrator:  # pylint: disable=too-few-public-methods; silent
         pass
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda path: build_workflow())
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
-    monkeypatch.setattr("core.orchestrator.load_framework_config", lambda path=None: {"framework": {"review": {"enabled": False}}})
+    monkeypatch.setattr(
+        "core.orchestrator.load_framework_config",
+        lambda path=None: {"framework": {"review": {"enabled": False}}},
+    )
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="failed5"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
     monkeypatch.setattr("core.orchestrator.PromptLoader", FakePromptLoader)
@@ -410,9 +612,13 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
     monkeypatch.setattr("core.orchestrator.StateMachine", FakeStateMachine)
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
-    monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeRuleBasedMigrator())
+    monkeypatch.setattr(
+        "core.orchestrator.create_migrator_resolved", lambda **kw: FakeRuleBasedMigrator()
+    )
 
-    result = Orchestrator(session_mgr=MockSessionManager(), project_dir="/repo/project", workflow_path="workflow.yaml").run_workflow("/repo/project")
+    result = Orchestrator(
+        session_mgr=MockSessionManager(), project_dir="/repo/project", workflow_path="workflow.yaml"
+    ).run_workflow("/repo/project")
 
     assert result["success"] is False
     assert result["failed_phase"] == "phase_5"
@@ -421,7 +627,10 @@ def test_run_workflow_stops_before_phase6_when_phase5_fails(monkeypatch: pytest.
     assert "phase_6_report" not in phases
     assert "run_phase_6" not in call_order
     assert not any(entry.get("phase_id") == "phase_6_report" for entry in journal_entries)
-    assert any(entry.get("phase_id") == "phase_5_validation" and entry.get("status") == "failed" for entry in journal_entries)
+    assert any(
+        entry.get("phase_id") == "phase_5_validation" and entry.get("status") == "failed"
+        for entry in journal_entries
+    )
 
 
 def _build_workflow_with_backend(backend_cfg=None) -> WorkflowDefinition:
@@ -431,93 +640,221 @@ def _build_workflow_with_backend(backend_cfg=None) -> WorkflowDefinition:
         version="2.0",
         globals={"max_retry_per_phase": 2},
         phases=[
-            PhaseDefinition("phase_0", "Phase 0", "", {}, None, {"on_success": "phase_1", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_1", "Phase 1", "", {}, None, {"on_success": "phase_2", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_2", "Phase 2", "", {}, None, {"on_success": "phase_3", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_3", "Phase 3", "", {}, None, {"on_success": "phase_4", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_4", "Phase 4", "", {}, None, {"on_success": "phase_5", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_5", "Phase 5", "", {}, None, {"on_success": "phase_6", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_6", "Phase 6", "", {}, None, {"on_success": "complete", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_error_recovery", "Error Recovery", "", {}, None, {"on_success": "failed", "on_failure": "failed"}),
+            PhaseDefinition(
+                "phase_0",
+                "Phase 0",
+                "",
+                {},
+                None,
+                {"on_success": "phase_1", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_1",
+                "Phase 1",
+                "",
+                {},
+                None,
+                {"on_success": "phase_2", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_2",
+                "Phase 2",
+                "",
+                {},
+                None,
+                {"on_success": "phase_3", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_3",
+                "Phase 3",
+                "",
+                {},
+                None,
+                {"on_success": "phase_4", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_4",
+                "Phase 4",
+                "",
+                {},
+                None,
+                {"on_success": "phase_5", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_5",
+                "Phase 5",
+                "",
+                {},
+                None,
+                {"on_success": "phase_6", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_6",
+                "Phase 6",
+                "",
+                {},
+                None,
+                {"on_success": "complete", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_error_recovery",
+                "Error Recovery",
+                "",
+                {},
+                None,
+                {"on_success": "failed", "on_failure": "failed"},
+            ),
         ],
         terminals=["complete", "failed"],
         execution_backend=backend_cfg,
     )
 
 
-def test_orchestrator_passes_container_backend_to_repair_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_orchestrator_passes_container_backend_to_repair_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When workflow.execution_backend is 'container', orchestrator creates ContainerBackend
     and passes it to RepairLoopEngine."""
     captured_backend: list[object] = []
     fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
-    container_cfg = ExecutionBackendConfig.from_dict({
-        "mode": "container",
-        "image": "test:latest",
-    })
+    container_cfg = ExecutionBackendConfig.from_dict(
+        {
+            "mode": "container",
+            "image": "test:latest",
+        }
+    )
 
     class FakeArtifactStore:
+        # pylint: disable-next=unused-argument; silent
         def __init__(self, base_dir: str, run_id: str) -> None:
             self.saved: dict[str, dict[str, object]] = {}
-        def write_journal(self, entry: dict[str, object]) -> str: return "j"
-        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str:
+
+        # pylint: disable-next=unused-argument; silent
+        def write_journal(self, entry: dict[str, object]) -> str:
+            return "j"
+
+        # pylint: disable-next=unused-argument; silent
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            return None
+
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
             return f"raw/{phase_id}"
-        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return f"v/{phase_id}"
 
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, phase_id: str, context=None) -> str: return "prompt"
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str:
+            return f"v/{phase_id}"
 
-    class FakeValidatorEngine: pass
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        # pylint: disable-next=unused-argument; silent
+        def load_prompt(self, phase_id: str, context=None) -> str:
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
 
     class FakeStateMachine:
         def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
             self.transitions = {}
             for p in wf.phases or []:
                 self.transitions[p.id] = p.transitions.get("on_success", "complete")
+
         def record_success(self, phase_id: str) -> tuple[bool, str | None]:
             t = self.transitions.get(phase_id, "complete")
             if t in ("complete", "failed"):
-                self.current_phase = None; self.terminal = t
+                self.current_phase = None
+                self.terminal = t
             else:
                 self.current_phase = t
             return True, t
+
+        # pylint: disable-next=unused-argument; silent
         def record_failure(self, phase_id: str, error: str) -> tuple[bool, str | None]:
-            self.current_phase = "phase_error_recovery"; return False, "phase_error_recovery"
-        def current_terminal(self) -> str | None: return self.terminal
+            self.current_phase = "phase_error_recovery"
+            return False, "phase_error_recovery"
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
 
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {"phase_0_env_detect": {}, "phase_1_project_analysis": {}}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
-        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
-            return {"phase_2_venv_create": {}, "phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
+        def set_container_context(self, ctx) -> None:
+            pass
 
-    class FakeRepairLoopEngine:
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"phase_0_env_detect": {}, "phase_1_project_analysis": {}}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
+        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
+            return {
+                "phase_2_venv_create": {},
+                "phase_3_entry_script": {"run_command": "python t.py"},
+            }
+
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        # pylint: disable-next=unused-argument; silent
         def __init__(self, *a, exec_backend=None, **kw) -> None:
             captured_backend.append(exec_backend)
-        @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
 
-    class FakeMigrator: pass
+        @staticmethod
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
+
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeMigrator:  # pylint: disable=too-few-public-methods; silent
+        pass
 
     class FakeContainerBackend:
-        def __init__(self, cfg) -> None: self._cfg = cfg
-        def set_project_dir(self, d: str) -> None: pass
-        def preflight(self) -> None: pass
-        def probe_environment(self) -> dict: return {"status": "ok"}
-        def cleanup(self) -> None: pass
-        def run(self, *a, **kw) -> object: raise NotImplementedError
-        def get_execution_context(self, **kw) -> dict: return {"execution_backend_mode": "container"}
+        def __init__(self, cfg) -> None:
+            self._cfg = cfg
 
-    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+        def set_project_dir(self, d: str) -> None:
+            pass
+
+        def preflight(self) -> None:
+            pass
+
+        def probe_environment(self) -> dict:
+            return {"status": "ok"}
+
+        def cleanup(self) -> None:
+            pass
+
+        def run(self, *a, **kw) -> object:
+            raise NotImplementedError
+
+        def get_execution_context(self, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"execution_backend_mode": "container"}
+
+    monkeypatch.setattr(
+        "core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg)
+    )
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="t1"))
@@ -530,7 +867,9 @@ def test_orchestrator_passes_container_backend_to_repair_loop(monkeypatch: pytes
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
-    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+    Orchestrator(
+        session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml"
+    ).run_workflow("/tmp/p")
 
     assert len(captured_backend) == 1
     backend = captured_backend[0]
@@ -545,42 +884,102 @@ def test_orchestrator_passes_none_backend_for_local_config(monkeypatch: pytest.M
     fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
 
     class FakeArtifactStore:
-        def __init__(self, *a, **kw) -> None: self.saved = {}
-        def write_journal(self, entry: dict[str, object]) -> str: return "j"
-        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
-        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, *a, **kw) -> str: return "prompt"
-    class FakeValidatorEngine: pass
+        def __init__(self, *a, **kw) -> None:  # pylint: disable=unused-argument; silent
+            self.saved = {}
+
+        # pylint: disable-next=unused-argument; silent
+        def write_journal(self, entry: dict[str, object]) -> str:
+            return "j"
+
+        # pylint: disable-next=unused-argument; silent
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            return None
+
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
+            return "r"
+
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str:
+            return "v"
+
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        def load_prompt(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
+
     class FakeStateMachine:
         def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        # pylint: disable-next=unused-argument; silent
         def record_success(self, phase_id: str) -> tuple[bool, str | None]:
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
+
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
         def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
             return {"phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
-    class FakeRepairLoopEngine:
-        def __init__(self, *a, exec_backend=None, **kw) -> None: captured_backend.append(exec_backend)
+
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        # pylint: disable-next=unused-argument; silent
+        def __init__(self, *a, exec_backend=None, **kw) -> None:
+            captured_backend.append(exec_backend)
+
         @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
-    class FakeMigrator: pass
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
+
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeMigrator:  # pylint: disable=too-few-public-methods; silent
+        pass
 
     # Test with absent backend
-    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(None))
+    monkeypatch.setattr(
+        "core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(None)
+    )
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="t2"))
@@ -592,7 +991,9 @@ def test_orchestrator_passes_none_backend_for_local_config(monkeypatch: pytest.M
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
-    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+    Orchestrator(
+        session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml"
+    ).run_workflow("/tmp/p")
     assert captured_backend[-1] is None
 
 
@@ -600,57 +1001,128 @@ def test_orchestrator_cleans_up_backend_in_finally(monkeypatch: pytest.MonkeyPat
     """Orchestrator calls cleanup() on the execution backend in the finally block."""
     cleanup_calls: list[None] = []
     fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
-    container_cfg = ExecutionBackendConfig.from_dict({
-        "mode": "container",
-        "image": "test:latest",
-    })
+    container_cfg = ExecutionBackendConfig.from_dict(
+        {
+            "mode": "container",
+            "image": "test:latest",
+        }
+    )
 
-    class FakeBackend:
-        def __init__(self) -> None: pass
-        def set_project_dir(self, d: str) -> None: pass
-        def cleanup(self) -> None: cleanup_calls.append(None)
+    class FakeBackend:  # pylint: disable=unused-variable; silent
+        def __init__(self) -> None:
+            pass
+
+        def set_project_dir(self, d: str) -> None:
+            pass
+
+        def cleanup(self) -> None:
+            cleanup_calls.append(None)
 
     class FakeContainerBackend:
-        def __init__(self, cfg) -> None: pass
-        def set_project_dir(self, d: str) -> None: pass
-        def cleanup(self) -> None: cleanup_calls.append(None)
+        def __init__(self, cfg) -> None:
+            pass
+
+        def set_project_dir(self, d: str) -> None:
+            pass
+
+        def cleanup(self) -> None:
+            cleanup_calls.append(None)
 
     class FakeArtifactStore:
-        def __init__(self, *a, **kw) -> None: self.saved = {}
-        def write_journal(self, entry: dict[str, object]) -> str: return "j"
-        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
-        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, *a, **kw) -> str: return "prompt"
-    class FakeValidatorEngine: pass
+        def __init__(self, *a, **kw) -> None:  # pylint: disable=unused-argument; silent
+            self.saved = {}
+
+        # pylint: disable-next=unused-argument; silent
+        def write_journal(self, entry: dict[str, object]) -> str:
+            return "j"
+
+        # pylint: disable-next=unused-argument; silent
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            return None
+
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
+            return "r"
+
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str:
+            return "v"
+
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        def load_prompt(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
+
     class FakeStateMachine:
         def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        # pylint: disable-next=unused-argument; silent
         def record_success(self, phase_id: str) -> tuple[bool, str | None]:
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
+
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
         def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
             return {"phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
-    class FakeRepairLoopEngine:
-        def __init__(self, *a, exec_backend=None, **kw) -> None: pass
-        @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
-    class FakeMigrator: pass
 
-    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, *a, exec_backend=None, **kw) -> None:
+            pass
+
+        @staticmethod
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
+
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeMigrator:  # pylint: disable=too-few-public-methods; silent
+        pass
+
+    monkeypatch.setattr(
+        "core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg)
+    )
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="t3"))
@@ -663,11 +1135,16 @@ def test_orchestrator_cleans_up_backend_in_finally(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
-    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+    Orchestrator(
+        session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml"
+    ).run_workflow("/tmp/p")
     assert len(cleanup_calls) == 1
 
 
-def test_orchestrator_calls_preflight_for_container_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+# pylint: disable-next=too-many-locals; silent
+def test_orchestrator_calls_preflight_for_container_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     preflight_calls: list[None] = []
     probe_calls: list[None] = []
     cleanup_calls: list[None] = []
@@ -675,63 +1152,141 @@ def test_orchestrator_calls_preflight_for_container_backend(monkeypatch: pytest.
     fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
     container_cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
 
-    class FakeBackend:
-        def __init__(self) -> None: pass
-        def set_project_dir(self, d: str) -> None: pass
-        def preflight(self) -> None: preflight_calls.append(None)
-        def cleanup(self) -> None: cleanup_calls.append(None)
+    class FakeBackend:  # pylint: disable=unused-variable; silent
+        def __init__(self) -> None:
+            pass
+
+        def set_project_dir(self, d: str) -> None:
+            pass
+
+        def preflight(self) -> None:
+            preflight_calls.append(None)
+
+        def cleanup(self) -> None:
+            cleanup_calls.append(None)
 
     class FakeContainerBackend:
-        def __init__(self, cfg) -> None: pass
-        def set_project_dir(self, d: str) -> None: pass
-        def preflight(self) -> None: preflight_calls.append(None)
+        def __init__(self, cfg) -> None:
+            pass
+
+        def set_project_dir(self, d: str) -> None:
+            pass
+
+        def preflight(self) -> None:
+            preflight_calls.append(None)
+
         def probe_environment(self) -> dict:
             probe_calls.append(None)
             return {"container_id": "c1", "status": "ok", "python_version": "3.10.0"}
-        def cleanup(self) -> None: cleanup_calls.append(None)
-        def get_execution_context(self, **kw) -> dict:
+
+        def cleanup(self) -> None:
+            cleanup_calls.append(None)
+
+        def get_execution_context(self, **kw) -> dict:  # pylint: disable=unused-argument; silent
             return {"execution_backend_mode": "container", "container_name_or_id": "c1"}
 
     class FakeArtifactStore:
-        def __init__(self, *a, **kw) -> None: self.saved = {}
-        def write_journal(self, entry: dict[str, object]) -> str: return "j"
-        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
-        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, *a, **kw) -> str: return "prompt"
-    class FakeValidatorEngine: pass
+        def __init__(self, *a, **kw) -> None:  # pylint: disable=unused-argument; silent
+            self.saved = {}
+
+        # pylint: disable-next=unused-argument; silent
+        def write_journal(self, entry: dict[str, object]) -> str:
+            return "j"
+
+        # pylint: disable-next=unused-argument; silent
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            return None
+
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
+            return "r"
+
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str:
+            return "v"
+
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        def load_prompt(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
+
     class FakeStateMachine:
         def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        # pylint: disable-next=unused-argument; silent
         def record_success(self, phase_id: str) -> tuple[bool, str | None]:
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
 
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def set_container_context(self, ctx) -> None: set_container_ctxs.append(dict(ctx))
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def set_container_context(self, ctx) -> None:  # pylint: disable=function-redefined; silent
+            set_container_ctxs.append(dict(ctx))
+
+        # pylint: disable-next=function-redefined; silent
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
         def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
             return {"phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
 
-    class FakeRepairLoopEngine:
-        def __init__(self, *a, exec_backend=None, **kw) -> None: pass
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, *a, exec_backend=None, **kw) -> None:
+            pass
+
         @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
-    class FakeMigrator: pass
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
 
-    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeMigrator:  # pylint: disable=too-few-public-methods; silent
+        pass
+
+    monkeypatch.setattr(
+        "core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg)
+    )
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="pf1"))
@@ -744,7 +1299,9 @@ def test_orchestrator_calls_preflight_for_container_backend(monkeypatch: pytest.
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
-    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+    Orchestrator(
+        session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml"
+    ).run_workflow("/tmp/p")
     assert len(preflight_calls) == 1
     assert len(probe_calls) == 1
     assert len(set_container_ctxs) == 1
@@ -758,39 +1315,94 @@ def test_orchestrator_preflight_failure_stops_early(monkeypatch: pytest.MonkeyPa
     container_cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
 
     class FakeContainerBackend:
-        def __init__(self, cfg) -> None: pass
-        def set_project_dir(self, d: str) -> None: pass
-        def preflight(self) -> None: raise RuntimeError("preflight failed")
-        def cleanup(self) -> None: pass
+        def __init__(self, cfg) -> None:
+            pass
+
+        def set_project_dir(self, d: str) -> None:
+            pass
+
+        def preflight(self) -> None:
+            raise RuntimeError("preflight failed")
+
+        def cleanup(self) -> None:
+            pass
 
     class FakeArtifactStore:
-        def __init__(self, *a, **kw) -> None: self.saved = {}
-        def write_journal(self, entry: dict[str, object]) -> str: return "j"
-        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
-        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, *a, **kw) -> str: return "prompt"
-    class FakeValidatorEngine: pass
-    class FakeStateMachine:
-        def __init__(self, wf) -> None: self.current_phase = wf.phases[0].id; self.terminal = None
-        def record_success(self, phase_id: str) -> tuple[bool, str | None]:
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
-    class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-    class FakeRepairLoopEngine:
-        def __init__(self, *a, exec_backend=None, **kw) -> None: pass
-        @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
-    class FakeMigrator: pass
+        def __init__(self, *a, **kw) -> None:  # pylint: disable=unused-argument; silent
+            self.saved = {}
 
-    monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg))
+        # pylint: disable-next=unused-argument; silent
+        def write_journal(self, entry: dict[str, object]) -> str:
+            return "j"
+
+        # pylint: disable-next=unused-argument; silent
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            return None
+
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
+            return "r"
+
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str:
+            return "v"
+
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        def load_prompt(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
+
+    class FakeStateMachine:
+        def __init__(self, wf) -> None:
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        # pylint: disable-next=unused-argument; silent
+        def record_success(self, phase_id: str) -> tuple[bool, str | None]:
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
+
+    class FakePhaseRunner:
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, *a, exec_backend=None, **kw) -> None:
+            pass
+
+        @staticmethod
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
+
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeMigrator:  # pylint: disable=too-few-public-methods; silent
+        pass
+
+    monkeypatch.setattr(
+        "core.orchestrator.load_workflow", lambda p: _build_workflow_with_backend(container_cfg)
+    )
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: fw_config)
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="pf2"))
@@ -804,27 +1416,88 @@ def test_orchestrator_preflight_failure_stops_early(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
 
     with pytest.raises(RuntimeError, match="preflight failed"):
-        Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+        Orchestrator(
+            session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml"
+        ).run_workflow("/tmp/p")
 
 
 # ── PPU rule-based migrator selection tests ──────────────────────────
 
+
 def _build_ppu_workflow() -> WorkflowDefinition:
     """Build a test workflow with PPU target_platform preset."""
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import TargetPlatformConfig
+
     return WorkflowDefinition(
         name="ppu_migration_v2",
         version="2.0",
         globals={"max_retry_per_phase": 2},
         phases=[
-            PhaseDefinition("phase_0", "Phase 0", "", {}, None, {"on_success": "phase_1", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_1", "Phase 1", "", {}, None, {"on_success": "phase_2", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_2", "Phase 2", "", {}, None, {"on_success": "phase_3", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_3", "Phase 3", "", {}, None, {"on_success": "phase_4", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_4", "Phase 4", "", {}, None, {"on_success": "phase_5", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_5", "Phase 5", "", {}, None, {"on_success": "phase_6", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_6", "Phase 6", "", {}, None, {"on_success": "complete", "on_failure": "phase_error_recovery"}),
-            PhaseDefinition("phase_error_recovery", "Error Recovery", "", {}, None, {"on_success": "failed", "on_failure": "failed"}),
+            PhaseDefinition(
+                "phase_0",
+                "Phase 0",
+                "",
+                {},
+                None,
+                {"on_success": "phase_1", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_1",
+                "Phase 1",
+                "",
+                {},
+                None,
+                {"on_success": "phase_2", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_2",
+                "Phase 2",
+                "",
+                {},
+                None,
+                {"on_success": "phase_3", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_3",
+                "Phase 3",
+                "",
+                {},
+                None,
+                {"on_success": "phase_4", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_4",
+                "Phase 4",
+                "",
+                {},
+                None,
+                {"on_success": "phase_5", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_5",
+                "Phase 5",
+                "",
+                {},
+                None,
+                {"on_success": "phase_6", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_6",
+                "Phase 6",
+                "",
+                {},
+                None,
+                {"on_success": "complete", "on_failure": "phase_error_recovery"},
+            ),
+            PhaseDefinition(
+                "phase_error_recovery",
+                "Error Recovery",
+                "",
+                {},
+                None,
+                {"on_success": "failed", "on_failure": "failed"},
+            ),
         ],
         terminals=["complete", "failed"],
         target_platform=TargetPlatformConfig(preset="ppu_cuda_compatible"),
@@ -834,59 +1507,137 @@ def _build_ppu_workflow() -> WorkflowDefinition:
 def test_ppu_workflow_uses_ppu_rule_based_migrator(monkeypatch: pytest.MonkeyPatch) -> None:
     """For PPU policy (ppu_cuda_compatible), Phase 4 uses PPURuleBasedMigrator
     via the configuration-driven resolver."""
-    from migrator.rule_based_ppu import PPURuleBasedMigrator
 
     instantiated_ppu: list[None] = []
     fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}  # noqa: F841
 
     class FakeArtifactStore:
-        def __init__(self, *a, **kw) -> None: self.saved = {}
-        def write_journal(self, entry: dict[str, object]) -> str: return "j"
-        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
-        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
+        def __init__(self, *a, **kw) -> None:  # pylint: disable=unused-argument; silent
+            self.saved = {}
+
+        # pylint: disable-next=unused-argument; silent
+        def write_journal(self, entry: dict[str, object]) -> str:
+            return "j"
+
+        # pylint: disable-next=unused-argument; silent
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            return None
+
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
+            return "r"
+
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str:
+            return "v"
 
     # ... (fakes omitted for brevity — same as above) ...
 
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, *a, **kw) -> str: return "prompt"
-    class FakeValidatorEngine: pass
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        def load_prompt(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
+
     class FakeStateMachine:
-        def __init__(self, wf) -> None: self.current_phase = wf.phases[0].id; self.terminal = None
-        def record_success(self, phase_id: str) -> tuple[bool, str | None]: self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
+        def __init__(self, wf) -> None:
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        # pylint: disable-next=unused-argument; silent
+        def record_success(self, phase_id: str) -> tuple[bool, str | None]:
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
+
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
-        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict: return {"phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
-    class FakeRepairLoopEngine:
-        def __init__(self, *a, **kw) -> None: pass
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
+        def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
+            return {"phase_3_entry_script": {"run_command": "python t.py"}}
+
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, *a, **kw) -> None:
+            pass
+
         @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
 
-    class FakePPUMigrator:
-        def __init__(self) -> None: instantiated_ppu.append(None)
-        def migrate_directory(self, *a, **kw): return {}
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
 
-    def fake_create_resolved(**kw) -> object:
+    class FakePPUMigrator:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self) -> None:
+            instantiated_ppu.append(None)
+
+        def migrate_directory(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return {}
+
+    def fake_create_resolved(**kw) -> object:  # pylint: disable=unused-argument; silent
         return FakePPUMigrator()
 
     def build_ppu_workflow() -> object:
-        from core.types import WorkflowDefinition, PhaseDefinition
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
+        from core.types import PhaseDefinition, WorkflowDefinition
+
         return WorkflowDefinition(
-            name="ppu_migration_test", version="1.0",
+            name="ppu_migration_test",
+            version="1.0",
             description="PPU test workflow",
-            phases=[PhaseDefinition(id="phase_0_env_detect", name="Phase 0", prompt_template="phase_0_env_detect_ppu", output_schema={}, transitions={"on_success": "phase_4_rule_migration"}),
-                    PhaseDefinition(id="phase_4_rule_migration", name="Phase 4", prompt_template="", output_schema={}, type="builtin", params={"operation": "rule_based_migration", "pattern": "*.py"}, transitions={"on_success": "complete"})],
+            phases=[
+                PhaseDefinition(
+                    id="phase_0_env_detect",
+                    name="Phase 0",
+                    prompt_template="phase_0_env_detect_ppu",
+                    output_schema={},
+                    transitions={"on_success": "phase_4_rule_migration"},
+                ),
+                PhaseDefinition(
+                    id="phase_4_rule_migration",
+                    name="Phase 4",
+                    prompt_template="",
+                    output_schema={},
+                    type="builtin",
+                    params={"operation": "rule_based_migration", "pattern": "*.py"},
+                    transitions={"on_success": "complete"},
+                ),
+            ],
             terminals=["complete"],
         )
 
@@ -902,64 +1653,119 @@ def test_ppu_workflow_uses_ppu_rule_based_migrator(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", fake_create_resolved)
 
-    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+    Orchestrator(
+        session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml"
+    ).run_workflow("/tmp/p")
 
-    assert len(instantiated_ppu) == 1, "PPU workflow must instantiate a PPURuleBasedMigrator via the resolver"
+    assert len(instantiated_ppu) == 1, (
+        "PPU workflow must instantiate a PPURuleBasedMigrator via the resolver"
+    )
 
 
 def test_non_ppu_workflow_uses_regular_rule_based_migrator(monkeypatch: pytest.MonkeyPatch) -> None:
     """For non-PPU policies with NPU strategy override, Phase 4 uses RuleBasedMigrator
     via the configuration-driven resolver."""
-    from migrator.rule_based import RuleBasedMigrator
 
     instantiated_regular: list[None] = []
     fw_config: dict[str, object] = {"framework": {"review": {"enabled": False}}}
 
     class FakeArtifactStore:
-        def __init__(self, *a, **kw) -> None: self.saved = {}
-        def write_journal(self, entry: dict[str, object]) -> str: return "j"
-        def load_phase_output(self, phase_id: str) -> dict[str, object] | None: return None
-        def save_phase_output(self, phase_id: str, data: dict[str, object], attempt: int = 0) -> str: return "r"
-        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str: return "v"
+        def __init__(self, *a, **kw) -> None:  # pylint: disable=unused-argument; silent
+            self.saved = {}
 
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, *a, **kw) -> str: return "prompt"
+        # pylint: disable-next=unused-argument; silent
+        def write_journal(self, entry: dict[str, object]) -> str:
+            return "j"
 
-    class FakeValidatorEngine: pass
+        # pylint: disable-next=unused-argument; silent
+        def load_phase_output(self, phase_id: str) -> dict[str, object] | None:
+            return None
+
+        def save_phase_output(
+            # pylint: disable-next=unused-argument; silent
+            self, phase_id: str, data: dict[str, object], attempt: int = 0
+        ) -> str:
+            return "r"
+
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data: dict[str, object]) -> str:
+            return "v"
+
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        def load_prompt(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
 
     class FakeStateMachine:
         def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        # pylint: disable-next=unused-argument; silent
         def record_success(self, phase_id: str) -> tuple[bool, str | None]:
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
 
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
         def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
             return {"phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
 
-    class FakeRepairLoopEngine:
-        def __init__(self, *a, **kw) -> None: pass
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, *a, **kw) -> None:
+            pass
+
         @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict: return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
 
-    class FakeMigrator:
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
+
+    class FakeMigrator:  # pylint: disable=too-few-public-methods; silent
         def __init__(self) -> None:
             instantiated_regular.append(None)
-        def migrate_directory(self, *a, **kw): return {}
 
-    def fake_create_resolved(**kw) -> object:
+        def migrate_directory(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return {}
+
+    def fake_create_resolved(**kw) -> object:  # pylint: disable=unused-argument; silent
         return FakeMigrator()
 
     monkeypatch.setattr("core.orchestrator.load_workflow", lambda p: build_workflow())
@@ -974,14 +1780,21 @@ def test_non_ppu_workflow_uses_regular_rule_based_migrator(monkeypatch: pytest.M
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", fake_create_resolved)
 
-    Orchestrator(session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml").run_workflow("/tmp/p")
+    Orchestrator(
+        session_mgr=MockSessionManager(), project_dir="/tmp/p", workflow_path="wf.yaml"
+    ).run_workflow("/tmp/p")
 
-    assert len(instantiated_regular) == 1, "Non-PPU workflow must instantiate a migrator via the resolver"
+    assert len(instantiated_regular) == 1, (
+        "Non-PPU workflow must instantiate a migrator via the resolver"
+    )
 
 
 def test_select_rule_based_migrator_ppu_returns_ppu_type() -> None:
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import BUILTIN_PRESETS
+
     ppu_policy = BUILTIN_PRESETS["ppu_cuda_compatible"]
+    # pylint: disable-next=protected-access; silent
     migrator = Orchestrator._select_rule_based_migrator(ppu_policy)
     assert isinstance(migrator, YamlRuleBasedMigrator)
     code = "import torch\nprint(torch.cuda.is_available())"
@@ -991,8 +1804,11 @@ def test_select_rule_based_migrator_ppu_returns_ppu_type() -> None:
 
 
 def test_select_rule_based_migrator_npu_returns_regular_type() -> None:
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import BUILTIN_PRESETS
+
     npu_policy = BUILTIN_PRESETS["npu_ascend"]
+    # pylint: disable-next=protected-access; silent
     migrator = Orchestrator._select_rule_based_migrator(npu_policy)
     assert isinstance(migrator, YamlRuleBasedMigrator)
     result, report = migrator.migrate("import torch\nprint(torch.cuda.is_available())")
@@ -1001,8 +1817,11 @@ def test_select_rule_based_migrator_npu_returns_regular_type() -> None:
 
 
 def test_select_rule_based_migrator_generic_returns_report_only() -> None:
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import BUILTIN_PRESETS
+
     generic_policy = BUILTIN_PRESETS["generic_accelerator"]
+    # pylint: disable-next=protected-access; silent
     migrator = Orchestrator._select_rule_based_migrator(generic_policy)
     assert isinstance(migrator, YamlRuleBasedMigrator)
     code = "import torch\nprint(torch.cuda.is_available())"
@@ -1012,9 +1831,12 @@ def test_select_rule_based_migrator_generic_returns_report_only() -> None:
 
 
 def test_select_rule_based_migrator_workflow_strategy_overrides_policy() -> None:
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import BUILTIN_PRESETS
+
     workflow = types.SimpleNamespace(rule_migration={"strategy": "cuda_to_npu"}, phases=[])
     generic_policy = BUILTIN_PRESETS["generic_accelerator"]
+    # pylint: disable-next=protected-access; silent
     migrator = Orchestrator._select_rule_based_migrator(generic_policy, workflow)
     result, report = migrator.migrate("import torch\nprint(torch.cuda.is_available())")
     assert "torch.npu.is_available()" in result
@@ -1022,13 +1844,16 @@ def test_select_rule_based_migrator_workflow_strategy_overrides_policy() -> None
 
 
 def test_select_rule_based_migrator_legacy_backend_overrides_policy() -> None:
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import BUILTIN_PRESETS
+
     phase = types.SimpleNamespace(
         id="phase_4_rule_migration",
         params={"operation": "rule_based_migration", "backend": "report_only"},
     )
     workflow = types.SimpleNamespace(rule_migration={"strategy": "cuda_to_npu"}, phases=[phase])
     npu_policy = BUILTIN_PRESETS["npu_ascend"]
+    # pylint: disable-next=protected-access; silent
     migrator = Orchestrator._select_rule_based_migrator(npu_policy, workflow)
     code = "import torch\nprint(torch.cuda.is_available())"
     result, report = migrator.migrate(code)
@@ -1039,21 +1864,30 @@ def test_select_rule_based_migrator_legacy_backend_overrides_policy() -> None:
 # ── Workflow Selector integration tests ────────────────────────────────
 
 
+# pylint: disable-next=too-many-locals; silent
 def test_orchestrator_resolves_selector_before_load_workflow(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """When workflow_path is a selector YAML, orchestrator resolves it
     before load_workflow and journals the resolution."""
-    import yaml as _yaml
+    import yaml as _yaml  # pylint: disable=import-outside-toplevel; silent
 
     # Build a minimal workflow that load_workflow will accept
     def _minimal_wf_yaml(name: str) -> dict:
         return {
-            "name": name, "version": "1.0", "description": "test",
+            "name": name,
+            "version": "1.0",
+            "description": "test",
             "phases": [
-                {"id": "p0", "name": "p0", "type": "llm",
-                 "prompt_template": "t.md", "agent": "main_engineer",
-                 "transitions": {"on_success": "complete"}},
+                {
+                    "id": "p0",
+                    "name": "p0",
+                    "type": "llm",
+                    "prompt_template": "t.md",
+                    "agent": "main_engineer",
+                    "transitions": {"on_success": "complete"},
+                },
             ],
             "terminals": ["complete", "failed"],
             "agents": {"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
@@ -1066,7 +1900,7 @@ def test_orchestrator_resolves_selector_before_load_workflow(
     _ = wf_b.write_text(_yaml.dump(_minimal_wf_yaml("ppu")), encoding="utf-8")
 
     # Write selector YAML
-    import json as _json
+
     selector = tmp_path / "sel.yaml"
     selector_data = {
         "kind": "workflow_selector",
@@ -1084,11 +1918,22 @@ def test_orchestrator_resolves_selector_before_load_workflow(
 
     def fake_load_workflow(path: str):
         captured_workflow_path.append(path)
-        from core.types import WorkflowDefinition, PhaseDefinition
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
+        from core.types import PhaseDefinition, WorkflowDefinition
+
         return WorkflowDefinition(
-            name="npu", version="1.0", description="test",
-            phases=[PhaseDefinition(id="p0", name="p0", prompt_template="t.md",
-                                     output_schema={}, transitions={"on_success": "complete"})],
+            name="npu",
+            version="1.0",
+            description="test",
+            phases=[
+                PhaseDefinition(
+                    id="p0",
+                    name="p0",
+                    prompt_template="t.md",
+                    output_schema={},
+                    transitions={"on_success": "complete"},
+                )
+            ],
             terminals=["complete"],
         )
 
@@ -1096,55 +1941,99 @@ def test_orchestrator_resolves_selector_before_load_workflow(
         def __init__(self, base_dir: str, run_id: str) -> None:
             self.base_dir = base_dir
             self.run_id = run_id
+
         def write_journal(self, entry: dict) -> str:
             journal_entries.append(entry)
             return "j"
-        def load_phase_output(self, phase_id: str):
+
+        def load_phase_output(self, phase_id: str):  # pylint: disable=unused-argument; silent
             return None
+
+        # pylint: disable-next=unused-argument; silent
         def save_phase_output(self, phase_id: str, data, attempt: int = 0) -> str:
             return "r"
+
+        # pylint: disable-next=unused-argument; silent
         def mark_validated(self, phase_id: str, data) -> str:
             return "v"
 
-    class FakePromptLoader:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, phase_id: str, context=None) -> str: return "prompt"
+    class FakePromptLoader:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
 
-    class FakeValidatorEngine: pass
+        # pylint: disable-next=unused-argument; silent
+        def load_prompt(self, phase_id: str, context=None) -> str:
+            return "prompt"
+
+    class FakeValidatorEngine:  # pylint: disable=too-few-public-methods; silent
+        pass
 
     class FakeStateMachine:
         def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
-        def record_success(self, phase_id: str):
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        def record_success(self, phase_id: str):  # pylint: disable=unused-argument; silent
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
 
     class FakePhaseRunner:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
         def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
             return {"phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
 
-    class FakeRepairLoopEngine:
-        def __init__(self, *a, **kw) -> None: pass
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class FakeRepairLoopEngine:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, *a, **kw) -> None:
+            pass
+
         @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict:
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
+
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
             return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
 
-    class FakeMigrator: pass
+    class FakeMigrator:  # pylint: disable=too-few-public-methods; silent
+        pass
 
     # Real is_selector_file (selector exists), fake session mgr returns first candidate
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: True)
     monkeypatch.setattr("core.orchestrator.load_workflow", fake_load_workflow)
-    monkeypatch.setattr("core.orchestrator.load_framework_config", lambda p=None: {"framework": {"review": {"enabled": False}}})
+    monkeypatch.setattr(
+        "core.orchestrator.load_framework_config",
+        lambda p=None: {"framework": {"review": {"enabled": False}}},
+    )
     monkeypatch.setattr("core.orchestrator.uuid4", lambda: types.SimpleNamespace(hex="sel1"))
     monkeypatch.setattr("core.orchestrator.ArtifactStore", FakeArtifactStore)
     monkeypatch.setattr("core.orchestrator.PromptLoader", FakePromptLoader)
@@ -1153,11 +2042,17 @@ def test_orchestrator_resolves_selector_before_load_workflow(
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
-    monkeypatch.setattr("core.orchestrator.resolve_workflow_from_selector",
-                        lambda selector_path, session_mgr, prompt_loader, project_context=None, output_dir=".": wf_a)
+    monkeypatch.setattr(
+        "core.orchestrator.resolve_workflow_from_selector",
+        lambda selector_path, session_mgr, prompt_loader, project_context=None, output_dir=".": (
+            wf_a
+        ),
+    )
 
     session_mgr = MockSessionManager()
-    orchestrator = Orchestrator(session_mgr=session_mgr, project_dir="/tmp/testproj", workflow_path=str(selector))
+    orchestrator = Orchestrator(
+        session_mgr=session_mgr, project_dir="/tmp/testproj", workflow_path=str(selector)
+    )
     result = orchestrator.run_workflow("/tmp/testproj")
 
     assert result["success"] is True
@@ -1180,45 +2075,91 @@ def test_orchestrator_passes_through_normal_workflow(
         return build_workflow()
 
     class _FakeAS:
-        def __init__(self, base_dir: str, run_id: str) -> None: pass
-        def write_journal(self, entry: dict) -> str: return "j"
-        def load_phase_output(self, phase_id: str): return None
-        def save_phase_output(self, phase_id: str, data, attempt: int = 0) -> str: return "r"
-        def mark_validated(self, phase_id: str, data) -> str: return "v"
+        def __init__(self, base_dir: str, run_id: str) -> None:
+            pass
 
-    class _FakePL:
-        def __init__(self, d: str) -> None: pass
-        def load_prompt(self, *a, **kw) -> str: return "prompt"
+        def write_journal(self, entry: dict) -> str:  # pylint: disable=unused-argument; silent
+            return "j"
 
-    class _FakeVE: pass
+        def load_phase_output(self, phase_id: str):  # pylint: disable=unused-argument; silent
+            return None
+
+        # pylint: disable-next=unused-argument; silent
+        def save_phase_output(self, phase_id: str, data, attempt: int = 0) -> str:
+            return "r"
+
+        # pylint: disable-next=unused-argument; silent
+        def mark_validated(self, phase_id: str, data) -> str:
+            return "v"
+
+    class _FakePL:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, d: str) -> None:
+            pass
+
+        def load_prompt(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return "prompt"
+
+    class _FakeVE:  # pylint: disable=too-few-public-methods; silent
+        pass
+
     class _FakeSM:
         def __init__(self, wf) -> None:
-            self.current_phase = wf.phases[0].id; self.terminal = None
-        def record_success(self, p: str):
-            self.current_phase = None; self.terminal = "complete"; return True, "complete"
-        def record_failure(self, *a): return False, None
-        def current_terminal(self) -> str | None: return self.terminal
+            self.current_phase = wf.phases[0].id
+            self.terminal = None
+
+        def record_success(self, p: str):  # pylint: disable=unused-argument; silent
+            self.current_phase = None
+            self.terminal = "complete"
+            return True, "complete"
+
+        def record_failure(self, *a):  # pylint: disable=unused-argument; silent
+            return False, None
+
+        def current_terminal(self) -> str | None:
+            return self.terminal
 
     class _FakePR:
-        def set_container_context(self, ctx) -> None: pass
-        def set_execution_environment_context(self, ctx: str) -> None: pass
-        def __init__(self, *a, **kw) -> None: pass
-        def run_phase_0_to_1(self, *a, **kw) -> dict: return {}
-        def run_phase_1_5(self, *a, **kw) -> str: return ""
+        def set_container_context(self, ctx) -> None:
+            pass
+
+        def set_execution_environment_context(self, ctx: str) -> None:
+            pass
+
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def run_phase_0_to_1(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_1_5(self, *a, **kw) -> str:  # pylint: disable=unused-argument; silent
+            return ""
+
+        # pylint: disable-next=unused-argument; silent
         def run_phase_2_to_3(self, project_dir: str, *a, **kw) -> dict:
             return {"phase_3_entry_script": {"run_command": "python t.py"}}
-        def run_phase_4(self, *a, **kw) -> dict: return {}
-        def run_phase_6(self, *a, **kw) -> dict: return {}
-        def run_review_check(self, *a, **kw) -> dict: return {"verdict": "accept"}
 
-    class _FakeRL:
-        def __init__(self, *a, **kw) -> None: pass
+        def run_phase_4(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_phase_6(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {}
+
+        def run_review_check(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
+            return {"verdict": "accept"}
+
+    class _FakeRL:  # pylint: disable=too-few-public-methods; silent
+        def __init__(self, *a, **kw) -> None:
+            pass
+
         @staticmethod
-        def _format_history_summary(h): return ""
-        def run(self, *a, **kw) -> dict:
+        def _format_history_summary(h):  # pylint: disable=unused-argument; silent
+            return ""
+
+        def run(self, *a, **kw) -> dict:  # pylint: disable=unused-argument; silent
             return {"success": True, "status": "success", "iteration_count": 1, "errors": []}
 
-    class _FakeMig: pass
+    class _FakeMig:  # pylint: disable=too-few-public-methods; silent
+        pass
 
     monkeypatch.setattr("core.orchestrator.is_selector_file", lambda p: False)
     monkeypatch.setattr("core.orchestrator.load_workflow", fake_load_workflow)
@@ -1233,7 +2174,9 @@ def test_orchestrator_passes_through_normal_workflow(
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: _FakeMig())
 
     session_mgr = MockSessionManager()
-    orchestrator = Orchestrator(session_mgr=session_mgr, project_dir="/tmp/testproj", workflow_path="normal_wf.yaml")
+    orchestrator = Orchestrator(
+        session_mgr=session_mgr, project_dir="/tmp/testproj", workflow_path="normal_wf.yaml"
+    )
     result = orchestrator.run_workflow("/tmp/testproj")
 
     assert result["success"] is True

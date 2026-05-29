@@ -1,4 +1,9 @@
-# pyright: reportMissingTypeArgument=false, reportMissingParameterType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportAny=false, reportExplicitAny=false, reportUnnecessaryIsInstance=false
+# pyright: reportMissingTypeArgument=false,
+# reportMissingParameterType=false, reportUnknownParameterType=false,
+# reportUnknownVariableType=false, reportUnknownMemberType=false,
+# reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false,
+# reportUninitializedInstanceVariable=false, reportAny=false,
+# reportExplicitAny=false, reportUnnecessaryIsInstance=false
 import glob
 import json
 import logging
@@ -12,42 +17,46 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = os.path.join(os.path.dirname(__file__), "..", "prompts", "experience_query.md")
 _INACTIVE_EXPERIENCE_STATUSES = frozenset({"consumed", "rejected", "quarantined", "archived"})
-_ATEN_ONLY_CUSTOM_OP_TERMS = frozenset({
-    "aten",
-    "cpp_extension",
-    "cppextension",
-    "npu_routed_cpp_extension",
-    "privateuse1",
-    "torch_utils_cpp_extension",
-})
-_CONCRETE_NATIVE_CUSTOM_OP_TERMS = frozenset({
-    "aclrt",
-    "aclnn",
-    "acl_op",
-    "ascendc",
-    "cann",
-    "lascendcl",
-    "libascendcl",
-    "libacl",
-    "op_host",
-    "op_kernel",
-    "op_proto",
-    "msopgen",
-    "opp",
-    "aicore",
-    "aicpu",
-    "tikcpp",
-    "kernel_operator_h",
-})
+_ATEN_ONLY_CUSTOM_OP_TERMS = frozenset(
+    {
+        "aten",
+        "cpp_extension",
+        "cppextension",
+        "npu_routed_cpp_extension",
+        "privateuse1",
+        "torch_utils_cpp_extension",
+    }
+)
+_CONCRETE_NATIVE_CUSTOM_OP_TERMS = frozenset(
+    {
+        "aclrt",
+        "aclnn",
+        "acl_op",
+        "ascendc",
+        "cann",
+        "lascendcl",
+        "libascendcl",
+        "libacl",
+        "op_host",
+        "op_kernel",
+        "op_proto",
+        "msopgen",
+        "opp",
+        "aicore",
+        "aicpu",
+        "tikcpp",
+        "kernel_operator_h",
+    }
+)
 
 
 class ExperienceQuerier:
-
     def __init__(self, store: ExperienceStore, session_mgr) -> None:
         self.store = store
         self.session_mgr = session_mgr
         self._last_query_result: dict | None = None
 
+    # pylint: disable-next=too-many-locals; silent
     def query(self, context: dict, load_full: bool = True) -> dict:
         index = self.store.read_index()
 
@@ -69,11 +78,17 @@ class ExperienceQuerier:
         try:
             session_id = self._get_query_session()
             raw_response = self.session_mgr.send_command(
-                session_id, prompt, timeout=1800,
+                session_id,
+                prompt,
+                timeout=1800,
             )
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
             logger.warning("Experience query LLM call failed: %s", exc)
-            return {"selected_experiences": [], "summary": "", "warning": f"LLM query failed: {exc}"}
+            return {
+                "selected_experiences": [],
+                "summary": "",
+                "warning": f"LLM query failed: {exc}",
+            }
 
         parsed = self._extract_json(raw_response)
 
@@ -106,23 +121,25 @@ class ExperienceQuerier:
                     enriched.append(full_exp)
             else:
                 file_path = self._derive_experience_file_path(entry_id, entry_type, merged_item)
-                enriched.append({
-                    "id": entry_id,
-                    "type": entry_type,
-                    "title": merged_item.get("title", ""),
-                    "category": merged_item.get("category", ""),
-                    "subtype": merged_item.get("subtype", ""),
-                    "tags": merged_item.get("tags", []),
-                    "target_roles": merged_item.get("target_roles", []),
-                    "target_phases": merged_item.get("target_phases", []),
-                    "reasoning": item.get("reasoning", ""),
-                    "relevance_score": item.get("relevance_score", 0.0),
-                    "symptom": merged_item.get("symptom", ""),
-                    "file_path": file_path,
-                    "asset_paths": merged_item.get("asset_paths", []),
-                    "confidence": merged_item.get("confidence", 0),
-                    "load_full": bool(item.get("load_full", False)),
-                })
+                enriched.append(
+                    {
+                        "id": entry_id,
+                        "type": entry_type,
+                        "title": merged_item.get("title", ""),
+                        "category": merged_item.get("category", ""),
+                        "subtype": merged_item.get("subtype", ""),
+                        "tags": merged_item.get("tags", []),
+                        "target_roles": merged_item.get("target_roles", []),
+                        "target_phases": merged_item.get("target_phases", []),
+                        "reasoning": item.get("reasoning", ""),
+                        "relevance_score": item.get("relevance_score", 0.0),
+                        "symptom": merged_item.get("symptom", ""),
+                        "file_path": file_path,
+                        "asset_paths": merged_item.get("asset_paths", []),
+                        "confidence": merged_item.get("confidence", 0),
+                        "load_full": bool(item.get("load_full", False)),
+                    }
+                )
 
         if self._native_custom_op_gate_required(context):
             enriched = [
@@ -139,11 +156,16 @@ class ExperienceQuerier:
         self._last_query_result = result
         return result
 
-
     def _prefilter_index(self, index: list[dict], context: dict) -> list[dict]:
-        roles = self._context_values(context, "role", "roles", "target_role", "target_roles", "repair_role")
-        phases = self._context_values(context, "phase", "phases", "parent_phase", "target_phase", "target_phases")
-        types = self._context_values(context, "type", "types", "experience_type", "experience_types", "allowed_types")
+        roles = self._context_values(
+            context, "role", "roles", "target_role", "target_roles", "repair_role"
+        )
+        phases = self._context_values(
+            context, "phase", "phases", "parent_phase", "target_phase", "target_phases"
+        )
+        types = self._context_values(
+            context, "type", "types", "experience_type", "experience_types", "allowed_types"
+        )
         tags = self._context_values(context, "tags", "query_tags", "experience_tags")
         native_custom_op_gate_required = self._native_custom_op_gate_required(context)
 
@@ -261,6 +283,7 @@ class ExperienceQuerier:
         except (TypeError, ValueError):
             return 0.0
 
+    # pylint: disable-next=too-many-locals; silent
     def _format_index_summary(self, index: list[dict]) -> str:
         lines: list[str] = []
         for entry in index:
@@ -281,7 +304,9 @@ class ExperienceQuerier:
             target_roles = ", ".join(entry.get("target_roles", []))
             target_phases = ", ".join(entry.get("target_phases", []))
             lines.append(f"- id: {eid}")
-            lines.append(f"  type: {etype}  category: {cat}/{sub}  status: {status}  title: {title}")
+            lines.append(
+                f"  type: {etype}  category: {cat}/{sub}  status: {status}  title: {title}"
+            )
             lines.append(f"  tags: {tags}  confidence: {conf}")
             lines.append(f"  target_roles: {target_roles}  target_phases: {target_phases}")
             if symptom:
@@ -290,13 +315,18 @@ class ExperienceQuerier:
             lines.append("")
         return "\n".join(lines)
 
+    # pylint: disable-next=too-many-branches,too-many-locals,too-many-return-statements; silent
     def _derive_experience_file_path(self, entry_id: str, entry_type: str, entry: dict) -> str:
         """Return absolute path to the experience file the LLM can read."""
         store = self.store
         asset_paths = entry.get("asset_paths", [])
         if asset_paths:
             for asset_path in asset_paths:
-                absolute = asset_path if os.path.isabs(asset_path) else os.path.join(store.repo_root, asset_path)
+                absolute = (
+                    asset_path
+                    if os.path.isabs(asset_path)
+                    else os.path.join(store.repo_root, asset_path)
+                )
                 if os.path.exists(absolute):
                     return absolute
         if entry_type == "skill":
@@ -320,7 +350,10 @@ class ExperienceQuerier:
         for root in [store.promotions_dir, store.cases_dir]:
             pattern = os.path.join(root, "**", "experience.json")
             for fp in glob.glob(pattern, recursive=True):
-                if entry_id.endswith(os.path.basename(os.path.dirname(fp))) or entry_id == f"promoted-{os.path.basename(os.path.dirname(fp))}":
+                if (
+                    entry_id.endswith(os.path.basename(os.path.dirname(fp)))
+                    or entry_id == f"promoted-{os.path.basename(os.path.dirname(fp))}"
+                ):
                     return fp
         # Generic: try staging candidates
         parts = entry_id.split("-exp-", 1)
@@ -333,13 +366,17 @@ class ExperienceQuerier:
                     return fp
         return ""
 
+    # pylint: disable-next=too-many-locals; silent
     def _build_query_prompt(self, context: dict, index_summary: str) -> str:
         phase = context.get("phase", "unknown")
-        
+
         # Check if we should use a specific prompt for Phase 1
         if "project_analysis" in phase:
-            prompt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                                       "prompts", "experience_query_phase1.md")
+            prompt_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "prompts",
+                "experience_query_phase1.md",
+            )
         else:
             prompt_path = _PROMPT_FILE
 
@@ -353,33 +390,50 @@ class ExperienceQuerier:
         error_category = context.get("error_category", "unknown")
         error_stderr = context.get("error_stderr", "")
         project_type = context.get("project_type", "unknown")
-        target_roles = ", ".join(sorted(self._context_values(context, "role", "roles", "target_roles", "repair_role"))) or "any"
-        target_phases = ", ".join(sorted(self._context_values(context, "phase", "phases", "parent_phase", "target_phases"))) or "any"
+        target_roles = (
+            ", ".join(
+                sorted(
+                    self._context_values(context, "role", "roles", "target_roles", "repair_role")
+                )
+            )
+            or "any"
+        )
+        target_phases = (
+            ", ".join(
+                sorted(
+                    self._context_values(
+                        context, "phase", "phases", "parent_phase", "target_phases"
+                    )
+                )
+            )
+            or "any"
+        )
         deps_raw = context.get("dependencies", [])
         dependencies = ", ".join(deps_raw) if isinstance(deps_raw, list) else str(deps_raw)
         previous_repair_attempts = context.get("previous_repair_attempts", "None recorded")
         root_cause = context.get("root_cause", "") or "(Not yet analyzed)"
         suggested_fix = context.get("suggested_fix", "") or "(Not yet suggested)"
 
-        return (template
-                .replace("{{phase}}", phase)
-                .replace("{{error_category}}", error_category)
-                .replace("{{error_stderr}}", error_stderr)
-                .replace("{{project_type}}", project_type)
-                .replace("{{target_roles}}", target_roles)
-                .replace("{{target_phases}}", target_phases)
-                .replace("{{dependencies}}", dependencies)
-                .replace("{{previous_repair_attempts}}", str(previous_repair_attempts))
-                .replace("{{root_cause}}", root_cause)
-                .replace("{{suggested_fix}}", suggested_fix)
-                .replace("{{index_summary}}", index_summary))
+        return (
+            template.replace("{{phase}}", phase)
+            .replace("{{error_category}}", error_category)
+            .replace("{{error_stderr}}", error_stderr)
+            .replace("{{project_type}}", project_type)
+            .replace("{{target_roles}}", target_roles)
+            .replace("{{target_phases}}", target_phases)
+            .replace("{{dependencies}}", dependencies)
+            .replace("{{previous_repair_attempts}}", str(previous_repair_attempts))
+            .replace("{{root_cause}}", root_cause)
+            .replace("{{suggested_fix}}", suggested_fix)
+            .replace("{{index_summary}}", index_summary)
+        )
 
     def _load_experience(self, entry_id: str, entry_type: str) -> dict:
         try:
             if entry_type in {"skill", "skill-pack"}:
                 return self._load_skill_experience(entry_id)
             return self._load_case_experience(entry_id)
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
             logger.warning("Failed to load experience %s: %s", entry_id, exc)
             return {"id": entry_id, "_warning": f"Load failed: {exc}"}
 
@@ -413,7 +467,11 @@ class ExperienceQuerier:
 
     def _load_skill_from_asset_paths(self, entry: dict, entry_id: str) -> dict:
         for asset_path in entry.get("asset_paths", []):
-            absolute = asset_path if os.path.isabs(asset_path) else os.path.join(self.store.repo_root, asset_path)
+            absolute = (
+                asset_path
+                if os.path.isabs(asset_path)
+                else os.path.join(self.store.repo_root, asset_path)
+            )
             if not os.path.isfile(absolute):
                 continue
             if absolute.endswith(".json"):
@@ -455,7 +513,11 @@ class ExperienceQuerier:
         for entry in self.store.read_index():
             if entry.get("id") == entry_id:
                 for asset_path in entry.get("asset_paths", []):
-                    absolute = asset_path if os.path.isabs(asset_path) else os.path.join(self.store.repo_root, asset_path)
+                    absolute = (
+                        asset_path
+                        if os.path.isabs(asset_path)
+                        else os.path.join(self.store.repo_root, asset_path)
+                    )
                     if os.path.isfile(absolute) and absolute.endswith(".json"):
                         with open(absolute, "r", encoding="utf-8") as fh:
                             data = json.load(fh)
@@ -486,7 +548,7 @@ class ExperienceQuerier:
         if len(parts) >= 2:
             return parts[-1]
         if entry_id.startswith("promoted-"):
-            return entry_id[len("promoted-"):]
+            return entry_id[len("promoted-") :]
         return entry_id
 
     def _load_staging_experience(self, entry_id: str) -> dict:
@@ -533,7 +595,7 @@ class ExperienceQuerier:
         if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
             return {}
 
-        json_str = cleaned[first_brace: last_brace + 1]
+        json_str = cleaned[first_brace : last_brace + 1]
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as exc:
@@ -548,13 +610,16 @@ class ExperienceQuerier:
         if not hasattr(self, "_query_session_id"):
             mgr = self.session_mgr
             if hasattr(mgr, "get_or_create"):
+                # pylint: disable-next=attribute-defined-outside-init; silent
                 self._query_session_id = mgr.get_or_create(
                     role="experience_querier", lifecycle="persistent"
                 )
             elif hasattr(mgr, "_session_mgr"):
+                # pylint: disable-next=attribute-defined-outside-init,protected-access; silent
                 self._query_session_id = mgr._session_mgr.get_or_create(
                     role="experience_querier", lifecycle="persistent"
                 )
             else:
+                # pylint: disable-next=attribute-defined-outside-init; silent
                 self._query_session_id = "experience_querier"
         return self._query_session_id

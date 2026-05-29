@@ -5,7 +5,7 @@ from __future__ import annotations
 from core.types import PhaseDefinition, WorkflowDefinition
 
 
-class StateMachine:
+class StateMachine:  # pylint: disable=too-many-instance-attributes; silent
     """Track workflow progress without executing any phase logic."""
 
     def __init__(self, workflow: WorkflowDefinition):
@@ -67,11 +67,11 @@ class StateMachine:
 
     def _require_active_phase(self, phase_id: str) -> PhaseDefinition:
         if self.is_terminal():
-            raise RuntimeError(f"State machine already reached terminal state '{self._terminal_state}'")
-        if phase_id != self._current_phase_id:
-            raise ValueError(
-                f"Expected active phase '{self._current_phase_id}', got '{phase_id}'"
+            raise RuntimeError(
+                f"State machine already reached terminal state '{self._terminal_state}'"
             )
+        if phase_id != self._current_phase_id:
+            raise ValueError(f"Expected active phase '{self._current_phase_id}', got '{phase_id}'")
         return self._phases[phase_id]
 
     def _resolve_transition(self, phase: PhaseDefinition, event: str) -> str:
@@ -79,7 +79,9 @@ class StateMachine:
         if not target:
             raise ValueError(f"Phase '{phase.id}' missing required transition '{event}'")
         if target not in self._phases and target not in self._terminals:
-            raise ValueError(f"Phase '{phase.id}' transition '{event}' points to unknown target '{target}'")
+            raise ValueError(
+                f"Phase '{phase.id}' transition '{event}' points to unknown target '{target}'"
+            )
         return target
 
     def _move_to(self, target: str) -> None:

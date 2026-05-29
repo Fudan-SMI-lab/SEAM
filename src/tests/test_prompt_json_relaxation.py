@@ -87,7 +87,9 @@ def test_production_custom_op_prompts_do_not_use_project_specific_examples():
     for filename in ("phase_1_project_analysis.md", "phase_1_5_constraint_summary.md"):
         content = (PROMPTS_DIR / filename).read_text()
         for term in forbidden_terms:
-            assert term not in content, f"{filename} contains project-specific prompt example term {term!r}"
+            assert term not in content, (
+                f"{filename} contains project-specific prompt example term {term!r}"
+            )
 
 
 def test_phase3_and_phase5_prompts_require_complete_performance_report_closure():
@@ -110,8 +112,14 @@ def test_phase3_and_phase5_prompts_require_complete_performance_report_closure()
 
 def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline_rules():
     expectations = {
-        "phase_error_recovery.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
-        "repair_dependency_fixer.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第5点要求"),
+        "phase_error_recovery.md": (
+            "{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md",
+            "第2、3、5、6点要求",
+        ),
+        "repair_dependency_fixer.md": (
+            "{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md",
+            "第5点要求",
+        ),
     }
 
     for filename, required_phrases in expectations.items():
@@ -151,6 +159,7 @@ def test_error_recovery_prompt_not_modified():
 
 def test_extract_json_response_handles_natural_language_plus_json():
     """extract_json_response should extract JSON from natural language + trailing JSON."""
+    # pylint: disable-next=import-outside-toplevel; silent
     from harness.session.manager import extract_json_response
 
     # Test: natural language + trailing JSON
@@ -167,6 +176,7 @@ def test_extract_json_response_handles_natural_language_plus_json():
 
 
 def test_extract_json_response_uses_last_valid_fenced_json():
+    # pylint: disable-next=import-outside-toplevel; silent
     from harness.session.manager import extract_json_response
 
     response = """

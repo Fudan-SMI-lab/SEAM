@@ -50,7 +50,9 @@ def test_phase_4_migrates_real_cuda_project(tmp_path: Path) -> None:
 
     _ = train_path.write_text(CUDA_TRAIN_SCRIPT, encoding="utf-8")
     _ = helper_path.write_text(CUDA_HELPER_SCRIPT, encoding="utf-8")
-    _ = notes_path.write_text("torch.cuda stays here because txt files are ignored\n", encoding="utf-8")
+    _ = notes_path.write_text(
+        "torch.cuda stays here because txt files are ignored\n", encoding="utf-8"
+    )
 
     artifact_store = ArtifactStore(str(tmp_path), "phase4-run")
     _ = artifact_store.mark_validated(
@@ -86,7 +88,10 @@ def test_phase_4_migrates_real_cuda_project(tmp_path: Path) -> None:
     assert ".npu(" in helper_code
     assert "import torch_npu" in train_code
     assert "import torch_npu" in helper_code
-    assert notes_path.read_text(encoding="utf-8") == "torch.cuda stays here because txt files are ignored\n"
+    assert (
+        notes_path.read_text(encoding="utf-8")
+        == "torch.cuda stays here because txt files are ignored\n"
+    )
 
     saved = artifact_store.load_phase_output("phase_4_rule_migration")
     journal = artifact_store.get_journal()

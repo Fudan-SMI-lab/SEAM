@@ -7,9 +7,9 @@ Only scans for NVIDIA-specific patterns and reports them.
 
 from __future__ import annotations
 
+import glob as glob_module
 import os
 import re
-import glob as glob_module
 from typing import Any  # noqa: F401
 
 
@@ -86,6 +86,7 @@ class PPURuleBasedMigrator:
 
         for filepath in files:
             try:
+                # pylint: disable-next=unused-variable; silent
                 source_code, report = self.migrate_file(filepath)
                 aggregate["files"][filepath] = report
                 aggregate["summary"]["total_files"] += 1
@@ -97,7 +98,11 @@ class PPURuleBasedMigrator:
                     )
 
                 # PPU migrator never writes back - source is unchanged
-            except Exception as e:
-                aggregate["files"][filepath] = {"error": str(e), "total_replacements": 0, "rules": {}}
+            except Exception as e:  # pylint: disable=broad-exception-caught; silent
+                aggregate["files"][filepath] = {
+                    "error": str(e),
+                    "total_replacements": 0,
+                    "rules": {},
+                }
 
         return aggregate

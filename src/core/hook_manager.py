@@ -1,3 +1,4 @@
+# pylint: disable=line-too-long
 """Hook system for workflow lifecycle events."""
 
 import json
@@ -15,6 +16,7 @@ class HookManager:
     def __init__(self, workflow_hooks: dict[str, list[dict]], output_dir: str = "."):
         """
         Args:
+            # pylint: disable-next=line-too-long; silent  # pylint: disable=line-too-long; silent
             workflow_hooks: {"workflow_start": [{"type": "builtin", "operation": "snapshot_project", ...}]}
             output_dir: directory for hook outputs (snapshots, telemetry, etc.)
         """
@@ -47,7 +49,7 @@ class HookManager:
                 dispatch_params = hook_cfg if isinstance(hook_cfg, dict) else hook_cfg.params
                 result = self._dispatch_builtin(op_name, dispatch_params, context)
                 point_results[save_as] = result
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught; silent
                 if critical:
                     raise
                 warnings.warn(
@@ -67,7 +69,9 @@ class HookManager:
         """Return all hook results accumulated so far."""
         return dict(self._results)
 
-    def register(self, hook_point: str, phase_id: str = "", hook_config: list[dict] | None = None) -> None:
+    def register(
+        self, hook_point: str, phase_id: str = "", hook_config: list[dict] | None = None
+    ) -> None:
         """Register additional hooks at runtime.
 
         Args:
@@ -82,7 +86,6 @@ class HookManager:
             self._hooks[key] = []
         self._hooks[key].extend(hook_config)
 
-
     # ── Dispatch ─────────────────────────────────────────────────────
 
     def _dispatch_builtin(self, operation: str, params: dict, context: dict) -> dict:
@@ -91,7 +94,7 @@ class HookManager:
         method = getattr(self, method_name, None)
         if method is None:
             raise ValueError(f"Unknown builtin operation: {operation}")
-        return method(params, context)
+        return method(params, context)  # pylint: disable=not-callable; silent
 
     # ── Builtin operations ───────────────────────────────────────────
 
@@ -116,13 +119,19 @@ class HookManager:
                     "size": stat.st_size,
                     "mtime": stat.st_mtime,
                 }
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught; silent
                 snapshot[str(py_file)] = {"error": str(e)}
 
         # Determine filename
-        filename = "after_snapshot.json" if "workflow_end" in str(context.get("_hook_point", "")) else "before_snapshot.json"
+        filename = (
+            "after_snapshot.json"
+            if "workflow_end" in str(context.get("_hook_point", ""))
+            else "before_snapshot.json"
+        )
         snap_path = os.path.join(self._output_dir, filename)
-        os.makedirs(os.path.dirname(snap_path) if os.path.dirname(snap_path) else ".", exist_ok=True)
+        os.makedirs(
+            os.path.dirname(snap_path) if os.path.dirname(snap_path) else ".", exist_ok=True
+        )
 
         with open(snap_path, "w", encoding="utf-8") as f:
             json.dump(snapshot, f, indent=2, ensure_ascii=False)
@@ -144,6 +153,7 @@ class HookManager:
         shutil.copytree(str(src), str(dest), dirs_exist_ok=True)
         return {"artifacts_copied": True, "dest": str(dest)}
 
+    # pylint: disable-next=unused-argument; silent
     def _builtin_write_summary(self, params: dict, context: dict) -> dict:
         """Write summary.json based on state and phase results."""
         summary = {
@@ -158,6 +168,7 @@ class HookManager:
 
         return {"summary_path": os.path.abspath(path)}
 
+    # pylint: disable-next=unused-argument; silent
     def _builtin_save_telemetry(self, params: dict, context: dict) -> dict:
         """Save telemetry data. Delegate to context.get('telemetry_bridge').save_metrics()."""
         bridge = context.get("telemetry_bridge")
@@ -166,14 +177,14 @@ class HookManager:
         if bridge is not None and hasattr(bridge, "save_metrics"):
             try:
                 bridge.save_metrics()
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught; silent
                 pass
 
             # Try to get metrics data if available
             if hasattr(bridge, "get_metrics"):
                 try:
                     telemetry_data = bridge.get_metrics()
-                except Exception:
+                except Exception:  # pylint: disable=broad-exception-caught; silent
                     pass
 
         path = os.path.join(self._output_dir, "telemetry.json")
@@ -184,6 +195,7 @@ class HookManager:
 
         return {"telemetry_saved": True, "path": os.path.abspath(path)}
 
+    # pylint: disable-next=unused-argument; silent
     def _builtin_noop(self, params: dict, context: dict) -> dict:
         """No-operation hook (for testing/debugging)."""
         return {"noop": True, "timestamp": time.time()}

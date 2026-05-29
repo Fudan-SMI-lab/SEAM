@@ -23,10 +23,11 @@ MockSession = HELPERS_MODULE.MockSession
 NoopSessionManager = HELPERS_MODULE.NoopSessionManager
 build_runner = HELPERS_MODULE.build_runner
 
-from core.workflow_executor import WorkflowExecutor
+# pylint: disable-next=wrong-import-position; silent
 from core.phase_runner import PhaseRunner, PhaseSpec
-from core.validator_engine import ValidationResult
-
+from core.validator_engine import ValidationResult  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
+from core.workflow_executor import WorkflowExecutor
 
 # ── Output format extraction ──────────────────────────────────────────
 
@@ -47,39 +48,48 @@ Return exactly one JSON object with this shape:
 ## Field Semantics
 - platform: string."""
 
-_EXPECTED_FORMAT_JSON = '{\n  "platform": "npu",\n  "npu_detected": true,\n  "python_version": "3.10"\n}'
+_EXPECTED_FORMAT_JSON = (
+    '{\n  "platform": "npu",\n  "npu_detected": true,\n  "python_version": "3.10"\n}'
+)
 
 
 def test_extract_output_format_workflow() -> None:
+    # pylint: disable-next=protected-access; silent
     result = WorkflowExecutor._extract_output_format_from_prompt(_OUTPUT_FORMAT_PROMPT)
     assert result == _EXPECTED_FORMAT_JSON
 
 
 def test_extract_output_format_empty() -> None:
+    # pylint: disable-next=protected-access; silent
     assert WorkflowExecutor._extract_output_format_from_prompt("") is None
 
 
 def test_extract_output_format_none() -> None:
+    # pylint: disable-next=protected-access; silent
     assert WorkflowExecutor._extract_output_format_from_prompt(None) is None
 
 
 def test_extract_output_format_no_section() -> None:
+    # pylint: disable-next=protected-access; silent
     assert WorkflowExecutor._extract_output_format_from_prompt("## Goal\nNo format here.") is None
 
 
 def test_extract_output_format_phase_runner() -> None:
+    # pylint: disable-next=protected-access; silent
     result = PhaseRunner._extract_output_format_from_prompt(_OUTPUT_FORMAT_PROMPT)
     assert result == _EXPECTED_FORMAT_JSON
 
 
 def test_extract_output_format_case_insensitive() -> None:
-    prompt = "## output format\n```json\n{\"key\": \"val\"}\n```"
+    prompt = '## output format\n```json\n{"key": "val"}\n```'
+    # pylint: disable-next=protected-access; silent
     result = WorkflowExecutor._extract_output_format_from_prompt(prompt)
     assert result == '{"key": "val"}'
 
 
 def test_extract_output_format_no_lang_tag() -> None:
-    prompt = "## Output Format\n```\n{\"a\": 1}\n```"
+    prompt = '## Output Format\n```\n{"a": 1}\n```'
+    # pylint: disable-next=protected-access; silent
     result = WorkflowExecutor._extract_output_format_from_prompt(prompt)
     assert result == '{"a": 1}'
 
@@ -88,6 +98,7 @@ def test_extract_output_format_no_lang_tag() -> None:
 
 
 def test_validation_correction_with_output_format() -> None:
+    # pylint: disable-next=protected-access; silent
     prompt = WorkflowExecutor._build_validation_correction_prompt(
         "Missing field 'platform'",
         output_format_example='{"platform": "npu"}',
@@ -102,12 +113,14 @@ def test_validation_correction_with_output_format() -> None:
 
 
 def test_validation_correction_without_format() -> None:
+    # pylint: disable-next=protected-access; silent
     prompt = WorkflowExecutor._build_validation_correction_prompt("error")
     assert "Your previous output failed validation" in prompt
     assert "Expected output format" not in prompt
 
 
 def test_parse_failure_prompt_content() -> None:
+    # pylint: disable-next=protected-access; silent
     prompt = WorkflowExecutor._build_validation_correction_prompt(
         "dummy",
         output_format_example='{"platform": "npu"}',
@@ -122,6 +135,7 @@ def test_parse_failure_prompt_content() -> None:
 
 
 def test_parse_failure_no_format() -> None:
+    # pylint: disable-next=protected-access; silent
     prompt = WorkflowExecutor._build_validation_correction_prompt(
         "dummy",
         is_parse_failure=True,
@@ -131,6 +145,7 @@ def test_parse_failure_no_format() -> None:
 
 
 def test_custom_op_hint_injected() -> None:
+    # pylint: disable-next=protected-access; silent
     prompt = WorkflowExecutor._build_validation_correction_prompt(
         "existing file for custom-op contracts is missing",
     )
@@ -146,7 +161,7 @@ def test_phase_runner_correction_with_output_format() -> None:
         passed=False,
         errors=["field 'python_version' is required"],
     )
-    prompt = PhaseRunner._build_correction_prompt(
+    prompt = PhaseRunner._build_correction_prompt(  # pylint: disable=protected-access; silent
         phase=PhaseSpec("phase_0", "phase_0_env_detect", "env_detect"),
         validation=validation,
         previous_prompt=_OUTPUT_FORMAT_PROMPT,
@@ -163,7 +178,7 @@ def test_phase_runner_correction_without_format() -> None:
         passed=False,
         errors=["missing field"],
     )
-    prompt = PhaseRunner._build_correction_prompt(
+    prompt = PhaseRunner._build_correction_prompt(  # pylint: disable=protected-access; silent
         phase=PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis"),
         validation=validation,
         previous_prompt="No output format section here.",
@@ -180,7 +195,7 @@ def test_phase_runner_correction_missing_fields() -> None:
             "field 'beta' is missing",
         ],
     )
-    prompt = PhaseRunner._build_correction_prompt(
+    prompt = PhaseRunner._build_correction_prompt(  # pylint: disable=protected-access; silent
         phase=PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis"),
         validation=validation,
         previous_prompt="",
@@ -193,7 +208,7 @@ def test_phase_runner_correction_custom_op_hint() -> None:
         passed=False,
         errors=["existing file for custom-op contracts not found"],
     )
-    prompt = PhaseRunner._build_correction_prompt(
+    prompt = PhaseRunner._build_correction_prompt(  # pylint: disable=protected-access; silent
         phase=PhaseSpec("phase_3", "phase_3_entry_script", "entry_script"),
         validation=validation,
         previous_prompt="",
@@ -206,10 +221,12 @@ def test_phase_runner_correction_custom_op_hint() -> None:
 
 def test_phase_runner_correction_allows_reasoning(tmp_path: Path) -> None:
     runner, _ = build_runner(tmp_path, session_mgr=NoopSessionManager())
-    session = MockSession([
-        json.dumps({"platform": "npu"}),
-        json.dumps({"platform": "npu"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"platform": "npu"}),
+            json.dumps({"platform": "npu"}),
+        ]
+    )
     with pytest.raises(ValueError):
         _ = runner.run_single_phase(session, "phase_0", {"max_retry": 2})
     second_prompt, _ = session.calls[1]
@@ -219,10 +236,12 @@ def test_phase_runner_correction_allows_reasoning(tmp_path: Path) -> None:
 
 def test_phase_runner_correction_includes_output_format(tmp_path: Path) -> None:
     runner, _ = build_runner(tmp_path, session_mgr=NoopSessionManager())
-    session = MockSession([
-        json.dumps({"platform": "npu"}),
-        json.dumps({"platform": "npu"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"platform": "npu"}),
+            json.dumps({"platform": "npu"}),
+        ]
+    )
     with pytest.raises(ValueError):
         _ = runner.run_single_phase(session, "phase_0", {"max_retry": 2})
     second_prompt, _ = session.calls[1]
@@ -232,18 +251,22 @@ def test_phase_runner_correction_includes_output_format(tmp_path: Path) -> None:
 
 def test_phase_runner_parse_retry_accepts_trailing_json_after_prose(tmp_path: Path) -> None:
     runner, _ = build_runner(tmp_path, session_mgr=NoopSessionManager())
-    session = MockSession([
-        "Phase 0 complete, but I forgot the JSON.",
-        "Here is the corrected final object:\n"
-        + json.dumps({
-            "platform": "npu",
-            "npu_detected": True,
-            "python_version": "3.10",
-            "cann_version": "8.0.RC1",
-            "ascendc_available": True,
-            "driver_version": "24.1",
-        }),
-    ])
+    session = MockSession(
+        [
+            "Phase 0 complete, but I forgot the JSON.",
+            "Here is the corrected final object:\n"
+            + json.dumps(
+                {
+                    "platform": "npu",
+                    "npu_detected": True,
+                    "python_version": "3.10",
+                    "cann_version": "8.0.RC1",
+                    "ascendc_available": True,
+                    "driver_version": "24.1",
+                }
+            ),
+        ]
+    )
 
     result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
 
@@ -263,10 +286,12 @@ def _build_correction_runner(tmp_path: Path):
 
 def test_first_attempt_sends_full_prompt(tmp_path: Path) -> None:
     runner, _ = _build_correction_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"platform": "npu"}),
-        json.dumps({"platform": "npu"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"platform": "npu"}),
+            json.dumps({"platform": "npu"}),
+        ]
+    )
 
     with pytest.raises(ValueError):
         _ = runner.run_single_phase(session, "phase_0", {"max_retry": 2})
@@ -278,10 +303,12 @@ def test_first_attempt_sends_full_prompt(tmp_path: Path) -> None:
 
 def test_second_attempt_sends_correction_prompt(tmp_path: Path) -> None:
     runner, _ = _build_correction_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"platform": "npu"}),
-        json.dumps({"platform": "npu"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"platform": "npu"}),
+            json.dumps({"platform": "npu"}),
+        ]
+    )
 
     with pytest.raises(ValueError):
         _ = runner.run_single_phase(session, "phase_0", {"max_retry": 2})
@@ -293,10 +320,12 @@ def test_second_attempt_sends_correction_prompt(tmp_path: Path) -> None:
 
 def test_correction_prompt_includes_validation_errors(tmp_path: Path) -> None:
     runner, _ = _build_correction_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"platform": "npu"}),
-        json.dumps({"platform": "npu"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"platform": "npu"}),
+            json.dumps({"platform": "npu"}),
+        ]
+    )
 
     with pytest.raises(ValueError):
         _ = runner.run_single_phase(session, "phase_0", {"max_retry": 2})
@@ -307,17 +336,21 @@ def test_correction_prompt_includes_validation_errors(tmp_path: Path) -> None:
 
 def test_second_attempt_correct_json_passes(tmp_path: Path) -> None:
     runner, _ = _build_correction_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"platform": "npu"}),
-        json.dumps({
-            "platform": "npu",
-            "npu_detected": True,
-            "python_version": "3.10",
-            "cann_version": "8.0.RC1",
-            "ascendc_available": True,
-            "driver_version": "24.1",
-        }),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"platform": "npu"}),
+            json.dumps(
+                {
+                    "platform": "npu",
+                    "npu_detected": True,
+                    "python_version": "3.10",
+                    "cann_version": "8.0.RC1",
+                    "ascendc_available": True,
+                    "driver_version": "24.1",
+                }
+            ),
+        ]
+    )
 
     result = runner.run_single_phase(session, "phase_0", {"max_retry": 2})
 

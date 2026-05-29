@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitOverride=false, reportUnknownMemberType=false
-
+# pyright: reportAny=false, reportExplicitAny=false,
+# reportImplicitOverride=false, reportUnknownMemberType=false
 from typing import Any
 
-import torch
-from torch import nn
+import torch  # pylint: disable=import-error; silent
+from torch import nn  # pylint: disable=import-error; silent
 
 from .backbone import build_backbone
 
 
-class ImageClassifier(nn.Module):
+class ImageClassifier(nn.Module):  # pylint: disable=too-few-public-methods; silent
     """Backbone + classification head wrapper."""
 
-    def __init__(self, backbone: nn.Module, feature_dim: int, hidden_dim: int, num_classes: int) -> None:
+    def __init__(
+        self, backbone: nn.Module, feature_dim: int, hidden_dim: int, num_classes: int
+    ) -> None:
         super().__init__()
         self.backbone: nn.Module = backbone
         self.head: nn.Sequential = nn.Sequential(
