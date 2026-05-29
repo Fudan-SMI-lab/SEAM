@@ -53,8 +53,8 @@ The table above shows prior improvement iterations and what was tried. Do NOT re
 4. Suggest a concrete, actionable direction for the next repair attempt.
 5. Assign the appropriate repair role based on the nature of the gap:
    - `dependency_fixer`: The issue is at the package/install level (wrong version, missing dependency, mirror config).
-   - `code_adapter`: The issue is in Python-level CUDA-to-NPU migration (wrong device mapping, incomplete API replacement, tensor placement errors).
-   - `operator_fixer`: The issue is at the operator/kernel level (missing NPU operator, C/CUDA kernel needs AscendC port, custom op lacking NPU symbols).
+   - `code_adapter`: The issue is in Python-level CUDA-to-target-accelerator migration (wrong device mapping, incomplete API/backend replacement, tensor placement errors).
+   - `operator_fixer`: The issue is at the operator/kernel level (missing target-platform operator, C/CUDA kernel needs a platform-native port, custom op lacking target-runtime symbols).
 6. Set the priority based on how critical this gap is to unblocking the migration.
 
 ## Hard Rules
@@ -80,5 +80,5 @@ At the end of your response, append a JSON code block with exactly these keys:
 ## Repair Role Descriptions
 
 - `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.
-- `code_adapter`: Fix CUDA-to-NPU code migration at the Python level — device placement, API replacements, tensor operations. Must prioritize NPU-native solutions.
-- `operator_fixer`: Fix missing/unsupported NPU operators — implement custom operators, compose alternatives from NPU-supported primitives, or port CUDA kernels to AscendC. ALL fixes must be NPU-native.
+- `code_adapter`: Fix CUDA-to-target-accelerator migration at the Python level — device placement, API/backend replacements, tensor operations. Must prioritize selected-platform-native solutions.
+- `operator_fixer`: Fix missing/unsupported target-platform operators — implement custom operators, compose alternatives from target-supported primitives, or port CUDA kernels to the selected platform toolchain. ALL fixes must be selected-platform-native.

@@ -208,7 +208,7 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 cd "$REPO_ROOT"
-python src/tests/e2e/e2e_test.py \
+if python src/tests/e2e/e2e_test.py \
     --server-url "$SERVER_URL" \
     --project-dir "$PROJECT_DIR" \
     --output-project-dir "$OUTPUT_PROJECTS_DIR" \
@@ -217,9 +217,11 @@ python src/tests/e2e/e2e_test.py \
     $REVIEW_FLAG \
     $CONSTRAINTS_FLAG \
     $NO_AUTO_FLAG \
-    $EXTRA_ARGS
-
-EXIT_CODE=$?
+    $EXTRA_ARGS; then
+    EXIT_CODE=0
+else
+    EXIT_CODE=$?
+fi
 echo ""
 if [[ $EXIT_CODE -eq 0 ]]; then
     echo -e "${GREEN}══════════════════════════════════════════════════════════${NC}"

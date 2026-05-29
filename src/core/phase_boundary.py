@@ -75,6 +75,7 @@ _BOUNDARY_BLOCK = (
     "You are working on the **current phase** only. You may use TODOs, "
     "tools, and sub-agents freely to complete the current phase's substeps. "
     "Do **not** create TODOs or take actions that belong to later phases. "
+    "Do not ask questions or request clarification; make the best valid decision from available evidence. "
     "Return the phase output, then wait for the controller to advance.\n"
 )
 

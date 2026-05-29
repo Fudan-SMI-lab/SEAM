@@ -94,6 +94,7 @@ def test_inject_boundary_appends_short_guidance() -> None:
     assert "current phase" in result.lower()
     assert "later phases" in result.lower()
     assert "wait for the controller" in result.lower()
+    assert "do not ask questions" in result.lower()
     assert "TODOs" in result
     assert "sub-agents" in result
     # Boundary should be concise: ~3 lines of body text.

@@ -1,6 +1,6 @@
 # Repair: Code Adapter
 
-You are a code adaptation specialist for a CUDA-to-NPU migration project.
+You are a code adaptation specialist for a CUDA-to-target-accelerator migration project.
 
 ## Execution Failure
 ```
@@ -15,12 +15,12 @@ You are a code adaptation specialist for a CUDA-to-NPU migration project.
 ## Migration Constraints (from Phase 1.5)
 {constraint_summary}
 
-These constraints are binding. CPU fallback is explicitly restricted — prioritize NPU-native solutions in all fixes.
+These constraints are binding. CPU fallback is explicitly restricted — prioritize solutions native to the selected target platform/backend in all fixes.
 
 ## Environment Context (from Phase 0)
 {env_context}
 
-Use this to understand the target environment: `ascendc_available` tells you whether AscendC compilation is possible. If `false`, escalation to `operator_fixer` should note that kernel porting may not be feasible.
+Use this to understand the target environment. Ascend/CANN fields such as `ascendc_available` are relevant only for Ascend policy; for PPU/MUXI or other platforms, use the observed vendor runtime/compiler/API facts from Phase 0/2 and the Phase 3 platform policy. If the selected platform toolchain is unavailable, escalation to `operator_fixer` should note that kernel porting may not be feasible.
 
 ## Previous Repair Attempts
 {history_summary}
@@ -28,26 +28,26 @@ Use this to understand the target environment: `ascendc_available` tells you whe
 ## Previous Review Assessment
 {last_review}
 
-If the previous review detected CPU fallback in an earlier fix, do NOT repeat that pattern. Instead, look for NPU-native alternatives or escalate to operator_fixer if the issue requires C-level changes.
+If the previous review detected CPU fallback in an earlier fix, do NOT repeat that pattern. Instead, look for selected-platform-native alternatives or escalate to operator_fixer if the issue requires C-level changes.
 
 ## Goal
-Modify project source code to fix execution failures caused by CUDA-NPU incompatibilities.
+Modify project source code to fix execution failures caused by CUDA-to-target-accelerator incompatibilities.
 
 ## Required Actions
 1. Analyze the execution failure to identify which code location needs modification.
 2. **Scope Check**: Before making any changes, verify the root cause is actually at the Python level (API calls, device strings, tensor placement).
-   - If the real issue is a compiled shared library (.so) lacking NPU support → STOP. Do NOT implement CPU fallback. Report that the issue requires `operator_fixer` to port the C kernel.
-   - If the issue is purely Python (e.g. `torch.cuda.current_stream` instead of `torch.npu.current_stream`, wrong device string) → proceed with the fix.
-3. Apply the code change — replace CUDA APIs with NPU equivalents, fix device placement, adjust tensor operations.
-4. All device placement must use `npu` device type. Verify `torch.npu` APIs replace `torch.cuda` APIs.
-5. **NPU-First**: If your fix would map NPU device to CPU (e.g. `if device == 'npu': device = 'cpu'`), STOP. This is CPU fallback. Instead, explore alternatives or report the limitation.
+   - If the real issue is a compiled shared library (.so) lacking target-accelerator support → STOP. Do NOT implement CPU fallback. Report that the issue requires `operator_fixer` to port the C kernel.
+   - If the issue is purely Python (API call, stream API, device string, backend selector) → proceed with the fix according to platform policy. For PPU CUDA-compatible policy, `torch.cuda` may be correct and must not be rewritten to `torch.npu`.
+3. Apply the code change — replace CUDA APIs only when the selected platform policy requires a different API, fix device placement, adjust tensor operations.
+4. All device placement must target the selected accelerator/backend. Do not force `npu` or `torch.npu` unless the platform policy is Ascend/NPU.
+5. **Target-Accelerator First**: If your fix would map the target accelerator to CPU, STOP. This is CPU fallback. Instead, explore alternatives or report the limitation.
 
 ## Strategy When C-Level NPU Operators Are Missing
 
-If the execution failure indicates a missing CANN toolkit operator at the kernel
-level (e.g., the error references `aclnn` operators, "operator not implemented",
+If the execution failure indicates a missing target-platform operator at the kernel
+level (e.g., the error references platform runtime operators, "operator not implemented",
 "not supported on this device", or similar C++ dispatch failures), consider
-composing the missing functionality from lower-level NPU-supported primitives.
+composing the missing functionality from lower-level target-supported primitives.
 
 The general approach should:
 - Identify the failing function's role within the computation graph (e.g.,

@@ -7,6 +7,13 @@ You are executing `{phase_name}` for `{project_dir}`.
 
 *Note: A detailed, project-specific constraint summary will be generated in Phase 1.5.*
 
+## Serving Route Detection
+- Classify `migration_route` as exactly one of `ordinary_cuda`, `custom_op`, `custom_op_with_variants`, `vllm_serving`, or `sglang_serving`.
+- Use `vllm_serving` only when project files show a vLLM serving runtime surface such as project-local imports, requirements, launch scripts, README commands, API demos, or tests. Use `sglang_serving` only for equivalent SGLang surface evidence. Do not infer either serving route from package availability alone.
+- For vLLM/SGLang routes, include `serving_runtime_surface` with `serving_framework`, `serving_backend`, `detection_complete`, `launch_command`, `launch_evidence`, `project_demo_or_test_evidence`, `project_test_files`, `readiness_probe`, `request_validation`, `expected_outputs`, `required_runtime_env`, and `unresolved_source_groups`.
+- Keep this PPU-specific and platform-neutral: PPU uses CUDA-compatible APIs, so do not copy Ascend/NPU-only requirements such as `torch_npu`, CANN, `tbe`, or `te`. Set `serving_backend` to `ppu` for this workflow.
+- Serving route classification is fail-closed: framework must match the route, launch/demo/API/test evidence must be project-local, `project_demo_or_test_evidence` and `project_test_files` must be non-empty, and `unresolved_source_groups` must be empty when `detection_complete=true`.
+
 ## Goal
 - Understand the project structure and likely execution path.
 - Extract dependency signals relevant to CUDA/PPU migration.
@@ -39,6 +46,21 @@ Return exactly one JSON object with this shape:
   "dependencies": ["torch", "numpy", "pyyaml"],
   "cuda_detected": true,
   "entry_script": "train.py",
+  "migration_route": "vllm_serving",
+  "serving_runtime_surface": {
+    "serving_framework": "vllm",
+    "serving_backend": "ppu",
+    "detection_complete": true,
+    "launch_command": "python serve.py --model example",
+    "launch_evidence": ["README documents python serve.py"],
+    "project_demo_or_test_evidence": ["tests/test_api.py calls the serving API"],
+    "project_test_files": ["tests/test_api.py"],
+    "readiness_probe": {"type": "http", "path": "/health"},
+    "request_validation": {"type": "http", "path": "/generate"},
+    "expected_outputs": ["HTTP 200 with generated text"],
+    "required_runtime_env": ["PPU serving runtime and vendor-compatible vLLM/SGLang package"],
+    "unresolved_source_groups": []
+  },
   "custom_op_surface": {
     "custom_op_detected": true,
     "discovery_complete": true,
@@ -68,4 +90,6 @@ Return exactly one JSON object with this shape:
 - `dependencies`: short list of directly relevant dependencies.
 - `cuda_detected`: whether CUDA-pattern code (including PPU-compatible `torch.cuda`) was found.
 - `entry_script`: best relative or root-level script path candidate.
+- `migration_route`: exactly one of `ordinary_cuda`, `custom_op`, `custom_op_with_variants`, `vllm_serving`, or `sglang_serving`.
+- `serving_runtime_surface`: required for `vllm_serving` and `sglang_serving`; omit it or leave it absent for ordinary/custom-op non-serving projects.
 - `custom_op_surface`: optional, only present when custom operators are discovered.

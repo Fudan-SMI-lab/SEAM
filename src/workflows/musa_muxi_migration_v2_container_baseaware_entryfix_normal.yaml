@@ -123,13 +123,6 @@ phases:
     validator: project_analysis
     input_mapping:
       project_dir: "${context.PROJECT_DIR}"
-    retrieve_experience: true
-    experience_query:
-      source: "project_context"
-      signals:
-        - dependencies
-        - cuda_patterns
-        - entry_script
     transitions:
       on_success: phase_1_5_constraint_summary
 
@@ -250,6 +243,12 @@ sub_workflows:
         condition: "$.script_exit_code == 0"
         params:
           operation: "custom_op_final_gate"
+
+      - id: serving_final_gate
+        type: builtin
+        condition: "$.script_exit_code == 0"
+        params:
+          operation: "serving_final_gate"
 
       - id: analyze_error
         type: llm

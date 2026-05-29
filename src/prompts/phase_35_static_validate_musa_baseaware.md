@@ -18,6 +18,7 @@ Statically validate the Phase 3 entry script and command contract before the tar
 5. Check host/container path semantics: host-visible fields stay under `{project_dir}`, while container-mode commands may use the container project path shown in the execution context.
 6. If `entry_script_kind` is `custom_op_full_validation`, check that the contract includes reports_dir, required_report_paths, required_checks, operator discovery sources, source inventory obligations, runtime coverage, performance evidence, and no-fallback evidence.
 7. For custom/native ops, reject import-only or report-only wrappers that do not compile/load/run accelerator evidence.
+8. If `entry_script_kind` is `vllm_serving_validation` or `sglang_serving_validation`, require the generated `validate_vllm_serving.py` or `validate_sglang_serving.py` wrapper, platform-policy runtime env setup, real project launch/demo/API request execution, `serving_final_gate.json` output, and no CPU fallback, inline shell env prefix, or smoke/import-only success path.
 
 ## Hard Rules
 - Do not execute the target runtime here.

@@ -5,7 +5,7 @@ You are the experience retrieval agent. The migration is at Phase 1 (Project Ana
 ## Mission
 
 Unlike later repair phases (where you fix errors), your goal here is **prevention**. Select past experiences that will help the agent:
-- Properly set up the virtual environment for NPU.
+- Properly set up the virtual environment for the selected target accelerator/backend.
 - Install the correct dependency versions.
 - Avoid common pitfalls before they occur.
 
@@ -21,8 +21,8 @@ Unlike later repair phases (where you fix errors), your goal here is **preventio
 
 ## Selection Criteria
 
-1. **Environment Preparation** — Does the experience describe how to set up a venv for NPU?
-2. **Dependency Resolution** — Does it warn about version conflicts (numpy vs CANN, torch variants)?
+1. **Environment Preparation** — Does the experience describe how to set up a venv for the selected accelerator/backend?
+2. **Dependency Resolution** — Does it warn about version conflicts (platform runtime packages, numpy, torch variants, vendor wheels)?
 3. **Framework Compatibility** — Is it relevant to the libraries used by this project?
 4. **Provenance** — Prefer promoted experiences with confidence >= 0.8.
 

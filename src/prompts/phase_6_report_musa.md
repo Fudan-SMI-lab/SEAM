@@ -18,6 +18,7 @@ Create a short final report bundle for the MUXI-family migration run. Do not reg
 - Mention Phase 4 strategy and whether it modified files.
 - Mention Phase 5 final status and accelerator evidence.
 - For custom-op runs, summarize final-gate pass/fail, artifact directory, runtime coverage, performance evidence, and unresolved rows in a compact table.
+- For vLLM/SGLang serving runs, summarize the current `serving_final_gate.json`: route/framework/backend, launch/readiness/request evidence, project demo/test/API files, expected outputs, accelerator runtime evidence, no-fallback flags, and final `full_migration_status`. Do not report import-only, smoke-only, stale, or fallback evidence as success.
 - If partial or failed, report the failed phase and actionable root cause.
 
 ## Hard Rules

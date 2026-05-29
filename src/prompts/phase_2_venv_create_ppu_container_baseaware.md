@@ -21,7 +21,7 @@ Before running any commands, inspect the target runtime to gather facts:
 1. **Inspect the target runtime**:
    - When the backend is a framework-created container, examine the container base environment (Python interpreters, versions, preinstalled packages — especially `torch`, `vllm`, and related libraries).
    - When the backend is local/host, examine the host base environment directly. File tools and the target runtime both observe the same local environment.
-   - Key question: does the base environment already satisfy the project's requirements?
+   - Decision criterion: determine from evidence whether the base environment already satisfies the project's requirements.
 
 2. **Check the project for an existing venv**: look for `.venv`, `venv/`, or similar directories under `{project_dir}`. If one exists, inspect its Python version and installed packages.
 
@@ -48,6 +48,7 @@ Before running any commands, inspect the target runtime to gather facts:
 **Important for container mode**: File tools (read, grep, etc.) observe the host filesystem. The `python3` you find via file tooling on the host reflects the *host* Python, not necessarily the container's. Use the Execution Environment Context above and container probe facts as your authoritative source for the target execution environment.
 
 ## Hard Rules
+- Do not ask the user or call the `question` tool. If a decision is required, choose the safest autonomous option that advances validation evidence.
 - Use PPU vendor index, PTG/t-head artifactory, or offline PPU wheelhouse first for all installs.
 - **Do NOT install `torch_npu` or any package that replaces the PPU-provided `torch`.**
 - **Do NOT install `torch`, `vllm`, `sglang`, `sgl-kernel`, `flash_attn`, `flashinfer-python`, `deep_gemm`, `deep_ep`, `flash_mla`, `triton`, `xgrammar`, or `torchao` from public PyPI** unless explicitly confirmed as safe and pinned to vendor-compatible PPU versions. Public PyPI installs of these packages can overwrite PPU-vendor-built wheels.

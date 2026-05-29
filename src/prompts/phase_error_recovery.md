@@ -6,7 +6,7 @@ The failed phase is `{failed_phase}`.
 ## Migration Constraints (from Phase 1.5)
 {constraint_summary}
 
-These constraints are binding. When diagnosing failures and suggesting fixes, always prefer solutions that keep computation on NPU. CPU fallback is not acceptable for custom-op contracts and must not be treated as final success.
+These constraints are binding. When diagnosing failures and suggesting fixes, always prefer solutions that keep computation on the selected target accelerator/backend. CPU fallback is not acceptable for custom-op or serving final-gate contracts and must not be treated as final success.
 
 Custom-op reference: diagnosing custom-op/operator failures 时，查看 `{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md` 第2、3、5、6点要求；不要内联完整规则文本。
 
@@ -14,10 +14,9 @@ Custom-op reference: diagnosing custom-op/operator failures 时，查看 `{works
 {env_context}
 
 Use this environment context when classifying errors and assigning repair roles:
-- `cann_version`: The CANN toolkit version detected. If `not_found`, note that AscendC compilation is not available.
-- `ascendc_available`: Whether the AscendC compiler is present. If `false` and the Phase 3 contract requires native custom-op artifacts, classify the issue as blocked environment/toolchain evidence instead of passing with PyTorch-level composition. For non-custom-op repairs, prefer supported NPU PyTorch-level alternatives.
-- `torch_npu_version`: The torch_npu version available. Use this to determine operator coverage.
-- `driver_version`: NPU driver version for compatibility checks.
+- Treat `cann_version`, `ascendc_available`, `torch_npu_version`, and Ascend/NPU driver fields as Ascend-specific evidence only when the selected platform/backend is Ascend.
+- For PPU/MUXI or other non-Ascend policies, use the observed vendor runtime/compiler/API facts from Phase 0/2 and the Phase 3 platform policy instead of assuming CANN, AscendC, or `torch_npu`.
+- If the Phase 3 contract requires native custom-op artifacts and the selected platform toolchain is unavailable, classify the issue as blocked environment/toolchain evidence instead of passing with Python-level composition.
 
 ## Current Entry Script
 
@@ -97,24 +96,24 @@ recommended agent.
    - **environment**: missing env vars, wrong Python version, device not detected
    - **dependency**: missing/mismatched packages, import errors, version conflicts
    - **pathing**: wrong file paths, missing files, directory issues
-   - **migration logic**: incomplete CUDA-to-NPU code migration (Python-level API replacements)
-   - **operator**: missing/unsupported NPU operators, unsupported math operations, C/CUDA kernel lacking NPU equivalent, shared library with `_cuda` symbols but no `_npu` symbols
+   - **migration logic**: incomplete CUDA-to-target-accelerator code migration (Python-level API/device/backend replacements)
+   - **operator**: missing/unsupported target-accelerator operators, unsupported math operations, C/CUDA kernel lacking a target-native equivalent, shared library exposing only source-backend symbols with no target-runtime path
    - **validation**: validation script issues, incorrect pass/fail logic
    - **unknown**: cannot determine root cause
-4. **NPU-First Diagnosis Rule**: When the error involves a compiled shared library (.so) or custom op:
-   a. First check: is the C library calibrated for x86_64 or aarch64? NPU memory (HBM) is not accessible by CPU code.
-   b. If the C library has `_cuda` symbols but NO `_npu` symbols → this is an **operator** issue, not migration logic. The kernel needs to be ported to AscendC.
+4. **Target-Accelerator Diagnosis Rule**: When the error involves a compiled shared library (.so) or custom op:
+   a. First check whether the native library can execute on the selected target accelerator/backend or is CPU/source-backend only.
+   b. If the native library exposes only CUDA/source-backend symbols and no target-runtime path, classify this as an **operator** issue, not migration logic. The kernel needs a target-platform implementation governed by platform policy.
    c. Do NOT classify as "migration logic" when the real gap is at the C/kernel level.
 5. **Review Feedback Integration**: If the previous review assessment detected CPU fallback and suggested alternatives, consider classifying this as `"operator"` with `"repair_role": "operator_fixer"` to force operator-level fixes.
 6. Decide whether the Phase 3 entry-script command itself is wrong for the contract. If so, request a bounded entry-script revision instead of routing to a repair agent.
-7. Propose the minimum corrective action that lets the workflow continue, prioritizing NPU-native solutions.
+7. Propose the minimum corrective action that lets the workflow continue, prioritizing target-platform-native solutions.
 8. If the failure is package or installation related, recommend domestic mirrors first (阿里云镜像 or 清华镜像).
 
 ## Hard Rules
 - Do not restate the full failure log — quote only short fragments when necessary as evidence.
 - Do not claim a root cause without supporting evidence from the current failure or fix history.
 - The fix history table shows what was tried before. Do NOT recommend repeating the same fix for the same category.
-- **NPU-First**: Always suggest NPU-native fixes first. CPU fallback is the last resort.
+- **Target-Accelerator First**: Always suggest fixes native to the selected platform/backend first. CPU fallback is not final success.
 - Prefer deterministic fixes over broad speculative refactors.
 - Keep the response concise, operational, and directly usable by the next retry attempt.
 - Use `entry_script_action` only when the command should be regenerated or modified to satisfy the existing Phase 3 contract. Do not use it to weaken required reports, checks, or custom-op evidence.
@@ -142,8 +141,8 @@ First, provide your reasoning and diagnosis in free text. Then, at the end of yo
 
 ## Repair Role Descriptions
 - `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.
-- `code_adapter`: Fix CUDA-to-NPU code migration at the Python level — device placement, API replacements, tensor operations. Must prioritize NPU-native solutions. If the root cause is a C library limitation (not a Python API issue), STOP and report it — do not implement CPU fallback.
-- `operator_fixer`: Fix missing/unsupported NPU operators — implement custom operators, compose alternatives from NPU-supported primitives, or port CUDA kernels to AscendC. ALL fixes must be NPU-native.
+- `code_adapter`: Fix CUDA-to-target-accelerator migration at the Python level — device placement, API replacements, tensor operations. Must prioritize selected-platform-native solutions. If the root cause is a C library limitation (not a Python API issue), STOP and report it — do not implement CPU fallback.
+- `operator_fixer`: Fix missing/unsupported target-accelerator operators — implement custom operators, compose alternatives from target-supported primitives, or port CUDA kernels to the selected platform toolchain. ALL fixes must be target-platform-native.
 
 ## Retry Decision Rule
 - Pick a role only when a concrete fix path exists for that role.
