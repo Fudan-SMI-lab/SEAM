@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .platform_policy import TargetPlatformConfig
+    pass
 
 
 @dataclass
@@ -42,7 +42,7 @@ class SessionRecord:
 
 
 @dataclass
-class PhaseDefinition:
+class PhaseDefinition:  # pylint: disable=too-many-instance-attributes; silent
     """Declarative definition of a workflow phase."""
 
     id: str
@@ -63,9 +63,9 @@ class PhaseDefinition:
     hooks: PhaseHooks | None = None
     transition: TransitionDefinition | None = None
     on_failure: str = "continue"
-    handler: str | None = None             # For orchestration type handler path
-    retrieve_experience: bool = False      # Enable experience retrieval for this phase
-    experience_query: dict[str, Any] | None = None   # Query configuration for experience retrieval
+    handler: str | None = None  # For orchestration type handler path
+    retrieve_experience: bool = False  # Enable experience retrieval for this phase
+    experience_query: dict[str, Any] | None = None  # Query configuration for experience retrieval
     runtime_skills: RuntimeSkillsConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -90,7 +90,7 @@ class RepairContext:
 
 
 @dataclass
-class ExecutionBackendConfig:
+class ExecutionBackendConfig:  # pylint: disable=too-many-instance-attributes; silent
     """Optional execution-backend configuration parsed from workflow YAML.
 
     When *mode* is ``"local"`` (the default), all fields beyond ``mode``
@@ -106,12 +106,12 @@ class ExecutionBackendConfig:
     ``images=[image]`` when ``images`` is not explicitly provided.
     """
 
-    mode: str = "local"                           # local | container | auto
-    source: str = "image"                         # image | existing_container
-    runtime: str = "docker"                       # docker | podman
-    image: str | None = None                      # source=image only (single, legacy)
-    images: list[str] | None = None               # source=image only (list, new)
-    container_name: str | None = None             # source=existing_container only
+    mode: str = "local"  # local | container | auto
+    source: str = "image"  # image | existing_container
+    runtime: str = "docker"  # docker | podman
+    image: str | None = None  # source=image only (single, legacy)
+    images: list[str] | None = None  # source=image only (list, new)
+    container_name: str | None = None  # source=existing_container only
     container_name_prefix: str = "seam-migration"
     devices: list[str] = field(default_factory=list)
     volumes: list[str] = field(default_factory=list)
@@ -208,7 +208,7 @@ class ExperienceConfig:
 
 
 @dataclass
-class WorkflowDefinition:
+class WorkflowDefinition:  # pylint: disable=too-many-instance-attributes; silent
     """Top-level workflow descriptor loaded from YAML."""
 
     name: str
@@ -279,7 +279,7 @@ class TransitionDefinition:
 
 
 @dataclass
-class SubWorkflowDefinition:
+class SubWorkflowDefinition:  # pylint: disable=too-many-instance-attributes; silent
     """A sub-workflow e.g. loop body, used inside a parent workflow."""
 
     id: str

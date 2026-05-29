@@ -4,9 +4,10 @@ parsing, and the auto-start logic in e2e_test_v3.run_e2e_v3.
 No real OpenCode server is started — every network / subprocess dependency is
 replaced via monkeypatch or mock.
 """
+
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -78,6 +79,7 @@ class TestStartServerHostname:
                 _ = start_server("/tmp/work", port=4098, hostname="0.0.0.0")
 
                 mock_popen.assert_called_once()
+                # pylint: disable-next=unused-variable; silent
                 call_args, call_kwargs = mock_popen.call_args
                 cmd = call_args[0]
                 assert "--hostname" in cmd
@@ -113,14 +115,17 @@ class TestResolveServerUrl:
 
     def test_none_url_auto_start_off_uses_default(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "harness.server.lifecycle.start_server", MagicMock(),
+            "harness.server.lifecycle.start_server",
+            MagicMock(),
             raising=False,
         )
         monkeypatch.setattr(
-            "harness.server.lifecycle.stop_server", _dummy_stop,
+            "harness.server.lifecycle.stop_server",
+            _dummy_stop,
             raising=False,
         )
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.server.lifecycle import resolve_server_url
 
         url, proc = resolve_server_url(
@@ -138,11 +143,13 @@ class TestResolveServerUrl:
         mock_proc = MagicMock()
         start_mock = MagicMock(return_value=mock_proc)
         monkeypatch.setattr(
-            "harness.server.lifecycle.find_available_port", find_port,
+            "harness.server.lifecycle.find_available_port",
+            find_port,
             raising=False,
         )
         monkeypatch.setattr(
-            "harness.server.lifecycle.start_server", start_mock,
+            "harness.server.lifecycle.start_server",
+            start_mock,
             raising=False,
         )
         monkeypatch.setattr(
@@ -151,6 +158,7 @@ class TestResolveServerUrl:
             raising=False,
         )
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.server.lifecycle import resolve_server_url
 
         url, proc = resolve_server_url(
@@ -169,11 +177,13 @@ class TestResolveServerUrl:
         mock_proc = MagicMock()
         start_mock = MagicMock(return_value=mock_proc)
         monkeypatch.setattr(
-            "harness.server.lifecycle.find_available_port", find_port,
+            "harness.server.lifecycle.find_available_port",
+            find_port,
             raising=False,
         )
         monkeypatch.setattr(
-            "harness.server.lifecycle.start_server", start_mock,
+            "harness.server.lifecycle.start_server",
+            start_mock,
             raising=False,
         )
         monkeypatch.setattr(
@@ -182,9 +192,10 @@ class TestResolveServerUrl:
             raising=False,
         )
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.server.lifecycle import resolve_server_url
 
-        url, proc = resolve_server_url(
+        url, proc = resolve_server_url(  # pylint: disable=unused-variable; silent
             None,
             auto_start=True,
             work_dir="/tmp",
@@ -199,7 +210,8 @@ class TestResolveServerUrl:
         mock_proc = MagicMock()
         start_mock = MagicMock(return_value=mock_proc)
         monkeypatch.setattr(
-            "harness.server.lifecycle.health_check", health_mock,
+            "harness.server.lifecycle.health_check",
+            health_mock,
             raising=False,
         )
         monkeypatch.setattr(
@@ -208,7 +220,8 @@ class TestResolveServerUrl:
             raising=False,
         )
         monkeypatch.setattr(
-            "harness.server.lifecycle.start_server", start_mock,
+            "harness.server.lifecycle.start_server",
+            start_mock,
             raising=False,
         )
         monkeypatch.setattr(
@@ -217,6 +230,7 @@ class TestResolveServerUrl:
             raising=False,
         )
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.server.lifecycle import resolve_server_url
 
         url, proc = resolve_server_url(
@@ -241,10 +255,12 @@ class TestResolveServerUrl:
         )
         start_mock = MagicMock()
         monkeypatch.setattr(
-            "harness.server.lifecycle.start_server", start_mock,
+            "harness.server.lifecycle.start_server",
+            start_mock,
             raising=False,
         )
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.server.lifecycle import resolve_server_url
 
         url, proc = resolve_server_url(
@@ -270,10 +286,12 @@ class TestResolveServerUrl:
         )
         start_mock = MagicMock()
         monkeypatch.setattr(
-            "harness.server.lifecycle.start_server", start_mock,
+            "harness.server.lifecycle.start_server",
+            start_mock,
             raising=False,
         )
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.server.lifecycle import resolve_server_url
 
         with pytest.raises(RuntimeError, match="remote"):
@@ -288,10 +306,12 @@ class TestResolveServerUrl:
     def test_auto_start_off_does_not_start(self, monkeypatch) -> None:
         start_mock = MagicMock()
         monkeypatch.setattr(
-            "harness.server.lifecycle.start_server", start_mock,
+            "harness.server.lifecycle.start_server",
+            start_mock,
             raising=False,
         )
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.server.lifecycle import resolve_server_url
 
         url, proc = resolve_server_url(

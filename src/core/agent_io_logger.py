@@ -6,19 +6,20 @@ import os
 import re
 from pathlib import Path
 
-
 _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer <REDACTED>"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "<REDACTED_API_KEY>"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}"), "<REDACTED_GITHUB_TOKEN>"),
     (
         re.compile(
+            # pylint: disable-next=line-too-long; silent
             r"(?i)([\"']?(?:HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)[\"']?\s*[:=]\s*[\"'])([^\"']+)([\"'])"
         ),
         r"\1<REDACTED>\3",
     ),
     (
         re.compile(
+            # pylint: disable-next=line-too-long; silent
             r"(?i)\b(HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)\s*([:=])\s*([^\s\'\"`,;]+)"
         ),
         r"\1\2<REDACTED>",
@@ -40,10 +41,10 @@ def _safe_int(value: str | None, default: int = 0) -> int:
     return max(parsed, 0)
 
 
-class AgentIOLogger:
+class AgentIOLogger:  # pylint: disable=too-many-instance-attributes; silent
     """Append-only sidecar logger for full Agent prompt/response payloads."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments; silent
         self,
         output_dir: str | Path,
         run_id: str = "",
@@ -80,7 +81,7 @@ class AgentIOLogger:
             "payload_dir": str(self.payload_dir),
         }
 
-    def record(
+    def record(  # pylint: disable=too-many-arguments,too-many-locals; silent
         self,
         *,
         sequence: int,

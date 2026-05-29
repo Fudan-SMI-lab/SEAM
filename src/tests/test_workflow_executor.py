@@ -1,30 +1,33 @@
+# pylint: disable=too-many-lines; silent
 """Mock-based tests for WorkflowExecutor."""
-import logging
+
 import json
-import pytest
-import tempfile
+import logging
 import os
-from unittest.mock import MagicMock, patch
+import tempfile
 from pathlib import Path
 from typing import cast
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from core.artifact_store import ArtifactStore
+from core.config import load_workflow
+from core.execution_backend import ContainerBackend
+from core.experience_store import ExperienceStore
+from core.prompt_loader import PromptLoader
+from core.telemetry_bridge import TelemetryBridge
 from core.types import (
-    PhaseDefinition,
-    RuntimeSkillsConfig,
-    WorkflowDefinition,
-    SubWorkflowDefinition,
-    TransitionDefinition,
     ExecutionBackendConfig,
     ExperienceConfig,
+    PhaseDefinition,
+    RuntimeSkillsConfig,
+    SubWorkflowDefinition,
+    TransitionDefinition,
+    WorkflowDefinition,
 )
-from core.workflow_executor import WorkflowExecutor
-from core.execution_backend import ContainerBackend
-from core.artifact_store import ArtifactStore
-from core.experience_store import ExperienceStore
-from core.telemetry_bridge import TelemetryBridge
-from core.prompt_loader import PromptLoader
-from core.config import load_workflow
 from core.validator_engine import ValidatorEngine
+from core.workflow_executor import WorkflowExecutor
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 
@@ -44,16 +47,31 @@ def temp_dir():
 
 
 @pytest.fixture
-def basic_workflow(temp_dir):
+def basic_workflow(temp_dir):  # pylint: disable=redefined-outer-name,unused-argument; silent
     return WorkflowDefinition(
-        name="test", version="1.0",
+        name="test",
+        version="1.0",
         phases=[
-            PhaseDefinition(id="phase_a", name="A", prompt_template="test.md", output_schema={},
-                           type="llm", agent="main_engineer", validator=None,
-                           transitions={"on_success": "phase_b"}),
-            PhaseDefinition(id="phase_b", name="B", prompt_template="test.md", output_schema={},
-                           type="llm", agent="main_engineer", validator=None,
-                           transitions={"on_success": "complete"}),
+            PhaseDefinition(
+                id="phase_a",
+                name="A",
+                prompt_template="test.md",
+                output_schema={},
+                type="llm",
+                agent="main_engineer",
+                validator=None,
+                transitions={"on_success": "phase_b"},
+            ),
+            PhaseDefinition(
+                id="phase_b",
+                name="B",
+                prompt_template="test.md",
+                output_schema={},
+                type="llm",
+                agent="main_engineer",
+                validator=None,
+                transitions={"on_success": "complete"},
+            ),
         ],
         terminals=["complete", "failed"],
         agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
@@ -61,30 +79,36 @@ def basic_workflow(temp_dir):
 
 
 @pytest.fixture
-def executor(basic_workflow, temp_dir):
+def executor(basic_workflow, temp_dir):  # pylint: disable=redefined-outer-name; silent
     session_mgr = MagicMock()
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
     validator_engine = MagicMock()
     return WorkflowExecutor(
-        basic_workflow, session_mgr, artifact_store, prompt_loader, validator_engine,
-        project_dir=temp_dir, output_dir=temp_dir
+        basic_workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator_engine,
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
 
 
 class TestWorkflowExecutorInit:
-    def test_constructor(self, executor):
+    def test_constructor(self, executor):  # pylint: disable=redefined-outer-name; silent
         assert executor.workflow.name == "test"
         assert executor.state == {}
         assert executor.phase_results == {}
 
-    def test_phase_index_built(self, executor):
+    def test_phase_index_built(self, executor):  # pylint: disable=redefined-outer-name; silent
         assert "phase_a" in executor.phase_index
         assert "phase_b" in executor.phase_index
         assert executor.phase_index["phase_a"] == 0
 
 
-class TestExecute:
+class TestExecute:  # pylint: disable=too-few-public-methods; silent
+    # pylint: disable-next=redefined-outer-name; silent
     def test_basic_execute_flow(self, executor, temp_dir):
         executor.hook_manager = MagicMock()
 
@@ -93,16 +117,16 @@ class TestExecute:
 
 
 class TestConditionEvaluation:
-    def test_condition_true(self, executor):
-        result = executor._evaluate_condition(
+    def test_condition_true(self, executor):  # pylint: disable=redefined-outer-name; silent
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
             "${context.X} != ''",
             state={},
             context={"X": "abc"},
         )
         assert result is True
 
-    def test_condition_false(self, executor):
-        result = executor._evaluate_condition(
+    def test_condition_false(self, executor):  # pylint: disable=redefined-outer-name; silent
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
             "$.X == ''",
             state={},
             context={},
@@ -110,8 +134,9 @@ class TestConditionEvaluation:
         )
         assert result is True
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_condition_dollar_shorthand(self, executor):
-        result = executor._evaluate_condition(
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
             "$.exit_code == 0",
             state={},
             context={},
@@ -119,8 +144,9 @@ class TestConditionEvaluation:
         )
         assert result is True
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_condition_and_operator(self, executor):
-        result = executor._evaluate_condition(
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
             "$.a == 1 and $.b == 2",
             state={},
             context={},
@@ -128,8 +154,8 @@ class TestConditionEvaluation:
         )
         assert result is True
 
-    def test_condition_or_operator(self, executor):
-        result = executor._evaluate_condition(
+    def test_condition_or_operator(self, executor):  # pylint: disable=redefined-outer-name; silent
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
             "$.a == 1 or $.b == 2",
             state={},
             context={},
@@ -137,8 +163,9 @@ class TestConditionEvaluation:
         )
         assert result is True
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_condition_not_operator(self, executor):
-        result = executor._evaluate_condition(
+        result = executor._evaluate_condition(  # pylint: disable=protected-access; silent
             "not $.failed",
             state={},
             context={},
@@ -147,67 +174,101 @@ class TestConditionEvaluation:
         assert result is True
 
 
-class TestResolveInputMapping:
-    def test_basic_mapping(self, executor):
+class TestResolveInputMapping:  # pylint: disable=too-few-public-methods; silent
+    def test_basic_mapping(self, executor):  # pylint: disable=redefined-outer-name; silent
         phase = PhaseDefinition(
-            id="test", name="test", prompt_template="x", output_schema={},
+            id="test",
+            name="test",
+            prompt_template="x",
+            output_schema={},
             input_mapping={"project": "${context.PROJECT_DIR}", "max": "${globals.max}"},
         )
-        result = executor._resolve_input_mapping(
-            phase, state={},
+        result = executor._resolve_input_mapping(  # pylint: disable=protected-access; silent
+            phase,
+            state={},
             context={"PROJECT_DIR": "/tmp/test"},
-            loop_vars=None, loop_state=None, loop_history=None, step_outputs=None,
+            loop_vars=None,
+            loop_state=None,
+            loop_history=None,
+            step_outputs=None,
         )
         assert result["project"] == "/tmp/test"
         executor.workflow.globals = {"max": 5}
-        result = executor._resolve_input_mapping(
-            phase, state={},
+        result = executor._resolve_input_mapping(  # pylint: disable=protected-access; silent
+            phase,
+            state={},
             context={"PROJECT_DIR": "/tmp/test"},
-            loop_vars=None, loop_state=None, loop_history=None, step_outputs=None,
+            loop_vars=None,
+            loop_state=None,
+            loop_history=None,
+            step_outputs=None,
         )
         assert result["max"] == 5
 
 
 class TestTransitionResolution:
-    def test_on_success(self, executor):
+    def test_on_success(self, executor):  # pylint: disable=redefined-outer-name; silent
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"success": "b", "failure": "fail"},
         )
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
         assert next_id == "b"
 
-    def test_on_failure(self, executor):
+    def test_on_failure(self, executor):  # pylint: disable=redefined-outer-name; silent
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"success": "b", "failure": "error_recovery"},
         )
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "failure", {}, {})
         assert next_id == "error_recovery"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_yaml_shaped_transition_keys(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
-            transitions={"on_success": "b", "on_failure": "error_recovery", "on_skip": "skip_target"},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
+            transitions={
+                "on_success": "b",
+                "on_failure": "error_recovery",
+                "on_skip": "skip_target",
+            },
         )
+        # pylint: disable-next=protected-access; silent
         assert executor._get_next_phase_id(phase, "success", {}, {}) == "b"
+        # pylint: disable-next=protected-access; silent
         assert executor._get_next_phase_id(phase, "failure", {}, {}) == "error_recovery"
+        # pylint: disable-next=protected-access; silent
         assert executor._get_next_phase_id(phase, "skipped", {}, {}) == "skip_target"
 
-    def test_default_next(self, executor):
+    def test_default_next(self, executor):  # pylint: disable=redefined-outer-name; silent
         phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
         executor.phase_index = {"a": 0}
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
         assert next_id == executor.workflow.phases[1].id
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_failure_without_transition_stops(self, executor):
         phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "failure", {}, {})
 
         assert next_id is None
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_failure_with_only_success_transition_stops(self, executor):
         phase = PhaseDefinition(
             id="a",
@@ -218,173 +279,237 @@ class TestTransitionResolution:
         )
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "failure", {}, {})
 
         assert next_id is None
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_skipped_without_transition_still_defaults_next(self, executor):
         phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "skipped", {}, {})
 
         assert next_id == executor.workflow.phases[1].id
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_stagnation_without_routing_terminates(self, executor):
         phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
 
         assert next_id is None
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_reject_exhausted_without_routing_terminates(self, executor):
         phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
 
         assert next_id is None
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_arbitrary_non_success_status_terminates(self, executor):
         phase = PhaseDefinition(id="a", name="A", prompt_template="x", output_schema={})
         executor.phase_index = {"a": 0}
 
         for status in ("accept", "unknown_fail", "stagnation", "reject_exhausted"):
+            # pylint: disable-next=protected-access; silent
             next_id = executor._get_next_phase_id(phase, status, {}, {})
             assert next_id is None, f"{status} should terminate, not fall through"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_stagnation_explicit_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"stagnation": "error_recovery"},
         )
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
 
         assert next_id == "error_recovery"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_reject_exhausted_explicit_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"reject_exhausted": "review_cleanup"},
         )
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
 
         assert next_id == "review_cleanup"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_on_stagnation_yaml_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"on_stagnation": "stagnation_recovery"},
         )
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
 
         assert next_id == "stagnation_recovery"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_on_reject_exhausted_yaml_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"on_reject_exhausted": "review_cleanup"},
         )
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
 
         assert next_id == "review_cleanup"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_transition_definition_on_stagnation_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transition=TransitionDefinition(on_stagnation="stagnation_recovery"),
         )
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "stagnation", {}, {})
 
         assert next_id == "stagnation_recovery"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_transition_definition_on_reject_exhausted_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transition=TransitionDefinition(on_reject_exhausted="exhausted_cleanup"),
         )
         executor.phase_index = {"a": 0}
 
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "reject_exhausted", {}, {})
 
         assert next_id == "exhausted_cleanup"
 
 
 class TestShellPhase:
+    # pylint: disable-next=redefined-outer-name,unused-argument; silent
     def test_shell_success(self, executor, temp_dir):
-        phase = PhaseDefinition(id="shell", name="S", prompt_template="", output_schema={},
-                               type="shell", on_failure="continue")
+        phase = PhaseDefinition(
+            id="shell",
+            name="S",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="continue",
+        )
         setattr(phase, "command", "echo hello")
 
         state = {}
         loop_state = {}
+        # pylint: disable-next=protected-access,unused-variable; silent
         status, output = executor._execute_shell_phase(phase, state, {}, loop_state=loop_state)
 
         assert status == "success"
         assert loop_state.get("script_exit_code") == 0
 
+    # pylint: disable-next=redefined-outer-name,unused-argument; silent
     def test_shell_failure_continue(self, executor, temp_dir):
-        phase = PhaseDefinition(id="shell", name="S", prompt_template="", output_schema={},
-                               type="shell", on_failure="continue")
+        phase = PhaseDefinition(
+            id="shell",
+            name="S",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="continue",
+        )
         setattr(phase, "command", "exit 1")
 
+        # pylint: disable-next=protected-access,unused-variable; silent
         status, output = executor._execute_shell_phase(phase, {}, {}, loop_state={})
         assert status == "success"
 
 
 class TestStagnation:
-    def test_detect_same_error(self, executor):
+    def test_detect_same_error(self, executor):  # pylint: disable=redefined-outer-name; silent
         loop_state = {}
         error = "Error: module not found\n  at line 1"
 
+        # pylint: disable-next=protected-access; silent
         stagnated = executor._check_stagnation(error, loop_state, threshold=3)
         assert not stagnated
         assert loop_state["stagnation_count"] == 1
 
+        # pylint: disable-next=protected-access; silent
         stagnated = executor._check_stagnation(error, loop_state, threshold=3)
         assert not stagnated
         assert loop_state["stagnation_count"] == 2
 
+        # pylint: disable-next=protected-access; silent
         stagnated = executor._check_stagnation(error, loop_state, threshold=3)
         assert stagnated
         assert loop_state["stagnation_count"] == 3
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_reset_on_different_error(self, executor):
         loop_state = {}
+        # pylint: disable-next=protected-access; silent
         executor._check_stagnation("Error: A", loop_state, threshold=3)
         assert loop_state["stagnation_count"] == 1
 
+        # pylint: disable-next=protected-access; silent
         stagnated = executor._check_stagnation("Error: B", loop_state, threshold=3)
         assert not stagnated
         assert loop_state["stagnation_count"] == 1
 
 
 class TestStopConditions:
-    def test_stop_condition_match(self, executor):
+    def test_stop_condition_match(self, executor):  # pylint: disable=redefined-outer-name; silent
         loop_state = {"exit_code": 0}
         stop_conds = [
             {"condition": "$.exit_code == 0", "status": "success"},
             {"condition": "$.exit_code != 0", "status": "failure"},
         ]
+        # pylint: disable-next=protected-access; silent
         result = executor._check_stop_conditions(stop_conds, loop_state, {})
         assert result == "success"
 
+    # pylint: disable-next=redefined-outer-name; silent
     def test_no_stop_condition_match(self, executor):
         loop_state = {"exit_code": 1}
         stop_conds = [
             {"condition": "$.exit_code == 0", "status": "success"},
         ]
+        # pylint: disable-next=protected-access; silent
         result = executor._check_stop_conditions(stop_conds, loop_state, {})
         assert result is None
 
@@ -406,6 +531,7 @@ def _executor_for_experience_context(tmp_path: Path) -> WorkflowExecutor:
 
 
 def test_experience_query_context_uses_direct_script_stderr(tmp_path: Path):
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _executor_for_experience_context(tmp_path)
     phase = PhaseDefinition(
         id="analyze_error",
@@ -416,6 +542,7 @@ def test_experience_query_context_uses_direct_script_stderr(tmp_path: Path):
         agent="error_analyzer",
     )
 
+    # pylint: disable-next=protected-access; silent
     query_ctx = executor._build_experience_query_context(
         phase,
         state={},
@@ -428,6 +555,7 @@ def test_experience_query_context_uses_direct_script_stderr(tmp_path: Path):
 
 
 def test_experience_query_context_preserves_nested_run_entry_script_stderr(tmp_path: Path):
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _executor_for_experience_context(tmp_path)
     phase = PhaseDefinition(
         id="analyze_error",
@@ -438,6 +566,7 @@ def test_experience_query_context_preserves_nested_run_entry_script_stderr(tmp_p
         agent="error_analyzer",
     )
 
+    # pylint: disable-next=protected-access; silent
     query_ctx = executor._build_experience_query_context(
         phase,
         state={},
@@ -451,6 +580,7 @@ def test_experience_query_context_preserves_nested_run_entry_script_stderr(tmp_p
 
 def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
     """Generic workflow name infers generic_accelerator policy."""
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _executor_for_experience_context(tmp_path)
     phase = PhaseDefinition(
         id="analyze_error",
@@ -461,6 +591,7 @@ def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
         agent="error_analyzer",
     )
 
+    # pylint: disable-next=protected-access; silent
     query_ctx = executor._build_experience_query_context(
         phase,
         state={
@@ -475,9 +606,7 @@ def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
     )
 
     assert query_ctx["custom_op_native_gate_required"] == "true"
-    assert query_ctx["custom_op_evidence_policy"] == (
-        "require_real_custom_op_artifacts"
-    )
+    assert query_ctx["custom_op_evidence_policy"] == ("require_real_custom_op_artifacts")
 
 
 def test_npu_workflow_keeps_legacy_custom_op_evidence_policy(tmp_path: Path):
@@ -486,7 +615,7 @@ def test_npu_workflow_keeps_legacy_custom_op_evidence_policy(tmp_path: Path):
     artifact_store = MagicMock()
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         artifact_store,
@@ -504,6 +633,7 @@ def test_npu_workflow_keeps_legacy_custom_op_evidence_policy(tmp_path: Path):
         agent="error_analyzer",
     )
 
+    # pylint: disable-next=protected-access; silent
     query_ctx = executor._build_experience_query_context(
         phase,
         state={
@@ -529,7 +659,7 @@ def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
     artifact_store = MagicMock()
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         artifact_store,
@@ -547,6 +677,7 @@ def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
         agent="error_analyzer",
     )
 
+    # pylint: disable-next=protected-access; silent
     query_ctx = executor._build_experience_query_context(
         phase,
         state={
@@ -561,9 +692,7 @@ def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
     )
 
     assert query_ctx["custom_op_native_gate_required"] == "true"
-    assert query_ctx["custom_op_evidence_policy"] == (
-        "require_real_ppu_custom_op_artifacts"
-    )
+    assert query_ctx["custom_op_evidence_policy"] == ("require_real_ppu_custom_op_artifacts")
 
 
 class TestRuntimeSkillPromptAssembly:
@@ -575,7 +704,7 @@ class TestRuntimeSkillPromptAssembly:
         session_mgr.get_or_create.return_value = "session_123"
         session_mgr.send_command.return_value = '{"ok": true}'
         prompt_loader.load_prompt.return_value = "BASE PROMPT"
-        executor = WorkflowExecutor(
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
             workflow,
             session_mgr,
             artifact_store,
@@ -616,11 +745,12 @@ class TestRuntimeSkillPromptAssembly:
                 },
             },
         )
+        # pylint: disable-next=redefined-outer-name; silent
         executor, session_mgr, _prompt_loader = self._executor_for_runtime_skills(
             workflow, tmp_path
         )
 
-        executor._execute_llm_phase(phase, {}, {})
+        executor._execute_llm_phase(phase, {}, {})  # pylint: disable=protected-access; silent
 
         sent_prompt = session_mgr.send_command.call_args[0][1]
         assert sent_prompt.startswith("BASE PROMPT\n\n## Explicit Runtime Skills")
@@ -672,10 +802,13 @@ class TestRuntimeSkillPromptAssembly:
             "summary": "keep summary",
             "warning": "keep warning",
         }
+        # pylint: disable-next=redefined-outer-name; silent
         executor, session_mgr, _prompt_loader = self._executor_for_runtime_skills(
             workflow, tmp_path, experience_store=MagicMock()
         )
+        # pylint: disable-next=protected-access; silent
         bundle = executor._resolve_runtime_skill_bundle(phase, "main_engineer")
+        # pylint: disable-next=protected-access; silent
         filtered = executor._dedupe_dynamic_experiences(query_result, bundle, phase.id)
         assert filtered["summary"] == "keep summary"
         assert filtered["warning"] == "keep warning"
@@ -685,7 +818,7 @@ class TestRuntimeSkillPromptAssembly:
         assert len(query_result["selected_experiences"]) == 2
 
         with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
-            executor._execute_llm_phase(phase, {}, {})
+            executor._execute_llm_phase(phase, {}, {})  # pylint: disable=protected-access; silent
 
         sent_prompt = session_mgr.send_command.call_args[0][1]
         assert "## Explicit Runtime Skills" in sent_prompt
@@ -695,25 +828,30 @@ class TestRuntimeSkillPromptAssembly:
         assert "Dynamic Duplicate Guidance" not in sent_prompt
 
 
-
 def test_experience_action_cards_include_readable_paths():
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.experience_injector import ExperienceInjector
 
-    injected = ExperienceInjector().inject(None, {
-        "selected_experiences": [{
-            "id": "dep-exp",
-            "type": "document",
-            "title": "Dependency Fix",
-            "target_roles": ["dependency_fixer"],
-            "target_phases": ["phase_5_validation"],
-            "relevance_score": 0.9,
-            "reasoning": "same torch-npu failure",
-            "file_path": "/tmp/dep.md",
-            "asset_paths": ["/tmp/rule.yaml"],
-            "root_cause": "should stay compact at non-critical relevance",
-            "fix_steps": ["Do not inject this by default"],
-        }]
-    })
+    injected = ExperienceInjector().inject(
+        None,
+        {
+            "selected_experiences": [
+                {
+                    "id": "dep-exp",
+                    "type": "document",
+                    "title": "Dependency Fix",
+                    "target_roles": ["dependency_fixer"],
+                    "target_phases": ["phase_5_validation"],
+                    "relevance_score": 0.9,
+                    "reasoning": "same torch-npu failure",
+                    "file_path": "/tmp/dep.md",
+                    "asset_paths": ["/tmp/rule.yaml"],
+                    "root_cause": "should stay compact at non-critical relevance",
+                    "fix_steps": ["Do not inject this by default"],
+                }
+            ]
+        },
+    )
 
     assert "## Relevant Past Experiences" in injected
     assert "### Experience Card 1: Dependency Fix" in injected
@@ -773,12 +911,15 @@ def test_fix_prompt_inherits_analyze_error_selected_experiences(tmp_path: Path):
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.send_command.side_effect = [
+        # pylint: disable-next=line-too-long; silent
         '{"repair_role": "code_adapter", "category": "code", "root_cause": "cuda call", "suggested_fix": "use npu"}',
         '{"fixed": true}',
     ]
-    prompt_loader.load_prompt.side_effect = lambda template, ctx: f"{template}\n{ctx.get('experience_action_cards', '')}"
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: (
+        f"{template}\n{ctx.get('experience_action_cards', '')}"
+    )
 
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -789,22 +930,24 @@ def test_fix_prompt_inherits_analyze_error_selected_experiences(tmp_path: Path):
         experience_store=MagicMock(),
     )
     query_result = {
-        "selected_experiences": [{
-            "id": "code-exp",
-            "type": "skill",
-            "title": "CUDA Call Fix",
-            "target_roles": ["code_adapter"],
-            "target_phases": ["phase_5_validation"],
-            "relevance_score": 0.88,
-            "reasoning": "same cuda call",
-            "file_path": str(tmp_path / "skills" / "cuda" / "SKILL.md"),
-        }],
+        "selected_experiences": [
+            {
+                "id": "code-exp",
+                "type": "skill",
+                "title": "CUDA Call Fix",
+                "target_roles": ["code_adapter"],
+                "target_phases": ["phase_5_validation"],
+                "relevance_score": 0.88,
+                "reasoning": "same cuda call",
+                "file_path": str(tmp_path / "skills" / "cuda" / "SKILL.md"),
+            }
+        ],
         "summary": "selected",
         "warning": "",
     }
 
     with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
-        result = executor._run_sub_workflow(
+        result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
             sub_workflow,
             loop_vars={"entry_script": "python main.py"},
             state={},
@@ -824,6 +967,7 @@ def test_fix_prompt_inherits_analyze_error_selected_experiences(tmp_path: Path):
     assert "used_experience_ids" in fix_prompt
 
 
+# pylint: disable-next=too-many-locals,too-many-statements; silent
 def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_path: Path):
     write_runtime_skill(tmp_path, "operator-runtime-skill")
     sub_workflow = SubWorkflowDefinition(
@@ -873,6 +1017,7 @@ def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_p
     artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.send_command.side_effect = [
+        # pylint: disable-next=line-too-long; silent
         '{"repair_role": "operator_fixer", "category": "operator", "root_cause": "unsupported custom op", "suggested_fix": "port custom op"}',
         '{"fixed": true}',
     ]
@@ -884,7 +1029,7 @@ def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_p
         return template
 
     prompt_loader.load_prompt.side_effect = load_prompt
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -896,7 +1041,7 @@ def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_p
         experience_store=MagicMock(),
     )
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python main.py"},
         state={},
@@ -1006,12 +1151,13 @@ def test_operator_fix_session_error_fails_subworkflow_without_validated_artifact
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.create_session.return_value = "session:operator_fixer_retry"
     session_mgr.send_command.side_effect = [
+        # pylint: disable-next=line-too-long; silent
         '{"repair_role": "operator_fixer", "category": "operator", "root_cause": "unsupported custom op", "suggested_fix": "port custom op"}',
         '{"ok": false, "error": "Compaction response is incomplete"}',
         '{"ok": false, "error": "Compaction response is incomplete"}',
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -1022,7 +1168,7 @@ def test_operator_fix_session_error_fails_subworkflow_without_validated_artifact
         experience_store=MagicMock(),
     )
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python main.py"},
         state={},
@@ -1090,12 +1236,13 @@ def test_operator_fix_empty_response_retries_in_fresh_session(tmp_path: Path):
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.create_session.return_value = "session:operator_fixer_retry"
     session_mgr.send_command.side_effect = [
+        # pylint: disable-next=line-too-long; silent
         '{"repair_role": "operator_fixer", "category": "operator", "root_cause": "unsupported custom op", "suggested_fix": "port custom op"}',
         '{"ok": false, "error": "Empty session response"}',
         '{"fixed": true, "used_experience_ids": [], "ignored_experience_ids": []}',
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -1106,7 +1253,7 @@ def test_operator_fix_empty_response_retries_in_fresh_session(tmp_path: Path):
         experience_store=MagicMock(),
     )
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python main.py"},
         state={},
@@ -1121,8 +1268,11 @@ def test_operator_fix_empty_response_retries_in_fresh_session(tmp_path: Path):
     assert result["step_outputs"]["fix_operator"]["fixed"] is True
     session_mgr.create_session.assert_called_once()
     called_sessions = [call.args[0] for call in session_mgr.send_command.call_args_list]
-    assert called_sessions == ["session:error_analyzer", "session:operator_fixer", "session:operator_fixer_retry"]
-
+    assert called_sessions == [
+        "session:error_analyzer",
+        "session:operator_fixer",
+        "session:operator_fixer_retry",
+    ]
 
 
 def _run_single_llm_subphase(
@@ -1154,7 +1304,7 @@ def _run_single_llm_subphase(
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.send_command.return_value = '{"fixed": true}'
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: f"prompt:{template}"
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -1165,7 +1315,7 @@ def _run_single_llm_subphase(
         output_dir=str(tmp_path),
     )
 
-    executor._run_sub_workflow(
+    executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={},
         state={},
@@ -1178,7 +1328,9 @@ def _run_single_llm_subphase(
     return session_mgr
 
 
-def test_fix_operator_without_explicit_timeout_uses_finite_default_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+def test_fix_operator_without_explicit_timeout_uses_finite_default_and_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
     caplog.set_level(logging.INFO, logger="core.workflow_executor")
 
     session_mgr = _run_single_llm_subphase(
@@ -1300,7 +1452,9 @@ def test_analyze_error_without_explicit_timeout_uses_finite_default(tmp_path: Pa
     assert session_mgr.send_command.call_args.kwargs["timeout"] == 600
 
 
-def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(tmp_path: Path):
+def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(
+    tmp_path: Path,
+):
     session_mgr = _run_single_llm_subphase(
         tmp_path,
         {
@@ -1313,9 +1467,6 @@ def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_expl
     )
 
     assert session_mgr.send_command.call_args.kwargs["timeout"] is None
-
-
-
 
 
 def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(tmp_path: Path):
@@ -1371,16 +1522,18 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.send_command.side_effect = [
-        json.dumps({
-            "repair_role": "code_adapter",
-            "category": "pathing",
-            "root_cause": "stale Path.relative_to(PROJECT_DIR) failure",
-            "suggested_fix": "adjust path handling",
-        }),
+        json.dumps(
+            {
+                "repair_role": "code_adapter",
+                "category": "pathing",
+                "root_cause": "stale Path.relative_to(PROJECT_DIR) failure",
+                "suggested_fix": "adjust path handling",
+            }
+        ),
         json.dumps({"fixed": True}),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -1390,7 +1543,7 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
         output_dir=str(tmp_path),
     )
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python validate.py"},
         state={
@@ -1404,17 +1557,22 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
         sub_wf_phases=sub_workflow.phases,
         step_outputs={
             "script_stderr": (
+                # pylint: disable-next=line-too-long; silent
                 "Custom-op final evidence gate failed: full_migration_status is FULL_MIGRATION_INCOMPLETE; "
+                # pylint: disable-next=line-too-long; silent
                 "closed_pass_entries=0; remaining_entries=4; custom_call_count_total=0; zero_call_detected=true"
             ),
         },
-        loop_history=[{
-            "iteration": 1,
-            "status": "success",
-            "error_category": "pathing",
-            "repair_role": "code_adapter",
-            "agent_diagnostics": "Remaining failure is custom-op/operator evidence incompleteness",
-        }],
+        loop_history=[
+            {
+                "iteration": 1,
+                "status": "success",
+                "error_category": "pathing",
+                "repair_role": "code_adapter",
+                # pylint: disable-next=line-too-long; silent
+                "agent_diagnostics": "Remaining failure is custom-op/operator evidence incompleteness",
+            }
+        ],
         loop_state={},
     )
 
@@ -1434,7 +1592,7 @@ def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(tm
         type="llm",
         agent="error_analyzer",
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(name="plain_pathing", version="1.0", phases=[], terminals=[]),
         MagicMock(),
         MagicMock(),
@@ -1444,7 +1602,7 @@ def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(tm
         output_dir=str(tmp_path),
     )
 
-    normalized = executor._normalize_llm_output(
+    normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {
             "repair_role": "code_adapter",
@@ -1473,7 +1631,7 @@ def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tm
         type="llm",
         agent="error_analyzer",
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(
             name="disabled_force_route",
             version="1.0",
@@ -1489,7 +1647,7 @@ def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tm
         output_dir=str(tmp_path),
     )
 
-    normalized = executor._normalize_llm_output(
+    normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {
             "repair_role": "code_adapter",
@@ -1498,6 +1656,7 @@ def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tm
             "suggested_fix": "fix path handling",
         },
         {
+            # pylint: disable-next=line-too-long; silent
             "failure_log": "Custom-op final evidence gate failed: full_migration_status is FULL_MIGRATION_INCOMPLETE",
             "entry_script_contract": json.dumps({"entry_script_kind": "custom_op_full_validation"}),
             "previous_outputs": "",
@@ -1508,9 +1667,14 @@ def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tm
     assert normalized["category"] == "pathing"
     assert normalized["repair_role"] == "code_adapter"
 
-def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_phase5_entry_command_does_not_expand_environment_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target_script = tmp_path / "expanded_target.py"
-    target_script.write_text("from pathlib import Path\nPath('expanded-ran').write_text('yes')\n", encoding="utf-8")
+    target_script.write_text(
+        "from pathlib import Path\nPath('expanded-ran').write_text('yes')\n", encoding="utf-8"
+    )
     monkeypatch.setenv("PY_SCRIPT", str(target_script))
     workflow = WorkflowDefinition(
         name="entry-no-shell-expansion",
@@ -1518,7 +1682,7 @@ def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Pa
         phases=[],
         terminals=["complete"],
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -1537,7 +1701,7 @@ def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Pa
     )
     setattr(phase, "command", "${loop_vars.entry_script}")
 
-    status, output = executor._execute_shell_phase(
+    status, output = executor._execute_shell_phase(  # pylint: disable=protected-access; silent
         phase,
         state={},
         context={},
@@ -1554,6 +1718,7 @@ def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Pa
 def test_phase5_entry_command_does_not_expand_globs_or_tilde(tmp_path: Path) -> None:
     recorder = tmp_path / "record_args.py"
     recorder.write_text(
+        # pylint: disable-next=line-too-long; silent
         "import json, sys\nfrom pathlib import Path\nPath('args.json').write_text(json.dumps(sys.argv[1:]))\n",
         encoding="utf-8",
     )
@@ -1565,7 +1730,7 @@ def test_phase5_entry_command_does_not_expand_globs_or_tilde(tmp_path: Path) -> 
         phases=[],
         terminals=["complete"],
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -1584,7 +1749,7 @@ def test_phase5_entry_command_does_not_expand_globs_or_tilde(tmp_path: Path) -> 
     )
     setattr(phase, "command", "${loop_vars.entry_script}")
 
-    status, output = executor._execute_shell_phase(
+    status, output = executor._execute_shell_phase(  # pylint: disable=protected-access; silent
         phase,
         state={},
         context={},
@@ -1600,6 +1765,7 @@ def test_phase5_entry_command_does_not_expand_globs_or_tilde(tmp_path: Path) -> 
 def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: Path) -> None:
     train_script = tmp_path / "train.py"
     train_script.write_text(
+        # pylint: disable-next=line-too-long; silent
         "import argparse\nfrom pathlib import Path\nparser = argparse.ArgumentParser()\nparser.add_argument('--config')\nargs = parser.parse_args()\nPath('safe-command-ok').write_text(args.config)\n",
         encoding="utf-8",
     )
@@ -1610,7 +1776,7 @@ def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: 
         phases=[],
         terminals=["complete"],
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -1630,7 +1796,7 @@ def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: 
     setattr(phase, "command", "${loop_vars.entry_script}")
     loop_state: dict[str, object] = {}
 
-    status, output = executor._execute_shell_phase(
+    status, output = executor._execute_shell_phase(  # pylint: disable=protected-access; silent
         phase,
         state={},
         context={},
@@ -1645,9 +1811,11 @@ def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: 
     assert loop_state["script_stderr"] == ""
 
 
+# pylint: disable-next=unused-argument; silent
 def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target_script = tmp_path / "env_target.py"
     target_script.write_text(
+        # pylint: disable-next=line-too-long; silent
         "import os\nfrom pathlib import Path\nPath('env_ok').write_text(os.environ.get('MPLBACKEND', 'missing'))\n",
         encoding="utf-8",
     )
@@ -1657,7 +1825,7 @@ def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.M
         phases=[],
         terminals=["complete"],
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -1676,7 +1844,7 @@ def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.M
     )
     setattr(phase, "command", "${loop_vars.entry_script}")
 
-    status, output = executor._execute_shell_phase(
+    status, output = executor._execute_shell_phase(  # pylint: disable=protected-access; silent
         phase,
         state={},
         context={},
@@ -1692,6 +1860,7 @@ def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.M
 def test_phase5_env_prefix_multiple_env_vars(tmp_path: Path) -> None:
     target_script = tmp_path / "multi_env.py"
     target_script.write_text(
+        # pylint: disable-next=line-too-long; silent
         "import os\nfrom pathlib import Path\nPath('multi_ok').write_text(os.environ.get('FOO', 'x') + os.environ.get('BAR', 'y'))\n",
         encoding="utf-8",
     )
@@ -1701,7 +1870,7 @@ def test_phase5_env_prefix_multiple_env_vars(tmp_path: Path) -> None:
         phases=[],
         terminals=["complete"],
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -1720,7 +1889,7 @@ def test_phase5_env_prefix_multiple_env_vars(tmp_path: Path) -> None:
     )
     setattr(phase, "command", "${loop_vars.entry_script}")
 
-    status, output = executor._execute_shell_phase(
+    status, output = executor._execute_shell_phase(  # pylint: disable=protected-access; silent
         phase,
         state={},
         context={},
@@ -1747,7 +1916,7 @@ def test_phase5_entry_script_action_allows_env_prefix_command() -> None:
         phases=[],
         terminals=["complete"],
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -1763,7 +1932,7 @@ def test_phase5_entry_script_action_allows_env_prefix_command() -> None:
         "max_entry_script_revisions": 2,
     }
 
-    result = executor._maybe_apply_entry_script_action(
+    result = executor._maybe_apply_entry_script_action(  # pylint: disable=protected-access; silent
         {
             "entry_script_action": {
                 "needed": True,
@@ -1785,7 +1954,9 @@ def test_phase5_entry_script_action_allows_env_prefix_command() -> None:
     assert loop_vars["entry_script"] == "MPLBACKEND=Agg python3 new.py"
 
 
-def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validated(tmp_path: Path) -> None:
+def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validated(
+    tmp_path: Path,
+) -> None:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -1817,7 +1988,14 @@ def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validate
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
     validator = ValidatorEngine()
-    validator.register_validator("always_fail", lambda _data: {"passed": False, "errors": ["invalid repair classification"], "warnings": []})
+    validator.register_validator(
+        "always_fail",
+        lambda _data: {
+            "passed": False,
+            "errors": ["invalid repair classification"],
+            "warnings": [],
+        },
+    )
     artifact_store.artifact_dir = str(tmp_path / ".sm-artifacts" / "testrun")
     artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
     session_mgr.get_or_create.return_value = "session:error_analyzer"
@@ -1827,7 +2005,7 @@ def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validate
         json.dumps({"repair_role": "operator_fixer"}),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -1836,9 +2014,10 @@ def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validate
         project_dir=str(tmp_path),
         output_dir=str(tmp_path),
     )
+    # pylint: disable-next=protected-access; silent
     executor._execute_shell_phase = MagicMock(return_value=("success", {"ran": True}))
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python main.py"},
         state={},
@@ -1850,14 +2029,20 @@ def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validate
     )
 
     assert result["status"] == "failure"
-    assert result["step_outputs"]["analyze_error"]["validation_errors"] == ["invalid repair classification"]
-    artifact_store.save_phase_output.assert_called_once_with("analyze_error", result["step_outputs"]["analyze_error"])
+    assert result["step_outputs"]["analyze_error"]["validation_errors"] == [
+        "invalid repair classification"
+    ]
+    artifact_store.save_phase_output.assert_called_once_with(
+        "analyze_error", result["step_outputs"]["analyze_error"]
+    )
     artifact_store.mark_validated.assert_not_called()
-    executor._execute_shell_phase.assert_not_called()
+    executor._execute_shell_phase.assert_not_called()  # pylint: disable=protected-access; silent
     assert session_mgr.send_command.call_count == 3
 
 
-def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validated(tmp_path: Path) -> None:
+def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validated(
+    tmp_path: Path,
+) -> None:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -1888,7 +2073,9 @@ def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validate
         "repair_classification",
         lambda data: {
             "passed": data.get("repair_role") == "code_adapter",
-            "errors": [] if data.get("repair_role") == "code_adapter" else ["missing valid repair role"],
+            "errors": []
+            if data.get("repair_role") == "code_adapter"
+            else ["missing valid repair role"],
             "warnings": [],
         },
     )
@@ -1900,7 +2087,7 @@ def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validate
         json.dumps({"repair_role": "code_adapter", "category": "code"}),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -1910,7 +2097,7 @@ def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validate
         output_dir=str(tmp_path),
     )
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python main.py"},
         state={},
@@ -1925,10 +2112,16 @@ def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validate
     assert result["step_outputs"]["analyze_error"]["repair_role"] == "code_adapter"
     assert result["step_outputs"]["analyze_error"]["category"] == "code"
     assert "validation_errors" not in result["step_outputs"]["analyze_error"]
-    artifact_store.save_phase_output.assert_called_once_with("analyze_error", result["step_outputs"]["analyze_error"])
-    artifact_store.mark_validated.assert_called_once_with("analyze_error", result["step_outputs"]["analyze_error"])
+    artifact_store.save_phase_output.assert_called_once_with(
+        "analyze_error", result["step_outputs"]["analyze_error"]
+    )
+    artifact_store.mark_validated.assert_called_once_with(
+        "analyze_error", result["step_outputs"]["analyze_error"]
+    )
     assert session_mgr.send_command.call_count == 2
 
+
+# pylint: disable-next=too-many-locals; silent
 def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_path: Path):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -1977,6 +2170,7 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
     artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.send_command.side_effect = [
+        # pylint: disable-next=line-too-long; silent
         '{"repair_role": "dependency_fixer", "category": "dependency", "root_cause": "torch_npu missing", "suggested_fix": "install torch_npu"}',
         '{"fixed": true}',
     ]
@@ -1988,7 +2182,7 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
         return template
 
     prompt_loader.load_prompt.side_effect = load_prompt
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -1999,7 +2193,7 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
         experience_store=MagicMock(),
     )
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python main.py"},
         state={},
@@ -2015,7 +2209,8 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
 
     assert result["step_outputs"]["repair_dispatch"]["dispatched_to"] == "fix_dependency"
     fix_prompt = session_mgr.send_command.call_args_list[-1][0][1]
-    # Dependency fixer prompt now includes constraint_summary, No CPU Fallback, and Native Operator Handoff
+    # Dependency fixer prompt now includes constraint_summary, No CPU
+    # Fallback, and Native Operator Handoff
     assert "No CPU Fallback (CRITICAL)" in fix_prompt
     assert "Native Operator Handoff" in fix_prompt
     assert "## Analyzer-Selected Experience Action Cards" not in fix_prompt
@@ -2045,11 +2240,15 @@ def test_slim_repair_prompt_phase_predicate_covers_direct_and_improvement_roles(
         "fix_operator",
         "imp_fix_operator",
     ):
+        # pylint: disable-next=protected-access; silent
         assert WorkflowExecutor._is_slim_repair_prompt_phase(phase_id)
+    # pylint: disable-next=protected-access; silent
     assert not WorkflowExecutor._is_slim_repair_prompt_phase("fix_code")
+    # pylint: disable-next=protected-access; silent
     assert not WorkflowExecutor._is_slim_repair_prompt_phase("imp_fix_code")
 
 
+# pylint: disable-next=too-many-locals; silent
 def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt(tmp_path: Path):
     write_runtime_skill(tmp_path, "improvement-operator-runtime-skill")
     sub_workflow = SubWorkflowDefinition(
@@ -2069,7 +2268,10 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
                 "prompt_template": "repair_operator_fixer",
                 "agent": "operator_fixer",
                 "retrieve_experience": True,
-                "runtime_skills": {"include": ["improvement-operator-runtime-skill"], "missing": "ignore"},
+                "runtime_skills": {
+                    "include": ["improvement-operator-runtime-skill"],
+                    "missing": "ignore",
+                },
             },
         ],
     )
@@ -2097,7 +2299,7 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
         return template
 
     prompt_loader.load_prompt.side_effect = load_prompt
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -2109,7 +2311,7 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
         experience_store=MagicMock(),
     )
 
-    result = executor._run_sub_workflow(
+    result = executor._run_sub_workflow(  # pylint: disable=protected-access; silent
         sub_workflow,
         loop_vars={"entry_script": "python main.py"},
         state={},
@@ -2163,8 +2365,10 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
     assert "## Experience Card 1" in card_text
     assert "Read /skills/runtime-card/SKILL.md" in card_text
 
+
+# pylint: disable-next=too-many-locals,too-many-statements; silent
 def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path):
-    import sys as _sys
+    import sys as _sys  # pylint: disable=import-outside-toplevel; silent
 
     python = _sys.executable
     sub_workflow = SubWorkflowDefinition(
@@ -2177,7 +2381,7 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
                 "id": "run_entry_script",
                 "type": "shell",
                 "command": (
-                    f"{python} -c \"import pathlib, sys; "
+                    f'{python} -c "import pathlib, sys; '
                     f"p=pathlib.Path('{tmp_path / 'flag'}'); sys.exit(0 if p.exists() else 1)\""
                 ),
                 "on_failure": "continue",
@@ -2219,34 +2423,42 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
         sub_workflows={"repair_loop": sub_workflow},
     )
     store = ExperienceStore(str(tmp_path))
-    store.upsert_index({
-        "id": "code-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "CUDA Call Fix",
-        "target_roles": ["code_adapter"],
-        "target_phases": ["phase_5_validation"],
-    })
-    store.upsert_index({
-        "id": "ignored-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "Irrelevant Fix",
-        "target_roles": ["code_adapter"],
-        "target_phases": ["phase_5_validation"],
-    })
-    store.upsert_catalog_entry({
-        "id": "code-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "CUDA Call Fix",
-    })
-    store.upsert_catalog_entry({
-        "id": "ignored-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "Irrelevant Fix",
-    })
+    store.upsert_index(
+        {
+            "id": "code-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "CUDA Call Fix",
+            "target_roles": ["code_adapter"],
+            "target_phases": ["phase_5_validation"],
+        }
+    )
+    store.upsert_index(
+        {
+            "id": "ignored-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "Irrelevant Fix",
+            "target_roles": ["code_adapter"],
+            "target_phases": ["phase_5_validation"],
+        }
+    )
+    store.upsert_catalog_entry(
+        {
+            "id": "code-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "CUDA Call Fix",
+        }
+    )
+    store.upsert_catalog_entry(
+        {
+            "id": "ignored-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "Irrelevant Fix",
+        }
+    )
     telemetry_bridge = TelemetryBridge(str(tmp_path / "telemetry"))
     session_mgr = MagicMock()
     artifact_store = MagicMock()
@@ -2256,21 +2468,25 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
 
+    # pylint: disable-next=unused-argument; silent
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
+            # pylint: disable-next=line-too-long; silent
             return '{"repair_role": "code_adapter", "category": "code", "root_cause": "cuda", "suggested_fix": "use npu"}'
         (tmp_path / "flag").write_text("fixed", encoding="utf-8")
-        return json.dumps({
-            "fixed": True,
-            "used_experience_ids": ["code-exp"],
-            "experience_actions_taken": {"code-exp": ["replaced cuda call"]},
-            "ignored_experience_ids": ["ignored-exp"],
-            "ignored_reasons": {"ignored-exp": "not relevant to this CUDA call"},
-        })
+        return json.dumps(
+            {
+                "fixed": True,
+                "used_experience_ids": ["code-exp"],
+                "experience_actions_taken": {"code-exp": ["replaced cuda call"]},
+                "ignored_experience_ids": ["ignored-exp"],
+                "ignored_reasons": {"ignored-exp": "not relevant to this CUDA call"},
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -2291,7 +2507,7 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
     }
 
     with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
-        result = executor._execute_loop_phase(
+        result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
             PhaseDefinition(
                 id="phase_5_validation",
                 name="Validation",
@@ -2322,15 +2538,22 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
     assert catalog_by_id["ignored-exp"]["usage"]["ignored_count"] == 1
     assert legacy_by_id["code-exp"]["usage"]["used_count"] == 1
     assert legacy_by_id["ignored-exp"]["usage"]["ignored_count"] == 1
+    # pylint: disable-next=protected-access; silent
     event_types = [event["event_type"] for event in telemetry_bridge._events]
     assert "experience_selected" in event_types
     assert "experience_used" in event_types
     assert "experience_ignored" in event_types
     assert "experience_verification" in event_types
-    selected_event = next(event for event in telemetry_bridge._events if event["event_type"] == "experience_selected")
+    selected_event = next(
+        # pylint: disable-next=protected-access; silent
+        event for event in telemetry_bridge._events if event["event_type"] == "experience_selected"
+    )
     assert selected_event["details"]["action_card_count"] == 2
     assert "CUDA Call Fix" in selected_event["details"]["action_cards"][0]
-    ignored_event = next(event for event in telemetry_bridge._events if event["event_type"] == "experience_ignored")
+    ignored_event = next(
+        # pylint: disable-next=protected-access; silent
+        event for event in telemetry_bridge._events if event["event_type"] == "experience_ignored"
+    )
     assert ignored_event["details"]["ignored_reasons"] == {
         "ignored-exp": "not relevant to this CUDA call"
     }
@@ -2346,7 +2569,7 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
             {
                 "id": "run_entry_script",
                 "type": "shell",
-                "command": "python -c \"import sys; sys.exit(1)\"",
+                "command": 'python -c "import sys; sys.exit(1)"',
                 "on_failure": "continue",
             },
             {
@@ -2386,8 +2609,12 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
         sub_workflows={"repair_loop": sub_workflow},
     )
     store = ExperienceStore(str(tmp_path))
-    store.upsert_index({"id": "code-exp", "type": "skill", "status": "promoted", "title": "CUDA Call Fix"})
-    store.upsert_catalog_entry({"id": "code-exp", "type": "skill", "status": "promoted", "title": "CUDA Call Fix"})
+    store.upsert_index(
+        {"id": "code-exp", "type": "skill", "status": "promoted", "title": "CUDA Call Fix"}
+    )
+    store.upsert_catalog_entry(
+        {"id": "code-exp", "type": "skill", "status": "promoted", "title": "CUDA Call Fix"}
+    )
     session_mgr = MagicMock()
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
@@ -2396,20 +2623,24 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
 
+    # pylint: disable-next=unused-argument; silent
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
+            # pylint: disable-next=line-too-long; silent
             return '{"repair_role": "code_adapter", "category": "code", "root_cause": "cuda", "suggested_fix": "use npu"}'
-        return json.dumps({
-            "fixed": False,
-            "used_experience_ids": ["code-exp"],
-            "experience_actions_taken": {"code-exp": ["attempted cuda replacement"]},
-            "ignored_experience_ids": [],
-            "ignored_reasons": {},
-        })
+        return json.dumps(
+            {
+                "fixed": False,
+                "used_experience_ids": ["code-exp"],
+                "experience_actions_taken": {"code-exp": ["attempted cuda replacement"]},
+                "ignored_experience_ids": [],
+                "ignored_reasons": {},
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -2426,7 +2657,7 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
     }
 
     with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
-        result = executor._execute_loop_phase(
+        result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
             PhaseDefinition(
                 id="phase_5_validation",
                 name="Validation",
@@ -2453,6 +2684,7 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
     ]
 
 
+# pylint: disable-next=too-many-locals,too-many-statements; silent
 def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -2462,7 +2694,7 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
             {
                 "id": "run_entry_script",
                 "type": "shell",
-                "command": "python -c \"import sys; sys.exit(1)\"",
+                "command": 'python -c "import sys; sys.exit(1)"',
                 "on_failure": "continue",
             },
             {
@@ -2518,21 +2750,45 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
-    analyzer_outputs = iter([
-        {"repair_role": "dependency_fixer", "category": "dependency", "root_cause": "missing", "suggested_fix": "install"},
-        {"repair_role": "operator_fixer", "category": "operator", "root_cause": "unsupported", "suggested_fix": "replace op"},
-    ])
+    analyzer_outputs = iter(
+        [
+            {
+                "repair_role": "dependency_fixer",
+                "category": "dependency",
+                "root_cause": "missing",
+                "suggested_fix": "install",
+            },
+            {
+                "repair_role": "operator_fixer",
+                "category": "operator",
+                "root_cause": "unsupported",
+                "suggested_fix": "replace op",
+            },
+        ]
+    )
 
+    # pylint: disable-next=unused-argument; silent
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
-        if session_id == "session:error_analyzer":
+        if session_id == "session:error_analyzer":  # pylint: disable=no-else-return; silent
             return json.dumps(next(analyzer_outputs))
         elif session_id == "session:dependency_fixer":
-            return json.dumps({"fixed": True, "summary": "Installed torch_npu; dependency closure verified; no handoff needed", "modified_files": ["requirements.txt"], "agent_diagnostics": {"verified": True}})
-        return json.dumps({"fixed": True, "summary": "Replaced unsupported op", "modified_files": ["model.py"], "agent_diagnostics": {"verified": True}})
+            return json.dumps( { "fixed": True,
+    "summary": "Installed torch_npu; dependency closure verified; no handoff needed",
+    "modified_files": ["requirements.txt"],
+    "agent_diagnostics": {"verified": True},
+     } )
+        return json.dumps(
+            {
+                "fixed": True,
+                "summary": "Replaced unsupported op",
+                "modified_files": ["model.py"],
+                "agent_diagnostics": {"verified": True},
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -2542,7 +2798,7 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
         output_dir=str(tmp_path),
     )
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -2564,7 +2820,10 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert "fixer_outputs" in history[0]
     fixer0 = history[0]["fixer_outputs"]
     assert "fix_dependency" in fixer0
-    assert fixer0["fix_dependency"]["summary"] == "Installed torch_npu; dependency closure verified; no handoff needed"
+    assert (
+        fixer0["fix_dependency"]["summary"]
+        == "Installed torch_npu; dependency closure verified; no handoff needed"
+    )
     assert fixer0["fix_dependency"]["modified_files"] == ["requirements.txt"]
     assert fixer0["fix_dependency"]["agent_diagnostics"] == {"verified": "True"}
     assert "fixer_outputs" in history[1]
@@ -2574,7 +2833,7 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert fixer1["fix_operator"]["modified_files"] == ["model.py"]
     prompt_contexts = {
         call.args[0]: call.args[1]
-        for call in prompt_loader.load_prompt.call_args_list
+        for call in prompt_loader.load_prompt.call_args_list  # pylint: disable=no-member; silent
         if call.args[0] in {"fix_dependency_prompt", "fix_operator_prompt"}
     }
     assert "runtime_error_artifact_path" in prompt_contexts["fix_dependency_prompt"]
@@ -2584,6 +2843,7 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert "operator_custom_op_guidance" in prompt_contexts["fix_operator_prompt"]
     assert "operator_repair_context_artifact_path" not in prompt_contexts["fix_operator_prompt"]
 
+    # pylint: disable-next=protected-access; silent
     formatted = executor._format_error_analyzer_history(
         history,
         step_outputs={},
@@ -2600,6 +2860,7 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert "requirements.txt" in formatted
     assert "model.py" in formatted
 
+    # pylint: disable-next=protected-access; silent
     legacy_formatted = executor._format_error_analyzer_history(
         [{"iteration": 1, "status": "success", "duration": 0.1}],
         step_outputs={},
@@ -2612,7 +2873,7 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
     """Regression: when a fixer runs on the last loop iteration, the stale
     non-zero script_exit_code from the earlier run_entry_script must be
     refreshed by a canonical re-run so the loop can return success."""
-    import sys as _sys
+    import sys as _sys  # pylint: disable=import-outside-toplevel; silent
 
     python = _sys.executable  # use the same interpreter, portable across envs
     sub_workflow = SubWorkflowDefinition(
@@ -2625,7 +2886,7 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
                 "id": "run_entry_script",
                 "type": "shell",
                 "command": (
-                    f"{python} -c \"import pathlib, sys; "
+                    f'{python} -c "import pathlib, sys; '
                     f"p=pathlib.Path('{tmp_path / 'flag'}'); sys.exit(0 if p.exists() else 1)\""
                 ),
                 "on_failure": "continue",
@@ -2675,26 +2936,31 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
 
     # On the first pass run_entry_script fails (no flag yet).
     # The fix_dependency LLM creates the flag so the canonical re-run passes.
+    # pylint: disable-next=unused-argument; silent
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
-            return json.dumps({
-                "repair_role": "dependency_fixer",
-                "category": "dependency",
-                "root_cause": "missing flag",
-                "suggested_fix": "create flag file",
-            })
+            return json.dumps(
+                {
+                    "repair_role": "dependency_fixer",
+                    "category": "dependency",
+                    "root_cause": "missing flag",
+                    "suggested_fix": "create flag file",
+                }
+            )
         # dependency_fixer: create the flag file so re-run succeeds
         flag_path = tmp_path / "flag"
         flag_path.write_text("fixed", encoding="utf-8")
-        return json.dumps({
-            "fixed": True,
-            "summary": "Created flag file",
-            "modified_files": [str(flag_path)],
-        })
+        return json.dumps(
+            {
+                "fixed": True,
+                "summary": "Created flag file",
+                "modified_files": [str(flag_path)],
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -2704,7 +2970,7 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
         output_dir=str(tmp_path),
     )
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -2744,24 +3010,35 @@ def test_collect_fixer_outputs_extracts_summary_modified_files_and_diagnostics()
         "analyze_error": {"category": "dependency"},
         "irrelevant": "not a dict",
     }
-    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+    result = WorkflowExecutor._collect_fixer_outputs(  # pylint: disable=protected-access; silent
+        WorkflowExecutor.__new__(WorkflowExecutor), step_outputs
+    )
 
     assert result is not None
-    assert "fix_dependency" in result
+    assert "fix_dependency" in result  # pylint: disable=unsupported-membership-test; silent
+    # pylint: disable-next=unsubscriptable-object; silent
     assert result["fix_dependency"]["summary"] == "Installed torch_npu==2.1.0"
+    # pylint: disable-next=unsubscriptable-object; silent
     assert result["fix_dependency"]["modified_files"] == ["requirements.txt", "setup.cfg"]
+    # pylint: disable-next=unsubscriptable-object; silent
     assert result["fix_dependency"]["agent_diagnostics"] == {"verified": "True"}
-    assert "fix_code" in result
+    assert "fix_code" in result  # pylint: disable=unsupported-membership-test; silent
+    # pylint: disable-next=unsubscriptable-object; silent
     assert result["fix_code"]["summary"] == "Replaced .cuda() calls"
+    # pylint: disable-next=unsubscriptable-object; silent
     assert result["fix_code"]["modified_files"] == ["model.py"]
+    # pylint: disable-next=unsubscriptable-object; silent
     assert result["fix_code"]["agent_diagnostics"] == "All CUDA APIs migrated"
-    assert "fix_operator" not in result
+    assert "fix_operator" not in result  # pylint: disable=unsupported-membership-test; silent
+    # pylint: disable-next=unsupported-membership-test; silent
     assert "imp_fix_dependency" not in result
 
 
 def test_collect_fixer_outputs_returns_none_when_no_fixers():
     step_outputs = {"analyze_error": {"category": "operator"}, "script_stderr": "error text"}
-    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+    result = WorkflowExecutor._collect_fixer_outputs(  # pylint: disable=protected-access; silent
+        WorkflowExecutor.__new__(WorkflowExecutor), step_outputs
+    )
     assert result is None
 
 
@@ -2797,10 +3074,10 @@ def test_format_error_analyzer_history_renders_fixer_outputs():
         },
     ]
 
+    # pylint: disable-next=redefined-outer-name; silent
     executor = WorkflowExecutor.__new__(WorkflowExecutor)
-    formatted = executor._format_error_analyzer_history(
-        history, step_outputs={}, state={}
-    )
+    # pylint: disable-next=protected-access; silent
+    formatted = executor._format_error_analyzer_history(history, step_outputs={}, state={})
 
     assert "| Iter 1 | failure | 1.5 | dependency | dependency_fixer |" in formatted
     assert "| Iter 2 | failure | 2.0 | operator | operator_fixer |" in formatted
@@ -2838,18 +3115,22 @@ def test_format_history_summary_renders_fixer_outputs():
         },
     ]
 
+    # pylint: disable-next=redefined-outer-name; silent
     executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    # pylint: disable-next=protected-access; silent
     formatted = executor._format_history_summary(history)
 
     assert "| Iteration | Status | Duration | Summary | Agent Diagnostics |" in formatted
     assert "| 1 | failure | 1.5 | Installed torch_npu |" in formatted
     assert "| 2 | success | 2.0 | Added AscendC kernel | operator fixed |" in formatted
 
-    empty = executor._format_history_summary([])
+    empty = executor._format_history_summary([])  # pylint: disable=protected-access; silent
     assert "(No previous repair attempts)" in empty
 
 
-def _entry_script_revision_workflow(max_iterations: int = 3, max_revisions: int = 2) -> WorkflowDefinition:
+def _entry_script_revision_workflow(
+    max_iterations: int = 3, max_revisions: int = 2
+) -> WorkflowDefinition:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2900,7 +3181,9 @@ def _entry_script_revision_workflow(max_iterations: int = 3, max_revisions: int 
     )
 
 
-def _entry_script_revision_executor(tmp_path: Path, workflow: WorkflowDefinition) -> WorkflowExecutor:
+def _entry_script_revision_executor(
+    tmp_path: Path, workflow: WorkflowDefinition
+) -> WorkflowExecutor:
     session_mgr = MagicMock()
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
@@ -2910,7 +3193,7 @@ def _entry_script_revision_executor(tmp_path: Path, workflow: WorkflowDefinition
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -2925,32 +3208,37 @@ def _entry_script_revision_executor(tmp_path: Path, workflow: WorkflowDefinition
 
 def test_entry_script_action_revises_next_loop_command_and_skips_repair(tmp_path: Path):
     workflow = _entry_script_revision_workflow(max_iterations=3, max_revisions=2)
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _entry_script_revision_executor(tmp_path, workflow)
     revised_script = tmp_path / "final_evidence_validate.py"
-    revised_script.write_text("from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8")
+    revised_script.write_text(
+        "from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8"
+    )
     revised_command = f"python {revised_script}"
-    executor.session_mgr.send_command.return_value = json.dumps({
-        "repair_role": "code_adapter",
-        "category": "validation",
-        "root_cause": "Phase 3 command used the wrong script",
-        "suggested_fix": "Regenerate the command",
-        "entry_script_action": {
-            "needed": True,
-            "action": "regenerate",
-            "reason": "Use the generated validation script",
-            "entry_script_path": str(revised_script),
-            "run_command": revised_command,
-        },
-    })
+    executor.session_mgr.send_command.return_value = json.dumps(
+        {
+            "repair_role": "code_adapter",
+            "category": "validation",
+            "root_cause": "Phase 3 command used the wrong script",
+            "suggested_fix": "Regenerate the command",
+            "entry_script_action": {
+                "needed": True,
+                "action": "regenerate",
+                "reason": "Use the generated validation script",
+                "entry_script_path": str(revised_script),
+                "run_command": revised_command,
+            },
+        }
+    )
     state = {
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
-            "run_command": "python -c \"import sys; sys.exit(1)\"",
+            "run_command": 'python -c "import sys; sys.exit(1)"',
             "phase5_entry_script_revision_allowed": True,
         }
     }
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -2979,6 +3267,7 @@ def test_entry_script_action_revises_next_loop_command_and_skips_repair(tmp_path
 
 def test_entry_script_action_max_revision_limit_records_without_applying(tmp_path: Path):
     workflow = _entry_script_revision_workflow(max_iterations=2, max_revisions=1)
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _entry_script_revision_executor(tmp_path, workflow)
     first_revision_script = tmp_path / "first_revision.py"
     first_revision_script.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
@@ -2990,28 +3279,37 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
     # Use an iterator because loop_state is not stored on executor.state until the loop returns.
     analyzer_outputs = iter([first_revision, blocked_revision])
 
+    # pylint: disable-next=unused-argument; silent
     def respond_with_iterator(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
             command = next(analyzer_outputs)
-            return json.dumps({
-                "repair_role": "code_adapter",
-                "category": "validation",
-                "root_cause": "entry command mismatch",
-                "suggested_fix": "revise command",
-                "entry_script_action": {
-                    "needed": True,
-                    "action": "modify",
-                    "reason": "adjust command",
-                    "entry_script_path": "",
-                    "run_command": command,
-                },
-            })
+            return json.dumps(
+                {
+                    "repair_role": "code_adapter",
+                    "category": "validation",
+                    "root_cause": "entry command mismatch",
+                    "suggested_fix": "revise command",
+                    "entry_script_action": {
+                        "needed": True,
+                        "action": "modify",
+                        "reason": "adjust command",
+                        "entry_script_path": "",
+                        "run_command": command,
+                    },
+                }
+            )
         return json.dumps({"fixed": True})
 
     executor.session_mgr.send_command.side_effect = respond_with_iterator
-    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": "python -c \"import sys; sys.exit(1)\"", "phase5_entry_script_revision_allowed": True}}
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "old.py",
+            "run_command": 'python -c "import sys; sys.exit(1)"',
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -3032,15 +3330,25 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
     assert requests[1]["blocked_reason"] == "max_revisions_exceeded"
     assert state["phase_3_entry_script"]["run_command"] == first_revision
     assert result["loop_history"][1]["entry_script_action"]["applied"] is False
-    assert result["loop_history"][1]["entry_script_action"]["blocked_reason"] == "max_revisions_exceeded"
+    assert (
+        result["loop_history"][1]["entry_script_action"]["blocked_reason"]
+        == "max_revisions_exceeded"
+    )
     assert result["loop_history"][1]["repair_role"] == "code_adapter"
     called_sessions = [call.args[0] for call in executor.session_mgr.send_command.call_args_list]
-    assert called_sessions == ["session:error_analyzer", "session:error_analyzer", "session:code_adapter"]
+    assert called_sessions == [
+        "session:error_analyzer",
+        "session:error_analyzer",
+        "session:code_adapter",
+    ]
 
 
 def test_entry_script_action_blocks_when_phase3_contract_flag_false(tmp_path: Path):
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
-    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": "python old.py"}}
+    state = {
+        "phase_3_entry_script": {"entry_script_path": "old.py", "run_command": "python old.py"}
+    }
     loop_vars = {"entry_script": "python old.py"}
     loop_state: dict[str, object] = {
         "entry_script_revision_count": 0,
@@ -3048,7 +3356,7 @@ def test_entry_script_action_blocks_when_phase3_contract_flag_false(tmp_path: Pa
         "max_entry_script_revisions": 2,
     }
 
-    result = executor._maybe_apply_entry_script_action(
+    result = executor._maybe_apply_entry_script_action(  # pylint: disable=protected-access; silent
         {
             "entry_script_action": {
                 "needed": True,
@@ -3093,6 +3401,7 @@ def test_entry_script_action_blocks_when_phase3_contract_flag_false(tmp_path: Pa
     ],
 )
 def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_command: str):
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
     state = {
         "phase_3_entry_script": {
@@ -3108,7 +3417,7 @@ def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_c
         "max_entry_script_revisions": 2,
     }
 
-    result = executor._maybe_apply_entry_script_action(
+    result = executor._maybe_apply_entry_script_action(  # pylint: disable=protected-access; silent
         {
             "entry_script_action": {
                 "needed": True,
@@ -3130,7 +3439,9 @@ def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_c
     assert state["phase_3_entry_script"]["run_command"] == "python old.py"
 
 
-def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_required(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_required(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -3140,8 +3451,10 @@ def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_req
         validator="entry_script",
         agent="main_engineer",
     )
-    executor = WorkflowExecutor(
-        WorkflowDefinition(name="phase3-custom-op-required", version="1.0", phases=[phase], terminals=[]),
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        WorkflowDefinition(
+            name="phase3-custom-op-required", version="1.0", phases=[phase], terminals=[]
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -3150,7 +3463,7 @@ def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_req
         output_dir=str(tmp_path),
     )
 
-    normalized = executor._normalize_llm_output(
+    normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"previous_outputs": "phase_1 says CUDAExtension custom operator is required"},
@@ -3163,7 +3476,9 @@ def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_req
     assert any("required_report_paths" in error for error in result["errors"])
 
 
-def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -3173,7 +3488,7 @@ def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context
         validator="entry_script",
         agent="main_engineer",
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(name="phase3-legacy", version="1.0", phases=[phase], terminals=[]),
         MagicMock(),
         MagicMock(),
@@ -3183,7 +3498,7 @@ def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context
         output_dir=str(tmp_path),
     )
 
-    normalized = executor._normalize_llm_output(
+    normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"previous_outputs": "plain project"},
@@ -3195,7 +3510,9 @@ def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context
     assert result["passed"] is True
 
 
-def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_op_context(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_op_context(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -3205,8 +3522,10 @@ def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_o
         validator="entry_script",
         agent="main_engineer",
     )
-    executor = WorkflowExecutor(
-        WorkflowDefinition(name="phase3-negative-custom-op", version="1.0", phases=[phase], terminals=[]),
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        WorkflowDefinition(
+            name="phase3-negative-custom-op", version="1.0", phases=[phase], terminals=[]
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -3220,7 +3539,7 @@ def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_o
         "no CUDA custom operators",
         "custom_op_detected: false",
     ):
-        normalized = executor._normalize_llm_output(
+        normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
             phase,
             {"entry_script_path": "train.py", "run_command": "python train.py"},
             {"previous_outputs": notes},
@@ -3232,7 +3551,9 @@ def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_o
         assert result["passed"] is True
 
 
-def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_op_context(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_op_context(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -3242,8 +3563,10 @@ def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_o
         validator="entry_script",
         agent="main_engineer",
     )
-    executor = WorkflowExecutor(
-        WorkflowDefinition(name="phase3-structured-custom-op", version="1.0", phases=[phase], terminals=[]),
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        WorkflowDefinition(
+            name="phase3-structured-custom-op", version="1.0", phases=[phase], terminals=[]
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -3252,7 +3575,7 @@ def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_o
         output_dir=str(tmp_path),
     )
 
-    false_surface = executor._normalize_llm_output(
+    false_surface = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"previous_outputs": "looked for torch.ops"},
@@ -3270,7 +3593,7 @@ def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_o
     result = validate_entry_script(false_surface)
     assert result["passed"] is True
 
-    true_surface = executor._normalize_llm_output(
+    true_surface = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"previous_outputs": {}},
@@ -3285,7 +3608,7 @@ def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_o
     )
     assert true_surface["entry_script_kind"] == "custom_op_full_validation"
 
-    contract_output = executor._normalize_llm_output(
+    contract_output = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"previous_outputs": {}},
@@ -3299,7 +3622,9 @@ def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_o
     assert contract_output["entry_script_kind"] == "custom_op_full_validation"
 
 
-def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tmp_path: Path) -> None:
+def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_35_static_validate",
         name="Static Validate",
@@ -3323,32 +3648,36 @@ def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tm
     validator.register_validator("entry_static", validate_entry_static)
     session_mgr.get_or_create.return_value = "session:main"
     session_mgr.send_command.side_effect = [
-        json.dumps({
-            "validation_passed": True,
-            "issues": [],
-            "fix_plan": "Legacy static pass shape.",
-        }),
-        json.dumps({
-            "validation_passed": True,
-            "issues": [],
-            "fix_plan": "Full custom-op static pass shape.",
-            "custom_op_requirements_checked": True,
-            "script_source_driven_inventory": True,
-            "script_emits_fine_grained_units": True,
-            "script_maps_public_api_to_units": True,
-            "script_discovers_full_inventory": True,
-            "script_records_native_operator_symbols": True,
-            "script_runs_project_api_custom_ops": True,
-            "script_rejects_report_only_success": True,
-            "script_requires_project_local_artifacts": True,
-            "script_requires_numeric_performance": True,
-            "script_checks_no_fallback": True,
-        }),
+        json.dumps(
+            {
+                "validation_passed": True,
+                "issues": [],
+                "fix_plan": "Legacy static pass shape.",
+            }
+        ),
+        json.dumps(
+            {
+                "validation_passed": True,
+                "issues": [],
+                "fix_plan": "Full custom-op static pass shape.",
+                "custom_op_requirements_checked": True,
+                "script_source_driven_inventory": True,
+                "script_emits_fine_grained_units": True,
+                "script_maps_public_api_to_units": True,
+                "script_discovers_full_inventory": True,
+                "script_records_native_operator_symbols": True,
+                "script_runs_project_api_custom_ops": True,
+                "script_rejects_report_only_success": True,
+                "script_requires_project_local_artifacts": True,
+                "script_requires_numeric_performance": True,
+                "script_checks_no_fallback": True,
+            }
+        ),
     ]
     prompt_loader.load_prompt.return_value = "prompt"
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -3358,7 +3687,7 @@ def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tm
         output_dir=str(tmp_path),
     )
 
-    status, output = executor._execute_llm_phase(
+    status, output = executor._execute_llm_phase(  # pylint: disable=protected-access; silent
         phase,
         {"phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"}},
         {},
@@ -3371,7 +3700,9 @@ def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tm
     assert session_mgr.send_command.call_count == 2
 
 
-def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mark_validated(tmp_path: Path) -> None:
+def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mark_validated(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_35_static_validate",
         name="Static Validate",
@@ -3403,7 +3734,7 @@ def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mar
     prompt_loader.load_prompt.return_value = "prompt"
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -3413,7 +3744,7 @@ def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mar
         output_dir=str(tmp_path),
     )
 
-    status, output = executor._execute_llm_phase(
+    status, output = executor._execute_llm_phase(  # pylint: disable=protected-access; silent
         phase,
         {"phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"}},
         {},
@@ -3421,13 +3752,17 @@ def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mar
 
     assert status == "failure"
     assert output["custom_op_static_required"] is True
-    assert any("custom-op static validation missing booleans" in error for error in output["validation_errors"])
+    assert any(
+        "custom-op static validation missing booleans" in error
+        for error in output["validation_errors"]
+    )
     artifact_store.save_phase_output.assert_called_once()
     artifact_store.mark_validated.assert_not_called()
     assert session_mgr.send_command.call_count == 3
 
 
 def test_entry_script_action_needed_false_string_does_not_apply_or_count(tmp_path: Path):
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
     state = {"phase_3_entry_script": {"run_command": "python old.py"}}
     loop_vars = {"entry_script": "python old.py"}
@@ -3438,7 +3773,7 @@ def test_entry_script_action_needed_false_string_does_not_apply_or_count(tmp_pat
         "max_entry_script_revisions": 2,
     }
 
-    result = executor._maybe_apply_entry_script_action(
+    result = executor._maybe_apply_entry_script_action(  # pylint: disable=protected-access; silent
         {
             "entry_script_action": {
                 "needed": "false",
@@ -3459,13 +3794,15 @@ def test_entry_script_action_needed_false_string_does_not_apply_or_count(tmp_pat
     assert result["applied"] is False
     assert result["blocked_reason"] == "not_needed"
     assert loop_state["entry_script_revision_count"] == 0
+    # pylint: disable-next=use-implicit-booleaness-not-comparison; silent
     assert loop_state["entry_script_revision_requests"] == []
     assert loop_vars["entry_script"] == "python old.py"
     assert state["phase_3_entry_script"]["run_command"] == "python old.py"
-    assert step_outputs == {}
+    assert step_outputs == {}  # pylint: disable=use-implicit-booleaness-not-comparison; silent
 
 
 def test_entry_script_action_needed_string_normalization():
+    # pylint: disable-next=protected-access; silent
     normalize = WorkflowExecutor._normalize_entry_script_action
 
     for value in (True, "true", "1", "yes"):
@@ -3477,7 +3814,9 @@ def test_entry_script_action_needed_string_normalization():
 
 
 def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_context(tmp_path: Path):
-    prompt_content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery.md").read_text(encoding="utf-8")
+    prompt_content = (
+        Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery.md"
+    ).read_text(encoding="utf-8")
     assert "entry_script_contract" in prompt_content
     assert "entry_script_action" in prompt_content
     assert '"needed": false' in prompt_content
@@ -3485,9 +3824,10 @@ def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_contex
     assert '"run_command": ""' in prompt_content
     assert "reason freely" not in prompt_content
 
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
     input_ctx: dict[str, str] = {}
-    executor._inject_sub_workflow_context(
+    executor._inject_sub_workflow_context(  # pylint: disable=protected-access; silent
         input_ctx,
         "analyze_error",
         {"script_stderr": "failed"},
@@ -3510,9 +3850,11 @@ def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_contex
 
 
 def test_missing_experience_usage_fields_normalize_to_empty(tmp_path: Path):
+    # pylint: disable-next=redefined-outer-name; silent
     executor = _executor_for_experience_context(tmp_path)
     output = {"fixed": True}
 
+    # pylint: disable-next=protected-access; silent
     usage = executor._normalize_experience_usage_report(output)
 
     assert usage == {
@@ -3706,12 +4048,14 @@ def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
-    session_mgr.send_command.return_value = json.dumps({
-        "repair_role": "code_adapter",
-        "category": "validation",
-        "root_cause": "final evidence gate failed",
-        "suggested_fix": "complete custom-op evidence",
-    })
+    session_mgr.send_command.return_value = json.dumps(
+        {
+            "repair_role": "code_adapter",
+            "category": "validation",
+            "root_cause": "final evidence gate failed",
+            "suggested_fix": "complete custom-op evidence",
+        }
+    )
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
     return WorkflowExecutor(
         _custom_op_gate_workflow(),
@@ -3724,8 +4068,9 @@ def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
     )
 
 
-
-def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_default(tmp_path: Path) -> None:
+def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_default(
+    tmp_path: Path,
+) -> None:
     """Rule-based migration without explicit backend defaults to report_only (safe)."""
     source_file = tmp_path / "model.py"
     original = (
@@ -3735,8 +4080,10 @@ def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_defa
         "    tensor = torch.ones(1).cuda()\n"
     )
     source_file.write_text(original, encoding="utf-8")
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
-    executor = WorkflowExecutor(
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -3754,6 +4101,7 @@ def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_defa
     )
     setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py"})
 
+    # pylint: disable-next=protected-access; silent
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
     migrated = source_file.read_text(encoding="utf-8")
@@ -3777,8 +4125,10 @@ def test_rule_based_migration_builtin_with_backend_ppu(tmp_path: Path) -> None:
         "    tensor = torch.ones(1).cuda()\n"
     )
     source_file.write_text(original, encoding="utf-8")
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
-    executor = WorkflowExecutor(
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -3794,8 +4144,11 @@ def test_rule_based_migration_builtin_with_backend_ppu(tmp_path: Path) -> None:
         output_schema={},
         type="builtin",
     )
-    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py", "backend": "ppu"})
+    setattr(
+        phase, "params", {"operation": "rule_based_migration", "pattern": "*.py", "backend": "ppu"}
+    )
 
+    # pylint: disable-next=protected-access; silent
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
     migrated = source_file.read_text(encoding="utf-8")
@@ -3817,8 +4170,10 @@ def test_rule_based_migration_builtin_with_backend_report_only(tmp_path: Path) -
         "    tensor = torch.ones(1).cuda()\n"
     )
     source_file.write_text(original, encoding="utf-8")
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
-    executor = WorkflowExecutor(
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -3834,8 +4189,13 @@ def test_rule_based_migration_builtin_with_backend_report_only(tmp_path: Path) -
         output_schema={},
         type="builtin",
     )
-    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py", "backend": "report_only"})
+    setattr(
+        phase,
+        "params",
+        {"operation": "rule_based_migration", "pattern": "*.py", "backend": "report_only"},
+    )
 
+    # pylint: disable-next=protected-access; silent
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
     migrated = source_file.read_text(encoding="utf-8")
@@ -3847,6 +4207,7 @@ def test_rule_based_migration_builtin_with_backend_report_only(tmp_path: Path) -
 
 
 def test_rule_based_migration_top_level_strategy_file_overrides_platform(tmp_path: Path) -> None:
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import TargetPlatformConfig
 
     source_file = tmp_path / "model.py"
@@ -3860,7 +4221,7 @@ def test_rule_based_migration_top_level_strategy_file_overrides_platform(tmp_pat
         target_platform=TargetPlatformConfig(preset="npu_ascend"),
         rule_migration={"strategy_file": "rule_strategies/report_only.yaml"},
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -3878,6 +4239,7 @@ def test_rule_based_migration_top_level_strategy_file_overrides_platform(tmp_pat
     )
     setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py"})
 
+    # pylint: disable-next=protected-access; silent
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
     assert status == "success"
@@ -3885,7 +4247,10 @@ def test_rule_based_migration_top_level_strategy_file_overrides_platform(tmp_pat
     assert source_file.read_text(encoding="utf-8") == original
 
 
-def test_rule_based_migration_platform_strategy_used_without_workflow_override(tmp_path: Path) -> None:
+def test_rule_based_migration_platform_strategy_used_without_workflow_override(
+    tmp_path: Path,
+) -> None:
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.platform_policy import TargetPlatformConfig
 
     source_file = tmp_path / "model.py"
@@ -3897,7 +4262,7 @@ def test_rule_based_migration_platform_strategy_used_without_workflow_override(t
         terminals=["complete"],
         target_platform=TargetPlatformConfig(preset="npu_ascend"),
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -3915,6 +4280,7 @@ def test_rule_based_migration_platform_strategy_used_without_workflow_override(t
     )
     setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py"})
 
+    # pylint: disable-next=protected-access; silent
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
     migrated = source_file.read_text(encoding="utf-8")
@@ -3924,8 +4290,10 @@ def test_rule_based_migration_platform_strategy_used_without_workflow_override(t
 
 
 def test_builtin_phase_missing_operation_fails(tmp_path: Path) -> None:
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
-    executor = WorkflowExecutor(
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -3942,6 +4310,7 @@ def test_builtin_phase_missing_operation_fails(tmp_path: Path) -> None:
         type="builtin",
     )
 
+    # pylint: disable-next=protected-access; silent
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
     assert status == "failure"
@@ -3974,7 +4343,7 @@ def test_builtin_phase_missing_operation_does_not_fall_through(tmp_path: Path) -
         phases=[bad_phase, next_phase],
         terminals=["complete"],
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         MagicMock(),
         MagicMock(),
@@ -3991,11 +4360,14 @@ def test_builtin_phase_missing_operation_does_not_fall_through(tmp_path: Path) -
 
 
 def test_experience_memory_workflow_has_custom_op_final_gate_after_entry_script() -> None:
-    workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+    workflow_path = (
+        Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+    )
     workflow = load_workflow(str(workflow_path))
 
     gate_phase = next(
-        phase for phase in workflow.sub_workflows["repair_loop"].phases
+        phase
+        for phase in workflow.sub_workflows["repair_loop"].phases
         if isinstance(phase, dict) and phase.get("id") == "custom_op_final_gate"
     )
 
@@ -4004,17 +4376,25 @@ def test_experience_memory_workflow_has_custom_op_final_gate_after_entry_script(
     assert gate_phase["params"] == {"operation": "custom_op_final_gate"}
 
 
+# pylint: disable-next=unused-argument; silent
 def test_experience_memory_custom_op_gate_skips_for_non_custom_contract(tmp_path: Path) -> None:
-    workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+    workflow_path = (
+        Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+    )
     workflow = load_workflow(str(workflow_path))
 
-    phase_ids = [phase.get("id") for phase in workflow.sub_workflows["repair_loop"].phases if isinstance(phase, dict)]
+    phase_ids = [
+        phase.get("id")
+        for phase in workflow.sub_workflows["repair_loop"].phases
+        if isinstance(phase, dict)
+    ]
     assert "custom_op_final_gate" in phase_ids
+
 
 def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
-    executor = _custom_op_gate_executor(tmp_path)
+    executor = _custom_op_gate_executor(tmp_path)  # pylint: disable=redefined-outer-name; silent
     state = {
         "phase_3_entry_script": {
             "entry_script_kind": "custom_op_full_validation",
@@ -4023,7 +4403,7 @@ def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> N
         }
     }
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -4031,7 +4411,10 @@ def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> N
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4051,7 +4434,7 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
     performance_report = cast(dict[str, object], payload["performance_report"])
     performance_report["complete"] = False
     (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(payload), encoding="utf-8")
-    executor = _custom_op_gate_executor(tmp_path)
+    executor = _custom_op_gate_executor(tmp_path)  # pylint: disable=redefined-outer-name; silent
     state = {
         "phase_3_entry_script": {
             "entry_script_kind": "custom_op_full_validation",
@@ -4060,7 +4443,7 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
         }
     }
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -4068,7 +4451,10 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4076,14 +4462,19 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
 
     assert result["status"] == "failure"
     assert result["loop_state"]["script_exit_code"] == 1
-    assert any("performance_report.complete" in error for error in result["loop_state"]["custom_op_final_gate"]["errors"])
+    assert any(
+        "performance_report.complete" in error
+        for error in result["loop_state"]["custom_op_final_gate"]["errors"]
+    )
 
 
 def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path) -> None:
     outside = tmp_path / "outside_reports"
     outside.mkdir()
-    (outside / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
-    executor = _custom_op_gate_executor(tmp_path)
+    (outside / "custom_op_final_gate.json").write_text(
+        json.dumps(_custom_op_gate_payload()), encoding="utf-8"
+    )
+    executor = _custom_op_gate_executor(tmp_path)  # pylint: disable=redefined-outer-name; silent
     state = {
         "phase_3_entry_script": {
             "entry_script_kind": "custom_op_full_validation",
@@ -4092,7 +4483,7 @@ def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path
         }
     }
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -4100,7 +4491,10 @@ def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4109,14 +4503,18 @@ def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path
     assert result["status"] == "failure"
     gate = result["loop_state"]["custom_op_final_gate"]
     assert gate["passed"] is False
-    assert gate["path"] == str((tmp_path / "migration_reports" / "custom_op_final_gate.json").resolve())
+    assert gate["path"] == str(
+        (tmp_path / "migration_reports" / "custom_op_final_gate.json").resolve()
+    )
 
 
 def test_custom_op_final_gate_rejects_oversized_report(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
-    _ = (reports_dir / "custom_op_final_gate.json").write_text("{" + " " * (5 * 1024 * 1024), encoding="utf-8")
-    executor = _custom_op_gate_executor(tmp_path)
+    _ = (reports_dir / "custom_op_final_gate.json").write_text(
+        "{" + " " * (5 * 1024 * 1024), encoding="utf-8"
+    )
+    executor = _custom_op_gate_executor(tmp_path)  # pylint: disable=redefined-outer-name; silent
     state = {
         "phase_3_entry_script": {
             "entry_script_kind": "custom_op_full_validation",
@@ -4125,7 +4523,7 @@ def test_custom_op_final_gate_rejects_oversized_report(tmp_path: Path) -> None:
         }
     }
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -4133,22 +4531,29 @@ def test_custom_op_final_gate_rejects_oversized_report(tmp_path: Path) -> None:
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
     )
 
     assert result["status"] == "failure"
-    assert any("too large" in error for error in result["loop_state"]["custom_op_final_gate"]["errors"])
+    assert any(
+        "too large" in error for error in result["loop_state"]["custom_op_final_gate"]["errors"]
+    )
 
 
 def test_valid_custom_op_final_gate_allows_phase5_success(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
     _write_native_custom_op_gate_artifacts(tmp_path)
-    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
-    executor = _custom_op_gate_executor(tmp_path)
+    (reports_dir / "custom_op_final_gate.json").write_text(
+        json.dumps(_custom_op_gate_payload()), encoding="utf-8"
+    )
+    executor = _custom_op_gate_executor(tmp_path)  # pylint: disable=redefined-outer-name; silent
     state = {
         "phase_3_entry_script": {
             "entry_script_kind": "custom_op_full_validation",
@@ -4157,7 +4562,7 @@ def test_valid_custom_op_final_gate_allows_phase5_success(tmp_path: Path) -> Non
         }
     }
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -4165,7 +4570,10 @@ def test_valid_custom_op_final_gate_allows_phase5_success(tmp_path: Path) -> Non
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4178,10 +4586,10 @@ def test_valid_custom_op_final_gate_allows_phase5_success(tmp_path: Path) -> Non
 
 
 def test_non_custom_project_skips_custom_op_final_gate(tmp_path: Path) -> None:
-    executor = _custom_op_gate_executor(tmp_path)
+    executor = _custom_op_gate_executor(tmp_path)  # pylint: disable=redefined-outer-name; silent
     state = {"phase_3_entry_script": {"run_command": "python validate.py"}}
 
-    result = executor._execute_loop_phase(
+    result = executor._execute_loop_phase(  # pylint: disable=protected-access; silent
         PhaseDefinition(
             id="phase_5_validation",
             name="Validation",
@@ -4189,7 +4597,10 @@ def test_non_custom_project_skips_custom_op_final_gate(tmp_path: Path) -> None:
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4220,48 +4631,75 @@ class FakePhase7SessionManager:
         return json.dumps(self.response)
 
 
-def test_phase7a_orchestration_uses_artifact_backed_evaluator_and_persists_candidates(tmp_path: Path):
+def test_phase7a_orchestration_uses_artifact_backed_evaluator_and_persists_candidates(
+    tmp_path: Path,
+):
     project_root = tmp_path / "project"
     project_root.mkdir()
     (project_root / "model.py").write_text("import torch\nprint('npu fix')\n", encoding="utf-8")
 
     artifact_store = ArtifactStore(str(tmp_path), "run-1")
-    Path(artifact_store.validated_dir, "phase_1_project_analysis_canonical.json").write_text(json.dumps({
-        "project_dir": str(project_root),
-        "dependencies": ["torch"],
-        "unique_project_marker": "artifact-project-context",
-    }), encoding="utf-8")
-    Path(artifact_store.validated_dir, "phase_5_validation_canonical.json").write_text(json.dumps({
-        "final_status": "success",
-        "unique_validation_marker": "artifact-validation-context",
-    }), encoding="utf-8")
-    Path(artifact_store.raw_dir, "phase_run_entry_script_attempt1.json").write_text(json.dumps({
-        "stderr": "missing torch_npu before fix",
-        "unique_raw_marker": "artifact-raw-context",
-    }), encoding="utf-8")
+    Path(artifact_store.validated_dir, "phase_1_project_analysis_canonical.json").write_text(
+        json.dumps(
+            {
+                "project_dir": str(project_root),
+                "dependencies": ["torch"],
+                "unique_project_marker": "artifact-project-context",
+            }
+        ),
+        encoding="utf-8",
+    )
+    Path(artifact_store.validated_dir, "phase_5_validation_canonical.json").write_text(
+        json.dumps(
+            {
+                "final_status": "success",
+                "unique_validation_marker": "artifact-validation-context",
+            }
+        ),
+        encoding="utf-8",
+    )
+    Path(artifact_store.raw_dir, "phase_run_entry_script_attempt1.json").write_text(
+        json.dumps(
+            {
+                "stderr": "missing torch_npu before fix",
+                "unique_raw_marker": "artifact-raw-context",
+            }
+        ),
+        encoding="utf-8",
+    )
     Path(artifact_store.journal_path).write_text(
-        json.dumps({"phase_id": "phase_5_validation", "unique_journal_marker": "artifact-journal-context"}) + "\n",
+        json.dumps(
+            {"phase_id": "phase_5_validation", "unique_journal_marker": "artifact-journal-context"}
+        )
+        + "\n",
         encoding="utf-8",
     )
 
     store = ExperienceStore(str(tmp_path))
-    session_mgr = FakePhase7SessionManager({
-        "evaluation_summary": "Found dependency pattern",
-        "project_source_root": str(project_root),
-        "candidates": [{
-            "title": "Install torch-npu after CPU torch",
-            "problem_description": "Generic dependency fix",
-            "rough_fix_approach": "Pin CPU torch then install torch-npu",
-            "artifact_evidence": ["validated/phase_5_validation_canonical.json", "raw/phase_run_entry_script_attempt1.json"],
-            "involved_code_files": [{"path": "model.py", "role": "entry"}],
-            "recommended_type": "skill",
-            "category": "dependency",
-            "subtype": "torch_npu_install",
-            "tags": ["torch-npu", "pip"],
-            "confidence": 0.92,
-        }],
-    })
-    executor = WorkflowExecutor(
+    session_mgr = FakePhase7SessionManager(
+        {
+            "evaluation_summary": "Found dependency pattern",
+            "project_source_root": str(project_root),
+            "candidates": [
+                {
+                    "title": "Install torch-npu after CPU torch",
+                    "problem_description": "Generic dependency fix",
+                    "rough_fix_approach": "Pin CPU torch then install torch-npu",
+                    "artifact_evidence": [
+                        "validated/phase_5_validation_canonical.json",
+                        "raw/phase_run_entry_script_attempt1.json",
+                    ],
+                    "involved_code_files": [{"path": "model.py", "role": "entry"}],
+                    "recommended_type": "skill",
+                    "category": "dependency",
+                    "subtype": "torch_npu_install",
+                    "tags": ["torch-npu", "pip"],
+                    "confidence": 0.92,
+                }
+            ],
+        }
+    )
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(name="phase7", version="1.0", phases=[], terminals=[]),
         session_mgr,
         artifact_store,
@@ -4280,6 +4718,7 @@ def test_phase7a_orchestration_uses_artifact_backed_evaluator_and_persists_candi
         handler="experience_evaluator.ExperienceEvaluator.evaluate",
     )
 
+    # pylint: disable-next=protected-access; silent
     result = executor._execute_orchestration_phase(phase, {}, {})
 
     assert result["status"] == "success"
@@ -4292,36 +4731,44 @@ def test_phase7a_orchestration_uses_artifact_backed_evaluator_and_persists_candi
     candidates = store.read_candidates("run-1")
     assert candidates[0]["candidate_id"] == "candidate-001"
     assert candidates[0]["project_source_root"] == str(project_root)
-    assert (tmp_path / "memory" / "staging" / "run-1" / "evaluation_summary.md").read_text(encoding="utf-8") == "Found dependency pattern"
+    assert (tmp_path / "memory" / "staging" / "run-1" / "evaluation_summary.md").read_text(
+        encoding="utf-8"
+    ) == "Found dependency pattern"
 
 
 def test_phase7b_orchestration_refines_candidates_and_updates_catalog_manifest(tmp_path: Path):
     artifact_store = ArtifactStore(str(tmp_path), "run-1")
     store = ExperienceStore(str(tmp_path))
-    store.upsert_index({
-        "id": "run-0-exp-existing",
-        "type": "skill",
-        "status": "staging",
-        "category": "dependency",
-        "subtype": "torch_npu_install",
-        "tags": ["torch-npu", "pip"],
-        "title": "Existing torch-npu install fix",
-        "confidence": 0.7,
-    })
-    store.write_candidate("run-1", "candidate-001", {
-        "candidate_id": "candidate-001",
-        "skill_name": "torch-npu-install-order",
-        "title": "Install torch-npu after CPU torch",
-        "problem_description": "torch-npu dependency resolution failed",
-        "rough_fix_approach": "Install CPU torch first, then torch-npu",
-        "recommended_type": "skill",
-        "category": "dependency",
-        "subtype": "torch_npu_install",
-        "tags": ["torch-npu", "pip"],
-        "confidence": 0.95,
-        "fix_steps": ["Install CPU torch before torch-npu"],
-    })
-    executor = WorkflowExecutor(
+    store.upsert_index(
+        {
+            "id": "run-0-exp-existing",
+            "type": "skill",
+            "status": "staging",
+            "category": "dependency",
+            "subtype": "torch_npu_install",
+            "tags": ["torch-npu", "pip"],
+            "title": "Existing torch-npu install fix",
+            "confidence": 0.7,
+        }
+    )
+    store.write_candidate(
+        "run-1",
+        "candidate-001",
+        {
+            "candidate_id": "candidate-001",
+            "skill_name": "torch-npu-install-order",
+            "title": "Install torch-npu after CPU torch",
+            "problem_description": "torch-npu dependency resolution failed",
+            "rough_fix_approach": "Install CPU torch first, then torch-npu",
+            "recommended_type": "skill",
+            "category": "dependency",
+            "subtype": "torch_npu_install",
+            "tags": ["torch-npu", "pip"],
+            "confidence": 0.95,
+            "fix_steps": ["Install CPU torch before torch-npu"],
+        },
+    )
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(name="phase7", version="1.0", phases=[], terminals=[]),
         None,
         artifact_store,
@@ -4340,6 +4787,7 @@ def test_phase7b_orchestration_refines_candidates_and_updates_catalog_manifest(t
         handler="experience_dispatcher.ExperienceDispatcher.dispatch_and_refine",
     )
 
+    # pylint: disable-next=protected-access; silent
     result = executor._execute_orchestration_phase(phase, {}, {})
 
     assert result["status"] == "success"
@@ -4355,8 +4803,10 @@ def test_phase7b_orchestration_refines_candidates_and_updates_catalog_manifest(t
     assert legacy_statuses["run-0-exp-existing"] == "consumed"
 
 
-def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(tmp_path: Path) -> None:
-    from core.paths import execution_root
+def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(
+    tmp_path: Path,
+) -> None:
+    from core.paths import execution_root  # pylint: disable=import-outside-toplevel; silent
 
     skill_root_name = "__relative_runtime_skills__"
     skill_repo_root = execution_root() / skill_root_name
@@ -4385,7 +4835,7 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         session_mgr.get_or_create.return_value = "session_123"
         session_mgr.send_command.return_value = '{"ok": true}'
         prompt_loader.load_prompt.return_value = "BASE PROMPT"
-        executor = WorkflowExecutor(
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
             workflow,
             session_mgr,
             artifact_store,
@@ -4401,6 +4851,7 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         cwd.mkdir()
         os.chdir(cwd)
         try:
+            # pylint: disable-next=protected-access; silent
             _ = executor._execute_llm_phase(phase, {}, {})
         finally:
             os.chdir(old_cwd)
@@ -4409,7 +4860,7 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         assert "### agent-skill" in sent_prompt
         assert "Agent guidance" in sent_prompt
     finally:
-        import shutil
+        import shutil  # pylint: disable=import-outside-toplevel; silent
 
         shutil.rmtree(skill_repo_root, ignore_errors=True)
 
@@ -4428,11 +4879,19 @@ class TestPhase5ContainerEnvPrefix:
         )
         mock_backend = MagicMock(spec=ContainerBackend)
         mock_backend.run.return_value = MagicMock(
-            exit_code=0, stdout="", stderr="", duration=0.1,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration=0.1,
         )
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=mock_backend,
         )
         phase = PhaseDefinition(
@@ -4445,8 +4904,12 @@ class TestPhase5ContainerEnvPrefix:
         )
         setattr(phase, "command", "${loop_vars.entry_script}")
 
-        executor._execute_shell_phase(
-            phase, state={}, context={}, loop_vars={"entry_script": cmd}, loop_state={},
+        executor._execute_shell_phase(  # pylint: disable=protected-access; silent
+            phase,
+            state={},
+            context={},
+            loop_vars={"entry_script": cmd},
+            loop_state={},
         )
 
         mock_backend.run.assert_called_once()
@@ -4469,11 +4932,19 @@ class TestPhase5ContainerEnvPrefix:
         )
         mock_backend = MagicMock(spec=ContainerBackend)
         mock_backend.run.return_value = MagicMock(
-            exit_code=0, stdout="", stderr="", duration=0.1,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration=0.1,
         )
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=mock_backend,
         )
         phase = PhaseDefinition(
@@ -4486,8 +4957,12 @@ class TestPhase5ContainerEnvPrefix:
         )
         setattr(phase, "command", "${loop_vars.entry_script}")
 
-        executor._execute_shell_phase(
-            phase, state={}, context={}, loop_vars={"entry_script": cmd}, loop_state={},
+        executor._execute_shell_phase(  # pylint: disable=protected-access; silent
+            phase,
+            state={},
+            context={},
+            loop_vars={"entry_script": cmd},
+            loop_state={},
         )
 
         call_kwargs = mock_backend.run.call_args.kwargs
@@ -4502,48 +4977,73 @@ class TestPhase5ContainerEnvPrefix:
 
 class TestWorkflowExecutorContainerPreflight:
     @patch("core.execution_backend.ContainerBackend")
+    # pylint: disable-next=invalid-name; silent
     def test_container_workflow_calls_preflight_and_probe(self, MockBackend, tmp_path: Path):
         backend = MagicMock()
         MockBackend.return_value = backend
         cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         backend.set_project_dir.assert_called_once()
         backend.preflight.assert_called_once()
         backend.probe_environment.assert_called_once()
         assert executor.exec_backend is backend
+        # pylint: disable-next=protected-access; silent
         assert executor._container_env_probe is backend.probe_environment.return_value
 
     @patch("core.execution_backend.ContainerBackend")
+    # pylint: disable-next=invalid-name; silent
     def test_local_workflow_does_not_call_preflight(self, MockBackend, tmp_path: Path):
         workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         MockBackend.assert_not_called()
         assert executor.exec_backend is None
-        assert executor._container_env_probe is None
+        assert executor._container_env_probe is None  # pylint: disable=protected-access; silent
 
     @patch("subprocess.run")
     def test_container_backend_preflight_is_called_on_init(self, mock_run, tmp_path: Path):
         mock_run.return_value = MagicMock(returncode=0, stdout="init-cid\n", stderr="")
         cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         assert isinstance(executor.exec_backend, ContainerBackend)
+        # pylint: disable-next=protected-access; silent
         assert executor.exec_backend._container_id == "init-cid"
 
 
@@ -4553,69 +5053,100 @@ class TestWorkflowExecutorContainerPreflight:
 class TestContainerEnvContextInjection:
     def test_inject_container_env_context_skipped_for_local(self, tmp_path: Path):
         workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         ctx: dict = {}
-        executor._inject_container_env_context(ctx)
-        assert ctx == {}
+        executor._inject_container_env_context(ctx)  # pylint: disable=protected-access; silent
+        assert ctx == {}  # pylint: disable=use-implicit-booleaness-not-comparison; silent
 
     @patch("subprocess.run")
     def test_inject_container_env_context_adds_keys_for_container(self, mock_run, tmp_path: Path):
         mock_run.return_value = MagicMock(
             returncode=0,
+            # pylint: disable-next=line-too-long; silent
             stdout='{"status": "ok", "python_version": "3.10.1", "platform": "Linux", "cwd": "/workspace"}\n',
             stderr="",
         )
         cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         ctx: dict = {}
-        executor._inject_container_env_context(ctx)
+        executor._inject_container_env_context(ctx)  # pylint: disable=protected-access; silent
         assert "container_env_facts" in ctx
         assert "container_python_version" in ctx
         assert ctx["container_python_version"] == "3.10.1"
 
     def test_inject_container_env_context_uses_setdefault(self, tmp_path: Path):
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.execution_backend import ContainerBackend
 
         workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
-        mock_backend = ContainerBackend(ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"}))
-        mock_backend._container_id = "existing-cid"
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        mock_backend = ContainerBackend(
+            ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
+        )
+        mock_backend._container_id = "existing-cid"  # pylint: disable=protected-access; silent
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=mock_backend,
         )
+        # pylint: disable-next=protected-access; silent
         executor._container_env_probe = {"container_id": "existing-cid", "status": "ok"}
         ctx: dict = {"container_name_or_id": "pre-set"}
-        executor._inject_container_env_context(ctx)
+        executor._inject_container_env_context(ctx)  # pylint: disable=protected-access; silent
         assert ctx["container_name_or_id"] == "pre-set"
 
     def test_review_phase_receives_execution_environment_context(self, tmp_path: Path):
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
-        (prompts_dir / "review_probe.md").write_text(
-            "{execution_environment_context}\n{container_probe_command_prefix}\n{actual_execution_command}\n",
-            encoding="utf-8",
-        )
+        (
+    prompts_dir /
+    "review_probe.md").write_text(
+        # pylint: disable-next=line-too-long; silent
+        "{execution_environment_context}\n{container_probe_command_prefix}\n{actual_execution_command}\n",
+        encoding="utf-8",
+         )
         workflow = WorkflowDefinition(
-            name="review-context", version="1.0", phases=[], terminals=["complete"],
+            name="review-context",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
         )
-        backend = ContainerBackend(ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"}))
-        backend._container_id = "cid-review"
+        backend = ContainerBackend(
+            ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
+        )
+        backend._container_id = "cid-review"  # pylint: disable=protected-access; silent
         backend.set_project_dir(str(tmp_path))
         session_mgr = MagicMock()
         session_mgr.get_or_create.return_value = "s-review"
         session_mgr.send_command.return_value = '{"verdict": "accept", "reasoning": "ok"}'
-        executor = WorkflowExecutor(
+        executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
             workflow,
             session_mgr,
             MagicMock(),
@@ -4625,7 +5156,7 @@ class TestContainerEnvContextInjection:
             output_dir=str(tmp_path),
             exec_backend=backend,
         )
-        executor._container_env_probe = {
+        executor._container_env_probe = {  # pylint: disable=protected-access; silent
             "status": "ok",
             "interpreter_path": "/opt/conda/bin/python3",
             "python_version": "3.10.12",
@@ -4639,7 +5170,7 @@ class TestContainerEnvContextInjection:
             agent="main_engineer",
         )
 
-        result = executor._execute_review_phase(
+        result = executor._execute_review_phase(  # pylint: disable=protected-access; silent
             phase,
             state={},
             context={},
@@ -4660,11 +5191,19 @@ class TestContainerEnvContextInjection:
 class TestExperienceConfigGate:
     def test_experience_injection_gated_when_workflow_disabled(self, tmp_path: Path):
         phase = PhaseDefinition(
-            id="test", name="T", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer", retrieve_experience=True,
+            id="test",
+            name="T",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
+            retrieve_experience=True,
         )
         workflow = WorkflowDefinition(
-            name="exp_disabled", version="1.0", phases=[phase], terminals=["complete"],
+            name="exp_disabled",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
             agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
             experience=ExperienceConfig(enabled=False, phase7_enabled=True),
         )
@@ -4675,27 +5214,41 @@ class TestExperienceConfigGate:
         prompt_loader = MagicMock()
         prompt_loader.load_prompt.return_value = "BASE PROMPT"
 
+        # pylint: disable-next=invalid-name; silent
         with patch("core.experience_query.ExperienceQuerier") as MockQuerier:
-            executor = WorkflowExecutor(
-                workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
-                project_dir=str(tmp_path), output_dir=str(tmp_path),
+            executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+                workflow,
+                session_mgr,
+                MagicMock(),
+                prompt_loader,
+                MagicMock(),
+                project_dir=str(tmp_path),
+                output_dir=str(tmp_path),
                 experience_store=mock_store,
             )
-            result = executor._append_dynamic_experience_markdown(
-                "PROMPT", phase, {}, {}, None
-            )
+            # pylint: disable-next=protected-access; silent
+            result = executor._append_dynamic_experience_markdown("PROMPT", phase, {}, {}, None)
             MockQuerier.assert_not_called()
             assert result == "PROMPT"
 
     def test_experience_injection_allowed_when_enabled(self, tmp_path: Path):
-        from dataclasses import dataclass, field
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.types import ExperienceConfig
+
         phase = PhaseDefinition(
-            id="test", name="T", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer", retrieve_experience=True,
+            id="test",
+            name="T",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
+            retrieve_experience=True,
         )
         workflow = WorkflowDefinition(
-            name="exp_enabled", version="1.0", phases=[phase], terminals=["complete"],
+            name="exp_enabled",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
             agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
             experience=ExperienceConfig(enabled=True, phase7_enabled=True),
         )
@@ -4712,19 +5265,24 @@ class TestExperienceConfigGate:
             "warning": "",
         }
 
+        # pylint: disable-next=invalid-name; silent
         with patch("core.experience_query.ExperienceQuerier") as MockQuerier:
             mock_querier = MagicMock()
             mock_querier.query.return_value = query_result
             MockQuerier.return_value = mock_querier
 
-            executor = WorkflowExecutor(
-                workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
-                project_dir=str(tmp_path), output_dir=str(tmp_path),
+            executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+                workflow,
+                session_mgr,
+                MagicMock(),
+                prompt_loader,
+                MagicMock(),
+                project_dir=str(tmp_path),
+                output_dir=str(tmp_path),
                 experience_store=mock_store,
             )
-            executor._append_dynamic_experience_markdown(
-                "PROMPT", phase, {}, {}, None
-            )
+            # pylint: disable-next=protected-access; silent
+            executor._append_dynamic_experience_markdown("PROMPT", phase, {}, {}, None)
             MockQuerier.assert_called_once()
 
 
@@ -4733,7 +5291,9 @@ class TestPhase7SkipAndReroute:
         if experience_cfg is None:
             experience_cfg = ExperienceConfig(enabled=True, phase7_enabled=True)
         workflow = WorkflowDefinition(
-            name="phase7_test", version="1.0", phases=phases,
+            name="phase7_test",
+            version="1.0",
+            phases=phases,
             terminals=["complete", "failed"],
             agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
             experience=experience_cfg,
@@ -4744,101 +5304,162 @@ class TestPhase7SkipAndReroute:
         prompt_loader = MagicMock()
         prompt_loader.load_prompt.return_value = "PROMPT"
         return WorkflowExecutor(
-            workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            session_mgr,
+            MagicMock(),
+            prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             experience_store=None,
         ), session_mgr
 
     def test_phase7_rerouted_in_transition_definition(self, tmp_path: Path):
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.types import TransitionDefinition
+
         phase = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
             transition=TransitionDefinition(on_success="phase_7a_evaluate", on_failure="complete"),
         )
-        executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+        executor, _ = self._executor_with_phases(  # pylint: disable=redefined-outer-name; silent
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
         assert next_id == "complete"
 
     def test_phase7_rerouted_in_transitions_dict(self, tmp_path: Path):
         phase = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
             transitions={"on_success": "phase_7a_evaluate", "on_failure": "complete"},
         )
-        executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+        executor, _ = self._executor_with_phases(  # pylint: disable=redefined-outer-name; silent
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
         assert next_id == "complete"
 
     def test_phase7b_rerouted(self, tmp_path: Path):
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.types import TransitionDefinition
+
         phase = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_evaluator.ExperienceEvaluator.evaluate",
             transition=TransitionDefinition(on_success="phase_7b_refine", on_failure="complete"),
         )
-        executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+        executor, _ = self._executor_with_phases(  # pylint: disable=redefined-outer-name; silent
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
         assert next_id == "complete"
 
     def test_phase7_not_rerouted_when_enabled(self, tmp_path: Path):
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.types import TransitionDefinition
+
         phase = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
             transition=TransitionDefinition(on_success="phase_7a_evaluate"),
         )
-        executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+        executor, _ = self._executor_with_phases(  # pylint: disable=redefined-outer-name; silent
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=True),
         )
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
         assert next_id == "phase_7a_evaluate"
 
     def test_phase7_default_next_reroute(self, tmp_path: Path):
         phase_6 = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
         )
         phase_7a = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="x.y.z",
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="x.y.z",
         )
-        executor, _ = self._executor_with_phases(
-            tmp_path, [phase_6, phase_7a],
+        executor, _ = self._executor_with_phases(  # pylint: disable=redefined-outer-name; silent
+            tmp_path,
+            [phase_6, phase_7a],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
+        # pylint: disable-next=protected-access; silent
         next_id = executor._get_next_phase_id(phase_6, "success", {}, {})
         assert next_id == "complete"
 
     def test_phase7_skipped_in_execute_loop(self, tmp_path: Path):
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.types import TransitionDefinition
+
         phase_6 = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
             transition=TransitionDefinition(on_success="phase_7a_evaluate"),
         )
         phase_7a = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_evaluator.ExperienceEvaluator.evaluate",
             transition=TransitionDefinition(on_success="phase_7b_refine"),
         )
         phase_7b = PhaseDefinition(
-            id="phase_7b_refine", name="Refine", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_dispatcher.ExperienceDispatcher.dispatch_and_refine",
+            id="phase_7b_refine",
+            name="Refine",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_dispatcher.ExperienceDispatcher.dispatch_and_refine",
             transition=TransitionDefinition(on_success="complete"),
         )
+        # pylint: disable-next=redefined-outer-name,unused-variable; silent
         executor, session_mgr = self._executor_with_phases(
-            tmp_path, [phase_6, phase_7a, phase_7b],
+            tmp_path,
+            [phase_6, phase_7a, phase_7b],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         executor.hook_manager = MagicMock()
@@ -4853,15 +5474,25 @@ class TestPhase7SkipAndReroute:
 
     def test_phase7_direct_start_skipped(self, tmp_path: Path):
         phase_7a = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_evaluator.ExperienceEvaluator.evaluate",
         )
         phase_end = PhaseDefinition(
-            id="phase_end", name="End", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_end",
+            name="End",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
         )
+        # pylint: disable-next=redefined-outer-name,unused-variable; silent
         executor, session_mgr = self._executor_with_phases(
-            tmp_path, [phase_7a, phase_end],
+            tmp_path,
+            [phase_7a, phase_end],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         executor.hook_manager = MagicMock()
@@ -4878,41 +5509,65 @@ class TestPhase7SkipAndReroute:
 # ── Phase-aware previous_outputs filtering ────────────────────────
 
 
+# pylint: disable-next=redefined-outer-name; silent
 def test_we_filter_previous_outputs_empty_for_early_phases(temp_dir):
     """Phase 0/1/2/3 should receive empty previous_outputs."""
     workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
-    executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {
         "phase_0_env_detect": {"platform": "npu"},
         "phase_1_project_analysis": {"entry_script": "train.py"},
         "phase_2_venv_create": {"venv_path": "/.venv"},
     }
-    for pid in ("phase_0_env_detect", "phase_1_project_analysis",
-                "phase_2_venv_create", "phase_3_entry_script"):
+    for pid in (
+        "phase_0_env_detect",
+        "phase_1_project_analysis",
+        "phase_2_venv_create",
+        "phase_3_entry_script",
+    ):
         phase = PhaseDefinition(id=pid, name=pid, prompt_template=pid, output_schema={}, type="llm")
+        # pylint: disable-next=protected-access; silent
         assert executor._filter_previous_outputs(phase, state) == {}
 
 
+# pylint: disable-next=redefined-outer-name; silent
 def test_we_filter_previous_outputs_phase35_only_includes_phase3(temp_dir):
     """Phase 3.5 must receive only phase_3_entry_script, not earlier phases."""
     workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
-    executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {
         "phase_0_env_detect": {"platform": "npu"},
         "phase_1_project_analysis": {"entry_script": "train.py"},
         "phase_2_venv_create": {"venv_path": "/.venv"},
-        "phase_3_entry_script": {"entry_script_path": "/train.py", "entry_script_kind": "custom_op_full_validation"},
+        "phase_3_entry_script": {
+            "entry_script_path": "/train.py",
+            "entry_script_kind": "custom_op_full_validation",
+        },
     }
     phase = PhaseDefinition(
-        id="phase_35_static_validate", name="3.5", prompt_template="phase_35_static_validate",
-        output_schema={}, type="llm",
+        id="phase_35_static_validate",
+        name="3.5",
+        prompt_template="phase_35_static_validate",
+        output_schema={},
+        type="llm",
     )
+    # pylint: disable-next=protected-access; silent
     filtered = executor._filter_previous_outputs(phase, state)
     assert "phase_3_entry_script" in filtered
     assert "phase_0_env_detect" not in filtered
@@ -4920,37 +5575,63 @@ def test_we_filter_previous_outputs_phase35_only_includes_phase3(temp_dir):
     assert "phase_2_venv_create" not in filtered
 
 
+# pylint: disable-next=redefined-outer-name; silent
 def test_we_filter_previous_outputs_fallback_to_all_for_unlisted(temp_dir):
     """Phases not in whitelist should fall back to all state (backward compat)."""
     workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
-    executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {"phase_1_entry_script": {}, "phase_5_validation": {}}
-    phase = PhaseDefinition(id="phase_5_validation", name="5", prompt_template="phase_5_validation", output_schema={}, type="llm")
+    phase = PhaseDefinition(
+        id="phase_5_validation",
+        name="5",
+        prompt_template="phase_5_validation",
+        output_schema={},
+        type="llm",
+    )
+    # pylint: disable-next=protected-access; silent
     filtered = executor._filter_previous_outputs(phase, state)
     assert filtered == state
 
 
+# pylint: disable-next=redefined-outer-name; silent
 def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
     """Integration: _inject_llm_baseline_context produces filtered JSON for Phase 3.5."""
     workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
-    executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {
         "phase_0_env_detect": {"platform": "npu", "python_version": "3.10"},
         "phase_1_project_analysis": {"entry_script": "train.py"},
         "phase_2_venv_create": {"venv_path": "/.venv"},
-        "phase_3_entry_script": {"entry_script_path": "/train.py", "run_command": "python train.py"},
+        "phase_3_entry_script": {
+            "entry_script_path": "/train.py",
+            "run_command": "python train.py",
+        },
     }
     phase = PhaseDefinition(
-        id="phase_35_static_validate", name="3.5", prompt_template="phase_35_static_validate",
-        output_schema={}, type="llm",
+        id="phase_35_static_validate",
+        name="3.5",
+        prompt_template="phase_35_static_validate",
+        output_schema={},
+        type="llm",
     )
     ctx: dict = {}
+    # pylint: disable-next=protected-access; silent
     executor._inject_llm_baseline_context(ctx, phase, state)
     parsed = json.loads(ctx["previous_outputs"])
     assert "phase_3_entry_script" in parsed
@@ -4959,19 +5640,29 @@ def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
     assert "phase_2_venv_create" not in parsed
 
 
+# pylint: disable-next=redefined-outer-name; silent
 def test_we_inject_llm_baseline_context_early_phase_empty(temp_dir):
     """Integration: Phase 0 gets empty previous_outputs."""
     workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
-    executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {"phase_0_env_detect": {"platform": "npu"}}
     phase = PhaseDefinition(
-        id="phase_0_env_detect", name="0", prompt_template="phase_0_env_detect",
-        output_schema={}, type="llm",
+        id="phase_0_env_detect",
+        name="0",
+        prompt_template="phase_0_env_detect",
+        output_schema={},
+        type="llm",
     )
     ctx: dict = {}
+    # pylint: disable-next=protected-access; silent
     executor._inject_llm_baseline_context(ctx, phase, state)
     assert json.loads(ctx["previous_outputs"]) == {}
 
@@ -4991,7 +5682,7 @@ def test_disable_custom_op_injection_prevents_auto_injection(tmp_path: Path) -> 
         validator="entry_script",
         agent="main_engineer",
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(
             name="no-custom-injection",
             version="1.0",
@@ -5007,7 +5698,7 @@ def test_disable_custom_op_injection_prevents_auto_injection(tmp_path: Path) -> 
         output_dir=str(tmp_path),
     )
 
-    normalized = executor._normalize_llm_output(
+    normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"previous_outputs": "phase_1 says CUDAExtension custom operator is required"},
@@ -5029,7 +5720,7 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
         validator="entry_script",
         agent="main_engineer",
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(
             name="normal-entry-route",
             version="1.0",
@@ -5037,11 +5728,15 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
             terminals=["complete"],
             globals={"custom_op_route_enabled": False},
         ),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
 
-    normalized = executor._normalize_llm_output(
+    normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {
             "entry_script_path": "train.py",
@@ -5085,7 +5780,7 @@ def test_legacy_disable_custom_op_injection_strips_agent_contract_fields(tmp_pat
         validator="entry_script",
         agent="main_engineer",
     )
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         WorkflowDefinition(
             name="legacy-normal-entry-route",
             version="1.0",
@@ -5093,11 +5788,15 @@ def test_legacy_disable_custom_op_injection_strips_agent_contract_fields(tmp_pat
             terminals=["complete"],
             globals={"disable_custom_op_contract_injection": True},
         ),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
 
-    normalized = executor._normalize_llm_output(
+    normalized = executor._normalize_llm_output(  # pylint: disable=protected-access; silent
         phase,
         {
             "entry_script_path": "train.py",
@@ -5129,11 +5828,18 @@ def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> Non
         agent="main_engineer",
     )
     executor_no_globals = WorkflowExecutor(
-        WorkflowDefinition(name="default-behaviour", version="1.0", phases=[phase], terminals=["complete"]),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        WorkflowDefinition(
+            name="default-behaviour", version="1.0", phases=[phase], terminals=["complete"]
+        ),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
 
+    # pylint: disable-next=protected-access; silent
     normalized_no_flag = executor_no_globals._normalize_llm_output(
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
@@ -5150,9 +5856,14 @@ def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> Non
             terminals=["complete"],
             globals={"disable_custom_op_contract_injection": False},
         ),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
+    # pylint: disable-next=protected-access; silent
     normalized_false = executor_flag_false._normalize_llm_output(
         phase,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
@@ -5173,7 +5884,13 @@ def test_phase_6_report_session_error_generates_fallback(tmp_path: Path) -> None
             del role, lifecycle
             return "main-session"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = None, retries: int | None = None) -> str:
+        def send_command(
+            self,
+            session_id: str,
+            command: str,
+            timeout: int | None = None,
+            retries: int | None = None,
+        ) -> str:
             self.send_calls.append((session_id, command, timeout, retries))
             return json.dumps({"ok": False, "error": "Session still running"})
 
@@ -5195,7 +5912,7 @@ def test_phase_6_report_session_error_generates_fallback(tmp_path: Path) -> None
     )
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
     session_mgr = Phase6ErrorSessionManager()
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -5232,7 +5949,13 @@ def test_phase_6_report_timeout_exception_generates_fallback(tmp_path: Path) -> 
             del role, lifecycle
             return "main-session"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = None, retries: int | None = None) -> str:
+        def send_command(
+            self,
+            session_id: str,
+            command: str,
+            timeout: int | None = None,
+            retries: int | None = None,
+        ) -> str:
             self.send_calls.append((session_id, command, timeout, retries))
             raise TimeoutError("phase 6 timed out")
 
@@ -5254,7 +5977,7 @@ def test_phase_6_report_timeout_exception_generates_fallback(tmp_path: Path) -> 
     )
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
     session_mgr = Phase6TimeoutSessionManager()
-    executor = WorkflowExecutor(
+    executor = WorkflowExecutor(  # pylint: disable=redefined-outer-name; silent
         workflow,
         session_mgr,
         artifact_store,
@@ -5281,10 +6004,14 @@ class TestProductionWorkflowPlatformPolicy:
         """Load the production PPU entryfix workflow and verify its resolved
         platform policy includes performance_validation = presence_only and
         CPU baseline values."""
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.config import load_workflow
-        from core.platform_policy import resolve_policy, get_performance_validation_mode
-        from core.platform_policy import get_performance_baseline_device_values
-        from core.platform_policy import get_performance_baseline_boolean_fields
+        from core.platform_policy import (  # pylint: disable=import-outside-toplevel; silent
+            get_performance_baseline_boolean_fields,
+            get_performance_baseline_device_values,
+            get_performance_validation_mode,
+            resolve_policy,
+        )
 
         wf_path = (
             Path(__file__).resolve().parent.parent
@@ -5312,10 +6039,12 @@ class TestProductionWorkflowPlatformPolicy:
     def test_default_full_mode_has_cuda_baseline_only(self):
         """A workflow without performance overrides defaults to full mode
         with CUDA-only baseline values."""
-        from core.platform_policy import (
-            BUILTIN_PRESETS, get_performance_validation_mode,
+        from core.platform_policy import (  # pylint: disable=import-outside-toplevel; silent
+            BUILTIN_PRESETS,
             get_performance_baseline_device_values,
+            get_performance_validation_mode,
         )
+
         ppu = BUILTIN_PRESETS["ppu_cuda_compatible"]
         mode = get_performance_validation_mode(ppu)
         assert mode == "full"

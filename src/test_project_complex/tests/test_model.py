@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 # pyright: reportAny=false, reportExplicitAny=false, reportImplicitRelativeImport=false
-
-import torch
-
+import torch  # pylint: disable=import-error; silent
 from src.models.classifier import build_classifier
 
 

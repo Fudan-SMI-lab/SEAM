@@ -29,7 +29,9 @@ def test_bridge_custom_filename_and_key(tmp_path: Path) -> None:
     bridge.on_phase_start("bridge_phase")
     bridge.on_event("test_event", detail=1)
 
-    paths = bridge.save_metrics(filename="telemetry_bridge.json", return_key="telemetry_bridge_json")
+    paths = bridge.save_metrics(
+        filename="telemetry_bridge.json", return_key="telemetry_bridge_json"
+    )
 
     assert paths == {"telemetry_bridge_json": str(tmp_path / "telemetry_bridge.json")}
     assert not (tmp_path / "telemetry.json").exists(), "default telemetry.json must not be created"
@@ -41,12 +43,18 @@ def test_bridge_custom_filename_and_key(tmp_path: Path) -> None:
 
 def test_observer_and_bridge_no_collision(tmp_path: Path) -> None:
     """Simulate observer + bridge writing separate files; no overwrite occurs."""
+    # pylint: disable-next=import-outside-toplevel; silent
     from tests.e2e.e2e_observer import TelemetryObserver
 
     class FakeSessionManager:
-        def get_or_create(self, **kwargs): return "fake-session"
-        def send_command(self, *args, **kwargs): return "ok"
-        def cleanup_all(self) -> int: return 0
+        def get_or_create(self, **kwargs):  # pylint: disable=unused-argument; silent
+            return "fake-session"
+
+        def send_command(self, *args, **kwargs):  # pylint: disable=unused-argument; silent
+            return "ok"
+
+        def cleanup_all(self) -> int:
+            return 0
 
     fake_mgr = FakeSessionManager()
     observer = TelemetryObserver(fake_mgr, tmp_path)
@@ -55,7 +63,9 @@ def test_observer_and_bridge_no_collision(tmp_path: Path) -> None:
     observer_paths = observer.save_metrics()
     bridge = TelemetryBridge(str(tmp_path))
     bridge.on_phase_start("bridge_phase")
-    bridge_paths = bridge.save_metrics(filename="telemetry_bridge.json", return_key="telemetry_bridge_json")
+    bridge_paths = bridge.save_metrics(
+        filename="telemetry_bridge.json", return_key="telemetry_bridge_json"
+    )
 
     merged = {**observer_paths, **bridge_paths}
     assert "telemetry_json" in merged

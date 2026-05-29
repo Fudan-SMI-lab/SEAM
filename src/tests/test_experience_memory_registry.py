@@ -15,16 +15,18 @@ def read_raw_legacy_index(store: ExperienceStore) -> list[dict[str, object]]:
 def test_manifest_created_from_catalog_upsert(tmp_path):
     store = ExperienceStore(str(tmp_path))
 
-    store.upsert_catalog_entry({
-        "id": "promoted-npu-fix",
-        "type": "skill",
-        "status": "promoted",
-        "title": "NPU Fix",
-        "category": "operator_incompat",
-        "subtype": "flash_attention",
-        "tags": ["torch-npu"],
-        "confidence": 0.9,
-    })
+    store.upsert_catalog_entry(
+        {
+            "id": "promoted-npu-fix",
+            "type": "skill",
+            "status": "promoted",
+            "title": "NPU Fix",
+            "category": "operator_incompat",
+            "subtype": "flash_attention",
+            "tags": ["torch-npu"],
+            "confidence": 0.9,
+        }
+    )
 
     with open(store.manifest_path, "r", encoding="utf-8") as f:
         manifest = json.load(f)
@@ -33,35 +35,55 @@ def test_manifest_created_from_catalog_upsert(tmp_path):
     assert manifest["counts"]["total"] == 1
     assert manifest["counts"]["by_type"] == {"skill": 1}
     assert manifest["counts"]["by_status"] == {"promoted": 1}
-    assert manifest["storage_roots"]["catalog"] == os.path.join("memory", "index", "experiences.jsonl")
+    assert manifest["storage_roots"]["catalog"] == os.path.join(
+        "memory", "index", "experiences.jsonl"
+    )
     assert manifest["storage_roots"]["local_skills"] == ".skills"
 
 
 def test_catalog_upsert_read_preserves_required_fields(tmp_path):
     store = ExperienceStore(str(tmp_path))
 
-    store.upsert_catalog_entry({
-        "id": "promoted-npu-fix",
-        "type": "skill",
-        "status": "promoted",
-        "title": "NPU Fix",
-        "category": "dependency",
-        "subtype": "torch_npu_install",
-        "tags": ["torch-npu", "pip"],
-        "confidence": 0.8,
-        "target_roles": ["dependency_fixer"],
-        "target_phases": ["phase_5_validation"],
-        "trigger_fingerprint": "dependency|torch_npu_install|pip|torch-npu",
-        "asset_paths": [".memory/skills/npu-fix/skill_data.json"],
-        "source_runs": ["run-1"],
-    })
+    store.upsert_catalog_entry(
+        {
+            "id": "promoted-npu-fix",
+            "type": "skill",
+            "status": "promoted",
+            "title": "NPU Fix",
+            "category": "dependency",
+            "subtype": "torch_npu_install",
+            "tags": ["torch-npu", "pip"],
+            "confidence": 0.8,
+            "target_roles": ["dependency_fixer"],
+            "target_phases": ["phase_5_validation"],
+            "trigger_fingerprint": "dependency|torch_npu_install|pip|torch-npu",
+            "asset_paths": [".memory/skills/npu-fix/skill_data.json"],
+            "source_runs": ["run-1"],
+        }
+    )
 
     entry = store.read_catalog()[0]
 
     for field in [
-        "id", "type", "status", "title", "category", "subtype", "tags", "confidence",
-        "target_roles", "target_phases", "trigger_fingerprint", "asset_paths", "source_runs",
-        "created_at", "updated_at", "last_used_at", "use_count", "failure_count", "usage",
+        "id",
+        "type",
+        "status",
+        "title",
+        "category",
+        "subtype",
+        "tags",
+        "confidence",
+        "target_roles",
+        "target_phases",
+        "trigger_fingerprint",
+        "asset_paths",
+        "source_runs",
+        "created_at",
+        "updated_at",
+        "last_used_at",
+        "use_count",
+        "failure_count",
+        "usage",
     ]:
         assert field in entry
     assert entry["target_roles"] == ["dependency_fixer"]
@@ -101,7 +123,9 @@ def test_catalog_upsert_preserves_existing_usage_counters(tmp_path):
     store.upsert_catalog_entry({"id": "preserve-exp", "status": "promoted", "type": "skill"})
     store.record_experience_usage(selected_ids=["preserve-exp"], used_ids=["preserve-exp"])
 
-    store.upsert_catalog_entry({"id": "preserve-exp", "status": "promoted", "type": "skill", "title": "Updated"})
+    store.upsert_catalog_entry(
+        {"id": "preserve-exp", "status": "promoted", "type": "skill", "title": "Updated"}
+    )
 
     entry = store.read_catalog()[0]
     assert entry["title"] == "Updated"
@@ -114,16 +138,21 @@ def test_rebuild_catalog_from_skill_data(tmp_path):
     store = ExperienceStore(str(tmp_path))
     skill_dir = tmp_path / ".memory" / "skills" / "npu-flash-attn"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "skill_data.json").write_text(json.dumps({
-        "name": "npu-flash-attn",
-        "title": "Flash Attention NPU Fix",
-        "category": "operator_incompat",
-        "subtype": "flash_attention",
-        "tags": ["torch-npu", "flash-attn"],
-        "confidence": 0.95,
-        "promotion_type": "skill",
-        "merged_from_runs": ["run-1", "run-2"],
-    }), encoding="utf-8")
+    (skill_dir / "skill_data.json").write_text(
+        json.dumps(
+            {
+                "name": "npu-flash-attn",
+                "title": "Flash Attention NPU Fix",
+                "category": "operator_incompat",
+                "subtype": "flash_attention",
+                "tags": ["torch-npu", "flash-attn"],
+                "confidence": 0.95,
+                "promotion_type": "skill",
+                "merged_from_runs": ["run-1", "run-2"],
+            }
+        ),
+        encoding="utf-8",
+    )
     (skill_dir / "SKILL.md").write_text("# Flash Attention NPU Fix\n", encoding="utf-8")
 
     entries = store.rebuild_catalog()
@@ -132,7 +161,10 @@ def test_rebuild_catalog_from_skill_data(tmp_path):
     entry = entries[0]
     assert entry["id"] == "promoted-npu-flash-attn"
     assert entry["source_runs"] == ["run-1", "run-2"]
-    assert os.path.join(".memory", "skills", "npu-flash-attn", "skill_data.json") in entry["asset_paths"]
+    assert (
+        os.path.join(".memory", "skills", "npu-flash-attn", "skill_data.json")
+        in entry["asset_paths"]
+    )
 
 
 def test_rebuild_catalog_discovers_local_skill_pack_assets(tmp_path):
@@ -140,7 +172,9 @@ def test_rebuild_catalog_discovers_local_skill_pack_assets(tmp_path):
     skill_dir = tmp_path / ".skills" / "cuda-custom-op-to-npu-custom-op"
     nested_dir = skill_dir / "templates"
     nested_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# CUDA Custom Op\n\nLocal pack guidance\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(
+        "# CUDA Custom Op\n\nLocal pack guidance\n", encoding="utf-8"
+    )
     (nested_dir / "example.txt").write_text("template", encoding="utf-8")
     cache_dir = skill_dir / "__pycache__"
     cache_dir.mkdir()
@@ -154,8 +188,13 @@ def test_rebuild_catalog_discovers_local_skill_pack_assets(tmp_path):
     assert entry["status"] == "local"
     assert entry["category"] == "local_skill_pack"
     assert entry["title"] == "CUDA Custom Op"
-    assert entry["asset_paths"][0] == os.path.join(".skills", "cuda-custom-op-to-npu-custom-op", "SKILL.md")
-    assert os.path.join(".skills", "cuda-custom-op-to-npu-custom-op", "templates", "example.txt") in entry["asset_paths"]
+    assert entry["asset_paths"][0] == os.path.join(
+        ".skills", "cuda-custom-op-to-npu-custom-op", "SKILL.md"
+    )
+    assert (
+        os.path.join(".skills", "cuda-custom-op-to-npu-custom-op", "templates", "example.txt")
+        in entry["asset_paths"]
+    )
     assert all("__pycache__" not in path for path in entry["asset_paths"])
     assert store.validate_integrity()["ok"] is True
 
@@ -214,22 +253,28 @@ def test_experience_query_loads_local_skill_pack_from_asset_paths(tmp_path):
     store.rebuild_catalog()
 
     class SelectorSession:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return f"session:{role}"
 
+        # pylint: disable-next=unused-argument; silent
         def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
             assert "local-skill-local-pack" in command
             assert os.path.join(".skills", "local-pack", "SKILL.md") in command
-            return json.dumps({
-                "selected_experiences": [{
-                    "id": "local-skill-local-pack",
-                    "type": "skill-pack",
-                    "relevance_score": 0.9,
-                    "reasoning": "local skill pack match",
-                }],
-                "summary": "selected local pack",
-                "warning": "",
-            })
+            return json.dumps(
+                {
+                    "selected_experiences": [
+                        {
+                            "id": "local-skill-local-pack",
+                            "type": "skill-pack",
+                            "relevance_score": 0.9,
+                            "reasoning": "local skill pack match",
+                        }
+                    ],
+                    "summary": "selected local pack",
+                    "warning": "",
+                }
+            )
 
     result = ExperienceQuerier(store, SelectorSession()).query({})
 
@@ -244,40 +289,48 @@ def test_experience_query_skips_inactive_statuses(tmp_path):
     store = ExperienceStore(str(tmp_path))
     active_path = tmp_path / "active.json"
     active_path.write_text(json.dumps({"title": "Active Fix"}), encoding="utf-8")
-    store.upsert_index({
-        "id": "active-exp",
-        "type": "document",
-        "status": "promoted",
-        "title": "Active Fix",
-        "asset_paths": [str(active_path)],
-    })
+    store.upsert_index(
+        {
+            "id": "active-exp",
+            "type": "document",
+            "status": "promoted",
+            "title": "Active Fix",
+            "asset_paths": [str(active_path)],
+        }
+    )
 
     for status in ("rejected", "quarantined", "archived", "consumed"):
         path = tmp_path / f"{status}.json"
         path.write_text(json.dumps({"title": status}), encoding="utf-8")
-        store.upsert_index({
-            "id": f"{status}-exp",
-            "type": "document",
-            "status": status,
-            "title": status,
-            "asset_paths": [str(path)],
-        })
+        store.upsert_index(
+            {
+                "id": f"{status}-exp",
+                "type": "document",
+                "status": status,
+                "title": status,
+                "asset_paths": [str(path)],
+            }
+        )
 
     class SelectorSession:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return f"session:{role}"
 
+        # pylint: disable-next=unused-argument; silent
         def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
             assert "active-exp" in command
             assert "rejected-exp" not in command
             assert "quarantined-exp" not in command
             assert "archived-exp" not in command
             assert "consumed-exp" not in command
-            return json.dumps({
-                "selected_experiences": [{"id": "active-exp", "type": "document"}],
-                "summary": "active only",
-                "warning": "",
-            })
+            return json.dumps(
+                {
+                    "selected_experiences": [{"id": "active-exp", "type": "document"}],
+                    "summary": "active only",
+                    "warning": "",
+                }
+            )
 
     result = ExperienceQuerier(store, SelectorSession()).query({})
 
@@ -290,44 +343,54 @@ def test_experience_query_filters_aten_only_custom_op_under_native_gate(tmp_path
     stale_path.write_text(json.dumps({"title": "ATen-only"}), encoding="utf-8")
     native_path = tmp_path / "native.json"
     native_path.write_text(json.dumps({"title": "AscendC native"}), encoding="utf-8")
-    store.upsert_index({
-        "id": "aten-exp",
-        "type": "document",
-        "status": "staging",
-        "title": "Port CUDA custom extension to NPU-routed C++/ATen extension",
-        "subtype": "cuda_extension_to_npu_routed_cpp_extension",
-        "tags": ["custom-op", "aten", "cpp-extension"],
-        "asset_paths": [str(stale_path)],
-    })
-    store.upsert_index({
-        "id": "native-exp",
-        "type": "document",
-        "status": "local",
-        "title": "Build real AscendC CANN OPP custom op artifacts",
-        "subtype": "ascendc_opp_custom_op",
-        "tags": ["custom-op", "ascendc", "cann", "opp"],
-        "asset_paths": [str(native_path)],
-    })
+    store.upsert_index(
+        {
+            "id": "aten-exp",
+            "type": "document",
+            "status": "staging",
+            "title": "Port CUDA custom extension to NPU-routed C++/ATen extension",
+            "subtype": "cuda_extension_to_npu_routed_cpp_extension",
+            "tags": ["custom-op", "aten", "cpp-extension"],
+            "asset_paths": [str(stale_path)],
+        }
+    )
+    store.upsert_index(
+        {
+            "id": "native-exp",
+            "type": "document",
+            "status": "local",
+            "title": "Build real AscendC CANN OPP custom op artifacts",
+            "subtype": "ascendc_opp_custom_op",
+            "tags": ["custom-op", "ascendc", "cann", "opp"],
+            "asset_paths": [str(native_path)],
+        }
+    )
 
     class SelectorSession:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return f"session:{role}"
 
+        # pylint: disable-next=unused-argument; silent
         def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
             assert "native-exp" in command
             assert "aten-exp" not in command
-            return json.dumps({
-                "selected_experiences": [{"id": "native-exp", "type": "document"}],
-                "summary": "native only",
-                "warning": "",
-            })
+            return json.dumps(
+                {
+                    "selected_experiences": [{"id": "native-exp", "type": "document"}],
+                    "summary": "native only",
+                    "warning": "",
+                }
+            )
 
-    result = ExperienceQuerier(store, SelectorSession()).query({
-        "phase": "analyze_error",
-        "parent_phase": "phase_5_validation",
-        "roles": ["operator_fixer"],
-        "custom_op_native_gate_required": "true",
-    })
+    result = ExperienceQuerier(store, SelectorSession()).query(
+        {
+            "phase": "analyze_error",
+            "parent_phase": "phase_5_validation",
+            "roles": ["operator_fixer"],
+            "custom_op_native_gate_required": "true",
+        }
+    )
 
     assert [exp["id"] for exp in result["selected_experiences"]] == ["native-exp"]
 
@@ -335,37 +398,53 @@ def test_experience_query_filters_aten_only_custom_op_under_native_gate(tmp_path
 def test_experience_query_filters_loaded_aten_body_under_native_gate(tmp_path):
     store = ExperienceStore(str(tmp_path))
     stale_path = tmp_path / "stale.json"
-    stale_path.write_text(json.dumps({
-        "title": "Require fail-closed per-unit custom-op final-gate evidence",
-        "root_cause": "Rebuild as a project-local C++/ATen extension using PrivateUse1 tensors.",
-        "fix_steps": ["Use torch.utils.cpp_extension.CppExtension and ATen gather/scatter ops."],
-    }), encoding="utf-8")
-    store.upsert_index({
-        "id": "metadata-clean-exp",
-        "type": "document",
-        "status": "staging",
-        "title": "Require fail-closed per-unit custom-op final-gate evidence",
-        "category": "other",
-        "asset_paths": [str(stale_path)],
-    })
+    stale_path.write_text(
+        json.dumps(
+            {
+                "title": "Require fail-closed per-unit custom-op final-gate evidence",
+                # pylint: disable-next=line-too-long; silent
+                "root_cause": "Rebuild as a project-local C++/ATen extension using PrivateUse1 tensors.",
+                "fix_steps": [
+                    "Use torch.utils.cpp_extension.CppExtension and ATen gather/scatter ops."
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store.upsert_index(
+        {
+            "id": "metadata-clean-exp",
+            "type": "document",
+            "status": "staging",
+            "title": "Require fail-closed per-unit custom-op final-gate evidence",
+            "category": "other",
+            "asset_paths": [str(stale_path)],
+        }
+    )
 
     class SelectorSession:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return f"session:{role}"
 
+        # pylint: disable-next=unused-argument; silent
         def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
             assert "metadata-clean-exp" in command
-            return json.dumps({
-                "selected_experiences": [{"id": "metadata-clean-exp", "type": "document"}],
-                "summary": "selected stale body",
-                "warning": "",
-            })
+            return json.dumps(
+                {
+                    "selected_experiences": [{"id": "metadata-clean-exp", "type": "document"}],
+                    "summary": "selected stale body",
+                    "warning": "",
+                }
+            )
 
-    result = ExperienceQuerier(store, SelectorSession()).query({
-        "phase": "analyze_error",
-        "parent_phase": "phase_5_validation",
-        "custom_op_native_gate_required": "true",
-    })
+    result = ExperienceQuerier(store, SelectorSession()).query(
+        {
+            "phase": "analyze_error",
+            "parent_phase": "phase_5_validation",
+            "custom_op_native_gate_required": "true",
+        }
+    )
 
     assert result["selected_experiences"] == []
 
@@ -374,29 +453,37 @@ def test_experience_query_keeps_aten_custom_op_outside_native_gate(tmp_path):
     store = ExperienceStore(str(tmp_path))
     stale_path = tmp_path / "aten.json"
     stale_path.write_text(json.dumps({"title": "ATen-only"}), encoding="utf-8")
-    store.upsert_index({
-        "id": "aten-exp",
-        "type": "document",
-        "status": "staging",
-        "title": "Port CUDA custom extension to NPU-routed C++/ATen extension",
-        "subtype": "cuda_extension_to_npu_routed_cpp_extension",
-        "tags": ["custom-op", "aten", "cpp-extension"],
-        "asset_paths": [str(stale_path)],
-    })
+    store.upsert_index(
+        {
+            "id": "aten-exp",
+            "type": "document",
+            "status": "staging",
+            "title": "Port CUDA custom extension to NPU-routed C++/ATen extension",
+            "subtype": "cuda_extension_to_npu_routed_cpp_extension",
+            "tags": ["custom-op", "aten", "cpp-extension"],
+            "asset_paths": [str(stale_path)],
+        }
+    )
 
     class SelectorSession:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return f"session:{role}"
 
+        # pylint: disable-next=unused-argument; silent
         def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
             assert "aten-exp" in command
-            return json.dumps({
-                "selected_experiences": [{"id": "aten-exp", "type": "document"}],
-                "summary": "allowed outside native gate",
-                "warning": "",
-            })
+            return json.dumps(
+                {
+                    "selected_experiences": [{"id": "aten-exp", "type": "document"}],
+                    "summary": "allowed outside native gate",
+                    "warning": "",
+                }
+            )
 
-    result = ExperienceQuerier(store, SelectorSession()).query({"phase": "phase_1_project_analysis"})
+    result = ExperienceQuerier(store, SelectorSession()).query(
+        {"phase": "phase_1_project_analysis"}
+    )
 
     assert [exp["id"] for exp in result["selected_experiences"]] == ["aten-exp"]
 
@@ -404,10 +491,22 @@ def test_experience_query_keeps_aten_custom_op_outside_native_gate(tmp_path):
 def test_compact_catalog_default_is_dry_run(tmp_path):
     store = ExperienceStore(str(tmp_path))
     entries = [
-        {"id": "promoted-same", "type": "skill", "status": "promoted", "title": "Old", "tags": ["a"]},
-        {"id": "promoted-same", "type": "skill", "status": "promoted", "title": "New", "tags": ["b"]},
+        {
+            "id": "promoted-same",
+            "type": "skill",
+            "status": "promoted",
+            "title": "Old",
+            "tags": ["a"],
+        },
+        {
+            "id": "promoted-same",
+            "type": "skill",
+            "status": "promoted",
+            "title": "New",
+            "tags": ["b"],
+        },
     ]
-    store.registry._rewrite_catalog(entries)
+    store.registry._rewrite_catalog(entries)  # pylint: disable=protected-access; silent
 
     result = store.compact_catalog()
 
@@ -420,10 +519,24 @@ def test_compact_catalog_dedupes_without_touching_legacy_index(tmp_path):
     store = ExperienceStore(str(tmp_path))
     store.upsert_index({"id": "legacy-only", "status": "staging"})
     entries = [
-        {"id": "promoted-same", "type": "skill", "status": "promoted", "title": "Old", "tags": ["a"], "asset_paths": ["a.json"]},
-        {"id": "promoted-same", "type": "skill", "status": "promoted", "title": "New", "tags": ["b"], "asset_paths": ["b.json"]},
+        {
+            "id": "promoted-same",
+            "type": "skill",
+            "status": "promoted",
+            "title": "Old",
+            "tags": ["a"],
+            "asset_paths": ["a.json"],
+        },
+        {
+            "id": "promoted-same",
+            "type": "skill",
+            "status": "promoted",
+            "title": "New",
+            "tags": ["b"],
+            "asset_paths": ["b.json"],
+        },
     ]
-    store.registry._rewrite_catalog(entries)
+    store.registry._rewrite_catalog(entries)  # pylint: disable=protected-access; silent
 
     result = store.compact_catalog(dry_run=False)
 
@@ -441,13 +554,15 @@ def test_cleanup_staging_dry_run_is_non_mutating(tmp_path):
     run_dir = tmp_path / "memory" / "staging" / "run-1"
     run_dir.mkdir(parents=True)
     (run_dir / "note.json").write_text("{}", encoding="utf-8")
-    store.upsert_catalog_entry({
-        "id": "promoted-npu-fix",
-        "type": "skill",
-        "status": "promoted",
-        "title": "NPU Fix",
-        "source_runs": ["run-1"],
-    })
+    store.upsert_catalog_entry(
+        {
+            "id": "promoted-npu-fix",
+            "type": "skill",
+            "status": "promoted",
+            "title": "NPU Fix",
+            "source_runs": ["run-1"],
+        }
+    )
 
     result = store.cleanup_staging()
 
@@ -458,34 +573,42 @@ def test_cleanup_staging_dry_run_is_non_mutating(tmp_path):
 
 def test_integrity_reports_missing_asset_paths(tmp_path):
     store = ExperienceStore(str(tmp_path))
-    store.upsert_catalog_entry({
-        "id": "promoted-broken",
-        "type": "skill",
-        "status": "promoted",
-        "title": "Broken",
-        "asset_paths": [".memory/skills/missing/skill_data.json"],
-    })
+    store.upsert_catalog_entry(
+        {
+            "id": "promoted-broken",
+            "type": "skill",
+            "status": "promoted",
+            "title": "Broken",
+            "asset_paths": [".memory/skills/missing/skill_data.json"],
+        }
+    )
 
     report = store.validate_integrity()
 
     assert report["ok"] is False
-    assert report["missing_asset_paths"] == [{"id": "promoted-broken", "path": ".memory/skills/missing/skill_data.json"}]
+    assert report["missing_asset_paths"] == [
+        {"id": "promoted-broken", "path": ".memory/skills/missing/skill_data.json"}
+    ]
 
 
 def test_rebuild_catalog_ignores_non_canonical_promotion_metadata_json(tmp_path):
     store = ExperienceStore(str(tmp_path))
-    path = store.promote_from_staging("run-1", "document", {
-        "type": "document",
-        "title": "Migration Case",
-        "category": "case_study",
-        "tags": ["torch-npu"],
-        "confidence": 0.8,
-        "asset_names": ["document.md", "metadata.json"],
-        "_asset_contents": {
-            "document.md": "# Migration Case\n",
-            "metadata.json": {"type": "document", "run_id": "run-1"},
+    path = store.promote_from_staging(
+        "run-1",
+        "document",
+        {
+            "type": "document",
+            "title": "Migration Case",
+            "category": "case_study",
+            "tags": ["torch-npu"],
+            "confidence": 0.8,
+            "asset_names": ["document.md", "metadata.json"],
+            "_asset_contents": {
+                "document.md": "# Migration Case\n",
+                "metadata.json": {"type": "document", "run_id": "run-1"},
+            },
         },
-    })
+    )
 
     entries = store.rebuild_catalog()
 
@@ -493,20 +616,30 @@ def test_rebuild_catalog_ignores_non_canonical_promotion_metadata_json(tmp_path)
     entry = entries[0]
     assert entry["id"] == "promoted-migration-case"
     assert entry["type"] == "document"
-    assert os.path.join("memory", "promotions", "knowledge", "migration-case", "experience.json") in entry["asset_paths"]
-    assert os.path.join("memory", "promotions", "knowledge", "migration-case", "metadata.json") in entry["asset_paths"]
-    assert path.endswith(os.path.join("memory", "promotions", "knowledge", "migration-case", "experience.json"))
+    assert (
+        os.path.join("memory", "promotions", "knowledge", "migration-case", "experience.json")
+        in entry["asset_paths"]
+    )
+    assert (
+        os.path.join("memory", "promotions", "knowledge", "migration-case", "metadata.json")
+        in entry["asset_paths"]
+    )
+    assert path.endswith(
+        os.path.join("memory", "promotions", "knowledge", "migration-case", "experience.json")
+    )
 
 
 def test_record_experience_usage_preserves_legacy_custom_fields(tmp_path):
     store = ExperienceStore(str(tmp_path))
-    store.upsert_index({
-        "id": "legacy-exp",
-        "status": "promoted",
-        "type": "skill",
-        "custom_payload": {"keep": ["this"]},
-        "legacy_only": "unchanged",
-    })
+    store.upsert_index(
+        {
+            "id": "legacy-exp",
+            "status": "promoted",
+            "type": "skill",
+            "custom_payload": {"keep": ["this"]},
+            "legacy_only": "unchanged",
+        }
+    )
     store.upsert_catalog_entry({"id": "legacy-exp", "status": "promoted", "type": "skill"})
 
     store.record_experience_usage(
@@ -531,12 +664,14 @@ def test_prune_orphans_preserves_assets_referenced_only_by_legacy_index(tmp_path
     legacy_asset.parent.mkdir(parents=True, exist_ok=True)
     legacy_asset.write_text("{}", encoding="utf-8")
     orphan_asset.write_text("{}", encoding="utf-8")
-    store.upsert_index({
-        "id": "legacy-only",
-        "status": "promoted",
-        "type": "skill",
-        "asset_paths": [os.path.join("memory", "cases", "legacy.json")],
-    })
+    store.upsert_index(
+        {
+            "id": "legacy-only",
+            "status": "promoted",
+            "type": "skill",
+            "asset_paths": [os.path.join("memory", "cases", "legacy.json")],
+        }
+    )
 
     dry_run = store.prune_orphans()
     result = store.prune_orphans(dry_run=False)

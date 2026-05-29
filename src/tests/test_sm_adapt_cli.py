@@ -1,52 +1,57 @@
-# pyright: reportAny=false, reportPrivateUsage=false, reportUnknownParameterType=false, reportMissingParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnusedParameter=false, reportUnusedCallResult=false
+# pyright: reportAny=false, reportPrivateUsage=false,
+# reportUnknownParameterType=false, reportMissingParameterType=false,
+# reportUnknownVariableType=false, reportUnknownMemberType=false,
+# reportUnusedParameter=false, reportUnusedCallResult=false
 
 """Tests for sm_adapt_cli argument parsing."""
+
 from pathlib import Path
 
 import pytest
-from scripts.sm_adapt_cli import build_parser, parse_args, main
+
+from scripts.sm_adapt_cli import build_parser, main, parse_args
 
 
 class TestBuildParser:
     def test_parser_has_project_dir(self):
         parser = build_parser()
         # --project-dir is positional-like but actually required optional
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "project_dir" in opts
 
     def test_parser_has_workflow(self):
         parser = build_parser()
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "workflow" in opts
 
     def test_parser_has_opencode_url(self):
         parser = build_parser()
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "opencode_url" in opts
 
     def test_parser_has_command(self):
         parser = build_parser()
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "command" in opts
 
     def test_parser_has_resume(self):
         parser = build_parser()
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "resume" in opts
 
     def test_parser_has_verbose(self):
         parser = build_parser()
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "verbose" in opts
 
     def test_parser_has_max_iterations(self):
         parser = build_parser()
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "max_iterations" in opts
 
     def test_parser_has_user_constraints(self):
         parser = build_parser()
-        opts = [a.dest for a in parser._actions]
+        opts = [a.dest for a in parser._actions]  # pylint: disable=protected-access; silent
         assert "user_constraints" in opts
 
 
@@ -62,16 +67,24 @@ class TestParseArgs:
         assert args.workflow is not None
 
     def test_all_args(self):
-        args = parse_args([
-            "--project-dir", "/path/to/project",
-            "--workflow", "/path/to/workflow.yaml",
-            "--opencode-url", "http://custom:8080",
-            "--command", "Migrate all kernels",
-            "--resume",
-            "--verbose",
-            "--max-iterations", "10",
-            "--user-constraints", "No CPU fallback",
-        ])
+        args = parse_args(
+            [
+                "--project-dir",
+                "/path/to/project",
+                "--workflow",
+                "/path/to/workflow.yaml",
+                "--opencode-url",
+                "http://custom:8080",
+                "--command",
+                "Migrate all kernels",
+                "--resume",
+                "--verbose",
+                "--max-iterations",
+                "10",
+                "--user-constraints",
+                "No CPU fallback",
+            ]
+        )
         assert args.project_dir == "/path/to/project"
         assert args.workflow == "/path/to/workflow.yaml"
         assert args.opencode_url == "http://custom:8080"
@@ -109,38 +122,47 @@ class TestMain:
         code = main([])
         assert code == 2
 
-    def test_valid_args_returns_0(self, capsys):
+    def test_valid_args_returns_0(self, capsys):  # pylint: disable=unused-argument; silent
         code = main(["--project-dir", "/tmp/test"])
         assert code == 0
 
     def test_verbose_prints_info(self, capsys):
-        code = main([
-            "--project-dir", "/tmp/test",
-            "--verbose",
-        ])
+        code = main(
+            [
+                "--project-dir",
+                "/tmp/test",
+                "--verbose",
+            ]
+        )
         assert code == 0
         captured = capsys.readouterr()
         assert "[INFO] Project directory: /tmp/test" in captured.out
         assert "[INFO] OpenCode URL: http://127.0.0.1:4096" in captured.out
 
     def test_verbose_prints_constraints(self, capsys):
-        code = main([
-            "--project-dir", "/tmp/test",
-            "--user-constraints", "Zero CPU fallback",
-            "--verbose",
-        ])
+        code = main(
+            [
+                "--project-dir",
+                "/tmp/test",
+                "--user-constraints",
+                "Zero CPU fallback",
+                "--verbose",
+            ]
+        )
         assert code == 0
         captured = capsys.readouterr()
         assert "[INFO] User constraints: Zero CPU fallback" in captured.out
 
 
 def test_resolve_user_constraints_string():
+    # pylint: disable-next=import-outside-toplevel; silent
     from scripts.sm_adapt_cli import _resolve_user_constraints
 
     assert _resolve_user_constraints("Zero CPU fallback") == "Zero CPU fallback"
 
 
 def test_resolve_user_constraints_file(tmp_path: Path):
+    # pylint: disable-next=import-outside-toplevel; silent
     from scripts.sm_adapt_cli import _resolve_user_constraints
 
     constraint_file = tmp_path / "constraints.md"
@@ -149,6 +171,7 @@ def test_resolve_user_constraints_file(tmp_path: Path):
 
 
 def test_resolve_user_constraints_none():
+    # pylint: disable-next=import-outside-toplevel; silent
     from scripts.sm_adapt_cli import _resolve_user_constraints
 
     assert _resolve_user_constraints(None) == ""

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 # pyright: reportImplicitRelativeImport=false
-
 import sys
 from pathlib import Path
 
@@ -11,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.training import runner
+from src.training import runner  # pylint: disable=wrong-import-position; silent
 
 
 def prepare_data(project_root: Path | None = None) -> Path:

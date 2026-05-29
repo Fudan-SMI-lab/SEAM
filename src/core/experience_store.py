@@ -1,4 +1,8 @@
-# pyright: reportMissingImports=false, reportMissingTypeArgument=false, reportArgumentType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportAny=false, reportExplicitAny=false, reportUnusedCallResult=false
+# pyright: reportMissingImports=false, reportMissingTypeArgument=false,
+# reportArgumentType=false, reportUnknownParameterType=false,
+# reportUnknownVariableType=false, reportUnknownMemberType=false,
+# reportUnknownArgumentType=false, reportAny=false,
+# reportExplicitAny=false, reportUnusedCallResult=false
 import json
 import os
 from datetime import datetime, timezone
@@ -7,8 +11,8 @@ from typing import Any
 from .experience_registry import ExperienceRegistry
 
 
+# pylint: disable-next=too-many-instance-attributes,too-many-public-methods; silent
 class ExperienceStore:
-
     repo_root: str
     staging_dir: str
     cases_dir: str
@@ -84,7 +88,9 @@ class ExperienceStore:
         refined_dir = os.path.join(run_dir, self.refined_subdir)
         os.makedirs(refined_dir, exist_ok=True)
 
-        exp_id = experience.get("id", f"{run_id}-exp-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}")
+        exp_id = experience.get(
+            "id", f"{run_id}-exp-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        )
         experience["id"] = exp_id
         experience["run_id"] = run_id
         experience["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -117,7 +123,9 @@ class ExperienceStore:
         self._rewrite_index(entries)
 
     def read_index(self) -> list[dict]:
-        return self._merge_index_entries(self._read_persisted_index(), self._local_skill_index_entries())
+        return self._merge_index_entries(
+            self._read_persisted_index(), self._local_skill_index_entries()
+        )
 
     def _read_persisted_index(self) -> list[dict]:
         if not os.path.isfile(self.index_path):
@@ -176,7 +184,8 @@ class ExperienceStore:
 
     def _local_skill_index_entries(self) -> list[dict[str, Any]]:
         entries = [
-            entry for entry in self.registry.read_catalog()
+            entry
+            for entry in self.registry.read_catalog()
             if entry.get("status") == "local" and entry.get("type") == "skill-pack"
         ]
         if entries:
@@ -206,7 +215,6 @@ class ExperienceStore:
     def prune_orphans(self, dry_run: bool = True, quarantine: bool = True) -> dict[str, Any]:
         return self.registry.prune_orphans(dry_run=dry_run, quarantine=quarantine)
 
-
     def _apply_legacy_usage_updates(
         self,
         entries: list[dict],
@@ -220,7 +228,9 @@ class ExperienceStore:
         selected = set(str(item) for item in selected_ids or [] if item)
         used = set(str(item) for item in used_ids or [] if item)
         ignored = set(str(item) for item in ignored_ids or [] if item)
-        verified_ids = set(str(item) for item in (verification or {}).get("experience_ids", []) if item)
+        verified_ids = set(
+            str(item) for item in (verification or {}).get("experience_ids", []) if item
+        )
         verification_passed = (verification or {}).get("passed")
         changed = False
 
@@ -289,12 +299,19 @@ class ExperienceStore:
 
         return result
 
+    # pylint: disable-next=too-many-locals,too-many-statements; silent
     def promote_from_staging(self, run_id: str, promotion_type: str, exp_data: dict) -> str:
-        promotion_type = self._normalize_promotion_type(promotion_type or exp_data.get("type", "skill"))
+        promotion_type = self._normalize_promotion_type(
+            promotion_type or exp_data.get("type", "skill")
+        )
         skill_name = exp_data.get("skill_name", exp_data.get("name", f"{run_id}-promoted"))
-        asset_contents = exp_data.get("_asset_contents", {}) if isinstance(exp_data.get("_asset_contents", {}), dict) else {}
+        asset_contents = (
+            exp_data.get("_asset_contents", {})
+            if isinstance(exp_data.get("_asset_contents", {}), dict)
+            else {}
+        )
 
-        if promotion_type == "skill":
+        if promotion_type == "skill":  # pylint: disable=no-else-return; silent
             skill_dir = os.path.join(self.skills_dir, skill_name)
             os.makedirs(skill_dir, exist_ok=True)
 
@@ -325,27 +342,31 @@ class ExperienceStore:
                 promoted_asset_paths.append(skill_md_path)
 
             promoted_id = f"promoted-{skill_name}"
-            self.upsert_index({
-                "id": promoted_id,
-                "type": promotion_type,
-                "category": exp_data.get("category", ""),
-                "subtype": exp_data.get("subtype", ""),
-                "title": exp_data.get("title", skill_name),
-                "tags": exp_data.get("tags", []),
-                "confidence": exp_data.get("confidence", 0.0),
-                "target_roles": exp_data.get("target_roles", []),
-                "target_phases": exp_data.get("target_phases", []),
-                "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
-                "status": "promoted",
-                "run_id": run_id,
-                "created_at": exp_data.get("promoted_at", ""),
-            })
-            self.upsert_catalog_entry(self.registry.catalog_entry_from_promotion(
-                run_id,
-                promotion_type,
-                exp_data,
-                [os.path.relpath(path, self.repo_root) for path in promoted_asset_paths],
-            ))
+            self.upsert_index(
+                {
+                    "id": promoted_id,
+                    "type": promotion_type,
+                    "category": exp_data.get("category", ""),
+                    "subtype": exp_data.get("subtype", ""),
+                    "title": exp_data.get("title", skill_name),
+                    "tags": exp_data.get("tags", []),
+                    "confidence": exp_data.get("confidence", 0.0),
+                    "target_roles": exp_data.get("target_roles", []),
+                    "target_phases": exp_data.get("target_phases", []),
+                    "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
+                    "status": "promoted",
+                    "run_id": run_id,
+                    "created_at": exp_data.get("promoted_at", ""),
+                }
+            )
+            self.upsert_catalog_entry(
+                self.registry.catalog_entry_from_promotion(
+                    run_id,
+                    promotion_type,
+                    exp_data,
+                    [os.path.relpath(path, self.repo_root) for path in promoted_asset_paths],
+                )
+            )
 
             return data_path
 
@@ -372,27 +393,31 @@ class ExperienceStore:
                 promoted_asset_paths.append(asset_path)
 
             promoted_id = f"promoted-{item_slug}"
-            self.upsert_index({
-                "id": promoted_id,
-                "type": promotion_type,
-                "category": exp_data.get("category", ""),
-                "subtype": exp_data.get("subtype", ""),
-                "title": exp_data.get("title", skill_name),
-                "tags": exp_data.get("tags", []),
-                "confidence": exp_data.get("confidence", 0.0),
-                "target_roles": exp_data.get("target_roles", []),
-                "target_phases": exp_data.get("target_phases", []),
-                "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
-                "status": "promoted",
-                "run_id": run_id,
-                "created_at": exp_data.get("promoted_at", ""),
-            })
-            self.upsert_catalog_entry(self.registry.catalog_entry_from_promotion(
-                run_id,
-                promotion_type,
-                {**exp_data, "skill_name": item_slug, "name": item_slug},
-                [os.path.relpath(path, self.repo_root) for path in promoted_asset_paths],
-            ))
+            self.upsert_index(
+                {
+                    "id": promoted_id,
+                    "type": promotion_type,
+                    "category": exp_data.get("category", ""),
+                    "subtype": exp_data.get("subtype", ""),
+                    "title": exp_data.get("title", skill_name),
+                    "tags": exp_data.get("tags", []),
+                    "confidence": exp_data.get("confidence", 0.0),
+                    "target_roles": exp_data.get("target_roles", []),
+                    "target_phases": exp_data.get("target_phases", []),
+                    "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
+                    "status": "promoted",
+                    "run_id": run_id,
+                    "created_at": exp_data.get("promoted_at", ""),
+                }
+            )
+            self.upsert_catalog_entry(
+                self.registry.catalog_entry_from_promotion(
+                    run_id,
+                    promotion_type,
+                    {**exp_data, "skill_name": item_slug, "name": item_slug},
+                    [os.path.relpath(path, self.repo_root) for path in promoted_asset_paths],
+                )
+            )
 
             return file_path
 
@@ -440,6 +465,7 @@ class ExperienceStore:
                 skill_md = os.path.join(skill_dir, "SKILL.md")
                 if not os.path.isfile(skill_md):
                     continue
+                # pylint: disable-next=consider-using-with; silent
                 data = self._parse_meta_from_skill(open(skill_md, "r", encoding="utf-8").read())
 
             if data.get("category") != category:
@@ -454,19 +480,26 @@ class ExperienceStore:
 
         return None
 
+    # pylint: disable-next=too-many-locals; silent
     def check_and_auto_promote(self, exp: dict, run_id: str) -> bool:
         category = exp.get("category", "")
         tags = exp.get("tags", [])
         skill_name = exp.get("skill_name", exp.get("name", None))
         title = exp.get("title", "")
-        exp_type = self._normalize_promotion_type(exp.get("type", exp.get("promotion_type", "skill")))
+        exp_type = self._normalize_promotion_type(
+            exp.get("type", exp.get("promotion_type", "skill"))
+        )
 
         index_id = f"{run_id}-exp-{skill_name or title}"
 
-        similar_staging = self._find_similar_exp_entries(category, tags, min_overlap=2, status_filter="staging")
+        similar_staging = self._find_similar_exp_entries(
+            category, tags, min_overlap=2, status_filter="staging"
+        )
         similar_staging = [e for e in similar_staging if e.get("id") != index_id]
 
-        existing_skill = self._find_promoted_skill(category, skill_name) if exp_type == "skill" else None
+        existing_skill = (
+            self._find_promoted_skill(category, skill_name) if exp_type == "skill" else None
+        )
 
         exists_count = 1 if existing_skill is not None else 0
         total_count = len(similar_staging) + exists_count + 1
@@ -546,7 +579,9 @@ class ExperienceStore:
             slug = slug.replace("--", "-")
         return slug or "experience"
 
-    def _merge_into_promoted_skill(self, skill_path: str, new_exp: dict, staging_others: list) -> bool:
+    def _merge_into_promoted_skill(  # pylint: disable=too-many-branches,too-many-locals; silent
+        self, skill_path: str, new_exp: dict, staging_others: list
+    ) -> bool:
         data_path = os.path.join(skill_path, "skill_data.json")
 
         if os.path.isfile(data_path):
@@ -594,7 +629,7 @@ class ExperienceStore:
         max_confidence = data.get("confidence", 0.0)
         for entry in entries_to_merge:
             c = entry.get("confidence", 0.0)
-            if c > max_confidence:
+            if c > max_confidence:  # pylint: disable=consider-using-max-builtin; silent
                 max_confidence = c
         data["confidence"] = max_confidence
 
@@ -607,6 +642,7 @@ class ExperienceStore:
 
         return True
 
+    # pylint: disable-next=too-many-branches,too-many-locals,too-many-statements; silent
     def _render_skill_md_with_data(self, data: dict, output_path: str) -> None:
         name = data.get("name", "unknown")
         description = data.get("title", data.get("description", ""))

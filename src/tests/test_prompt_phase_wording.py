@@ -1,4 +1,5 @@
 """Verify that early-phase prompts do not contain forward-phase or framework-specific wording."""
+
 import sys
 from pathlib import Path
 
@@ -73,6 +74,7 @@ CONSTRAINT_SUMMARY_PPU = PROMPTS_DIR / "phase_1_5_constraint_summary_ppu.md"
 
 
 def test_experience_query_phase1_no_phase5() -> None:
+    # pylint: disable-next=line-too-long; silent
     """experience_query_phase1.md was changed from 'Unlike Phase 5' to 'Unlike later repair phases'."""
     text = EXPERIENCE_PHASE1.read_text(encoding="utf-8")
     assert "Unlike later repair phases" in text, (
@@ -99,15 +101,15 @@ def test_constraint_summary_no_phase_enumeration() -> None:
 def test_constraint_summary_ppu_already_neutral() -> None:
     """phase_1_5_constraint_summary_ppu.md was already neutral — verify it still is."""
     text = CONSTRAINT_SUMMARY_PPU.read_text(encoding="utf-8")
-    assert "ALL subsequent phases" in text, (
-        "expected neutral 'ALL subsequent phases' wording"
-    )
+    assert "ALL subsequent phases" in text, "expected neutral 'ALL subsequent phases' wording"
 
 
 # ── Phase 3 MUSA/MUXI entryfix prompt contract tests ─────────────────────────
 
 MUSA_ENTRYFIX_PROMPT = PROMPTS_DIR / "phase_3_entry_script_musa_container_baseaware_entryfix.md"
-MUSA_NORMAL_PROMPT = PROMPTS_DIR / "phase_3_entry_script_musa_container_baseaware_entryfix_normal.md"
+MUSA_NORMAL_PROMPT = (
+    PROMPTS_DIR / "phase_3_entry_script_musa_container_baseaware_entryfix_normal.md"
+)
 
 
 def _read_prompt(path: Path) -> str:
@@ -117,6 +119,7 @@ def _read_prompt(path: Path) -> str:
 
 
 # ── MUSA custom-op prompt (entryfix) assertions ──────────────────────────────
+
 
 def test_musa_custom_op_prompt_contains_priority_zero_user_constraints() -> None:
     """MUSA custom-op prompt must include Priority #0 user constraints section."""
@@ -211,7 +214,9 @@ def test_musa_custom_op_prompt_contains_musa_specific_context() -> None:
     text = _read_prompt(MUSA_ENTRYFIX_PROMPT)
     assert "CUDA-to-MUSA/MUXI" in text, "Missing CUDA-to-MUSA/MUXI context"
     assert "torch_musa" in text, "Missing torch_musa reference"
-    assert "torch.musa" in text or "MACA/MetaX" in text, "Missing torch.musa or MACA/MetaX reference"
+    assert "torch.musa" in text or "MACA/MetaX" in text, (
+        "Missing torch.musa or MACA/MetaX reference"
+    )
     assert "MUSA SDK" in text, "Missing MUSA SDK reference"
     assert "presence_only" in text.lower(), "Missing presence_only speedup optionality"
     assert "compile, load, and run" in text.lower() or "compile/load/run" in text.lower(), (
@@ -321,7 +326,9 @@ def test_musa_normal_prompt_contains_base_aware_sections() -> None:
 
 # ── Workflow reference assertions ────────────────────────────────────────────
 
-MUSA_NORMAL_WORKFLOW = WORKFLOWS_DIR / "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml"
+MUSA_NORMAL_WORKFLOW = (
+    WORKFLOWS_DIR / "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml"
+)
 
 
 def test_musa_normal_workflow_references_normal_prompt() -> None:
@@ -334,7 +341,7 @@ def test_musa_normal_workflow_references_normal_prompt() -> None:
         "Expected: phase_3_entry_script_musa_container_baseaware_entryfix_normal"
     )
     # The custom-op prompt should NOT be referenced by the normal workflow
-    assert "phase_3_entry_script_musa_container_baseaware_entryfix\"" not in text, (
+    assert 'phase_3_entry_script_musa_container_baseaware_entryfix"' not in text, (
         "MUSA normal workflow still references the custom-op prompt template. "
         "It must use only the normal prompt template."
     )

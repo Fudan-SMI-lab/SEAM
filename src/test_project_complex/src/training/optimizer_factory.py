@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportGeneralTypeIssues=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnnecessaryIsInstance=false
-
+# pyright: reportAny=false, reportExplicitAny=false,
+# reportGeneralTypeIssues=false, reportUnknownArgumentType=false,
+# reportUnknownVariableType=false, reportUnnecessaryIsInstance=false
 from collections.abc import Iterable
 from typing import Any
 
-import torch
-from torch import nn
+import torch  # pylint: disable=import-error; silent
+from torch import nn  # pylint: disable=import-error; silent
 
 
 def build_optimizer(model: nn.Module, config: dict[str, Any]) -> torch.optim.Optimizer:

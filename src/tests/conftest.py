@@ -5,8 +5,9 @@ which blocks import of ``harness.session.manager`` during test collection.
 Provide a minimal stub only when ``_sqlite3`` is truly missing. On properly
 built Python installations this code is never executed.
 """
+
 import sys
-import types
+
 
 class _FakeSqliteError(Exception):
     pass
@@ -31,8 +32,9 @@ class _FakeSqliteConnection:
         raise _FakeSqliteError("sqlite connect unavailable")
 
 
-class _FakeSqliteDbapi2:
+class _FakeSqliteDbapi2:  # pylint: disable=too-few-public-methods; silent
     """Minimal sqlite3.dbapi2 stub."""
+
     apilevel = "2.0"
     paramstyle = "qmark"
     threadsafety = 1
@@ -43,7 +45,7 @@ class _FakeSqliteDbapi2:
 
 if "_sqlite3" not in sys.modules:
     try:
-        import sqlite3  # noqa: F401
+        import sqlite3  # noqa: F401  # pylint: disable=unused-import; silent
     except ImportError:
         sys.modules["_sqlite3"] = _FakeSqliteDbapi2
         sys.modules["sqlite3.dbapi2"] = _FakeSqliteDbapi2
@@ -57,7 +59,7 @@ else:
 # Expose so test files can skip when real sqlite3 is unavailable.
 NO_REAL_SQLITE3 = _NO_REAL_SQLITE3
 
-import pytest
+import pytest  # pylint: disable=wrong-import-position; silent
 
 
 @pytest.fixture

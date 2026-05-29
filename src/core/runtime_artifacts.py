@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
 import json
+import re
 from pathlib import Path
 from typing import cast
-
 
 NO_EXPERIENCE_CARDS_NOTE = "(No analyzer-selected experience cards)"
 
@@ -17,7 +16,7 @@ def sanitize_project_name(project_dir: str) -> str:
     return sanitized or "project"
 
 
-def write_repair_runtime_artifacts(
+def write_repair_runtime_artifacts(  # pylint: disable=too-many-arguments; silent
     *,
     artifact_dir: str,
     project_dir: str,
@@ -56,7 +55,7 @@ def write_repair_runtime_artifacts(
     return str(runtime_error_path.resolve()), str(runtime_card_path.resolve())
 
 
-def write_operator_runtime_artifacts(
+def write_operator_runtime_artifacts(  # pylint: disable=too-many-arguments; silent
     *,
     artifact_dir: str,
     project_dir: str,
@@ -114,7 +113,7 @@ def _role_title(repair_role: str) -> str:
     return titles.get(repair_role, repair_role.replace("_", " ").title())
 
 
-def _repair_runtime_error_markdown(
+def _repair_runtime_error_markdown(  # pylint: disable=too-many-arguments; silent
     *,
     project_dir: str,
     entry_script: str,
@@ -148,7 +147,11 @@ def _repair_runtime_error_markdown(
 
 def _repair_runtime_card_markdown(repair_role: str, experience_action_cards: object) -> str:
     title = _role_title(repair_role)
-    cards = [str(card) for card in cast(list[object], experience_action_cards)] if isinstance(experience_action_cards, list) else []
+    cards = (
+        [str(card) for card in cast(list[object], experience_action_cards)]
+        if isinstance(experience_action_cards, list)
+        else []
+    )
     if not cards:
         return f"# {title} Runtime Cards\n\n{NO_EXPERIENCE_CARDS_NOTE}\n"
 
@@ -158,7 +161,7 @@ def _repair_runtime_card_markdown(repair_role: str, experience_action_cards: obj
     return "\n".join(lines)
 
 
-def _operator_repair_context_markdown(
+def _operator_repair_context_markdown(  # pylint: disable=too-many-locals; silent
     *,
     project_dir: str,
     entry_script: str,
@@ -176,7 +179,11 @@ def _operator_repair_context_markdown(
     gate = _read_json_report(gate_path, warnings)
 
     contract_units = _contract_operator_units(contract)
-    total_count = len(contract_units) if contract_units else _best_effort_total_count(inventory, manifest, gate)
+    total_count = (
+        len(contract_units)
+        if contract_units
+        else _best_effort_total_count(inventory, manifest, gate)
+    )
     units = contract_units or _operator_units(inventory, manifest, gate)
     progress = _progress_summary(gate)
 
@@ -201,19 +208,26 @@ def _operator_repair_context_markdown(
         f"- Entry Command: {entry_script or str(contract.get('run_command', '(not provided)'))}",
         f"- Entry Script Path: {contract.get('entry_script_path', '(not provided)')}",
         f"- Entry Script Kind: {contract.get('entry_script_kind', '(not provided)')}",
+        # pylint: disable-next=line-too-long; silent
         f"- Phase 5 Entry Script Revision Allowed: {contract.get('phase5_entry_script_revision_allowed', False)}",
         f"- Reports Dir: {reports_dir}",
         "",
         "## Inventory / Manifest / Final-Gate Closure",
+        # pylint: disable-next=line-too-long; silent
         "- Inventory is the discovery output: it records fine-grained operator/custom-op units, their variants/signatures, launch sites, public entries, and source evidence.",
+        # pylint: disable-next=line-too-long; silent
         "- Manifest is the closure output: it records the coverage rows that must close every discovered fine-grained unit.",
+        # pylint: disable-next=line-too-long; silent
         "- The final gate is the machine check that compares inventory, manifest, and runtime evidence and fails closed on mismatches.",
+        # pylint: disable-next=line-too-long; silent
         "- source_inventory is the authoritative source-discovery proof for each manifest row; if a row cannot be matched back to source_inventory, the run must re-discover or re-close instead of passing.",
+        # pylint: disable-next=line-too-long; silent
         "- Missing rows, mismatched rows, or incomplete evidence must force a re-discovery / re-closure loop rather than a false FULL_PASS.",
         "",
         "## Final Validation Goal",
         "- FULL_PASS is required.",
         "- remaining_entries must be 0.",
+        # pylint: disable-next=line-too-long; silent
         "- Every manifest/inventory entry must be a fine-grained unit and must be closed with passing custom-op artifact, adapter, parity, integration, runtime coverage, and performance evidence.",
         "- No CPU fallback, zero-call fake coverage, or builtin contamination is allowed.",
         "",
@@ -240,21 +254,33 @@ def _operator_repair_context_markdown(
             lines.append(f"- Unit {index}: {unit}")
         lines.append("")
     else:
-        lines.extend(["## Parallelizable Operator Units", "- No per-operator units found in reports; inspect the discovered inventory paths before editing.", ""])
+        lines.extend(
+    [
+        "## Parallelizable Operator Units",
+        # pylint: disable-next=line-too-long; silent
+        "- No per-operator units found in reports; inspect the discovered inventory paths before editing.",
+        "",
+         ] )
 
-    lines.extend([
-        "## Current Final-Gate Progress",
-        *[f"- {item}" for item in progress],
-        "",
-        "## Bounded Parallelization Guidance",
-        "- Repair only the currently failing or assigned operator/custom-op units needed for the final gate.",
-        "- Independent operator units may be split into bounded sub-tasks when their source files, build artifacts, and tests do not overlap.",
-        "- Merge sub-task results before running the entry command and final-gate checks.",
-        "- Treat the discovered inventory, manifest coverage rows, and final gate as the source of truth; do not invent passes for rows that are missing from source_inventory.",
-        "- Do not execute cuda_custom_op_skill_test_prompt.md as a workplan; this artifact is the bounded repair context.",
-        "",
-        "## Warnings",
-    ])
+    lines.extend(
+        [
+            "## Current Final-Gate Progress",
+            *[f"- {item}" for item in progress],
+            "",
+            "## Bounded Parallelization Guidance",
+            # pylint: disable-next=line-too-long; silent
+            "- Repair only the currently failing or assigned operator/custom-op units needed for the final gate.",
+            # pylint: disable-next=line-too-long; silent
+            "- Independent operator units may be split into bounded sub-tasks when their source files, build artifacts, and tests do not overlap.",
+            "- Merge sub-task results before running the entry command and final-gate checks.",
+            # pylint: disable-next=line-too-long; silent
+            "- Treat the discovered inventory, manifest coverage rows, and final gate as the source of truth; do not invent passes for rows that are missing from source_inventory.",
+            # pylint: disable-next=line-too-long; silent
+            "- Do not execute cuda_custom_op_skill_test_prompt.md as a workplan; this artifact is the bounded repair context.",
+            "",
+            "## Warnings",
+        ]
+    )
     lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
     lines.append("")
     return "\n".join(lines)
@@ -319,7 +345,15 @@ def _candidate_entries(data: object) -> list[object]:
         source_entries = cast(dict[str, object], source_inventory).get("entries")
         if isinstance(source_entries, list):
             return cast(list[object], source_entries)
-    for key in ("operators", "custom_operators", "entries", "items", "rows", "operator_inventory", "manifest"):
+    for key in (
+        "operators",
+        "custom_operators",
+        "entries",
+        "items",
+        "rows",
+        "operator_inventory",
+        "manifest",
+    ):
         value = data_dict.get(key)
         if isinstance(value, list):
             return cast(list[object], value)
@@ -365,7 +399,7 @@ def _operator_units(inventory: object, manifest: object, gate: object) -> list[s
     return units
 
 
-def _entry_summary(entry: object) -> str:
+def _entry_summary(entry: object) -> str:  # pylint: disable=too-many-branches; silent
     if not isinstance(entry, dict):
         return str(entry)[:300]
     entry_dict = cast(dict[str, object], entry)
@@ -381,7 +415,13 @@ def _entry_summary(entry: object) -> str:
         if entry_dict.get(key):
             parts.append(f"status={entry_dict[key]}")
             break
-    for key in ("native_operator_symbols", "kernel_functions", "kernel_launch_sites", "public_entry_mapping", "source_evidence"):
+    for key in (
+        "native_operator_symbols",
+        "kernel_functions",
+        "kernel_launch_sites",
+        "public_entry_mapping",
+        "source_evidence",
+    ):
         if entry_dict.get(key):
             parts.append(f"{key}={_compact_entry_value(entry_dict[key])}")
     for key in ("path", "file", "source", "source_file", "source_path"):

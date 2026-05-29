@@ -33,7 +33,7 @@ class SessionMetric:
 
 
 @dataclass
-class CommandMetric:
+class CommandMetric:  # pylint: disable=too-many-instance-attributes; silent
     sequence: int
     phase_id: str | None
     session_id: str
@@ -60,7 +60,7 @@ class PhaseMetric:
 
 
 class SessionManagerBackend(Protocol):
-    def get_or_create(
+    def get_or_create(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         role: str,
         lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
@@ -68,24 +68,21 @@ class SessionManagerBackend(Protocol):
         title: str = "",
         working_dir: str = "",
         initial_prompt: str = "",
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    def send_command(
+    def send_command(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         session_id: str,
         command: str,
         agent: str = "",
         timeout: int = 600,
         retries: int = 2,
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    def cleanup_all(self) -> int:
-        ...
+    def cleanup_all(self) -> int: ...
 
 
-class TelemetryObserver:
+class TelemetryObserver:  # pylint: disable=too-many-instance-attributes; silent
     _session_mgr: SessionManagerBackend
     _output_dir: Path
     _run_started_at: str
@@ -191,7 +188,7 @@ class TelemetryObserver:
         metric.status = status
         metric.error = error
 
-    def get_or_create(
+    def get_or_create(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         role: str,
         lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
@@ -227,6 +224,7 @@ class TelemetryObserver:
             metric.phases.append(self._active_phase)
         return session_id
 
+    # pylint: disable-next=too-many-arguments,too-many-locals,too-many-positional-arguments; silent
     def send_command(
         self,
         session_id: str,
@@ -287,7 +285,7 @@ class TelemetryObserver:
                         response=response,
                         error=error_message,
                     )
-                except Exception as exc:
+                except Exception as exc:  # pylint: disable=broad-exception-caught; silent
                     self.record_event(
                         "agent_io_log_error",
                         session_id=session_id,
@@ -346,5 +344,7 @@ class TelemetryObserver:
             "commands": [asdict(metric) for metric in self._commands],
             "events": self._events,
         }
-        _ = output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        _ = output_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         return {"telemetry_json": str(output_path)}

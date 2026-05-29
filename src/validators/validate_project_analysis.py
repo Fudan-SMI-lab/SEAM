@@ -4,7 +4,6 @@ from typing import cast
 
 from core.validator_engine import ValidationDict
 
-
 CUSTOM_OP_SURFACE_FIELDS = (
     "custom_op_detected",
     "discovery_complete",
@@ -35,6 +34,7 @@ REQUIRED_DISCOVERY_SOURCES = (
 )
 
 
+# pylint: disable-next=too-many-branches; silent
 def validate(data: dict[str, object]) -> ValidationDict:
     errors: list[str] = []
 
@@ -72,6 +72,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "discovery_sources_checked",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.discovery_sources_checked must contain the full source discovery category set when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -79,6 +80,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "searched_source_roots",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.searched_source_roots must contain at least one source root when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -86,6 +88,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "searched_source_paths",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.searched_source_paths must contain at least one source path when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -93,6 +96,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "operator_families",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.operator_families must contain at least one family when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -100,6 +104,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "fine_grained_operator_units",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.fine_grained_operator_units must contain at least one source-discovered fine-grained operator unit when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -107,6 +112,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "discovered_operator_names",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.discovered_operator_names must contain at least one source-discovered operator name when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -114,6 +120,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "source_evidence",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.source_evidence must contain at least one source proof when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -121,6 +128,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "negative_evidence",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.negative_evidence must contain at least one negative probe when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -128,6 +136,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "dynamic_loading_checks",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.dynamic_loading_checks must contain at least one dynamic loading check when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -135,6 +144,7 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 surface,
                 "build_load_checks",
                 errors,
+                # pylint: disable-next=line-too-long; silent
                 non_empty_message="custom_op_surface.build_load_checks must contain at least one build/load check when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
@@ -142,9 +152,15 @@ def validate(data: dict[str, object]) -> ValidationDict:
             _validate_string_list(surface, "out_of_scope_source_groups", errors)
             if custom_op_detected is True:
                 if surface.get("discovery_complete") is not True:
-                    errors.append("custom_op_surface.discovery_complete must be true when custom_op_detected is true")
+                    errors.append(
+                        # pylint: disable-next=line-too-long; silent
+                        "custom_op_surface.discovery_complete must be true when custom_op_detected is true"
+                    )
                 elif cast(list[object], surface.get("unresolved_source_groups", [])):
-                    errors.append("custom_op_surface.unresolved_source_groups must be empty when discovery_complete is true")
+                    errors.append(
+                        # pylint: disable-next=line-too-long; silent
+                        "custom_op_surface.unresolved_source_groups must be empty when discovery_complete is true"
+                    )
                 _validate_required_sources(surface, errors)
                 _validate_fine_grained_unit_evidence(surface, errors)
 
@@ -167,24 +183,36 @@ def _validate_string_list(
     if not all(isinstance(item, str) and str(item).strip() for item in items):
         errors.append(f"custom_op_surface.{field_name} must contain only non-empty strings")
     if require_non_empty and not items:
-        errors.append(non_empty_message or f"custom_op_surface.{field_name} must contain at least one item when custom_op_detected is true")
+        errors.append(
+            non_empty_message
+            # pylint: disable-next=line-too-long; silent
+            or f"custom_op_surface.{field_name} must contain at least one item when custom_op_detected is true"
+        )
 
 
 def _validate_required_sources(surface: dict[str, object], errors: list[str]) -> None:
     sources = surface.get("discovery_sources_checked")
     if not isinstance(sources, list):
         return
-    source_values = {str(source).strip().lower().replace("-", "_") for source in cast(list[object], sources)}
+    source_values = {
+        str(source).strip().lower().replace("-", "_") for source in cast(list[object], sources)
+    }
     missing_sources = sorted(set(REQUIRED_DISCOVERY_SOURCES) - source_values)
     if missing_sources:
-        errors.append("custom_op_surface.discovery_sources_checked missing required sources: " + ", ".join(missing_sources))
+        errors.append(
+            "custom_op_surface.discovery_sources_checked missing required sources: "
+            + ", ".join(missing_sources)
+        )
 
 
+# pylint: disable-next=too-many-branches,too-many-locals; silent
 def _validate_fine_grained_unit_evidence(surface: dict[str, object], errors: list[str]) -> None:
     unit_values = surface.get("fine_grained_operator_units")
     if not isinstance(unit_values, list):
         return
-    unit_identities = [unit for unit in cast(list[object], unit_values) if isinstance(unit, str) and unit.strip()]
+    unit_identities = [
+        unit for unit in cast(list[object], unit_values) if isinstance(unit, str) and unit.strip()
+    ]
 
     evidence_values = surface.get("fine_grained_operator_unit_evidence")
     if not isinstance(evidence_values, list):
@@ -192,28 +220,44 @@ def _validate_fine_grained_unit_evidence(surface: dict[str, object], errors: lis
         return
     evidence_items = cast(list[object], evidence_values)
     if not evidence_items:
-        errors.append("custom_op_surface.fine_grained_operator_unit_evidence must contain at least one source-linked entry when custom_op_detected is true")
+        errors.append(
+            # pylint: disable-next=line-too-long; silent
+            "custom_op_surface.fine_grained_operator_unit_evidence must contain at least one source-linked entry when custom_op_detected is true"
+        )
         return
 
     evidence_unit_identities: list[str] = []
     for index, item in enumerate(evidence_items):
         if not isinstance(item, dict):
-            errors.append(f"custom_op_surface.fine_grained_operator_unit_evidence[{index}] must be an object")
+            errors.append(
+                f"custom_op_surface.fine_grained_operator_unit_evidence[{index}] must be an object"
+            )
             continue
         evidence = cast(dict[str, object], item)
         unit_identity = evidence.get("unit_identity")
         if not isinstance(unit_identity, str) or not unit_identity.strip():
-            errors.append(f"custom_op_surface.fine_grained_operator_unit_evidence[{index}].unit_identity must be a non-empty string")
+            errors.append(
+                # pylint: disable-next=line-too-long; silent
+                f"custom_op_surface.fine_grained_operator_unit_evidence[{index}].unit_identity must be a non-empty string"
+            )
         else:
             evidence_unit_identities.append(unit_identity.strip())
 
         source_evidence = evidence.get("source_evidence")
         if not isinstance(source_evidence, list):
-            errors.append(f"custom_op_surface.fine_grained_operator_unit_evidence[{index}].source_evidence must be a list")
+            errors.append(
+                # pylint: disable-next=line-too-long; silent
+                f"custom_op_surface.fine_grained_operator_unit_evidence[{index}].source_evidence must be a list"
+            )
             continue
         source_items = cast(list[object], source_evidence)
-        if not source_items or not all(isinstance(source, str) and source.strip() for source in source_items):
-            errors.append(f"custom_op_surface.fine_grained_operator_unit_evidence[{index}].source_evidence must contain only non-empty strings")
+        if not source_items or not all(
+            isinstance(source, str) and source.strip() for source in source_items
+        ):
+            errors.append(
+                # pylint: disable-next=line-too-long; silent
+                f"custom_op_surface.fine_grained_operator_unit_evidence[{index}].source_evidence must contain only non-empty strings"
+            )
 
     if unit_identities:
         expected = set(unit_identities)
@@ -227,6 +271,7 @@ def _validate_fine_grained_unit_evidence(surface: dict[str, object], errors: lis
             if extra:
                 details.append("evidence without matching units: " + ", ".join(extra))
             errors.append(
+                # pylint: disable-next=line-too-long; silent
                 "custom_op_surface.fine_grained_operator_unit_evidence must provide one source-linked entry for every fine_grained_operator_unit"
                 + (" (" + "; ".join(details) + ")" if details else "")
             )

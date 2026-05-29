@@ -1,7 +1,7 @@
 # pyright: reportUnusedCallResult=false
 
 """Verification tests for load_framework_config (config_loader)."""
-import os
+
 import sys
 import tempfile
 from pathlib import Path
@@ -12,6 +12,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable-next=wrong-import-position; silent
 from core.config_loader import load_framework_config
 
 

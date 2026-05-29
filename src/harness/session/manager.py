@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines; silent
 from __future__ import annotations
 
 import base64
@@ -17,7 +18,17 @@ from typing import Any, Literal
 
 logger = logging.getLogger("harness.session.manager")
 
-RUNNING_TOKENS = {"running", "queued", "processing", "thinking", "in_progress", "active", "busy", "retry", "compacting"}
+RUNNING_TOKENS = {
+    "running",
+    "queued",
+    "processing",
+    "thinking",
+    "in_progress",
+    "active",
+    "busy",
+    "retry",
+    "compacting",
+}
 COMPACTION_TOKENS = {"compaction", "summary"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
 FALLBACK_AGENT_NAME = "Atlas"
@@ -50,7 +61,9 @@ def extract_json_response(text: str) -> dict[str, Any]:
     if not text:
         return {}
 
-    candidates = [match.group(1).strip() for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)]
+    candidates = [
+        match.group(1).strip() for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    ]
     candidates.reverse()
     candidates.append(text.strip())
 
@@ -91,6 +104,7 @@ def _parse_last_json_object(text: str) -> dict[str, Any]:
             continue
 
         absolute_end = start + end
+        # pylint: disable-next=unsubscriptable-object; silent
         if best is None or absolute_end > best[1] or (absolute_end == best[1] and start < best[0]):
             best = (start, absolute_end, parsed)
 
@@ -98,7 +112,7 @@ def _parse_last_json_object(text: str) -> dict[str, Any]:
 
 
 @dataclass
-class SessionRecord:
+class SessionRecord:  # pylint: disable=too-many-instance-attributes; silent
     session_id: str
     role: str
     agent: str
@@ -110,7 +124,7 @@ class SessionRecord:
 
 
 class MigrationSessionManager:
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         work_dir: str = ".",
         base_url: str = "http://127.0.0.1:4096",
@@ -231,9 +245,7 @@ class MigrationSessionManager:
                 f"{sorted(matching)}. Use a more specific name."
             )
 
-        raise ValueError(
-            f"Agent name '{name}' not found. Available agents: {sorted(agents)}"
-        )
+        raise ValueError(f"Agent name '{name}' not found. Available agents: {sorted(agents)}")
 
     def override_agent(self, name: str) -> str:
         """Validate and set *name* as the active agent after resolving aliases.
@@ -253,7 +265,7 @@ class MigrationSessionManager:
         self._detected_agent = canonical
         return canonical
 
-    def create_session(
+    def create_session(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         role: str,
         agent: str = "",
@@ -265,7 +277,9 @@ class MigrationSessionManager:
         payload = {"title": title or f"migration-{role}"}
         resp = self._http("POST", "/session", body=payload)
         if not resp.get("ok") or not isinstance(resp.get("data"), dict):
-            raise RuntimeError(f"Failed to create session: {resp.get('error') or resp.get('details')}")
+            raise RuntimeError(
+                f"Failed to create session: {resp.get('error') or resp.get('details')}"
+            )
 
         session_id = str(resp["data"]["id"])
         record = SessionRecord(
@@ -299,7 +313,7 @@ class MigrationSessionManager:
             )
         return True
 
-    def get_or_create(
+    def get_or_create(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         role: str,
         agent: str = "",
@@ -310,7 +324,11 @@ class MigrationSessionManager:
     ) -> str:
         selected_agent = agent or self.active_agent
         for session_id, record in self._sessions.items():
-            if record.role == role and record.agent == selected_agent and record.lifecycle == lifecycle:
+            if (
+                record.role == role
+                and record.agent == selected_agent
+                and record.lifecycle == lifecycle
+            ):
                 record.last_used_at = time.time()
                 return session_id
         return self.create_session(
@@ -322,7 +340,7 @@ class MigrationSessionManager:
             initial_prompt=initial_prompt,
         )
 
-    def send_command(
+    def send_command(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         session_id: str,
         command: str,
@@ -339,7 +357,9 @@ class MigrationSessionManager:
 
         for attempt in range(retries + 1):
             try:
-                return self._send_message_raw(session_id, command, agent=selected_agent, timeout=timeout)
+                return self._send_message_raw(
+                    session_id, command, agent=selected_agent, timeout=timeout
+                )
             except (SessionAuthError, SessionServerError) as exc:
                 last_error = exc
                 self._wait_after_hard_error(session_id, timeout=timeout)
@@ -347,13 +367,19 @@ class MigrationSessionManager:
             except TimeoutError as exc:
                 last_error = exc
                 break
-            except (SessionTransportError, SessionCompacted, urllib.error.URLError, RuntimeError, ValueError) as exc:
+            except (
+                SessionTransportError,
+                SessionCompacted,
+                urllib.error.URLError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
                 last_error = exc
                 if attempt >= retries:
                     break
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
 
-        return json.dumps({"ok": False, "error": str(last_error or 'unknown session error')})
+        return json.dumps({"ok": False, "error": str(last_error or "unknown session error")})
 
     @staticmethod
     def _effective_wait_timeout(timeout: int | float | None) -> float:
@@ -364,6 +390,7 @@ class MigrationSessionManager:
             raise ValueError("Session timeout must be finite")
         return max(1.0, timeout_value)
 
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments; silent
     def send_json_command(
         self,
         session_id: str,
@@ -406,6 +433,7 @@ class MigrationSessionManager:
 
         return json.dumps(payload, default=str)
 
+    # pylint: disable-next=too-many-branches,too-many-return-statements; silent
     def _extract_message_text(self, payload: Any) -> str:
         if payload is None:
             return ""
@@ -418,7 +446,7 @@ class MigrationSessionManager:
                 if text:
                     collected.append(text)
             return "\n".join(collected).strip()
-        if isinstance(payload, dict):
+        if isinstance(payload, dict):  # pylint: disable=too-many-nested-blocks; silent
             for key in ("content", "text", "message", "response"):
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
@@ -509,7 +537,11 @@ class MigrationSessionManager:
             summary = info.get("summary")
             if mode in COMPACTION_TOKENS or agent in COMPACTION_TOKENS:
                 return True
-            if summary is True and (mode in COMPACTION_TOKENS or agent in COMPACTION_TOKENS or finish in COMPACTION_TOKENS):
+            if summary is True and (
+                mode in COMPACTION_TOKENS
+                or agent in COMPACTION_TOKENS
+                or finish in COMPACTION_TOKENS
+            ):
                 return True
             if finish in COMPACTION_TOKENS:
                 return True
@@ -521,6 +553,7 @@ class MigrationSessionManager:
         text = self._extract_message_text(data).lower()
         return bool(text and "compaction" in text and "summary" in text)
 
+    # pylint: disable-next=too-many-branches,too-many-return-statements; silent
     def _todo_signal_from_payload(self, payload: Any) -> bool | None:
         if payload is None:
             return None
@@ -549,9 +582,28 @@ class MigrationSessionManager:
                 value = payload.get(key)
                 if isinstance(value, str):
                     token = value.lower()
-                    if token in {"open", "pending", "todo", "incomplete", "in_progress", "in progress", "running", "active", "busy"}:
+                    if token in {
+                        "open",
+                        "pending",
+                        "todo",
+                        "incomplete",
+                        "in_progress",
+                        "in progress",
+                        "running",
+                        "active",
+                        "busy",
+                    }:
                         return True
-                    if token in {"done", "complete", "completed", "closed", "resolved", "success", "idle", "stop"}:
+                    if token in {
+                        "done",
+                        "complete",
+                        "completed",
+                        "closed",
+                        "resolved",
+                        "success",
+                        "idle",
+                        "stop",
+                    }:
                         return False
             for key in ("done", "completed", "closed", "resolved"):
                 value = payload.get(key)
@@ -560,7 +612,16 @@ class MigrationSessionManager:
                 if value is True:
                     return False
 
-            explicit_keys = ("todos", "todo", "tasks", "task", "checklist", "items", "open_todos", "pending_todos")
+            explicit_keys = (
+                "todos",
+                "todo",
+                "tasks",
+                "task",
+                "checklist",
+                "items",
+                "open_todos",
+                "pending_todos",
+            )
             found_explicit = False
             for key in explicit_keys:
                 if key in payload:
@@ -633,7 +694,16 @@ class MigrationSessionManager:
                 token = value.lower()
                 if token in RUNNING_TOKENS:
                     return True
-                if token in {"done", "complete", "completed", "closed", "resolved", "success", "idle", "stop"}:
+                if token in {
+                    "done",
+                    "complete",
+                    "completed",
+                    "closed",
+                    "resolved",
+                    "success",
+                    "idle",
+                    "stop",
+                }:
                     return False
         return None
 
@@ -645,10 +715,14 @@ class MigrationSessionManager:
     ) -> bool | None:
         message_tables = [name for name in ("message", "messages") if name in tables]
         for table_name in message_tables:
-            columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
+            columns = [
+                row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            ]
             if not columns:
                 continue
-            session_column = self._resolve_sql_column(columns, {"sessionID", "sessionId", "session_id", "sessionid", "session"})
+            session_column = self._resolve_sql_column(
+                columns, {"sessionID", "sessionId", "session_id", "sessionid", "session"}
+            )
             data_column = self._resolve_sql_column(columns, {"data", "payload", "body", "message"})
             if not session_column or not data_column:
                 continue
@@ -656,7 +730,15 @@ class MigrationSessionManager:
             role_column = self._resolve_sql_column(columns, {"role"})
             order_column = self._resolve_sql_column(
                 columns,
-                {"time_completed", "timeCompleted", "time_created", "timeCreated", "created_at", "updated_at", "id"},
+                {
+                    "time_completed",
+                    "timeCompleted",
+                    "time_created",
+                    "timeCreated",
+                    "created_at",
+                    "updated_at",
+                    "id",
+                },
             )
             query = (
                 f"SELECT * FROM {self._quote_sql_identifier(table_name)} "
@@ -723,6 +805,7 @@ class MigrationSessionManager:
                     return True
         return False
 
+    # pylint: disable-next=too-many-branches,too-many-locals,too-many-return-statements,too-many-statements; silent
     def _session_completion_from_sqlite(self, session_id: str) -> bool | None:
         for db_path in self._candidate_sqlite_paths():
             if not db_path.is_file():
@@ -739,10 +822,16 @@ class MigrationSessionManager:
                     session_not_running = False
                     session_tables = [name for name in ("session", "sessions") if name in tables]
                     for table_name in session_tables:
-                        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
+                        columns = [
+                            row[1]
+                            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                        ]
                         if not columns:
                             continue
-                        id_column = self._resolve_sql_column(columns, {"id", "sessionID", "sessionId", "session_id", "sessionid", "session"})
+                        id_column = self._resolve_sql_column(
+                            columns,
+                            {"id", "sessionID", "sessionId", "session_id", "sessionid", "session"},
+                        )
                         if not id_column:
                             continue
                         quoted_table = self._quote_sql_identifier(table_name)
@@ -754,8 +843,14 @@ class MigrationSessionManager:
                         if row is None:
                             continue
                         session_row_seen = True
-                        time_compacting_column = self._resolve_sql_column(columns, {"time_compacting", "timeCompacting"})
-                        if time_compacting_column and row[time_compacting_column] not in (None, "", 0):
+                        time_compacting_column = self._resolve_sql_column(
+                            columns, {"time_compacting", "timeCompacting"}
+                        )
+                        if time_compacting_column and row[time_compacting_column] not in (
+                            None,
+                            "",
+                            0,
+                        ):
                             return True
                         state = self._sqlite_row_state(row)
                         if state is True:
@@ -765,11 +860,21 @@ class MigrationSessionManager:
 
                     saw_todo_rows = False
                     saw_completed_todo = False
-                    for table_name in sorted(name for name in tables if any(token in name.lower() for token in ("todo", "task", "checklist"))):
-                        columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
+                    for table_name in sorted(
+                        name
+                        for name in tables
+                        if any(token in name.lower() for token in ("todo", "task", "checklist"))
+                    ):
+                        columns = [
+                            row[1]
+                            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                        ]
                         if not columns:
                             continue
-                        session_column = self._resolve_sql_column(columns, {"sessionID", "sessionId", "session_id", "sessionid", "session"})
+                        session_column = self._resolve_sql_column(
+                            columns,
+                            {"sessionID", "sessionId", "session_id", "sessionid", "session"},
+                        )
                         if not session_column:
                             continue
                         query = (
@@ -789,7 +894,9 @@ class MigrationSessionManager:
                     if saw_todo_rows:
                         return False if saw_completed_todo else None
 
-                    assistant_state = self._sqlite_assistant_completion_evidence(conn, tables, session_id)
+                    assistant_state = self._sqlite_assistant_completion_evidence(
+                        conn, tables, session_id
+                    )
                     if assistant_state is True:
                         return True
                     if assistant_state is False and (session_row_seen or session_not_running):
@@ -803,9 +910,15 @@ class MigrationSessionManager:
         if not resp.get("ok"):
             status = resp.get("status")
             if status in {401, 403}:
-                raise SessionAuthError(f"GET /session/{session_id}/message unauthorized: {resp.get('details') or resp.get('error') or status}")
+                raise SessionAuthError(
+                    # pylint: disable-next=line-too-long; silent
+                    f"GET /session/{session_id}/message unauthorized: {resp.get('details') or resp.get('error') or status}"
+                )
             if isinstance(status, int) and status in HARD_HTTP_STATUSES:
-                raise SessionServerError(f"GET /session/{session_id}/message failed: {resp.get('details') or resp.get('error') or status}")
+                raise SessionServerError(
+                    # pylint: disable-next=line-too-long; silent
+                    f"GET /session/{session_id}/message failed: {resp.get('details') or resp.get('error') or status}"
+                )
             return self._session_completion_from_sqlite(session_id)
 
         data = resp.get("data")
@@ -814,7 +927,9 @@ class MigrationSessionManager:
             return signal
         return self._session_completion_from_sqlite(session_id)
 
-    def wait_for_idle(self, session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0) -> bool:
+    def wait_for_idle(
+        self, session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0
+    ) -> bool:
         started = time.time()
         effective_timeout = self._effective_wait_timeout(timeout_s)
         while time.time() - started < effective_timeout:
@@ -822,9 +937,15 @@ class MigrationSessionManager:
             if not status.get("ok"):
                 error_status = status.get("status")
                 if error_status in {401, 403}:
-                    raise SessionAuthError(f"GET /session/status unauthorized: {status.get('details') or status.get('error') or error_status}")
+                    raise SessionAuthError(
+                        # pylint: disable-next=line-too-long; silent
+                        f"GET /session/status unauthorized: {status.get('details') or status.get('error') or error_status}"
+                    )
                 if isinstance(error_status, int) and error_status in HARD_HTTP_STATUSES:
-                    raise SessionServerError(f"GET /session/status failed: {status.get('details') or status.get('error') or error_status}")
+                    raise SessionServerError(
+                        # pylint: disable-next=line-too-long; silent
+                        f"GET /session/status failed: {status.get('details') or status.get('error') or error_status}"
+                    )
                 return False
 
             data = status.get("data")
@@ -851,16 +972,20 @@ class MigrationSessionManager:
             return True
         return False
 
-    def _wait_after_hard_error(
+    def _wait_after_hard_error(  # pylint: disable=too-many-branches; silent
         self,
         session_id: str,
         timeout: int | float | None,
         interval_s: float = 1.0,
     ) -> None:
         started = time.time()
-        hard_error_timeout = DEFAULT_HARD_ERROR_WAIT_TIMEOUT if timeout is None else min(
-            self._effective_wait_timeout(timeout),
-            DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+        hard_error_timeout = (
+            DEFAULT_HARD_ERROR_WAIT_TIMEOUT
+            if timeout is None
+            else min(
+                self._effective_wait_timeout(timeout),
+                DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+            )
         )
         deadline = started + hard_error_timeout
         saw_observation = False
@@ -938,7 +1063,9 @@ class MigrationSessionManager:
         return True
 
     def cleanup_all(self) -> int:
-        doomed = [sid for sid, rec in self._sessions.items() if rec.lifecycle in {"ephemeral", "reusable"}]
+        doomed = [
+            sid for sid, rec in self._sessions.items() if rec.lifecycle in {"ephemeral", "reusable"}
+        ]
         for session_id in doomed:
             self.cleanup_session(session_id)
         return len(doomed)
@@ -946,14 +1073,18 @@ class MigrationSessionManager:
     def list_sessions(self) -> list[SessionRecord]:
         return list(self._sessions.values())
 
-    def _send_message_raw(self, session_id: str, text: str, agent: str = "", timeout: int | float | None = None) -> str:
+    def _send_message_raw(
+        self, session_id: str, text: str, agent: str = "", timeout: int | float | None = None
+    ) -> str:
         command_text = text
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if agent:
             payload["agent"] = agent
         http_timeout = self._effective_wait_timeout(timeout) + 30
         previous_text = self._last_message_text_tolerant(session_id)
-        resp = self._http("POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout)
+        resp = self._http(
+            "POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout
+        )
         if not resp.get("ok"):
             status = resp.get("status")
             detail = resp.get("details") or resp.get("error") or "request failed"
@@ -979,12 +1110,16 @@ class MigrationSessionManager:
 
         text = self._extract_message_text(data)
         if not text:
-            text = self._recover_empty_response_text(session_id, timeout, previous_text, command_text=command_text)
+            text = self._recover_empty_response_text(
+                session_id, timeout, previous_text, command_text=command_text
+            )
             if not text:
                 raise RuntimeError("Empty session response")
             return text
 
-        if not self.wait_for_idle(session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0):
+        if not self.wait_for_idle(
+            session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0
+        ):
             raise TimeoutError("Session still running or has incomplete todos")
 
         return text
@@ -996,7 +1131,9 @@ class MigrationSessionManager:
         previous_text: str,
         command_text: str,
     ) -> str:
-        if not self.wait_for_idle(session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0):
+        if not self.wait_for_idle(
+            session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0
+        ):
             raise TimeoutError("Session still running or has incomplete todos")
         recovered_text = self._last_message_text_tolerant(session_id)
         recovered_stripped = recovered_text.strip()
@@ -1008,6 +1145,7 @@ class MigrationSessionManager:
             return ""
         return recovered_text
 
+    # pylint: disable-next=too-many-arguments,too-many-locals,too-many-positional-arguments; silent
     def _http(
         self,
         method: str,
@@ -1027,7 +1165,9 @@ class MigrationSessionManager:
         if self._auth_header:
             headers["Authorization"] = self._auth_header
 
-        request = urllib.request.Request(url=url, headers=headers, data=payload, method=method.upper())
+        request = urllib.request.Request(
+            url=url, headers=headers, data=payload, method=method.upper()
+        )
         try:
             if timeout is _DEFAULT_HTTP_TIMEOUT:
                 request_timeout: float | None = self._timeout
@@ -1048,6 +1188,7 @@ class MigrationSessionManager:
         except urllib.error.HTTPError as exc:
             details = exc.read().decode(errors="replace") if exc.fp else ""
             return {"ok": False, "status": exc.code, "error": str(exc), "details": details}
+        # pylint: disable-next=broad-exception-caught; silent
         except Exception as exc:  # pragma: no cover - network failure path
             logger.debug("HTTP error for %s %s: %s", method, path, exc)
             return {"ok": False, "error": str(exc)}

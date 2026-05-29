@@ -41,20 +41,15 @@ class ExecutionBackend(Protocol):
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout: int | float | None = None,
-    ) -> ExecResult:
-        ...
+    ) -> ExecResult: ...
 
-    def is_available(self) -> bool:
-        ...
+    def is_available(self) -> bool: ...
 
-    def cleanup(self) -> None:
-        ...
+    def cleanup(self) -> None: ...
 
-    def preflight(self) -> None:
-        ...
+    def preflight(self) -> None: ...
 
-    def probe_environment(self) -> dict[str, Any]:
-        ...
+    def probe_environment(self) -> dict[str, Any]: ...
 
 
 class LocalBackend:
@@ -72,15 +67,23 @@ class LocalBackend:
         if env:
             run_env = {**__import__("os").environ, **env}
         if isinstance(command, str):
-            completed = subprocess.run(
-                command, shell=True, cwd=cwd, env=run_env,
-                capture_output=True, text=True,
+            completed = subprocess.run(  # pylint: disable=subprocess-run-check; silent
+                command,
+                shell=True,
+                cwd=cwd,
+                env=run_env,
+                capture_output=True,
+                text=True,
                 timeout=timeout,
             )
         else:
-            completed = subprocess.run(
-                command, shell=False, cwd=cwd, env=run_env,
-                capture_output=True, text=True,
+            completed = subprocess.run(  # pylint: disable=subprocess-run-check; silent
+                command,
+                shell=False,
+                cwd=cwd,
+                env=run_env,
+                capture_output=True,
+                text=True,
                 timeout=timeout,
             )
         elapsed = time.monotonic() - start
@@ -110,7 +113,7 @@ class LocalBackend:
         env: dict[str, str] | None = None,
     ) -> dict[str, str]:
         _ = cwd, env
-        cmd_str = command
+        cmd_str = command  # pylint: disable=unused-variable; silent
         if isinstance(command, list):
             cmd_str = " ".join(command)
         return {
@@ -150,10 +153,7 @@ class ContainerBackend:
         fallback.  Empty strings and ``"None"`` are filtered out.
         """
         if self.config.images:
-            return [
-                c for c in self.config.images
-                if str(c).strip() and str(c).strip() != "None"
-            ]
+            return [c for c in self.config.images if str(c).strip() and str(c).strip() != "None"]
         if self.config.image:
             return [self.config.image]
         return []
@@ -165,12 +165,16 @@ class ContainerBackend:
         excluding ``<none>`` tags and the ``REPOSITORY:TAG`` header.
         """
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # pylint: disable=subprocess-run-check; silent
                 [self._runtime_cmd, "images", "--format", "{{.Repository}}:{{.Tag}}"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
-                logger.warning("Image listing failed (%s): %s", self._runtime_cmd, result.stderr.strip())
+                logger.warning(
+                    "Image listing failed (%s): %s", self._runtime_cmd, result.stderr.strip()
+                )
                 return []
             images = []
             for line in result.stdout.splitlines():
@@ -191,7 +195,9 @@ class ContainerBackend:
         try:
             subprocess.run(
                 [self._runtime_cmd, "--version"],
-                capture_output=True, check=True, timeout=10,
+                capture_output=True,
+                check=True,
+                timeout=10,
             )
             return True
         except (subprocess.SubprocessError, OSError):
@@ -201,7 +207,9 @@ class ContainerBackend:
         """Create a container using normalized candidate images with sequential fallback."""
         candidates = self._resolve_candidate_images()
         if not candidates:
-            raise ValueError("execution_backend.image or execution_backend.images is required when source=image")
+            raise ValueError(
+                "execution_backend.image or execution_backend.images is required when source=image"
+            )
         if len(candidates) == 1:
             self._do_create_container(candidates[0])
             return
@@ -263,11 +271,10 @@ class ContainerBackend:
         cmd.extend([image_name, "tail", "-f", "/dev/null"])
 
         logger.info("Container create: %s", " ".join(cmd[:6]))
+        # pylint: disable-next=subprocess-run-check; silent
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to create container: {result.stderr.strip()}"
-            )
+            raise RuntimeError(f"Failed to create container: {result.stderr.strip()}")
         self._container_id = result.stdout.strip()
         self._initialized = True
         logger.info("Container created: %s", self._container_id)
@@ -275,18 +282,16 @@ class ContainerBackend:
     def _check_existing_container(self) -> None:
         cname = self.config.container_name
         if not cname:
-            raise ContainerNotFoundError(
-                f"Container name is empty. {_CONTAINER_NOT_FOUND_MSG}"
-            )
+            raise ContainerNotFoundError(f"Container name is empty. {_CONTAINER_NOT_FOUND_MSG}")
 
-        result = subprocess.run(
+        result = subprocess.run(  # pylint: disable=subprocess-run-check; silent
             [self._runtime_cmd, "inspect", "--format", "{{.State.Status}}", cname],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode != 0:
-            raise ContainerNotFoundError(
-                f"Container '{cname}' not found. {result.stderr.strip()}"
-            )
+            raise ContainerNotFoundError(f"Container '{cname}' not found. {result.stderr.strip()}")
         status = result.stdout.strip()
         if status != "running":
             raise ContainerNotRunningError(
@@ -295,19 +300,20 @@ class ContainerBackend:
 
         if self.config.required_devices:
             for dev in self.config.required_devices:
-                check = subprocess.run(
+                check = subprocess.run(  # pylint: disable=subprocess-run-check; silent
                     [self._runtime_cmd, "exec", cname, "test", "-e", dev],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 if check.returncode != 0:
-                    logger.warning(
-                        "Required device %s not found in container %s", dev, cname
-                    )
+                    logger.warning("Required device %s not found in container %s", dev, cname)
 
         if self.config.required_env_vars:
-            env_result = subprocess.run(
+            env_result = subprocess.run(  # pylint: disable=subprocess-run-check; silent
                 [self._runtime_cmd, "exec", cname, "env"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             container_env = set()
             if env_result.returncode == 0:
@@ -316,9 +322,7 @@ class ContainerBackend:
                         container_env.add(line.split("=", 1)[0])
             for var in self.config.required_env_vars:
                 if var not in container_env:
-                    logger.warning(
-                        "Required env var %s not found in container %s", var, cname
-                    )
+                    logger.warning("Required env var %s not found in container %s", var, cname)
 
         self._container_id = cname
         self._initialized = True
@@ -337,8 +341,12 @@ class ContainerBackend:
         if not self._host_project_dir:
             return token
         if token.startswith(self._host_project_dir):
-            rel = token[len(self._host_project_dir):].lstrip("/")
-            return str(Path(self.config.container_workdir) / rel) if rel else self.config.container_workdir
+            rel = token[len(self._host_project_dir) :].lstrip("/")
+            return (
+                str(Path(self.config.container_workdir) / rel)
+                if rel
+                else self.config.container_workdir
+            )
         return token
 
     def _rewrite_command_paths(self, command: str) -> str:
@@ -364,7 +372,7 @@ class ContainerBackend:
                 rewritten.append(token)
         return shlex.join(rewritten)
 
-    def run(
+    def run(  # pylint: disable=too-many-locals; silent
         self,
         command: str | list[str],
         cwd: str | None = None,
@@ -397,8 +405,11 @@ class ContainerBackend:
 
         effective_timeout = timeout or self.config.timeout
         start = time.monotonic()
-        proc = subprocess.run(
-            exec_cmd, capture_output=True, text=True, timeout=effective_timeout,
+        proc = subprocess.run(  # pylint: disable=subprocess-run-check; silent
+            exec_cmd,
+            capture_output=True,
+            text=True,
+            timeout=effective_timeout,
         )
         elapsed = time.monotonic() - start
         return ExecResult(
@@ -414,18 +425,20 @@ class ContainerBackend:
         if not self.config.cleanup or not self._container_id:
             return
         try:
-            subprocess.run(
+            subprocess.run(  # pylint: disable=subprocess-run-check; silent
                 [self._runtime_cmd, "stop", self._container_id],
-                capture_output=True, timeout=30,
+                capture_output=True,
+                timeout=30,
             )
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
             logger.warning("Container stop failed: %s", exc)
         try:
-            subprocess.run(
+            subprocess.run(  # pylint: disable=subprocess-run-check; silent
                 [self._runtime_cmd, "rm", self._container_id],
-                capture_output=True, timeout=30,
+                capture_output=True,
+                timeout=30,
             )
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
             logger.warning("Container rm failed: %s", exc)
         self._container_id = None
 
@@ -549,15 +562,24 @@ exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"
 """.strip()
 
         probe_cmd: list[str] = [
-            self._runtime_cmd, "exec", "-i", "--workdir",
+            self._runtime_cmd,
+            "exec",
+            "-i",
+            "--workdir",
             self.config.container_workdir,
-            "-e", f"SEAM_CONTAINER_PROBE_SCRIPT={probe_script}",
-            cid, "sh", "-lc", shell_probe,
+            "-e",
+            f"SEAM_CONTAINER_PROBE_SCRIPT={probe_script}",
+            cid,
+            "sh",
+            "-lc",
+            shell_probe,
         ]
 
         try:
-            proc = subprocess.run(
-                probe_cmd, capture_output=True, text=True,
+            proc = subprocess.run(  # pylint: disable=subprocess-run-check; silent
+                probe_cmd,
+                capture_output=True,
+                text=True,
                 timeout=30,
             )
             if proc.returncode == 0:
@@ -572,7 +594,7 @@ exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"
         except json.JSONDecodeError:
             result["status"] = "parse_error"
             result["error"] = f"Unexpected stdout: {proc.stdout[:200]!r}"
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
             result["status"] = "probe_failed"
             result["error"] = str(exc)
 
@@ -666,7 +688,9 @@ def auto_select_backend(config: ExecutionBackendConfig) -> ExecutionBackendConfi
     try:
         subprocess.run(
             [runtime_cmd, "--version"],
-            capture_output=True, check=True, timeout=10,
+            capture_output=True,
+            check=True,
+            timeout=10,
         )
         return ExecutionBackendConfig(
             mode="container",
@@ -705,7 +729,10 @@ def get_execution_environment_context(
         parts.append("## Execution Environment Context")
         parts.append("")
         parts.append("- **execution_backend_mode**: container")
-        parts.append("- **Target runtime**: the target runtime phase executes inside the framework-created container.")
+        parts.append(
+            # pylint: disable-next=line-too-long; silent
+            "- **Target runtime**: the target runtime phase executes inside the framework-created container."
+        )
         host_proj = getattr(backend, "_host_project_dir", None) or "(not yet set)"
         parts.append(f"- **Host project dir**: {host_proj}")
         container_proj = getattr(getattr(backend, "config", None), "container_workdir", "(unknown)")
@@ -717,24 +744,34 @@ def get_execution_environment_context(
                     probe_summary.append(f"{key}: {probe_facts[key]}")
             if probe_summary:
                 parts.append(f"- **Container probe facts**: {', '.join(probe_summary)}")
-            interp = probe_facts.get("interpreter_path", "a Python interpreter discovered on the container PATH")
-            parts.append(f"- **Probe interpreter**: the probe ran `{interp}` inside the container; this command is confirmed callable in the target runtime.")
+            interp = probe_facts.get(
+                "interpreter_path", "a Python interpreter discovered on the container PATH"
+            )
+            parts.append(
+                # pylint: disable-next=line-too-long; silent
+                f"- **Probe interpreter**: the probe ran `{interp}` inside the container; this command is confirmed callable in the target runtime."
+            )
         elif probe_facts:
             status = probe_facts.get("status", "unknown")
             error = probe_facts.get("error", "")
             extra = f" — {error}" if error else ""
             parts.append(f"- **Container probe**: status={status}{extra}")
-        parts.append("- **Tooling note**: OpenCode file tools (read, grep, etc.) observe the host filesystem, not the container. For target-runtime execution, use paths and commands valid inside the target container environment.")
+        parts.append(
+            # pylint: disable-next=line-too-long; silent
+            "- **Tooling note**: OpenCode file tools (read, grep, etc.) observe the host filesystem, not the container. For target-runtime execution, use paths and commands valid inside the target container environment."
+        )
         return "\n".join(parts)
 
     # LocalBackend or None
     return (
-        "## Execution Environment Context\n\n"
-        "- **execution_backend_mode**: local\n"
-        "- **Target runtime**: the target runtime phase executes on the host/local environment directly.\n"
-        "- **Tooling note**: OpenCode tools and the target runtime observe the same local environment.\n"
-        "  File paths, Python interpreters, and commands you see are exactly what the target runtime will use."
-    )
+    "## Execution Environment Context\n\n"
+    "- **execution_backend_mode**: local\n"
+    # pylint: disable-next=line-too-long; silent
+    "- **Target runtime**: the target runtime phase executes on the host/local environment directly.\n"
+    # pylint: disable-next=line-too-long; silent
+    "- **Tooling note**: OpenCode tools and the target runtime observe the same local environment.\n"
+    # pylint: disable-next=line-too-long; silent
+    "  File paths, Python interpreters, and commands you see are exactly what the target runtime will use." )
 
 
 def get_container_prompt_context(
@@ -756,7 +793,14 @@ def get_container_prompt_context(
         ctx[k] = str(v)
     if probe_facts:
         ctx["container_env_facts"] = json.dumps(probe_facts, ensure_ascii=False, default=str)
-        for key in ("interpreter_path", "python_version", "platform", "platform_machine", "cwd", "torch_version"):
+        for key in (
+            "interpreter_path",
+            "python_version",
+            "platform",
+            "platform_machine",
+            "cwd",
+            "torch_version",
+        ):
             if key in probe_facts:
                 ctx[f"container_{key}"] = str(probe_facts[key])
     return ctx

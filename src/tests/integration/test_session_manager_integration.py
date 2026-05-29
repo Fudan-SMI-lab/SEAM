@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from . import BASE_URL, cleanup_remote_sessions, server_available
 from harness.session.manager import SessionManager
+
+from . import BASE_URL, cleanup_remote_sessions, server_available
 
 pytestmark = pytest.mark.skipif(not server_available(), reason="No OpenCode server")
 
@@ -31,8 +32,12 @@ def test_session_manager_round_trip_and_json_parsing() -> None:
 def test_session_manager_reuses_persistent_session_per_role() -> None:
     session_mgr = SessionManager(base_url=BASE_URL, timeout=15.0)
     try:
-        first_session_id = session_mgr.get_or_create(role="integration-role", lifecycle="persistent")
-        second_session_id = session_mgr.get_or_create(role="integration-role", lifecycle="persistent")
+        first_session_id = session_mgr.get_or_create(
+            role="integration-role", lifecycle="persistent"
+        )
+        second_session_id = session_mgr.get_or_create(
+            role="integration-role", lifecycle="persistent"
+        )
 
         response = session_mgr.send_command(
             first_session_id,

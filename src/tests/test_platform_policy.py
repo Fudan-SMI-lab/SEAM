@@ -1,29 +1,27 @@
 """Tests for platform_policy module: presets, parsing, inference, token helpers."""
-import pytest
-import textwrap
-import tempfile
+
 import os
+import tempfile
+import textwrap
 from pathlib import Path
+
+import pytest
 
 # Use the existing test infrastructure
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-from core.platform_policy import (
-    PlatformPolicy,
-    CustomOpEvidenceConfig,
-    TargetPlatformConfig,
-    parse_target_platform,
-    resolve_policy,
+from core.config import load_workflow  # pylint: disable=wrong-import-position; silent
+from core.platform_policy import (  # pylint: disable=wrong-import-position; silent
     BUILTIN_PRESETS,
+    TargetPlatformConfig,
     _infer_policy_by_name,
     get_artifact_path_tokens,
     get_native_build_log_tokens,
-    get_native_source_tokens,
-    get_native_binary_tokens,
-    get_target_device_values,
     get_positive_boolean_fields,
+    get_target_device_values,
+    parse_target_platform,
+    resolve_policy,
 )
-from core.config import load_workflow
 
 
 class TestBuiltinPresets:
@@ -61,8 +59,12 @@ class TestBuiltinPresets:
             assert policy.display_name, f"{preset_id}: missing display_name"
             # generic_accelerator may have empty evidence configs
             if preset_id != "generic_accelerator":
-                assert policy.custom_op_evidence.target_device_values, f"{preset_id}: missing target_device_values"
-                assert policy.custom_op_evidence.positive_boolean_fields, f"{preset_id}: missing positive_boolean_fields"
+                assert policy.custom_op_evidence.target_device_values, (
+                    f"{preset_id}: missing target_device_values"
+                )
+                assert policy.custom_op_evidence.positive_boolean_fields, (
+                    f"{preset_id}: missing positive_boolean_fields"
+                )
 
     def test_all_expected_presets_exist(self):
         expected = {
@@ -137,19 +139,21 @@ class TestParseTargetPlatform:
         tp = parse_target_platform({"preset": "ppu_cuda_compatible"})
         assert tp is not None
         assert tp.preset == "ppu_cuda_compatible"
-        assert tp.overrides == {}
+        assert tp.overrides == {}  # pylint: disable=use-implicit-booleaness-not-comparison; silent
 
     def test_valid_with_overrides(self):
-        tp = parse_target_platform({
-            "preset": "ppu_cuda_compatible",
-            "overrides": {
-                "id": "my_gpu",
-                "custom_op_evidence": {
-                    "target_device_values": ["my_gpu"],
-                    "positive_boolean_fields": ["my_gpu_custom"],
+        tp = parse_target_platform(
+            {
+                "preset": "ppu_cuda_compatible",
+                "overrides": {
+                    "id": "my_gpu",
+                    "custom_op_evidence": {
+                        "target_device_values": ["my_gpu"],
+                        "positive_boolean_fields": ["my_gpu_custom"],
+                    },
                 },
-            },
-        })
+            }
+        )
         assert tp is not None
         assert tp.preset == "ppu_cuda_compatible"
         assert tp.overrides["id"] == "my_gpu"
@@ -223,6 +227,7 @@ class TestConfigLoadWorkflow:
     """Integration: config.py load_workflow with target_platform."""
 
     def _write_yaml(self, content: str) -> str:
+        # pylint: disable-next=consider-using-with; silent
         f = tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False, encoding="utf-8")
         f.write(textwrap.dedent(content))
         f.close()

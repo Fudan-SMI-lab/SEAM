@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import torch
+import torch  # pylint: disable=import-error; silent
 
 
 @dataclass

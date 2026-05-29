@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines; silent
 import json
 import sys
 from collections.abc import Callable
@@ -9,19 +10,28 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable-next=wrong-import-position; silent
 from core.validator_engine import ValidationDict, ValidationResult, ValidatorEngine
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_entry_script import validate as validate_entry_script
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_entry_static import validate as validate_entry_static
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_env_detect import validate as validate_env_detect
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_project_analysis import validate as validate_project_analysis
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_reports import validate as validate_reports
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_rule_migration import validate as validate_rule_migration
-from validators.validate_validation_final import (
+from validators.validate_validation_final import (  # pylint: disable=wrong-import-position; silent
     validate as validate_validation_final,
+)
+from validators.validate_validation_final import (  # pylint: disable=wrong-import-position; silent
     validate_custom_op_final_gate,
 )
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_venv import validate as validate_venv
-
 
 ValidatorCallable: TypeAlias = Callable[[dict[str, object]], ValidationDict]
 ValidatorCase: TypeAlias = tuple[ValidatorCallable, dict[str, object]]
@@ -30,11 +40,23 @@ ValidatorCase: TypeAlias = tuple[ValidatorCallable, dict[str, object]]
 VALID_CASES: list[ValidatorCase] = [
     (
         validate_env_detect,
-        {"platform": "npu", "npu_detected": True, "python_version": "3.10", "cann_version": "8.0.RC", "ascendc_available": True, "driver_version": "driver-1"},
+        {
+            "platform": "npu",
+            "npu_detected": True,
+            "python_version": "3.10",
+            "cann_version": "8.0.RC",
+            "ascendc_available": True,
+            "driver_version": "driver-1",
+        },
     ),
     (
         validate_env_detect,
-        {"platform": "musa", "musa_detected": True, "python_version": "3.10", "torch_musa_available": True},
+        {
+            "platform": "musa",
+            "musa_detected": True,
+            "python_version": "3.10",
+            "torch_musa_available": True,
+        },
     ),
     (
         validate_project_analysis,
@@ -89,8 +111,14 @@ INVALID_CASES: list[ValidatorCase] = [
     (validate_project_analysis, {"project_dir": "", "dependencies": "torch"}),
     (validate_venv, {"venv_path": 1, "python_path": "", "installed_packages": "torch"}),
     (validate_entry_script, {"entry_script_path": "", "run_command": None}),
-    (validate_entry_static, {"validation_passed": True, "issues": ["contradiction"], "fix_plan": ""}),
-    (validate_rule_migration, {"files_migrated": -1, "files_skipped": "0", "replacement_counts": []}),
+    (
+        validate_entry_static,
+        {"validation_passed": True, "issues": ["contradiction"], "fix_plan": ""},
+    ),
+    (
+        validate_rule_migration,
+        {"files_migrated": -1, "files_skipped": "0", "replacement_counts": []},
+    ),
     (validate_validation_final, {"success": "yes", "iteration_count": -1, "errors": {}}),
     (validate_reports, {"report_paths": "report.json", "migration_summary": []}),
 ]
@@ -233,7 +261,10 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "native_operator_symbols": ["scalar_forward"],
                     "kernel_functions": ["forward_kernel"],
                     "kernel_launch_sites": ["src/scalar_fwd_2d.cu:launch_forward"],
-                    "public_entry_mapping": {"python_api": "deepwave.scalar", "autograd": "ScalarForward"},
+                    "public_entry_mapping": {
+                        "python_api": "deepwave.scalar",
+                        "autograd": "ScalarForward",
+                    },
                     "source_evidence": ["src/scalar_fwd_2d.cu"],
                     "source_path": "src/scalar_fwd_2d.cu",
                 }
@@ -249,7 +280,10 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                 "native_operator_symbols": ["scalar_forward"],
                 "kernel_functions": ["forward_kernel"],
                 "kernel_launch_sites": ["src/scalar_fwd_2d.cu:launch_forward"],
-                "public_entry_mapping": {"python_api": "deepwave.scalar", "autograd": "ScalarForward"},
+                "public_entry_mapping": {
+                    "python_api": "deepwave.scalar",
+                    "autograd": "ScalarForward",
+                },
                 "source_evidence": ["src/scalar_fwd_2d.cu"],
                 "opp_custom_op_artifact_evidence": {
                     "path": "opp/ScalarFwd2D/libscalar_fwd_2d.so",
@@ -317,27 +351,47 @@ def _valid_project_analysis_custom_op_surface() -> dict[str, object]:
     return {
         "custom_op_detected": True,
         "discovery_complete": True,
-        "discovery_sources_checked": ["source", "bindings", "wrappers", "autograd", "aliases", "launch", "setup", "tests"],
+        "discovery_sources_checked": [
+            "source",
+            "bindings",
+            "wrappers",
+            "autograd",
+            "aliases",
+            "launch",
+            "setup",
+            "tests",
+        ],
         "searched_source_roots": ["src", "csrc", "tests"],
         "searched_source_paths": ["csrc/op_alpha.cpp", "tests/test_op_alpha.py"],
         "operator_families": ["op_alpha"],
         "fine_grained_operator_units": ["op_alpha:float32", "op_alpha:float16"],
         "discovered_operator_names": ["op_alpha_float32", "op_alpha_float16"],
-        "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float32", "csrc/op_alpha.cpp:op_alpha_float16"],
+        "source_evidence": [
+            "csrc/op_alpha.cpp:op_alpha_float32",
+            "csrc/op_alpha.cpp:op_alpha_float16",
+        ],
         "negative_evidence": ["grep under src/ and tests/ found no additional operator families"],
         "dynamic_loading_checks": ["import torch.ops.op_alpha succeeded"],
         "build_load_checks": ["python setup.py build_ext --inplace completed"],
         "unresolved_source_groups": [],
         "out_of_scope_source_groups": [],
         "fine_grained_operator_unit_evidence": [
-            {"unit_identity": "op_alpha:float32", "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float32"]},
-            {"unit_identity": "op_alpha:float16", "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float16"]},
+            {
+                "unit_identity": "op_alpha:float32",
+                "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float32"],
+            },
+            {
+                "unit_identity": "op_alpha:float16",
+                "source_evidence": ["csrc/op_alpha.cpp:op_alpha_float16"],
+            },
         ],
     }
 
 
 def test_entry_script_validator_accepts_legacy_minimal_output() -> None:
-    result = validate_entry_script({"entry_script_path": "train.py", "run_command": "python train.py"})
+    result = validate_entry_script(
+        {"entry_script_path": "train.py", "run_command": "python train.py"}
+    )
 
     assert result == {"passed": True, "errors": [], "warnings": []}
 
@@ -371,7 +425,10 @@ def test_project_analysis_rejects_detected_custom_op_surface_without_fine_graine
     )
 
     assert result["passed"] is False
-    assert any("fine_grained_operator_units" in error and "at least one" in error for error in result["errors"])
+    assert any(
+        "fine_grained_operator_units" in error and "at least one" in error
+        for error in result["errors"]
+    )
 
 
 def test_project_analysis_rejects_detected_custom_op_surface_without_discovery_complete() -> None:
@@ -388,7 +445,10 @@ def test_project_analysis_rejects_detected_custom_op_surface_without_discovery_c
     )
 
     assert result["passed"] is False
-    assert any("discovery_complete" in error and "custom_op_detected is true" in error for error in result["errors"])
+    assert any(
+        "discovery_complete" in error and "custom_op_detected is true" in error
+        for error in result["errors"]
+    )
 
 
 def test_project_analysis_rejects_detected_custom_op_surface_without_source_path_trail() -> None:
@@ -405,7 +465,9 @@ def test_project_analysis_rejects_detected_custom_op_surface_without_source_path
     )
 
     assert result["passed"] is False
-    assert any("searched_source_paths" in error and "source path" in error for error in result["errors"])
+    assert any(
+        "searched_source_paths" in error and "source path" in error for error in result["errors"]
+    )
 
 
 def test_project_analysis_rejects_discovery_complete_with_unresolved_source_groups() -> None:
@@ -422,7 +484,10 @@ def test_project_analysis_rejects_discovery_complete_with_unresolved_source_grou
     )
 
     assert result["passed"] is False
-    assert any("unresolved_source_groups" in error and "must be empty" in error for error in result["errors"])
+    assert any(
+        "unresolved_source_groups" in error and "must be empty" in error
+        for error in result["errors"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -464,7 +529,10 @@ def test_entry_script_validator_rejects_unsafe_shell_run_commands(run_command: s
     result = validate_entry_script({"entry_script_path": "train.py", "run_command": run_command})
 
     assert result["passed"] is False
-    assert any("wrapper script" in error or "single process" in error or "shell through env" in error for error in result["errors"])
+    assert any(
+        "wrapper script" in error or "single process" in error or "shell through env" in error
+        for error in result["errors"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -480,7 +548,9 @@ def test_entry_script_validator_rejects_container_runtime_run_commands(run_comma
     result = validate_entry_script({"entry_script_path": "train.py", "run_command": run_command})
 
     assert result["passed"] is False
-    assert any("container runtime" in error or "docker/podman" in error for error in result["errors"])
+    assert any(
+        "container runtime" in error or "docker/podman" in error for error in result["errors"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -492,10 +562,11 @@ def test_entry_script_validator_rejects_container_runtime_run_commands(run_comma
     ],
 )
 def test_entry_script_validator_accepts_direct_in_container_run_commands(run_command: str) -> None:
-    result = validate_entry_script({"entry_script_path": "smoke_validate.py", "run_command": run_command})
+    result = validate_entry_script(
+        {"entry_script_path": "smoke_validate.py", "run_command": run_command}
+    )
 
     assert result == {"passed": True, "errors": [], "warnings": []}
-
 
 
 @pytest.mark.parametrize(
@@ -522,11 +593,16 @@ def test_entry_script_validator_accepts_env_prefixed_safe_commands(run_command: 
         "X=y env bash -c id",
     ],
 )
-def test_entry_script_validator_rejects_env_prefixed_unsafe_shell_commands(run_command: str) -> None:
+def test_entry_script_validator_rejects_env_prefixed_unsafe_shell_commands(
+    run_command: str,
+) -> None:
     result = validate_entry_script({"entry_script_path": "train.py", "run_command": run_command})
 
     assert result["passed"] is False
-    assert any("wrapper script" in error or "single process" in error or "shell through env" in error for error in result["errors"])
+    assert any(
+        "wrapper script" in error or "single process" in error or "shell through env" in error
+        for error in result["errors"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -537,11 +613,15 @@ def test_entry_script_validator_rejects_env_prefixed_unsafe_shell_commands(run_c
         "CUDA_VISIBLE_DEVICES=0 docker exec my-container python3 train.py",
     ],
 )
-def test_entry_script_validator_rejects_env_prefixed_container_runtime_commands(run_command: str) -> None:
+def test_entry_script_validator_rejects_env_prefixed_container_runtime_commands(
+    run_command: str,
+) -> None:
     result = validate_entry_script({"entry_script_path": "train.py", "run_command": run_command})
 
     assert result["passed"] is False
-    assert any("container runtime" in error or "docker/podman" in error for error in result["errors"])
+    assert any(
+        "container runtime" in error or "docker/podman" in error for error in result["errors"]
+    )
 
 
 def test_entry_script_validator_rejects_env_prefix_only_no_executable() -> None:
@@ -594,7 +674,9 @@ def test_entry_script_validator_rejects_missing_custom_op_entry_script(tmp_path:
     assert any("existing file for custom-op contracts" in error for error in result["errors"])
 
 
-def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(tmp_path: Path) -> None:
+def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(
+    tmp_path: Path,
+) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     external_dir = tmp_path / "external"
@@ -604,9 +686,7 @@ def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(tm
     escaped_script = project_dir / "validate_custom_ops_full.py"
     escaped_script.symlink_to(outside_script)
 
-    result = validate_entry_script(
-        _valid_custom_op_contract(str(escaped_script), str(project_dir))
-    )
+    result = validate_entry_script(_valid_custom_op_contract(str(escaped_script), str(project_dir)))
 
     assert result["passed"] is False
     assert any("existing file for custom-op contracts" in error for error in result["errors"])
@@ -618,7 +698,9 @@ def test_custom_op_final_gate_accepts_valid_full_pass_report() -> None:
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
-def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root(tmp_path: Path) -> None:
+def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root(
+    tmp_path: Path,
+) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
     artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
@@ -626,21 +708,27 @@ def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root
     _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
     build_log = tmp_path / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _ = build_log.write_text(
+        "g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8"
+    )
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
-def test_custom_op_final_gate_rejects_self_consistent_report_missing_manifest_required_unit(tmp_path: Path) -> None:
+def test_custom_op_final_gate_rejects_self_consistent_report_missing_manifest_required_unit(
+    tmp_path: Path,
+) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path, ["ScalarFwd2D", "ScalarBwd2D"])
     artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
     artifact_path.parent.mkdir(parents=True)
     _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
     build_log = tmp_path / "migration_reports" / "build.log"
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _ = build_log.write_text(
+        "g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8"
+    )
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -649,12 +737,16 @@ def test_custom_op_final_gate_rejects_self_consistent_report_missing_manifest_re
     assert any("required_units length (2)" in error for error in result["errors"])
 
 
-def test_custom_op_final_gate_rejects_missing_native_artifact_with_project_root(tmp_path: Path) -> None:
+def test_custom_op_final_gate_rejects_missing_native_artifact_with_project_root(
+    tmp_path: Path,
+) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
     build_log = tmp_path / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _ = build_log.write_text(
+        "g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8"
+    )
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -662,7 +754,9 @@ def test_custom_op_final_gate_rejects_missing_native_artifact_with_project_root(
     assert any("native artifact path must exist" in error for error in result["errors"])
 
 
-def test_custom_op_final_gate_rejects_text_file_disguised_as_native_artifact(tmp_path: Path) -> None:
+def test_custom_op_final_gate_rejects_text_file_disguised_as_native_artifact(
+    tmp_path: Path,
+) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
     artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
@@ -670,7 +764,9 @@ def test_custom_op_final_gate_rejects_text_file_disguised_as_native_artifact(tmp
     _ = artifact_path.write_text("not a binary", encoding="utf-8")
     build_log = tmp_path / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _ = build_log.write_text(
+        "g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8"
+    )
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -678,7 +774,9 @@ def test_custom_op_final_gate_rejects_text_file_disguised_as_native_artifact(tmp
     assert any("non-empty compiled binary" in error for error in result["errors"])
 
 
-def test_custom_op_final_gate_rejects_torch_cpu_extension_masquerading_as_ascend_artifact(tmp_path: Path) -> None:
+def test_custom_op_final_gate_rejects_torch_cpu_extension_masquerading_as_ascend_artifact(
+    tmp_path: Path,
+) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
     rows = cast(list[dict[str, object]], payload["rows"])
@@ -704,6 +802,7 @@ def test_custom_op_final_gate_rejects_torch_cpu_extension_masquerading_as_ascend
     build_log = tmp_path / "migration_reports" / "build_ext_npu.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
     _ = build_log.write_text(
+        # pylint: disable-next=line-too-long; silent
         "g++ -shared sampling.o npu_ops.o -ltorch_cpu -ltorch -ltorch_python -o pointnet2_ops/_ext.so\n",
         encoding="utf-8",
     )
@@ -712,18 +811,26 @@ def test_custom_op_final_gate_rejects_torch_cpu_extension_masquerading_as_ascend
 
     assert result["passed"] is False
     assert any("CANN/ACL/AscendC/OPP build" in error for error in result["errors"])
-    assert any("independent CANN/ACL/AscendC binary or source evidence" in error for error in result["errors"])
+    assert any(
+        "independent CANN/ACL/AscendC binary or source evidence" in error
+        for error in result["errors"]
+    )
 
 
-def test_custom_op_final_gate_rejects_spoofed_cann_words_without_native_link_or_source(tmp_path: Path) -> None:
+def test_custom_op_final_gate_rejects_spoofed_cann_words_without_native_link_or_source(
+    tmp_path: Path,
+) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
     artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
     artifact_path.parent.mkdir(parents=True)
-    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00ordinary torch extension with ascend words")
+    _ = artifact_path.write_bytes(
+        b"\x7fELF\x02\x01\x01\x00ordinary torch extension with ascend words"
+    )
     build_log = tmp_path / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
     _ = build_log.write_text(
+        # pylint: disable-next=line-too-long; silent
         "CANN migration note: g++ -shared scalar.o -ltorch_cpu -ltorch_python -o libscalar_fwd_2d.so\n",
         encoding="utf-8",
     )
@@ -737,7 +844,9 @@ def test_custom_op_final_gate_rejects_spoofed_cann_words_without_native_link_or_
 def test_custom_op_final_gate_rejects_evidence_only_native_marker_artifact(tmp_path: Path) -> None:
     payload = _valid_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
-    fake_path = "pointnet2_ops/ascend_custom_op/op_plugin/lib/libpointnet2_ascend_custom_op_evidence.so"
+    fake_path = (
+        "pointnet2_ops/ascend_custom_op/op_plugin/lib/libpointnet2_ascend_custom_op_evidence.so"
+    )
     host_source = "pointnet2_ops/ascend_custom_op/op_host/pointnet2_ascend_acl_evidence.cpp"
     kernel_source = "pointnet2_ops/ascend_custom_op/op_kernel/pointnet2_ascendc_kernel_evidence.cpp"
     rows = cast(list[dict[str, object]], payload["rows"])
@@ -758,18 +867,23 @@ def test_custom_op_final_gate_rejects_evidence_only_native_marker_artifact(tmp_p
     )
     artifact_path = tmp_path / fake_path
     artifact_path.parent.mkdir(parents=True)
-    _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt op_host op_kernel aicore")
+    _ = artifact_path.write_bytes(
+        b"\x7fELF\x02\x01\x01\x00libascendcl aclrt op_host op_kernel aicore"
+    )
     for source_path in (tmp_path / host_source, tmp_path / kernel_source):
         source_path.parent.mkdir(parents=True, exist_ok=True)
     _ = (tmp_path / host_source).write_text(
-        "extern \"C\" int pointnet2_ascend_record_unit_call(unsigned long i) { return 1000 + i; }\n"
-        "const char* marker = \"aclrt libascendcl op_host evidence\";\n",
+        'extern "C" int pointnet2_ascend_record_unit_call(unsigned long i) { return 1000 + i; }\n'
+        'const char* marker = "aclrt libascendcl op_host evidence";\n',
         encoding="utf-8",
     )
-    _ = (tmp_path / kernel_source).write_text(
-        "extern \"C\" const char* pointnet2_ascendc_kernel_evidence() { return \"kernel_operator.h op_kernel aicore\"; }\n",
+    _ = (
+    tmp_path /
+    kernel_source).write_text(
+        # pylint: disable-next=line-too-long; silent
+        'extern "C" const char* pointnet2_ascendc_kernel_evidence() { return "kernel_operator.h op_kernel aicore"; }\n',
         encoding="utf-8",
-    )
+         )
     build_log = tmp_path / "migration_reports" / "ascend_custom_op_build.log"
     _ = build_log.write_text(
         f"command: g++ -shared {host_source} {kernel_source} -lascendcl -o {fake_path}\n"
@@ -796,7 +910,9 @@ def test_custom_op_final_gate_rejects_symlink_escape_native_artifact(tmp_path: P
     artifact_link.symlink_to(outside_artifact)
     build_log = tmp_path / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
+    _ = build_log.write_text(
+        "g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8"
+    )
 
     result = validate_custom_op_final_gate(payload, project_root=tmp_path)
 
@@ -813,7 +929,10 @@ def test_custom_op_final_gate_rejects_runtime_loaded_artifact_mismatch() -> None
     result = validate_custom_op_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("same-run runtime loaded the native compiled artifact" in error for error in result["errors"])
+    assert any(
+        "same-run runtime loaded the native compiled artifact" in error
+        for error in result["errors"]
+    )
 
 
 def test_custom_op_final_gate_rejects_missing_build_provenance() -> None:
@@ -1004,11 +1123,18 @@ def test_custom_op_final_gate_rejects_missing_overall_all_units_replaced_proof()
     result = validate_custom_op_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("after all source-discovered custom-op units were replaced" in error for error in result["errors"])
+    assert any(
+        "after all source-discovered custom-op units were replaced" in error
+        for error in result["errors"]
+    )
 
 
-@pytest.mark.parametrize("field_name", ["native_operator_symbols", "kernel_functions", "source_evidence"])
-def test_custom_op_final_gate_rejects_missing_native_inventory_source_fields(field_name: str) -> None:
+@pytest.mark.parametrize(
+    "field_name", ["native_operator_symbols", "kernel_functions", "source_evidence"]
+)
+def test_custom_op_final_gate_rejects_missing_native_inventory_source_fields(
+    field_name: str,
+) -> None:
     payload = _valid_custom_op_final_gate()
     source_inventory = cast(dict[str, object], payload["source_inventory"])
     entries = cast(list[dict[str, object]], source_inventory["entries"])
@@ -1022,7 +1148,13 @@ def test_custom_op_final_gate_rejects_missing_native_inventory_source_fields(fie
 
 @pytest.mark.parametrize(
     "field_name",
-    ["unit_identity", "variant_or_signature", "kernel_launch_sites", "public_entry_mapping", "inventory_granularity"],
+    [
+        "unit_identity",
+        "variant_or_signature",
+        "kernel_launch_sites",
+        "public_entry_mapping",
+        "inventory_granularity",
+    ],
 )
 def test_custom_op_final_gate_rejects_missing_fine_grained_source_fields(field_name: str) -> None:
     payload = _valid_custom_op_final_gate()
@@ -1033,10 +1165,14 @@ def test_custom_op_final_gate_rejects_missing_fine_grained_source_fields(field_n
     result = validate_custom_op_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("fine-grained unit fields" in error and field_name in error for error in result["errors"])
+    assert any(
+        "fine-grained unit fields" in error and field_name in error for error in result["errors"]
+    )
 
 
-@pytest.mark.parametrize("field_name", ["native_operator_symbols", "kernel_functions", "source_evidence"])
+@pytest.mark.parametrize(
+    "field_name", ["native_operator_symbols", "kernel_functions", "source_evidence"]
+)
 def test_custom_op_final_gate_rejects_missing_native_inventory_row_fields(field_name: str) -> None:
     payload = _valid_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
@@ -1050,7 +1186,13 @@ def test_custom_op_final_gate_rejects_missing_native_inventory_row_fields(field_
 
 @pytest.mark.parametrize(
     "field_name",
-    ["unit_identity", "variant_or_signature", "kernel_launch_sites", "public_entry_mapping", "inventory_granularity"],
+    [
+        "unit_identity",
+        "variant_or_signature",
+        "kernel_launch_sites",
+        "public_entry_mapping",
+        "inventory_granularity",
+    ],
 )
 def test_custom_op_final_gate_rejects_missing_fine_grained_row_fields(field_name: str) -> None:
     payload = _valid_custom_op_final_gate()
@@ -1060,7 +1202,9 @@ def test_custom_op_final_gate_rejects_missing_fine_grained_row_fields(field_name
     result = validate_custom_op_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("fine-grained unit fields" in error and field_name in error for error in result["errors"])
+    assert any(
+        "fine-grained unit fields" in error and field_name in error for error in result["errors"]
+    )
 
 
 def test_custom_op_final_gate_rejects_deepwave_like_collapsed_two_row_inventory() -> None:
@@ -1076,7 +1220,9 @@ def test_custom_op_final_gate_rejects_deepwave_like_collapsed_two_row_inventory(
             "variant_or_signature": "family_forward_all_variants",
             "inventory_granularity": "coarse",
             "family_only": True,
-            "native_operator_symbols": {"variants": ["scalar_forward_1d", "scalar_forward_2d", "scalar_forward_3d"]},
+            "native_operator_symbols": {
+                "variants": ["scalar_forward_1d", "scalar_forward_2d", "scalar_forward_3d"]
+            },
             "kernel_functions": {"variants": ["forward_kernel", "add_sources", "record_receivers"]},
             "kernel_launch_sites": {"variants": ["scalar.cu:forward"]},
             "public_entry_mapping": {"python_api": "deepwave.scalar"},
@@ -1088,7 +1234,9 @@ def test_custom_op_final_gate_rejects_deepwave_like_collapsed_two_row_inventory(
             "variant_or_signature": "family_backward_all_variants",
             "inventory_granularity": "family_only",
             "family_only": True,
-            "native_operator_symbols": {"variants": ["scalar_backward_1d", "scalar_backward_2d", "scalar_backward_3d"]},
+            "native_operator_symbols": {
+                "variants": ["scalar_backward_1d", "scalar_backward_2d", "scalar_backward_3d"]
+            },
             "kernel_functions": {"variants": ["backward_kernel", "combine_grad_v"]},
             "kernel_launch_sites": {"variants": ["scalar.cu:backward"]},
             "public_entry_mapping": {"python_api": "deepwave.scalar"},
@@ -1107,7 +1255,9 @@ def test_custom_op_final_gate_rejects_deepwave_like_collapsed_two_row_inventory(
                 "inventory_granularity": "coarse",
                 "family_only": True,
                 "native_operator_symbols": {"variants": [f"{name}_1d", f"{name}_2d", f"{name}_3d"]},
-                "kernel_functions": {"variants": ["forward_kernel", "backward_kernel", "combine_grad_v"]},
+                "kernel_functions": {
+                    "variants": ["forward_kernel", "backward_kernel", "combine_grad_v"]
+                },
                 "kernel_launch_sites": {"variants": ["scalar.cu:launch"]},
                 "public_entry_mapping": {"python_api": "deepwave.scalar"},
                 "source_evidence": ["deepwave_original_src/scalar.cu"],
@@ -1118,7 +1268,9 @@ def test_custom_op_final_gate_rejects_deepwave_like_collapsed_two_row_inventory(
     result = validate_custom_op_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("coarse" in error.lower() or "nested family" in error.lower() for error in result["errors"])
+    assert any(
+        "coarse" in error.lower() or "nested family" in error.lower() for error in result["errors"]
+    )
 
 
 def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory() -> None:
@@ -1131,7 +1283,10 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
     entries: list[dict[str, object]] = []
     rows: list[dict[str, object]] = []
     performance_entries: list[dict[str, object]] = []
-    for unit_name, signature in (("op_alpha_float32", "alpha(float32)"), ("op_alpha_float16", "alpha(float16)")):
+    for unit_name, signature in (
+        ("op_alpha_float32", "alpha(float32)"),
+        ("op_alpha_float16", "alpha(float16)"),
+    ):
         common = {
             "unit_identity": unit_name,
             "variant_or_signature": signature,
@@ -1279,7 +1434,9 @@ def test_custom_op_final_gate_rejects_row_count_mismatch() -> None:
         {"status": "FAILED", "path": "opp/op_1"},
     ],
 )
-def test_custom_op_final_gate_rejects_explicitly_failed_evidence_dict(evidence: dict[str, object]) -> None:
+def test_custom_op_final_gate_rejects_explicitly_failed_evidence_dict(
+    evidence: dict[str, object],
+) -> None:
     payload = _valid_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
     rows[0]["opp_custom_op_artifact_evidence"] = evidence
@@ -1298,7 +1455,9 @@ def test_custom_op_final_gate_rejects_failed_no_fallback_evidence() -> None:
     result = validate_custom_op_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("no_fallback_no_zero_call_no_builtin_contamination" in error for error in result["errors"])
+    assert any(
+        "no_fallback_no_zero_call_no_builtin_contamination" in error for error in result["errors"]
+    )
 
 
 def test_custom_op_final_gate_rejects_passed_only_no_fallback_evidence() -> None:
@@ -1328,7 +1487,9 @@ def test_custom_op_final_gate_rejects_partial_mvp_or_smoke_status(status: str) -
 def test_entry_script_validator_rejects_custom_op_contract_missing_critical_checks() -> None:
     payload = _valid_custom_op_contract()
     validation_obligations = cast(list[str], payload["validation_obligations"])
-    payload["validation_obligations"] = [obligation for obligation in validation_obligations if obligation != "no_fallback"]
+    payload["validation_obligations"] = [
+        obligation for obligation in validation_obligations if obligation != "no_fallback"
+    ]
 
     result = validate_entry_script(payload)
 
@@ -1363,7 +1524,9 @@ def test_entry_script_validator_rejects_report_only_final_evidence_validator() -
     payload = _valid_custom_op_contract()
     reports_dir = "/tmp/project/migration_reports"
     payload["entry_script_path"] = f"{reports_dir}/final_evidence_validate.py"
-    payload["run_command"] = f"/tmp/project/.venv/bin/python {reports_dir}/final_evidence_validate.py"
+    payload["run_command"] = (
+        f"/tmp/project/.venv/bin/python {reports_dir}/final_evidence_validate.py"
+    )
 
     result = validate_entry_script(payload)
 
@@ -1407,7 +1570,9 @@ def test_entry_script_validator_rejects_missing_report_and_check_obligations() -
 def test_entry_script_validator_rejects_missing_native_symbol_inventory_check() -> None:
     payload = _valid_custom_op_contract()
     checks = cast(list[str], payload["required_checks"])
-    payload["required_checks"] = [check for check in checks if check != "native_operator_symbol_inventory"]
+    payload["required_checks"] = [
+        check for check in checks if check != "native_operator_symbol_inventory"
+    ]
 
     result = validate_entry_script(payload)
 
@@ -1497,7 +1662,10 @@ def test_entry_static_validator_rejects_failed_custom_op_boolean() -> None:
     )
 
     assert result["passed"] is False
-    assert "script_runs_project_api_custom_ops must be true for custom-op static validation" in result["errors"]
+    assert (
+        "script_runs_project_api_custom_ops must be true for custom-op static validation"
+        in result["errors"]
+    )
 
 
 def test_entry_static_validator_rejects_missing_native_symbol_inventory_boolean() -> None:
@@ -1535,7 +1703,9 @@ def test_entry_static_validator_rejects_custom_marker_without_required_booleans(
     )
 
     assert result["passed"] is False
-    assert any("custom-op static validation missing booleans" in error for error in result["errors"])
+    assert any(
+        "custom-op static validation missing booleans" in error for error in result["errors"]
+    )
 
 
 def test_entry_static_validator_rejects_custom_static_required_without_required_booleans() -> None:
@@ -1549,7 +1719,9 @@ def test_entry_static_validator_rejects_custom_static_required_without_required_
     )
 
     assert result["passed"] is False
-    assert any("custom-op static validation missing booleans" in error for error in result["errors"])
+    assert any(
+        "custom-op static validation missing booleans" in error for error in result["errors"]
+    )
 
 
 def test_entry_static_validator_requires_failing_outputs_to_name_issues() -> None:
@@ -1569,7 +1741,9 @@ def test_entry_static_validator_preserves_failing_issue_errors() -> None:
     result = validate_entry_static(
         {
             "validation_passed": False,
-            "issues": ["Line 12: smoke/MVP validation does not inspect migration_reports/ evidence"],
+            "issues": [
+                "Line 12: smoke/MVP validation does not inspect migration_reports/ evidence"
+            ],
             "fix_plan": "Read all required reports and enforce every required custom-op check.",
         }
     )
@@ -1582,13 +1756,17 @@ def test_entry_static_validator_preserves_failing_issue_errors() -> None:
 
 
 @pytest.mark.parametrize(("validator_fn", "payload"), VALID_CASES)
-def test_validators_accept_valid_data(validator_fn: ValidatorCallable, payload: dict[str, object]) -> None:
+def test_validators_accept_valid_data(
+    validator_fn: ValidatorCallable, payload: dict[str, object]
+) -> None:
     result = validator_fn(payload)
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
 @pytest.mark.parametrize(("validator_fn", "payload"), INVALID_CASES)
-def test_validators_reject_invalid_data(validator_fn: ValidatorCallable, payload: dict[str, object]) -> None:
+def test_validators_reject_invalid_data(
+    validator_fn: ValidatorCallable, payload: dict[str, object]
+) -> None:
     result = validator_fn(payload)
     assert result["passed"] is False
     assert result["errors"]
@@ -1601,7 +1779,14 @@ def test_validator_engine_normalizes_dict_results() -> None:
 
     result = engine.validate(
         "env_detect",
-        {"platform": "cuda", "npu_detected": False, "python_version": "3.11", "cann_version": "8.0.RC", "ascendc_available": True, "driver_version": "driver-1"},
+        {
+            "platform": "cuda",
+            "npu_detected": False,
+            "python_version": "3.11",
+            "cann_version": "8.0.RC",
+            "ascendc_available": True,
+            "driver_version": "driver-1",
+        },
     )
 
     assert result == ValidationResult(passed=True, errors=[], warnings=[])
@@ -1609,7 +1794,7 @@ def test_validator_engine_normalizes_dict_results() -> None:
 
 def test_validator_engine_normalizes_boolean_results() -> None:
     engine = ValidatorEngine()
-    
+
     def platform_validator(data: dict[str, object]) -> bool:
         return data.get("platform") in ("npu", "cuda")
 
@@ -1637,10 +1822,15 @@ def test_validator_engine_handles_unregistered_validator() -> None:
         ("integration_e2e_evidence", {"failed": True}),
         ("same_run_runtime_coverage", {"custom_call_count": 0, "not_checked": True}),
         ("performance_evidence", {"speedup_vs_baseline": -0.2}),
-        ("no_fallback_no_zero_call_no_builtin_contamination", {"passed": True, "fallback_detected": True}),
+        (
+            "no_fallback_no_zero_call_no_builtin_contamination",
+            {"passed": True, "fallback_detected": True},
+        ),
     ],
 )
-def test_custom_op_final_gate_rejects_nested_non_passing_evidence(field_name: str, bad_value: object) -> None:
+def test_custom_op_final_gate_rejects_nested_non_passing_evidence(
+    field_name: str, bad_value: object
+) -> None:
     payload = _valid_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
     rows[0][field_name] = bad_value
@@ -1708,7 +1898,10 @@ def test_custom_op_final_gate_rejects_missing_numeric_performance_fields() -> No
     result = validate_custom_op_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("performance_evidence missing positive numeric fields" in error for error in result["errors"])
+    assert any(
+        "performance_evidence missing positive numeric fields" in error
+        for error in result["errors"]
+    )
 
 
 def test_custom_op_final_gate_rejects_source_inventory_mismatch() -> None:
@@ -1767,7 +1960,11 @@ def test_custom_op_final_gate_rejects_requirements_doc_discovery_source() -> Non
 def test_custom_op_final_gate_rejects_artifact_without_project_local_path_proof() -> None:
     payload = _valid_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
-    rows[0]["opp_custom_op_artifact_evidence"] = {"project_local": True, "built": True, "path": "/tmp/outside/op"}
+    rows[0]["opp_custom_op_artifact_evidence"] = {
+        "project_local": True,
+        "built": True,
+        "path": "/tmp/outside/op",
+    }
 
     result = validate_custom_op_final_gate(payload)
 
@@ -1775,7 +1972,10 @@ def test_custom_op_final_gate_rejects_artifact_without_project_local_path_proof(
     assert any("project-local path proof" in error for error in result["errors"])
 
 
-@pytest.mark.parametrize("unsafe_path", ["../outside/libop.so", "opp/../outside/libop.so", "file:///tmp/libop.so", "C:\\tmp\\libop.so"])
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ["../outside/libop.so", "opp/../outside/libop.so", "file:///tmp/libop.so", "C:\\tmp\\libop.so"],
+)
 def test_custom_op_final_gate_rejects_unsafe_artifact_paths(unsafe_path: str) -> None:
     payload = _valid_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])

@@ -1,15 +1,19 @@
-# pyright: reportMissingTypeArgument=false, reportAttributeAccessIssue=false, reportArgumentType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportAny=false, reportUnusedCallResult=false
+# pyright: reportMissingTypeArgument=false,
+# reportAttributeAccessIssue=false, reportArgumentType=false,
+# reportUnknownParameterType=false, reportUnknownVariableType=false,
+# reportUnknownMemberType=false, reportUnknownArgumentType=false,
+# reportUnannotatedClassAttribute=false, reportAny=false,
+# reportUnusedCallResult=false
 import json
 import os
 import shutil
 from datetime import datetime, timezone
 from typing import Any
 
-
 CATALOG_SCHEMA_VERSION = 1
 
 
-class ExperienceRegistry:
+class ExperienceRegistry:  # pylint: disable=too-many-instance-attributes; silent
     def __init__(self, repo_root: str) -> None:
         self.repo_root = repo_root
         self.memory_dir = os.path.join(repo_root, "memory")
@@ -53,7 +57,9 @@ class ExperienceRegistry:
             if existing.get("id") == normalized.get("id"):
                 merged = dict(existing)
                 merged.update(normalized)
-                merged.setdefault("created_at", existing.get("created_at", normalized["created_at"]))
+                merged.setdefault(
+                    "created_at", existing.get("created_at", normalized["created_at"])
+                )
                 if "usage" not in entry:
                     merged["usage"] = existing.get("usage", normalized.get("usage", {}))
                 for counter_field in ("use_count", "failure_count", "last_used_at"):
@@ -170,27 +176,35 @@ class ExperienceRegistry:
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
                     data.update(loaded)
-            entries.append(self.normalize_entry({
-                "id": f"local-skill-{skill_name}",
-                "type": "skill-pack",
-                "status": "local",
-                "title": data.get("title", skill_name),
-                "category": data.get("category", "local_skill_pack"),
-                "subtype": data.get("subtype", ""),
-                "tags": data.get("tags", []),
-                "confidence": data.get("confidence", 0.0),
-                "target_roles": data.get("target_roles", []),
-                "target_phases": data.get("target_phases", []),
-                "trigger_fingerprint": data.get("trigger_fingerprint", f"local_skill_pack|{skill_name}"),
-                "asset_paths": asset_paths,
-                "source_runs": ["local-skill-pack"],
-            }))
+            entries.append(
+                self.normalize_entry(
+                    {
+                        "id": f"local-skill-{skill_name}",
+                        "type": "skill-pack",
+                        "status": "local",
+                        "title": data.get("title", skill_name),
+                        "category": data.get("category", "local_skill_pack"),
+                        "subtype": data.get("subtype", ""),
+                        "tags": data.get("tags", []),
+                        "confidence": data.get("confidence", 0.0),
+                        "target_roles": data.get("target_roles", []),
+                        "target_phases": data.get("target_phases", []),
+                        "trigger_fingerprint": data.get(
+                            "trigger_fingerprint", f"local_skill_pack|{skill_name}"
+                        ),
+                        "asset_paths": asset_paths,
+                        "source_runs": ["local-skill-pack"],
+                    }
+                )
+            )
         return entries
 
     def _collect_local_skill_asset_paths(self, skill_dir: str) -> list[str]:
         asset_paths: list[str] = []
         for current_root, dirs, files in os.walk(skill_dir):
-            dirs[:] = sorted(d for d in dirs if d not in {"__pycache__", ".pytest_cache", ".ruff_cache"})
+            dirs[:] = sorted(
+                d for d in dirs if d not in {"__pycache__", ".pytest_cache", ".ruff_cache"}
+            )
             for filename in sorted(files):
                 if filename.endswith((".pyc", ".pyo")):
                     continue
@@ -202,7 +216,12 @@ class ExperienceRegistry:
         with open(skill_md, "r", encoding="utf-8") as f:
             content = f.read()
         metadata = self._parse_front_matter(content)
-        title = metadata.get("title") or metadata.get("name") or self._markdown_title(content) or skill_name
+        title = (
+            metadata.get("title")
+            or metadata.get("name")
+            or self._markdown_title(content)
+            or skill_name
+        )
         metadata["title"] = title
         return metadata
 
@@ -256,7 +275,9 @@ class ExperienceRegistry:
         run_dirs = self._list_dirs(self.staging_dir)
         consumed_runs = self._consumed_run_ids()
         targets = [path for path in run_dirs if os.path.basename(path) in consumed_runs]
-        return self._cleanup_paths(targets, dry_run=dry_run, archive=archive, action="cleanup_staging")
+        return self._cleanup_paths(
+            targets, dry_run=dry_run, archive=archive, action="cleanup_staging"
+        )
 
     def archive_consumed(self, dry_run: bool = True) -> dict:
         return self.cleanup_staging(dry_run=dry_run, archive=True)
@@ -278,12 +299,16 @@ class ExperienceRegistry:
                     if file_path not in protected_assets:
                         targets.append(file_path)
 
-        return self._cleanup_paths(targets, dry_run=dry_run, archive=quarantine, action="prune_orphans")
+        return self._cleanup_paths(
+            targets, dry_run=dry_run, archive=quarantine, action="prune_orphans"
+        )
 
     def normalize_entry(self, entry: dict) -> dict:
         now = self._now()
         entry_id = str(entry.get("id") or self._entry_id_from_data(entry))
-        source_runs = entry.get("source_runs", entry.get("merged_from_runs", entry.get("run_id", [])))
+        source_runs = entry.get(
+            "source_runs", entry.get("merged_from_runs", entry.get("run_id", []))
+        )
         if isinstance(source_runs, str):
             source_runs = [source_runs]
 
@@ -298,7 +323,9 @@ class ExperienceRegistry:
             "confidence": float(entry.get("confidence", 0.0) or 0.0),
             "target_roles": self._as_list(entry.get("target_roles", [])),
             "target_phases": self._as_list(entry.get("target_phases", [])),
-            "trigger_fingerprint": entry.get("trigger_fingerprint", self._trigger_fingerprint(entry)),
+            "trigger_fingerprint": entry.get(
+                "trigger_fingerprint", self._trigger_fingerprint(entry)
+            ),
             "asset_paths": self._as_list(entry.get("asset_paths", [])),
             "source_runs": self._as_list(source_runs),
             "created_at": entry.get("created_at", entry.get("promoted_at", now)),
@@ -330,7 +357,7 @@ class ExperienceRegistry:
             self._rewrite_catalog(entries)
             self.refresh_manifest(entries)
 
-    def _apply_usage_updates(
+    def _apply_usage_updates(  # pylint: disable=too-many-locals; silent
         self,
         entries: list[dict],
         *,
@@ -343,7 +370,9 @@ class ExperienceRegistry:
         selected = set(str(item) for item in selected_ids or [] if item)
         used = set(str(item) for item in used_ids or [] if item)
         ignored = set(str(item) for item in ignored_ids or [] if item)
-        verified_ids = set(str(item) for item in (verification or {}).get("experience_ids", []) if item)
+        verified_ids = set(
+            str(item) for item in (verification or {}).get("experience_ids", []) if item
+        )
         verification_passed = (verification or {}).get("passed")
         changed = False
 
@@ -390,7 +419,9 @@ class ExperienceRegistry:
             "ignored_count": int(raw.get("ignored_count", 0) or 0),
             "verification_attempt_count": int(raw.get("verification_attempt_count", 0) or 0),
             "verification_success_count": int(raw.get("verification_success_count", 0) or 0),
-            "verification_failure_count": int(raw.get("verification_failure_count", raw.get("failure_count", 0)) or 0),
+            "verification_failure_count": int(
+                raw.get("verification_failure_count", raw.get("failure_count", 0)) or 0
+            ),
             "last_selected_at": raw.get("last_selected_at"),
             "last_used_at": raw.get("last_used_at"),
             "last_ignored_at": raw.get("last_ignored_at"),
@@ -398,25 +429,33 @@ class ExperienceRegistry:
             "last_verification_passed": raw.get("last_verification_passed"),
         }
 
-    def catalog_entry_from_promotion(self, run_id: str, promotion_type: str, exp_data: dict, asset_paths: list[str]) -> dict:
+    def catalog_entry_from_promotion(
+        self, run_id: str, promotion_type: str, exp_data: dict, asset_paths: list[str]
+    ) -> dict:
         skill_name = exp_data.get("skill_name", exp_data.get("name", f"{run_id}-promoted"))
-        return self.normalize_entry({
-            "id": f"promoted-{skill_name}",
-            "type": promotion_type,
-            "status": "promoted",
-            "title": exp_data.get("title", skill_name),
-            "category": exp_data.get("category", ""),
-            "subtype": exp_data.get("subtype", ""),
-            "tags": exp_data.get("tags", []),
-            "confidence": exp_data.get("confidence", 0.0),
-            "target_roles": exp_data.get("target_roles", []),
-            "target_phases": exp_data.get("target_phases", []),
-            "trigger_fingerprint": exp_data.get("trigger_fingerprint", self._trigger_fingerprint(exp_data)),
-            "asset_paths": asset_paths,
-            "source_runs": exp_data.get("source_runs", exp_data.get("merged_from_runs", [run_id])),
-            "created_at": exp_data.get("created_at", exp_data.get("promoted_at", self._now())),
-            "updated_at": exp_data.get("promoted_at", self._now()),
-        })
+        return self.normalize_entry(
+            {
+                "id": f"promoted-{skill_name}",
+                "type": promotion_type,
+                "status": "promoted",
+                "title": exp_data.get("title", skill_name),
+                "category": exp_data.get("category", ""),
+                "subtype": exp_data.get("subtype", ""),
+                "tags": exp_data.get("tags", []),
+                "confidence": exp_data.get("confidence", 0.0),
+                "target_roles": exp_data.get("target_roles", []),
+                "target_phases": exp_data.get("target_phases", []),
+                "trigger_fingerprint": exp_data.get(
+                    "trigger_fingerprint", self._trigger_fingerprint(exp_data)
+                ),
+                "asset_paths": asset_paths,
+                "source_runs": exp_data.get(
+                    "source_runs", exp_data.get("merged_from_runs", [run_id])
+                ),
+                "created_at": exp_data.get("created_at", exp_data.get("promoted_at", self._now())),
+                "updated_at": exp_data.get("promoted_at", self._now()),
+            }
+        )
 
     def _scan_skill_entries(self) -> list[dict]:
         entries: list[dict] = []
@@ -434,12 +473,14 @@ class ExperienceRegistry:
             skill_md = os.path.join(skill_dir, "SKILL.md")
             if os.path.isfile(skill_md):
                 asset_paths.append(self._relpath(skill_md))
-            entries.append(self.catalog_entry_from_promotion(
-                data.get("run_id", data.get("source_run", "rebuild")),
-                data.get("promotion_type", "skill"),
-                {**data, "skill_name": data.get("skill_name", data.get("name", skill_name))},
-                asset_paths,
-            ))
+            entries.append(
+                self.catalog_entry_from_promotion(
+                    data.get("run_id", data.get("source_run", "rebuild")),
+                    data.get("promotion_type", "skill"),
+                    {**data, "skill_name": data.get("skill_name", data.get("name", skill_name))},
+                    asset_paths,
+                )
+            )
         return entries
 
     def _scan_promoted_json_entries(self) -> list[dict]:
@@ -452,18 +493,27 @@ class ExperienceRegistry:
             file_path = os.path.join(current_root, "experience.json")
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            promotion_type = data.get("promotion_type", os.path.basename(os.path.dirname(os.path.dirname(file_path))))
+            promotion_type = data.get(
+                "promotion_type", os.path.basename(os.path.dirname(os.path.dirname(file_path)))
+            )
             asset_paths = [self._relpath(file_path)]
             for asset_name in data.get("asset_names", []):
                 asset_path = os.path.join(os.path.dirname(file_path), asset_name)
                 if os.path.exists(asset_path):
                     asset_paths.append(self._relpath(asset_path))
-            entries.append(self.catalog_entry_from_promotion(
-                data.get("run_id", "rebuild"),
-                promotion_type,
-                {**data, "skill_name": data.get("skill_name", data.get("name", os.path.basename(current_root)))},
-                sorted(set(asset_paths)),
-            ))
+            entries.append(
+                self.catalog_entry_from_promotion(
+                    data.get("run_id", "rebuild"),
+                    promotion_type,
+                    {
+                        **data,
+                        "skill_name": data.get(
+                            "skill_name", data.get("name", os.path.basename(current_root))
+                        ),
+                    },
+                    sorted(set(asset_paths)),
+                )
+            )
         return entries
 
     def _scan_case_json_entries(self) -> list[dict]:
@@ -477,7 +527,9 @@ class ExperienceRegistry:
                 file_path = os.path.join(current_root, filename)
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                entries.append(self.normalize_entry({**data, "asset_paths": [self._relpath(file_path)]}))
+                entries.append(
+                    self.normalize_entry({**data, "asset_paths": [self._relpath(file_path)]})
+                )
         return entries
 
     def _dedupe_entries(self, entries: list[dict]) -> list[dict]:
@@ -494,13 +546,26 @@ class ExperienceRegistry:
     def _merge_entries(self, old: dict, new: dict) -> dict:
         merged = dict(old)
         merged.update({key: value for key, value in new.items() if value not in (None, "", [])})
-        merged["created_at"] = min(str(old.get("created_at", new.get("created_at", ""))), str(new.get("created_at", old.get("created_at", ""))))
+        merged["created_at"] = min(
+            str(old.get("created_at", new.get("created_at", ""))),
+            str(new.get("created_at", old.get("created_at", ""))),
+        )
         merged["updated_at"] = max(str(old.get("updated_at", "")), str(new.get("updated_at", "")))
-        merged["asset_paths"] = sorted(set(self._as_list(old.get("asset_paths", []))) | set(self._as_list(new.get("asset_paths", []))))
-        merged["source_runs"] = sorted(set(self._as_list(old.get("source_runs", []))) | set(self._as_list(new.get("source_runs", []))))
-        merged["tags"] = sorted(set(self._as_list(old.get("tags", []))) | set(self._as_list(new.get("tags", []))))
+        merged["asset_paths"] = sorted(
+            set(self._as_list(old.get("asset_paths", [])))
+            | set(self._as_list(new.get("asset_paths", [])))
+        )
+        merged["source_runs"] = sorted(
+            set(self._as_list(old.get("source_runs", [])))
+            | set(self._as_list(new.get("source_runs", [])))
+        )
+        merged["tags"] = sorted(
+            set(self._as_list(old.get("tags", []))) | set(self._as_list(new.get("tags", [])))
+        )
         merged["use_count"] = int(old.get("use_count", 0) or 0) + int(new.get("use_count", 0) or 0)
-        merged["failure_count"] = int(old.get("failure_count", 0) or 0) + int(new.get("failure_count", 0) or 0)
+        merged["failure_count"] = int(old.get("failure_count", 0) or 0) + int(
+            new.get("failure_count", 0) or 0
+        )
         old_usage = self._normalize_usage(old.get("usage", old))
         new_usage = self._normalize_usage(new.get("usage", new))
         usage = old_usage
@@ -520,10 +585,11 @@ class ExperienceRegistry:
             "last_verification_at",
         ):
             usage[key] = max(str(old_usage.get(key) or ""), str(new_usage.get(key) or "")) or None
-        usage["last_verification_passed"] = new_usage.get("last_verification_passed", old_usage.get("last_verification_passed"))
+        usage["last_verification_passed"] = new_usage.get(
+            "last_verification_passed", old_usage.get("last_verification_passed")
+        )
         merged["usage"] = usage
         return self.normalize_entry(merged)
-
 
     def _read_legacy_index_entries(self) -> list[dict]:
         legacy_index = os.path.join(self.index_dir, "cases.jsonl")
@@ -562,11 +628,15 @@ class ExperienceRegistry:
 
         for target in targets:
             if archive:
-                destination_root = self.archive_dir if action != "prune_orphans" else self.quarantine_dir
+                destination_root = (
+                    self.archive_dir if action != "prune_orphans" else self.quarantine_dir
+                )
                 destination = os.path.join(destination_root, self._relpath(target))
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
                 shutil.move(target, destination)
-                result["moved"].append({"from": self._relpath(target), "to": self._relpath(destination)})
+                result["moved"].append(
+                    {"from": self._relpath(target), "to": self._relpath(destination)}
+                )
             else:
                 if os.path.isdir(target):
                     shutil.rmtree(target)
@@ -617,7 +687,11 @@ class ExperienceRegistry:
     def _list_dirs(self, root: str) -> list[str]:
         if not os.path.isdir(root):
             return []
-        return [os.path.join(root, entry) for entry in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, entry))]
+        return [
+            os.path.join(root, entry)
+            for entry in sorted(os.listdir(root))
+            if os.path.isdir(os.path.join(root, entry))
+        ]
 
     @staticmethod
     def _as_list(value: Any) -> list:
@@ -625,6 +699,7 @@ class ExperienceRegistry:
             return []
         if isinstance(value, list):
             return value
+        # pylint: disable-next=consider-merging-isinstance; silent
         if isinstance(value, tuple) or isinstance(value, set):
             return list(value)
         return [value]

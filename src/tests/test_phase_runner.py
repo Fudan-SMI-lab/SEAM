@@ -1,4 +1,6 @@
-# pyright: reportPrivateUsage=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnusedParameter=false
+# pylint: disable=too-many-lines; silent
+# pyright: reportPrivateUsage=false, reportUnknownArgumentType=false,
+# reportUnknownLambdaType=false, reportUnusedParameter=false
 
 import json
 import os
@@ -11,14 +13,21 @@ from typing_extensions import override
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.artifact_store import ArtifactStore
+from core.artifact_store import ArtifactStore  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from core.phase_runner import PhaseRunner, PhaseSpec, SessionManagerLike
-from core.prompt_loader import PromptLoader
-from core.types import PhaseDefinition, RuntimeSkillsConfig, SubWorkflowDefinition, WorkflowDefinition
+from core.prompt_loader import PromptLoader  # pylint: disable=wrong-import-position; silent
+from core.types import (  # pylint: disable=wrong-import-position; silent
+    PhaseDefinition,
+    RuntimeSkillsConfig,
+    SubWorkflowDefinition,
+    WorkflowDefinition,
+)
+# pylint: disable-next=wrong-import-position; silent
 from core.validator_engine import ValidationResult, ValidatorEngine
 
 
-class MockSession:
+class MockSession:  # pylint: disable=too-few-public-methods; silent
     responses: list[str]
     calls: list[tuple[str, int | None]]
     session_id: str
@@ -53,7 +62,9 @@ class RecordingSessionManager:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+    def send_command(
+        self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None
+    ) -> str:
         self.send_calls.append((session_id, command, timeout, retries))
         return self.response
 
@@ -94,7 +105,9 @@ class StaticPromptLoader(PromptLoader):
         return f"BASE PROMPT {phase_id}"
 
 
-def build_runner(base_dir: Path, session_mgr: SessionManagerLike | None = None) -> tuple[PhaseRunner, ArtifactStore]:
+def build_runner(
+    base_dir: Path, session_mgr: SessionManagerLike | None = None
+) -> tuple[PhaseRunner, ArtifactStore]:
     artifact_store = ArtifactStore(str(base_dir), "testrun")
     runner = PhaseRunner(
         session_mgr=session_mgr or NoopSessionManager(),
@@ -221,7 +234,9 @@ def test_old_constructor_without_workflow_does_not_inject_runtime_skills(tmp_pat
 
 def test_run_phase_1_5_appends_runtime_skills(tmp_path: Path) -> None:
     _ = write_runtime_skill(tmp_path, "agent-skill", "# Agent Skill\n\nAgent guidance")
-    _ = write_runtime_skill(tmp_path, "constraint-skill", "# Constraint Skill\n\nConstraint guidance")
+    _ = write_runtime_skill(
+        tmp_path, "constraint-skill", "# Constraint Skill\n\nConstraint guidance"
+    )
     workflow = runtime_workflow(
         phases=[
             PhaseDefinition(
@@ -355,12 +370,12 @@ def test_run_review_check_json_example_text_not_session_error(tmp_path: Path) ->
     class SequentialReviewSessionManager(NoopSessionManager):
         def __init__(self) -> None:
             self.responses: list[str] = [
-                'Example envelope: {"ok": false, "error": "not transport"}\n'
-                + '{"verdict": "accept", "cpu_fallback_detected": false, '
-                + '"cpu_fallback_necessary": false, "alternative_suggestions": "", "reasoning": "ok"}',
-                '{"verdict": "accept", "cpu_fallback_detected": false, '
-                + '"cpu_fallback_necessary": false, "alternative_suggestions": "", "reasoning": "ok"}',
-            ]
+    'Example envelope: {"ok": false, "error": "not transport"}\n' +
+    '{"verdict": "accept", "cpu_fallback_detected": false, ' +
+    '"cpu_fallback_necessary": false, "alternative_suggestions": "", "reasoning": "ok"}',
+    '{"verdict": "accept", "cpu_fallback_detected": false, ' +
+    '"cpu_fallback_necessary": false, "alternative_suggestions": "", "reasoning": "ok"}',
+     ]
             self.send_calls: list[tuple[str, str, int | None]] = []
 
         @override
@@ -390,10 +405,12 @@ def test_run_review_check_json_example_text_not_session_error(tmp_path: Path) ->
 
 def test_validation_failure_retries_are_written_to_journal(tmp_path: Path) -> None:
     runner, artifact_store = build_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"platform": "npu"}),
-        json.dumps({"platform": "npu"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"platform": "npu"}),
+            json.dumps({"platform": "npu"}),
+        ]
+    )
 
     with pytest.raises(ValueError):
         _ = runner.run_single_phase(session, "phase_0", {"max_retry": 2})
@@ -405,10 +422,12 @@ def test_validation_failure_retries_are_written_to_journal(tmp_path: Path) -> No
 
 def test_retry_sends_correction_prompt_not_full_prompt(tmp_path: Path) -> None:
     runner, _ = build_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"npu_detected": True}),
-        json.dumps({"platform": "npu", "npu_detected": True}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"npu_detected": True}),
+            json.dumps({"platform": "npu", "npu_detected": True}),
+        ]
+    )
 
     def retrying_env_detect_validator(data: dict[str, object]) -> dict[str, object]:
         if "platform" not in data:
@@ -435,10 +454,12 @@ def test_retry_sends_correction_prompt_not_full_prompt(tmp_path: Path) -> None:
 
 def test_correction_prompt_includes_error_details(tmp_path: Path) -> None:
     runner, _ = build_runner(tmp_path)
-    session = MockSession([
-        json.dumps({"npu_detected": "yes"}),
-        json.dumps({"platform": "npu", "npu_detected": True}),
-    ])
+    session = MockSession(
+        [
+            json.dumps({"npu_detected": "yes"}),
+            json.dumps({"platform": "npu", "npu_detected": True}),
+        ]
+    )
 
     def detailed_env_detect_validator(data: dict[str, object]) -> dict[str, object]:
         errors: list[str] = []
@@ -455,7 +476,10 @@ def test_correction_prompt_includes_error_details(tmp_path: Path) -> None:
     correction_prompt, _ = session.calls[1]
     assert "Missing required field 'platform'" in correction_prompt
     assert "field 'npu_detected' must be a boolean" in correction_prompt
-    assert "Required or invalid fields called out by validation: platform, npu_detected." in correction_prompt
+    assert (
+        "Required or invalid fields called out by validation: platform, npu_detected."
+        in correction_prompt
+    )
 
 
 def test_correction_prompt_tells_custom_op_agent_to_create_missing_script(tmp_path: Path) -> None:
@@ -467,6 +491,7 @@ def test_correction_prompt_tells_custom_op_agent_to_create_missing_script(tmp_pa
         warnings=[],
     )
 
+    # pylint: disable-next=protected-access; silent
     correction_prompt = runner._build_correction_prompt(
         phase=phase,
         validation=validation,
@@ -522,9 +547,7 @@ def test_run_phase_0_to_3_uses_persistent_main_engineer_session(tmp_path: Path) 
 
     outputs = runner.run_phase_0_to_3(str(tmp_path), session_mgr, artifact_store)
 
-    assert session_mgr.get_or_create_calls == [
-        {"role": "main_engineer", "lifecycle": "persistent"}
-    ]
+    assert session_mgr.get_or_create_calls == [{"role": "main_engineer", "lifecycle": "persistent"}]
     assert list(outputs) == [
         "phase_0_env_detect",
         "phase_1_project_analysis",
@@ -552,7 +575,9 @@ class Phase6SessionManager:
         self.get_or_create_calls.append({"role": role, "lifecycle": lifecycle})
         return "persistent-main"
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+    def send_command(
+        self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None
+    ) -> str:
         self.send_calls.append((session_id, command, timeout, retries))
         if "Phase 6" in command or "phase_6" in command:
             return self.phase_6_response
@@ -563,7 +588,9 @@ class Phase6SessionManager:
 
 
 class Phase6TimeoutSessionManager(Phase6SessionManager):
-    def send_command(self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None) -> str:
+    def send_command(
+        self, session_id: str, command: str, timeout: int | None = 600, retries: int | None = None
+    ) -> str:
         self.send_calls.append((session_id, command, timeout, retries))
         raise TimeoutError("phase 6 timed out")
 
@@ -572,7 +599,11 @@ def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
 
     for candidate, data in {
-        "phase_0_env_detect": {"platform": "npu", "npu_detected": True, "python_version": "3.10.12"},
+        "phase_0_env_detect": {
+            "platform": "npu",
+            "npu_detected": True,
+            "python_version": "3.10.12",
+        },
         "phase_1_project_analysis": {
             "project_dir": str(tmp_path),
             "dependencies": ["torch", "numpy"],
@@ -601,10 +632,12 @@ def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
         os.path.join(report_dir, "LOCAL_TOOL_OPTIMIZATION_REPORT.md"),
     ]
 
-    phase_6_json = json.dumps({
-        "report_paths": expected_paths,
-        "migration_summary": {"files_migrated": 12, "files_skipped": 3},
-    })
+    phase_6_json = json.dumps(
+        {
+            "report_paths": expected_paths,
+            "migration_summary": {"files_migrated": 12, "files_skipped": 3},
+        }
+    )
 
     session_mgr = Phase6SessionManager(phase_6_response=phase_6_json)
 
@@ -726,9 +759,7 @@ def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
         ]
     )
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
-    session_mgr = RecordingSessionManager(
-        json.dumps({"report_paths": [], "migration_summary": {}})
-    )
+    session_mgr = RecordingSessionManager(json.dumps({"report_paths": [], "migration_summary": {}}))
     runner = PhaseRunner(
         session_mgr,
         artifact_store,
@@ -750,6 +781,7 @@ def test_run_phase_6_appends_runtime_skills(tmp_path: Path) -> None:
 
 def test_run_phase_0_to_1_returns_outputs(tmp_path: Path) -> None:
     class MockSM:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return "sess"
 
@@ -775,14 +807,14 @@ def test_run_phase_0_to_1_returns_outputs(tmp_path: Path) -> None:
 
 
 def test_run_phase_0_to_1_accepts_user_constraints() -> None:
-    import inspect
+    import inspect  # pylint: disable=import-outside-toplevel; silent
 
     sig = inspect.signature(PhaseRunner.run_phase_0_to_1)
     assert "user_constraints" in sig.parameters
 
 
 def test_run_phase_2_to_3_accepts_constraint_summary() -> None:
-    import inspect
+    import inspect  # pylint: disable=import-outside-toplevel; silent
 
     sig = inspect.signature(PhaseRunner.run_phase_2_to_3)
     assert "constraint_summary" in sig.parameters
@@ -790,6 +822,7 @@ def test_run_phase_2_to_3_accepts_constraint_summary() -> None:
 
 def test_build_prompt_context_has_constraint_keys() -> None:
     class MockSM:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return "x"
 
@@ -805,16 +838,18 @@ def test_build_prompt_context_has_constraint_keys() -> None:
         "constraint_summary": "R1",
         "user_constraints": "UC",
     }
-    result = runner._build_prompt_context(spec, ctx)
+    result = runner._build_prompt_context(spec, ctx)  # pylint: disable=protected-access; silent
     assert result["constraint_summary"] == "R1"
     assert result["user_constraints"] == "UC"
 
 
 def test_phase_runner_phase3_legacy_output_fails_when_custom_op_context_required() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -834,10 +869,12 @@ def test_phase_runner_phase3_legacy_output_fails_when_custom_op_context_required
 
 
 def test_phase_runner_phase3_legacy_output_passes_without_custom_op_context() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -850,7 +887,9 @@ def test_phase_runner_phase3_legacy_output_passes_without_custom_op_context() ->
 
 
 def test_phase_runner_phase3_negative_custom_op_notes_do_not_force_custom_op_context() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
     for notes in (
@@ -858,7 +897,7 @@ def test_phase_runner_phase3_negative_custom_op_notes_do_not_force_custom_op_con
         "no CUDA custom operators",
         "custom_op_detected: false",
     ):
-        normalized = runner._normalize_output(
+        normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
             spec,
             {"entry_script_path": "train.py", "run_command": "python train.py"},
             {"project_dir": "/tmp/project"},
@@ -871,10 +910,12 @@ def test_phase_runner_phase3_negative_custom_op_notes_do_not_force_custom_op_con
 
 
 def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_context() -> None:
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    false_surface = runner._normalize_output(
+    false_surface = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -895,7 +936,7 @@ def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_con
     validation = runner.validator.validate("entry_script", false_surface)
     assert validation.passed is True
 
-    true_surface = runner._normalize_output(
+    true_surface = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -912,7 +953,7 @@ def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_con
     )
     assert true_surface["entry_script_kind"] == "custom_op_full_validation"
 
-    contract_output = runner._normalize_output(
+    contract_output = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -930,6 +971,7 @@ def test_phase_runner_phase3_structured_custom_op_surface_controls_custom_op_con
 
 def test_phase_35_prompt_context_includes_previous_outputs() -> None:
     class MockSM:
+        # pylint: disable-next=unused-argument; silent
         def get_or_create(self, role: str, lifecycle: str) -> str:
             return "x"
 
@@ -951,9 +993,11 @@ def test_phase_35_prompt_context_includes_previous_outputs() -> None:
         },
     }
 
-    result = runner._build_prompt_context(spec, ctx)
+    result = runner._build_prompt_context(spec, ctx)  # pylint: disable=protected-access; silent
 
-    assert result["entry_script_path"] == "/tmp/project/migration_reports/final_evidence_validate.py"
+    assert (
+        result["entry_script_path"] == "/tmp/project/migration_reports/final_evidence_validate.py"
+    )
     assert "phase_3_entry_script" in result["previous_outputs"]
     assert "custom_op_full_validation" in result["previous_outputs"]
 
@@ -962,10 +1006,12 @@ def test_run_phase_6_uses_persistent_session(tmp_path: Path) -> None:
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
 
     session_mgr = Phase6SessionManager(
-        phase_6_response=json.dumps({
-            "report_paths": [],
-            "migration_summary": {"files_migrated": 0, "files_skipped": 0},
-        })
+        phase_6_response=json.dumps(
+            {
+                "report_paths": [],
+                "migration_summary": {"files_migrated": 0, "files_skipped": 0},
+            }
+        )
     )
 
     runner = PhaseRunner(
@@ -977,10 +1023,7 @@ def test_run_phase_6_uses_persistent_session(tmp_path: Path) -> None:
 
     _ = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
 
-    assert session_mgr.get_or_create_calls == [
-        {"role": "main_engineer", "lifecycle": "persistent"}
-    ]
-
+    assert session_mgr.get_or_create_calls == [{"role": "main_engineer", "lifecycle": "persistent"}]
 
 
 def test_run_phase_2_to_3_retries_phase_3_after_phase_35_failure(tmp_path: Path) -> None:
@@ -1197,7 +1240,9 @@ class CustomOpPhase35SessionManager:
         raise AssertionError(f"Unexpected prompt: {command}")
 
 
-def test_run_phase_2_to_3_rejects_missing_custom_op_entry_script_before_phase35(tmp_path: Path) -> None:
+def test_run_phase_2_to_3_rejects_missing_custom_op_entry_script_before_phase35(
+    tmp_path: Path,
+) -> None:
     class MissingScriptSessionManager:
         phase35_prompts: list[str]
 
@@ -1246,6 +1291,7 @@ def test_run_phase_2_to_3_rejects_missing_custom_op_entry_script_before_phase35(
             },
         )
 
+    # pylint: disable-next=use-implicit-booleaness-not-comparison; silent
     assert session_mgr.phase35_prompts == []
 
 
@@ -1282,12 +1328,11 @@ def test_run_phase_2_to_3_accepts_relative_custom_op_entry_script(tmp_path: Path
                 return json.dumps(custom_op_phase35_output())
             if "Phase 3" in command:
                 return json.dumps(
-                    {
-                        **custom_op_phase3_output(project_dir),
-                        "entry_script_path": "validate_custom_ops_full.py",
-                        "run_command": f"{project_dir / '.venv' / 'bin' / 'python'} validate_custom_ops_full.py",
-                    }
-                )
+    {
+        **custom_op_phase3_output(project_dir),
+        "entry_script_path": "validate_custom_ops_full.py",
+        "run_command": f"{project_dir / '.venv' / 'bin' / 'python'} validate_custom_ops_full.py",
+         } )
             raise AssertionError(f"Unexpected prompt: {command}")
 
     session_mgr = RelativeScriptSessionManager()
@@ -1375,8 +1420,10 @@ def test_phase_35_custom_op_context_with_all_booleans_passes(tmp_path: Path) -> 
     assert outputs["phase_35_static_validate"]["script_records_native_operator_symbols"] is True
 
 
-def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(tmp_path: Path) -> None:
-    from core.paths import execution_root
+def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(
+    tmp_path: Path,
+) -> None:
+    from core.paths import execution_root  # pylint: disable=import-outside-toplevel; silent
 
     skill_root_name = "__relative_runtime_skills__"
     skill_repo_root = execution_root() / skill_root_name
@@ -1419,7 +1466,7 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
         assert "### agent-skill" in sent_prompt
         assert "Agent guidance" in sent_prompt
     finally:
-        import shutil
+        import shutil  # pylint: disable=import-outside-toplevel; silent
 
         shutil.rmtree(skill_repo_root, ignore_errors=True)
 
@@ -1437,8 +1484,9 @@ class TestPhaseRunnerContainerContext:
         )
         ctx = {"execution_backend_mode": "container", "container_name_or_id": "c1"}
         runner.set_container_context(ctx)
-        assert runner._container_context == ctx
+        assert runner._container_context == ctx  # pylint: disable=protected-access; silent
         ctx["mutated"] = "x"
+        # pylint: disable-next=protected-access; silent
         assert "mutated" not in runner._container_context
 
     def test_build_prompt_context_includes_container_keys(self):
@@ -1448,14 +1496,17 @@ class TestPhaseRunnerContainerContext:
             PromptLoader(str(PROJECT_ROOT / "prompts")),
             ValidatorEngine(),
         )
-        runner.set_container_context({
-            "execution_backend_mode": "container",
-            "container_name_or_id": "c1",
-            "container_env_facts": '{"status":"ok"}',
-            "container_python_version": "3.10.0",
-        })
+        runner.set_container_context(
+            {
+                "execution_backend_mode": "container",
+                "container_name_or_id": "c1",
+                "container_env_facts": '{"status":"ok"}',
+                "container_python_version": "3.10.0",
+            }
+        )
         phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
         context = {"project_dir": "/tmp/proj", "user_constraints": ""}
+        # pylint: disable-next=protected-access; silent
         result = runner._build_prompt_context(phase_spec, context)
         assert result["execution_backend_mode"] == "container"
         assert result["container_name_or_id"] == "c1"
@@ -1472,6 +1523,7 @@ class TestPhaseRunnerContainerContext:
         runner.set_container_context({"project_dir": "/container/dir"})
         phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
         context = {"project_dir": "/host/proj"}
+        # pylint: disable-next=protected-access; silent
         result = runner._build_prompt_context(phase_spec, context)
         assert result["project_dir"] == "/host/proj"
 
@@ -1482,8 +1534,10 @@ class TestPhaseRunnerContainerContext:
             PromptLoader(str(PROJECT_ROOT / "prompts")),
             ValidatorEngine(),
         )
+        # pylint: disable-next=protected-access,use-implicit-booleaness-not-comparison; silent
         assert runner._container_context == {}
         phase_spec = PhaseSpec("phase_0", "phase_0_env_detect", "env_detect")
+        # pylint: disable-next=protected-access; silent
         result = runner._build_prompt_context(phase_spec, {"project_dir": "/tmp"})
         assert result["execution_backend_mode"] == "local"
         assert "local" in result["execution_environment_context"]
@@ -1492,9 +1546,14 @@ class TestPhaseRunnerContainerContext:
 def _make_session_mgr() -> SessionManagerLike:
     def _noop():
         return "s1"
+
     class M:
-        def get_or_create(self, *a, **kw): return "s1"
-        def send_command(self, *a, **kw): return '{"ok": true}'
+        def get_or_create(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return "s1"
+
+        def send_command(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return '{"ok": true}'
+
     return M()
 
 
@@ -1503,10 +1562,19 @@ def _make_artifact_store():
         def __init__(self):
             self.artifact_dir = "/tmp/test-artifacts"
             self.saved = {}
-        def save_phase_output(self, *a, **kw): return "raw"
-        def mark_validated(self, *a, **kw): return "v"
-        def write_journal(self, *a, **kw): return "j"
-        def load_phase_output(self, *a, **kw): return None
+
+        def save_phase_output(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return "raw"
+
+        def mark_validated(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return "v"
+
+        def write_journal(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return "j"
+
+        def load_phase_output(self, *a, **kw):  # pylint: disable=unused-argument; silent
+            return None
+
     return S()
 
 
@@ -1515,7 +1583,9 @@ def _make_artifact_store():
 
 def test_phase_35_previous_outputs_excludes_early_phases() -> None:
     """Phase 3.5 should receive only phase_3_entry_script, not Phase 0/1/2."""
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     spec = PhaseSpec("phase_35", "phase_35_static_validate", "entry_static")
     ctx: dict[str, object] = {
         "project_dir": "/tmp/project",
@@ -1529,7 +1599,7 @@ def test_phase_35_previous_outputs_excludes_early_phases() -> None:
             },
         },
     }
-    result = runner._build_prompt_context(spec, ctx)
+    result = runner._build_prompt_context(spec, ctx)  # pylint: disable=protected-access; silent
     parsed_previous = json.loads(result["previous_outputs"])
     assert "phase_3_entry_script" in parsed_previous
     assert "phase_0_env_detect" not in parsed_previous
@@ -1540,7 +1610,9 @@ def test_phase_35_previous_outputs_excludes_early_phases() -> None:
 
 def test_phase_1_5_does_not_get_duplicated_previous_outputs() -> None:
     """Phase 1.5 context should receive empty previous_outputs (no duplication of Phase 0/1)."""
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     spec = PhaseSpec("phase_1_5", "phase_1_5_constraint_summary", "constraint_summary")
     ctx: dict[str, object] = {
         "project_dir": "/tmp/project",
@@ -1549,7 +1621,7 @@ def test_phase_1_5_does_not_get_duplicated_previous_outputs() -> None:
             "phase_1_project_analysis": {"entry_script": "train.py"},
         },
     }
-    result = runner._build_prompt_context(spec, ctx)
+    result = runner._build_prompt_context(spec, ctx)  # pylint: disable=protected-access; silent
     parsed = json.loads(result["previous_outputs"])
     assert parsed == {}
     assert "phase_0_env_detect" not in parsed
@@ -1558,7 +1630,9 @@ def test_phase_1_5_does_not_get_duplicated_previous_outputs() -> None:
 
 def test_early_phases_get_empty_previous_outputs() -> None:
     """Phase 0/1/2/3 receive empty previous_outputs; _SHARED_SESSION_PHASES omit the key."""
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     ctx_with_noise: dict[str, object] = {
         "project_dir": "/tmp/project",
         "previous_outputs": {
@@ -1566,18 +1640,31 @@ def test_early_phases_get_empty_previous_outputs() -> None:
             "phase_1_project_analysis": {"entry_script": "train.py"},
         },
     }
-    for prompt_id in ("phase_0_env_detect", "phase_1_project_analysis", "phase_2_venv_create", "phase_3_entry_script"):
+    for prompt_id in (
+        "phase_0_env_detect",
+        "phase_1_project_analysis",
+        "phase_2_venv_create",
+        "phase_3_entry_script",
+    ):
         spec = PhaseSpec(prompt_id.rsplit("_", 1)[0], prompt_id, prompt_id.split("_", 1)[-1])
+        # pylint: disable-next=protected-access; silent
         result = runner._build_prompt_context(spec, ctx_with_noise)
+        # pylint: disable-next=protected-access; silent
         if prompt_id in PhaseRunner._SHARED_SESSION_PHASES:
-            assert "previous_outputs" not in result, f"{prompt_id} is shared-session and should omit key"
+            assert "previous_outputs" not in result, (
+                f"{prompt_id} is shared-session and should omit key"
+            )
         else:
-            assert result.get("previous_outputs") == "{}", f"{prompt_id} should get empty previous_outputs"
+            assert result.get("previous_outputs") == "{}", (
+                f"{prompt_id} should get empty previous_outputs"
+            )
 
 
 def test_phase_6_still_receives_all_previous_outputs() -> None:
     """Phase 6/report should still receive the full previous_outputs (no whitelist entry)."""
-    runner = PhaseRunner(NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine())
+    runner = PhaseRunner(
+        NoopSessionManager(), ArtifactStore("/tmp", "t"), PromptLoader(), ValidatorEngine()
+    )
     spec = PhaseSpec("phase_6", "phase_6_report", "report")
     ctx: dict[str, object] = {
         "project_dir": "/tmp/project",
@@ -1588,7 +1675,7 @@ def test_phase_6_still_receives_all_previous_outputs() -> None:
             "phase_4_rule_migration": {"files_migrated": 10},
         },
     }
-    result = runner._build_prompt_context(spec, ctx)
+    result = runner._build_prompt_context(spec, ctx)  # pylint: disable=protected-access; silent
     parsed = json.loads(result["previous_outputs"])
     assert "phase_0_env_detect" in parsed
     assert "phase_1_project_analysis" in parsed
@@ -1618,7 +1705,7 @@ def test_phase_runner_disable_custom_op_injection_prevents_injection() -> None:
     )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -1653,7 +1740,7 @@ def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
     )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {
             "entry_script_path": "train.py",
@@ -1669,7 +1756,11 @@ def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
             "phase5_entry_script_revision_allowed": True,
         },
         {"project_dir": "/tmp/project"},
-        {"previous_outputs": {"phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}}},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}
+            }
+        },
     )
 
     for field in (
@@ -1696,11 +1787,13 @@ def test_phase_runner_without_flag_injects_as_before() -> None:
         ArtifactStore("/tmp", "t"),
         PromptLoader(),
         ValidatorEngine(),
-        workflow=WorkflowDefinition(name="legacy", version="1.0", phases=[], terminals=["complete"]),
+        workflow=WorkflowDefinition(
+            name="legacy", version="1.0", phases=[], terminals=["complete"]
+        ),
     )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -1731,7 +1824,7 @@ def test_phase_runner_no_workflow_still_injects() -> None:
     )
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "train.py", "run_command": "python train.py"},
         {"project_dir": "/tmp/project"},
@@ -1751,11 +1844,11 @@ def test_phase_runner_no_workflow_still_injects() -> None:
 
 # ── Phase boundary injection tests ─────────────────────────────────────
 
-from core.phase_boundary import inject_phase_boundary  # noqa: E402
 
 
 class BoundaryTestPromptLoader(PromptLoader):
     """Captures the prompt context for boundary presence checks."""
+
     def __init__(self):
         super().__init__()
         self.last_prompt_id = ""
@@ -1772,20 +1865,30 @@ def test_boundary_injected_in_run_single_phase(tmp_path: Path) -> None:
     artifact_store = ArtifactStore(str(tmp_path), "test-boundary")
     prompt_loader = BoundaryTestPromptLoader()
     runner = PhaseRunner(
-        RecordingSessionManager(
-            json.dumps({"ok": True, "result": "valid"})
-        ),
+        RecordingSessionManager(json.dumps({"ok": True, "result": "valid"})),
         artifact_store,
         prompt_loader,
         ValidatorEngine(),
     )
+    # pylint: disable-next=import-outside-toplevel; silent
     from validators.validate_env_detect import validate as v_env
+
     runner.validator.register_validator("env_detect", v_env)
 
-    session = MockSession([
-        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
-                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps(
+                {
+                    "platform": "npu",
+                    "npu_detected": True,
+                    "python_version": "3.10",
+                    "cann_version": "8.0",
+                    "ascendc_available": True,
+                    "driver_version": "24.1",
+                }
+            ),
+        ]
+    )
     result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
     assert result.get("platform") == "npu"
 
@@ -1800,21 +1903,31 @@ def test_boundary_not_injected_when_disabled(tmp_path: Path) -> None:
     artifact_store = ArtifactStore(str(tmp_path), "test-boundary-off")
     prompt_loader = BoundaryTestPromptLoader()
     runner = PhaseRunner(
-        RecordingSessionManager(
-            json.dumps({"ok": True, "result": "valid"})
-        ),
+        RecordingSessionManager(json.dumps({"ok": True, "result": "valid"})),
         artifact_store,
         prompt_loader,
         ValidatorEngine(),
         framework_config={"phase_boundary_guidance_enabled": False},
     )
+    # pylint: disable-next=import-outside-toplevel; silent
     from validators.validate_env_detect import validate as v_env
+
     runner.validator.register_validator("env_detect", v_env)
 
-    session = MockSession([
-        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
-                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps(
+                {
+                    "platform": "npu",
+                    "npu_detected": True,
+                    "python_version": "3.10",
+                    "cann_version": "8.0",
+                    "ascendc_available": True,
+                    "driver_version": "24.1",
+                }
+            ),
+        ]
+    )
     result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
     assert result.get("platform") == "npu"
 
@@ -1827,20 +1940,30 @@ def test_boundary_avoids_framework_name_in_phase_prompts(tmp_path: Path) -> None
     artifact_store = ArtifactStore(str(tmp_path), "test-nofw")
     prompt_loader = BoundaryTestPromptLoader()
     runner = PhaseRunner(
-        RecordingSessionManager(
-            json.dumps({"ok": True, "result": "valid"})
-        ),
+        RecordingSessionManager(json.dumps({"ok": True, "result": "valid"})),
         artifact_store,
         prompt_loader,
         ValidatorEngine(),
     )
+    # pylint: disable-next=import-outside-toplevel; silent
     from validators.validate_env_detect import validate as v_env
+
     runner.validator.register_validator("env_detect", v_env)
 
-    session = MockSession([
-        json.dumps({"platform": "npu", "npu_detected": True, "python_version": "3.10",
-                     "cann_version": "8.0", "ascendc_available": True, "driver_version": "24.1"}),
-    ])
+    session = MockSession(
+        [
+            json.dumps(
+                {
+                    "platform": "npu",
+                    "npu_detected": True,
+                    "python_version": "3.10",
+                    "cann_version": "8.0",
+                    "ascendc_available": True,
+                    "driver_version": "24.1",
+                }
+            ),
+        ]
+    )
     result = runner.run_single_phase(session, "phase_0", {"max_retry": 1})
     assert result.get("platform") == "npu"
 

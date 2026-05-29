@@ -1,11 +1,13 @@
 """Tests for v2 YAML config parsing."""
-import pytest
-import tempfile
+
 import os
+import tempfile
 from pathlib import Path
 
+import pytest
+
 from core.config import load_workflow
-from core.types import RuntimeSkillsConfig, ExperienceConfig
+from core.types import RuntimeSkillsConfig
 
 # Get the package root for path resolution
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -28,7 +30,7 @@ def test_load_v2_yaml():
 
 
 def test_agents_registry():
-    """"agents" section should be parsed."""
+    """ "agents" section should be parsed."""
     wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
     assert "main_engineer" in wf.agents
     assert "error_analyzer" in wf.agents
@@ -36,7 +38,7 @@ def test_agents_registry():
 
 
 def test_sub_workflows_parsed():
-    """"sub_workflows" section should be parsed."""
+    """ "sub_workflows" section should be parsed."""
     wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
     assert "repair_loop" in wf.sub_workflows
     swf = wf.sub_workflows["repair_loop"]
@@ -192,7 +194,7 @@ phases:
   - id: phase_a
     prompt_template: y
 """
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         f.write(yaml_content)
         f.flush()
         with pytest.raises(ValueError):

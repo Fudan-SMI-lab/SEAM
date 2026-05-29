@@ -4,7 +4,6 @@ from typing import Any
 
 
 class ArtifactStore:
-
     base_dir: str
     run_id: str
     artifact_dir: str

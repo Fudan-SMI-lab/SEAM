@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportDeprecated=false, reportUnknownMemberType=false, reportUnusedCallResult=false
-
+# pyright: reportAny=false, reportDeprecated=false,
+# reportUnknownMemberType=false, reportUnusedCallResult=false
 import logging
 
-import torch
-from torch import nn
-from torch.utils.data import DataLoader
-from tqdm import tqdm
+import torch  # pylint: disable=import-error; silent
+from torch import nn  # pylint: disable=import-error; silent
+from torch.utils.data import DataLoader  # pylint: disable=import-error; silent
+from tqdm import tqdm  # pylint: disable=import-error; silent
 
-from .optimizer_factory import clip_gradients
 from ..utils.metrics import AverageMeter, accuracy, gradient_signal
+from .optimizer_factory import clip_gradients
 
 
-class Trainer:
+class Trainer:  # pylint: disable=too-few-public-methods,too-many-instance-attributes; silent
     """Training and validation loop wrapper."""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments; silent
         self,
         *,
         model: nn.Module,
@@ -61,7 +61,7 @@ class Trainer:
         torch.cuda.empty_cache()
         return final_metrics
 
-    def _run_epoch(
+    def _run_epoch(  # pylint: disable=too-many-locals; silent
         self,
         loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
         *,

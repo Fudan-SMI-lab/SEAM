@@ -1,4 +1,10 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportPrivateUsage=false, reportAny=false, reportUnusedCallResult=false
+# pyright: reportMissingTypeArgument=false,
+# reportUnknownParameterType=false, reportUnknownVariableType=false,
+# reportUnknownMemberType=false, reportUnknownArgumentType=false,
+# reportUnannotatedClassAttribute=false,
+# reportUninitializedInstanceVariable=false, reportPrivateUsage=false,
+# reportAny=false, reportUnusedCallResult=false
+# pylint: disable-next=line-too-long; silent
 """Experience refiner — transforms candidate experiences into production-ready skills/documents/rules/prompts."""
 
 import json
@@ -14,7 +20,7 @@ from core.experience_store import ExperienceStore
 logger = logging.getLogger(__name__)
 
 
-class ExperienceRefiner:
+class ExperienceRefiner:  # pylint: disable=too-few-public-methods; silent
     """Refines a raw candidate experience via LLM into a production-ready asset."""
 
     def __init__(self, artifact_dir: str, store: ExperienceStore, session_mgr):
@@ -23,7 +29,7 @@ class ExperienceRefiner:
         self.session_mgr = session_mgr
         self.solidifier = ExperienceSolidifier()
 
-    def refine(
+    def refine(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         candidate: dict,
         run_id: str,
@@ -47,30 +53,39 @@ class ExperienceRefiner:
         prompt = self._build_refinement_prompt(candidate, artifact_ctx, classification)
 
         if self.session_mgr is None or not hasattr(self.session_mgr, "send_command"):
-            result = self._fallback_refine(candidate, run_id, "LLM session manager unavailable", classification)
+            result = self._fallback_refine(
+                candidate, run_id, "LLM session manager unavailable", classification
+            )
             self._write_refined_assets(result, artifact_ctx, run_id)
             return result
 
         session_role = self._solidifier_session_role(classification)
         session_id = self._ensure_refinement_session(session_role)
 
-        logger.info("Calling LLM refiner for candidate %s (timeout=%ds, session=%s)",
-                     candidate.get("candidate_id", "unknown"), timeout_sec, session_id)
+        logger.info(
+            "Calling LLM refiner for candidate %s (timeout=%ds, session=%s)",
+            candidate.get("candidate_id", "unknown"),
+            timeout_sec,
+            session_id,
+        )
         try:
-            raw_response = self.session_mgr.send_command(
-                session_id, prompt, timeout=timeout_sec
+            raw_response = self.session_mgr.send_command(session_id, prompt, timeout=timeout_sec)
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
+            logger.warning(
+                "LLM refiner call failed for candidate %s: %s",
+                candidate.get("candidate_id", "unknown"),
+                exc,
             )
-        except Exception as exc:
-            logger.warning("LLM refiner call failed for candidate %s: %s",
-                           candidate.get("candidate_id", "unknown"), exc)
             result = self._fallback_refine(candidate, run_id, str(exc), classification)
             self._write_refined_assets(result, artifact_ctx, run_id)
             return result
 
         result = self._parse_json_response(raw_response)
         if "_raw" in result and not result.get("type"):
-            logger.warning("Refiner returned non-JSON for candidate %s",
-                           candidate.get("candidate_id", "unknown"))
+            logger.warning(
+                "Refiner returned non-JSON for candidate %s",
+                candidate.get("candidate_id", "unknown"),
+            )
 
         # Set meta fields
         result.setdefault("meta", {})
@@ -79,9 +94,18 @@ class ExperienceRefiner:
         self._apply_classification(result, classification)
 
         # Merge candidate-level metadata into result
-        for key in ("candidate_id", "title", "problem_description",
-                     "rough_fix_approach", "recommended_type", "tags",
-                     "category", "subtype", "confidence", "project_source_root"):
+        for key in (
+            "candidate_id",
+            "title",
+            "problem_description",
+            "rough_fix_approach",
+            "recommended_type",
+            "tags",
+            "category",
+            "subtype",
+            "confidence",
+            "project_source_root",
+        ):
             if key in candidate and key not in result:
                 result[key] = candidate[key]
 
@@ -95,12 +119,16 @@ class ExperienceRefiner:
         result["asset_names"] = sorted(assets)
         try:
             self.store.write_refined_experience(run_id, result, assets)
-        except Exception as exc:
-            logger.warning("Failed to write refined experience for candidate %s: %s",
-                           result.get("candidate_id", "unknown"), exc)
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
+            logger.warning(
+                "Failed to write refined experience for candidate %s: %s",
+                result.get("candidate_id", "unknown"),
+                exc,
+            )
 
     def _ensure_refinement_session(self, role: str = "experience_refiner") -> str:
         if not hasattr(self, "_refinement_session_ids"):
+            # pylint: disable-next=attribute-defined-outside-init; silent
             self._refinement_session_ids = {}
         if role not in self._refinement_session_ids:
             mgr = self.session_mgr
@@ -109,6 +137,7 @@ class ExperienceRefiner:
                     role=role, lifecycle="persistent"
                 )
             elif hasattr(mgr, "_session_mgr"):
+                # pylint: disable-next=protected-access; silent
                 self._refinement_session_ids[role] = mgr._session_mgr.get_or_create(
                     role=role, lifecycle="persistent"
                 )
@@ -123,7 +152,12 @@ class ExperienceRefiner:
         if not solidifier:
             exp_type = str(classification.get("type", "")).strip()
             solidifier = f"{exp_type}_solidifier" if exp_type else ""
-        allowed = {"skill_solidifier", "document_solidifier", "rule_solidifier", "prompt_solidifier"}
+        allowed = {
+            "skill_solidifier",
+            "document_solidifier",
+            "rule_solidifier",
+            "prompt_solidifier",
+        }
         if solidifier not in allowed:
             return "experience_refiner"
         return f"experience_{solidifier}"
@@ -168,12 +202,18 @@ class ExperienceRefiner:
     def _apply_classification(self, result: dict, classification: dict) -> None:
         result["type"] = classification.get("type", result.get("type", "skill"))
         result["target_roles"] = classification.get("target_roles", result.get("target_roles", []))
-        result["target_phases"] = classification.get("target_phases", result.get("target_phases", []))
-        result["trigger_fingerprint"] = classification.get("trigger_fingerprint", result.get("trigger_fingerprint", ""))
+        result["target_phases"] = classification.get(
+            "target_phases", result.get("target_phases", [])
+        )
+        result["trigger_fingerprint"] = classification.get(
+            "trigger_fingerprint", result.get("trigger_fingerprint", "")
+        )
         result["solidifier"] = classification.get("solidifier", result.get("solidifier", ""))
         result["classifier"] = classification
 
-    def _build_refinement_prompt(self, candidate: dict, artifact_ctx: dict, classification: dict | None = None) -> str:
+    def _build_refinement_prompt(
+        self, candidate: dict, artifact_ctx: dict, classification: dict | None = None
+    ) -> str:
         """Load experience_refiner.md template and fill with candidate + context."""
         prompt_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -221,6 +261,7 @@ class ExperienceRefiner:
 
         return template + "\n\n---\n\n" + context
 
+    # pylint: disable-next=too-many-locals; silent
     def _generate_assets(self, exp: dict, artifact_ctx: dict, run_id: str) -> dict:
         """Generate asset files based on experience type.
 
@@ -256,6 +297,7 @@ class ExperienceRefiner:
             # Render SKILL.md using store's internal method
             tmp_path = os.path.join(tempfile.gettempdir(), f"_skill_render_{run_id}.md")
             try:
+                # pylint: disable-next=protected-access; silent
                 self.store._render_skill_md_with_data(skill_data, tmp_path)
                 with open(tmp_path, "r", encoding="utf-8") as f:
                     assets["SKILL.md"] = f.read()
@@ -312,7 +354,7 @@ class ExperienceRefiner:
             logger.warning("No JSON object found in refiner response")
             return {"_raw": raw}
 
-        json_str = text[first_brace: last_brace + 1]
+        json_str = text[first_brace : last_brace + 1]
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as exc:

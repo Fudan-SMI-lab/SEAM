@@ -1,4 +1,9 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportMissingParameterType=false, reportUnusedCallResult=false
+# pyright: reportMissingTypeArgument=false,
+# reportUnknownParameterType=false, reportUnknownVariableType=false,
+# reportUnknownMemberType=false, reportUnknownArgumentType=false,
+# reportUnannotatedClassAttribute=false,
+# reportUninitializedInstanceVariable=false,
+# reportMissingParameterType=false, reportUnusedCallResult=false
 """Experience evaluator — scans migration artifacts and produces candidate experiences."""
 
 import glob
@@ -25,7 +30,7 @@ _CANONICAL_PHASES = [
 ]
 
 
-class ExperienceEvaluator:
+class ExperienceEvaluator:  # pylint: disable=too-few-public-methods; silent
     """Assessment agent that scans migration artifacts and produces candidate experiences."""
 
     def __init__(self, artifact_dir: str, store: ExperienceStore, session_mgr):
@@ -37,14 +42,17 @@ class ExperienceEvaluator:
         if not hasattr(self, "_evaluator_session_id"):
             mgr = self.session_mgr
             if hasattr(mgr, "get_or_create"):
+                # pylint: disable-next=attribute-defined-outside-init; silent
                 self._evaluator_session_id = mgr.get_or_create(
                     role="experience_evaluator", lifecycle="persistent"
                 )
             elif hasattr(mgr, "_session_mgr"):
+                # pylint: disable-next=attribute-defined-outside-init,protected-access; silent
                 self._evaluator_session_id = mgr._session_mgr.get_or_create(
                     role="experience_evaluator", lifecycle="persistent"
                 )
             else:
+                # pylint: disable-next=attribute-defined-outside-init; silent
                 self._evaluator_session_id = "experience_evaluator"
         return self._evaluator_session_id
 
@@ -77,7 +85,9 @@ class ExperienceEvaluator:
         logger.info("Evaluation complete for run_id=%s: %d candidates", run_id, len(candidates))
         return candidates
 
-    def _normalize_candidates(self, raw_candidates: object, project_source_root: str, run_id: str) -> list[dict]:
+    def _normalize_candidates(
+        self, raw_candidates: object, project_source_root: str, run_id: str
+    ) -> list[dict]:
         if not isinstance(raw_candidates, list):
             return []
 
@@ -99,7 +109,9 @@ class ExperienceEvaluator:
     def _stable_candidate_id(candidate: dict, index: int, seen_ids: set[str]) -> str:
         raw_id = str(candidate.get("candidate_id") or "").strip()
         if raw_id:
-            candidate_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_id).strip("-") or f"candidate-{index:03d}"
+            candidate_id = (
+                re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_id).strip("-") or f"candidate-{index:03d}"
+            )
         else:
             candidate_id = f"candidate-{index:03d}"
         if candidate_id not in seen_ids:
@@ -126,7 +138,8 @@ class ExperienceEvaluator:
             else:
                 result[key] = {}
 
-        # V2 saves as phase_run_entry_script_attempt*.json; V1 saves as phase_5_validation_attempt*.json
+        # V2 saves as phase_run_entry_script_attempt*.json; V1 saves as
+        # phase_5_validation_attempt*.json
         attempts = []
         for attempt_pattern in [
             os.path.join(raw_dir, "phase_run_entry_script_attempt*.json"),
@@ -170,7 +183,9 @@ class ExperienceEvaluator:
                     return d
         return ""
 
-    def _build_evaluation_context(self, artifacts: dict, run_id: str, project_source_root: str) -> str:
+    def _build_evaluation_context(
+        self, artifacts: dict, run_id: str, project_source_root: str
+    ) -> str:
         lines: list[str] = [
             f"## Run ID: {run_id}",
             f"## Project Source Root: {project_source_root or '(unknown)'}",

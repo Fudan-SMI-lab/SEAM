@@ -11,18 +11,18 @@ class FakeSessionManager:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str, int, int]] = []
 
-    def get_or_create(
+    def get_or_create(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         role: str,
-        agent: str = "",
-        lifecycle: str = "persistent",
-        title: str = "",
-        working_dir: str = "",
-        initial_prompt: str = "",
+        agent: str = "",  # pylint: disable=unused-argument; silent
+        lifecycle: str = "persistent",  # pylint: disable=unused-argument; silent
+        title: str = "",  # pylint: disable=unused-argument; silent
+        working_dir: str = "",  # pylint: disable=unused-argument; silent
+        initial_prompt: str = "",  # pylint: disable=unused-argument; silent
     ) -> str:
         return f"{role}-session"
 
-    def send_command(
+    def send_command(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         session_id: str,
         command: str,
@@ -157,16 +157,22 @@ def test_telemetry_observer_records_full_agent_io(tmp_path: Path) -> None:
     session_id = observer.get_or_create(role="main_engineer", lifecycle="persistent")
 
     with observer.timing_phase("phase_0"):
-        response = observer.send_command(session_id, "complete prompt", agent="main", timeout=123, retries=4)
+        response = observer.send_command(
+            session_id, "complete prompt", agent="main", timeout=123, retries=4
+        )
 
     telemetry_paths = observer.save_metrics()
 
     assert response == "full response body"
     telemetry = json.loads(Path(telemetry_paths["telemetry_json"]).read_text(encoding="utf-8"))
-    assert telemetry["metadata"]["agent_io_paths"]["jsonl"] == str(tmp_path / "agent_io" / "agent_io.jsonl")
+    assert telemetry["metadata"]["agent_io_paths"]["jsonl"] == str(
+        tmp_path / "agent_io" / "agent_io.jsonl"
+    )
     records = _read_jsonl(tmp_path / "agent_io" / "agent_io.jsonl")
     assert records[0]["phase_id"] == "phase_0"
     assert records[0]["role"] == "main_engineer"
     assert records[0]["agent"] == "main"
     assert (tmp_path / records[0]["command_path"]).read_text(encoding="utf-8") == "complete prompt"
-    assert (tmp_path / records[0]["response_path"]).read_text(encoding="utf-8") == "full response body"
+    assert (tmp_path / records[0]["response_path"]).read_text(
+        encoding="utf-8"
+    ) == "full response body"

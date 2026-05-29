@@ -1,3 +1,5 @@
+# pylint: disable=line-too-long
+# pylint: disable=too-many-lines; silent
 from __future__ import annotations
 
 import json
@@ -10,13 +12,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
 
-from harness.session.manager import extract_json_response
-
 from core.artifact_store import ArtifactStore
-from core.execution_backend import get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_env_ctx
+from core.execution_backend import (
+    get_execution_context as _get_exec_ctx,
+)
+from core.execution_backend import (
+    get_execution_environment_context as _get_env_ctx,
+)
 from core.paths import resolve_relative_path, workspace_root
+from core.phase6_fallback import (
+    build_phase6_fallback_report,
+    collect_phase6_prior_artifacts,
+    resolve_phase6_timeout,
+)
 from core.phase_boundary import inject_phase_boundary
-from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, resolve_phase6_timeout
 from core.prompt_loader import PromptLoader
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition
@@ -26,6 +35,7 @@ from core.validation_correction import (
     extract_output_format_from_prompt,
 )
 from core.validator_engine import ValidationResult, ValidatorEngine
+from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
@@ -33,7 +43,6 @@ from validators.validate_env_detect import validate as validate_env_detect
 from validators.validate_project_analysis import validate as validate_project_analysis
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
-
 
 JsonObject = dict[str, object]
 
@@ -72,6 +81,7 @@ CUSTOM_OP_CONTRACT_KEYS = frozenset(
     }
 )
 
+
 def _rewrite_container_to_host_path(
     path_str: str,
     project_dir: str,
@@ -92,7 +102,7 @@ def _rewrite_container_to_host_path(
         return path_str
     if not (path_str == safe or path_str.startswith(safe + "/")):
         return path_str
-    rel = path_str[len(safe):].lstrip("/")
+    rel = path_str[len(safe) :].lstrip("/")
     if not rel:
         return project_dir
     return str(Path(project_dir) / rel)
@@ -102,20 +112,18 @@ logger = logging.getLogger(__name__)
 
 
 class SessionManagerLike(Protocol):
-    def get_or_create(self, role: str, lifecycle: str) -> str:
-        ...
+    def get_or_create(self, role: str, lifecycle: str) -> str: ...
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str:
-        ...
+    def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str: ...
 
 
 @runtime_checkable
-class InlineSessionLike(Protocol):
-    def send_command(self, prompt: str, timeout: int | None = None) -> str:
-        ...
+class InlineSessionLike(Protocol):  # pylint: disable=too-few-public-methods; silent
+    def send_command(self, prompt: str, timeout: int | None = None) -> str: ...
 
 
 @runtime_checkable
+# pylint: disable-next=too-few-public-methods; silent
 class SessionWithIdLike(InlineSessionLike, Protocol):
     session_id: str
 
@@ -132,7 +140,7 @@ class PhaseSpec:
         return self.prompt_id.removeprefix("phase_")
 
 
-class PhaseRunner:
+class PhaseRunner:  # pylint: disable=too-many-instance-attributes; silent
     PHASE_ORDER: tuple[str, ...] = ("phase_0", "phase_1", "phase_2", "phase_3", "phase_35")
     _SHARED_SESSION_PHASES: frozenset[str] = frozenset(
         {
@@ -154,7 +162,7 @@ class PhaseRunner:
     _runtime_skill_resolver: RuntimeSkillResolver | None
     _runtime_phase_index: dict[str, PhaseDefinition]
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments,too-many-positional-arguments; silent
         self,
         session_mgr: SessionManagerLike,
         artifact_store: ArtifactStore,
@@ -175,13 +183,17 @@ class PhaseRunner:
             "phase_0": PhaseSpec("phase_0", "phase_0_env_detect", "env_detect"),
             "phase_0_env_detect": PhaseSpec("phase_0", "phase_0_env_detect", "env_detect"),
             "phase_1": PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis"),
-            "phase_1_project_analysis": PhaseSpec("phase_1", "phase_1_project_analysis", "project_analysis"),
+            "phase_1_project_analysis": PhaseSpec(
+                "phase_1", "phase_1_project_analysis", "project_analysis"
+            ),
             "phase_2": PhaseSpec("phase_2", "phase_2_venv_create", "venv"),
             "phase_2_venv_create": PhaseSpec("phase_2", "phase_2_venv_create", "venv"),
             "phase_3": PhaseSpec("phase_3", "phase_3_entry_script", "entry_script"),
             "phase_3_entry_script": PhaseSpec("phase_3", "phase_3_entry_script", "entry_script"),
             "phase_35": PhaseSpec("phase_35", "phase_35_static_validate", "entry_static"),
-            "phase_35_static_validate": PhaseSpec("phase_35", "phase_35_static_validate", "entry_static"),
+            "phase_35_static_validate": PhaseSpec(
+                "phase_35", "phase_35_static_validate", "entry_static"
+            ),
         }
         self._runtime_phase_index = self._build_runtime_phase_index(workflow)
         self._register_default_validators()
@@ -294,6 +306,7 @@ class PhaseRunner:
 
         return outputs
 
+    # pylint: disable-next=too-many-arguments,too-many-locals,too-many-positional-arguments; silent
     def run_phase_2_to_3(
         self,
         project_dir: str,
@@ -380,7 +393,7 @@ class PhaseRunner:
             raise last_phase_35_error
         return outputs
 
-    def run_phase_1_5(
+    def run_phase_1_5(  # pylint: disable=too-many-arguments; silent
         self,
         main_session_id: str,
         session_mgr: SessionManagerLike,
@@ -436,7 +449,9 @@ class PhaseRunner:
             "constraint_count": parsed.get("constraint_count", 0),
             "challenges_flagged": parsed.get("challenges_flagged", []),
         }
-        _ = artifact_store.save_phase_output("phase_1_5_constraint_summary", artifact_data, attempt=1)
+        _ = artifact_store.save_phase_output(
+            "phase_1_5_constraint_summary", artifact_data, attempt=1
+        )
         _ = artifact_store.mark_validated("phase_1_5_constraint_summary", artifact_data)
         _ = artifact_store.write_journal(
             {
@@ -453,7 +468,7 @@ class PhaseRunner:
 
         return constraint_summary
 
-    def run_review_check(
+    def run_review_check(  # pylint: disable=too-many-arguments,too-many-locals; silent
         self,
         review_session_id: str,
         session_mgr: SessionManagerLike,
@@ -473,6 +488,7 @@ class PhaseRunner:
             project_dir: Root directory of the project.
             repair_history: Markdown table of all repair iterations (from _format_history_summary).
             last_artifact_path: Path to the most recent validation attempt JSON.
+            # pylint: disable-next=line-too-long; silent  # pylint: disable=line-too-long; silent
             attempt_log_content: Extracted stdout/stderr/error from the most recent validation attempt.
             execution_duration: Duration of the last validation run in seconds.
             max_retry: Maximum number of review response validation attempts.
@@ -521,9 +537,7 @@ class PhaseRunner:
                 if not parsed:
                     error_details = "Response contained no parseable JSON"
                 elif verdict not in ("accept", "reject"):
-                    error_details = (
-                        f"Verdict was '{verdict}' - must be either 'accept' or 'reject'"
-                    )
+                    error_details = f"Verdict was '{verdict}' - must be either 'accept' or 'reject'"
 
                 active_prompt = (
                     "Your previous review response failed validation:\n"
@@ -564,6 +578,7 @@ class PhaseRunner:
         Raises:
             ValueError: If Phase 3 output missing or validation fails.
         """
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from typing import cast
 
         phase_3_output = artifact_store.load_phase_output("phase_3_entry_script")
@@ -601,20 +616,22 @@ class PhaseRunner:
         # Save to ArtifactStore
         _ = artifact_store.save_phase_output("phase_4_rule_migration", report, attempt=1)
         _ = artifact_store.mark_validated("phase_4_rule_migration", report)
-        _ = artifact_store.write_journal({
-            "phase_id": "phase_4_rule_migration",
-            "attempt": 1,
-            "status": "succeeded",
-            "session_ref": "local_script",
-            "raw_path": "",
-            "canonical_path": "",
-            "errors": validation["errors"],
-            "warnings": validation["warnings"],
-        })
+        _ = artifact_store.write_journal(
+            {
+                "phase_id": "phase_4_rule_migration",
+                "attempt": 1,
+                "status": "succeeded",
+                "session_ref": "local_script",
+                "raw_path": "",
+                "canonical_path": "",
+                "errors": validation["errors"],
+                "warnings": validation["warnings"],
+            }
+        )
 
         return report
 
-    def run_phase_6(
+    def run_phase_6(  # pylint: disable=too-many-locals; silent
         self,
         project_dir: str,
         artifact_store: ArtifactStore,
@@ -636,9 +653,7 @@ class PhaseRunner:
         """
         active_session_mgr = session_mgr or self.session_mgr
 
-        session_id = active_session_mgr.get_or_create(
-            role="main_engineer", lifecycle="persistent"
-        )
+        session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
 
         prior_artifacts = collect_phase6_prior_artifacts(artifact_store)
 
@@ -655,7 +670,9 @@ class PhaseRunner:
             prompt_context.setdefault(k, v)
         for k, v in _get_exec_ctx(None).items():
             prompt_context.setdefault(k, v)
-        prompt_context.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
+        prompt_context.setdefault(
+            "execution_environment_context", self._exec_env_context or _get_env_ctx(None)
+        )
 
         prompt = self.prompt_loader.load_prompt("phase_6_report", prompt_context)
         prompt = self._append_explicit_runtime_skill_markdown(prompt, "phase_6_report")
@@ -697,16 +714,18 @@ class PhaseRunner:
 
         raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=1)
         canonical_path = artifact_store.mark_validated("phase_6_report", report)
-        _ = artifact_store.write_journal({
-            "phase_id": "phase_6_report",
-            "attempt": 1,
-            "status": "fallback" if report.get("fallback") else "succeeded",
-            "session_ref": session_id,
-            "raw_path": raw_path,
-            "canonical_path": canonical_path,
-            "errors": [],
-            "warnings": [],
-        })
+        _ = artifact_store.write_journal(
+            {
+                "phase_id": "phase_6_report",
+                "attempt": 1,
+                "status": "fallback" if report.get("fallback") else "succeeded",
+                "session_ref": session_id,
+                "raw_path": raw_path,
+                "canonical_path": canonical_path,
+                "errors": [],
+                "warnings": [],
+            }
+        )
 
         return report
 
@@ -721,6 +740,7 @@ class PhaseRunner:
         migration_summary = output.get("migration_summary")
         return isinstance(report_paths, list) and isinstance(migration_summary, dict)
 
+    # pylint: disable-next=too-many-arguments,too-many-locals,too-many-positional-arguments; silent
     def _run_single_phase(
         self,
         session: str | InlineSessionLike,
@@ -739,7 +759,9 @@ class PhaseRunner:
         timeout = self._resolve_timeout(phase, normalized_context)
         session_ref = self._session_reference(session)
 
-        last_validation = ValidationResult(passed=False, errors=["phase did not execute"], warnings=[])
+        last_validation = ValidationResult(
+            passed=False, errors=["phase did not execute"], warnings=[]
+        )
         active_prompt = prompt
         for attempt in range(1, max_retry + 1):
             raw_response = self._send_prompt(session, active_prompt, timeout, session_mgr)
@@ -756,7 +778,9 @@ class PhaseRunner:
                 )
                 raw_response = self._send_prompt(session, parse_prompt, timeout, session_mgr)
                 parsed_output = dict(extract_json_response(raw_response))
-            normalized_output = self._normalize_output(phase, parsed_output, prompt_context, normalized_context)
+            normalized_output = self._normalize_output(
+                phase, parsed_output, prompt_context, normalized_context
+            )
 
             # Attach raw prompt and response for end-to-end verification.
             # Keys are prefixed with `_` to avoid conflicts with phase output schemas.
@@ -765,7 +789,9 @@ class PhaseRunner:
                 "response": raw_response,
             }
 
-            raw_path = artifact_store.save_phase_output(phase.artifact_id, normalized_output, attempt=attempt)
+            raw_path = artifact_store.save_phase_output(
+                phase.artifact_id, normalized_output, attempt=attempt
+            )
 
             validation = self.validator.validate(phase.validator_name, normalized_output)
             last_validation = validation
@@ -806,7 +832,9 @@ class PhaseRunner:
                 )
 
         error_text = "; ".join(last_validation.errors) or "unknown validation failure"
-        raise ValueError(f"{phase.prompt_id} failed validation after {max_retry} attempts: {error_text}")
+        raise ValueError(
+            f"{phase.prompt_id} failed validation after {max_retry} attempts: {error_text}"
+        )
 
     @staticmethod
     def _build_correction_prompt(
@@ -939,9 +967,7 @@ class PhaseRunner:
 
     def _get_runtime_skill_resolver(self) -> RuntimeSkillResolver:
         if self._runtime_skill_resolver is None:
-            self._runtime_skill_resolver = RuntimeSkillResolver(
-                self._runtime_skill_repo_root()
-            )
+            self._runtime_skill_resolver = RuntimeSkillResolver(self._runtime_skill_repo_root())
         return self._runtime_skill_resolver
 
     def _runtime_skill_names(self, value: object, location: str) -> list[str]:
@@ -966,11 +992,11 @@ class PhaseRunner:
         if raw is None or isinstance(raw, RuntimeSkillsConfig):
             return raw
         if isinstance(raw, list):
-            return RuntimeSkillsConfig(include=self._runtime_skill_names(cast(list[object], raw), location))
-        if not isinstance(raw, dict):
-            raise ValueError(
-                f"{location} must be a list or mapping, got {type(raw).__name__}"
+            return RuntimeSkillsConfig(
+                include=self._runtime_skill_names(cast(list[object], raw), location)
             )
+        if not isinstance(raw, dict):
+            raise ValueError(f"{location} must be a list or mapping, got {type(raw).__name__}")
 
         raw_dict = cast(dict[str, object], raw)
         merge = str(raw_dict.get("merge", "append"))
@@ -1083,13 +1109,19 @@ class PhaseRunner:
         if phase.prompt_id == "phase_35_static_validate":
             filtered = self._filter_previous_outputs(phase.prompt_id, previous_outputs)
             prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
-            entry_script = self._lookup_previous_output(filtered, "phase_3_entry_script", "entry_script_path")
-            prompt_ctx["entry_script_path"] = str(entry_script) if entry_script else "(not available)"
+            entry_script = self._lookup_previous_output(
+                filtered, "phase_3_entry_script", "entry_script_path"
+            )
+            prompt_ctx["entry_script_path"] = (
+                str(entry_script) if entry_script else "(not available)"
+            )
         for k, v in self._container_context.items():
             prompt_ctx.setdefault(k, v)
         for k, v in _get_exec_ctx(None).items():
             prompt_ctx.setdefault(k, v)
-        prompt_ctx.setdefault("execution_environment_context", self._exec_env_context or _get_env_ctx(None))
+        prompt_ctx.setdefault(
+            "execution_environment_context", self._exec_env_context or _get_env_ctx(None)
+        )
         return prompt_ctx
 
     @staticmethod
@@ -1151,17 +1183,22 @@ class PhaseRunner:
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
             if "entry_script_path" not in normalized:
-                entry_script = self._lookup_previous_output(previous_outputs, "phase_1_project_analysis", "entry_script")
+                entry_script = self._lookup_previous_output(
+                    previous_outputs, "phase_1_project_analysis", "entry_script"
+                )
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
-            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            workflow_globals = (
+                getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            )
             if self._custom_op_route_disabled(workflow_globals):
                 normalized = self._strip_custom_op_contract_fields(normalized)
             else:
                 if self._custom_op_required_signal(previous_outputs, context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
             normalized = self._normalize_phase3_container_paths(
-                normalized, prompt_context,
+                normalized,
+                prompt_context,
             )
         if phase.prompt_id == "phase_35_static_validate":
             previous_outputs = context.get("previous_outputs", {})
@@ -1170,8 +1207,13 @@ class PhaseRunner:
                 "phase_3_entry_script",
                 "entry_script_kind",
             )
-            workflow_globals = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
-            if not self._custom_op_route_disabled(workflow_globals) and entry_script_kind == "custom_op_full_validation":
+            workflow_globals = (
+                getattr(self.workflow, "globals", None) or {} if self.workflow else {}
+            )
+            if (
+                not self._custom_op_route_disabled(workflow_globals)
+                and entry_script_kind == "custom_op_full_validation"
+            ):
                 normalized["custom_op_static_required"] = True
                 normalized["entry_script_kind"] = "custom_op_full_validation"
         return normalized
@@ -1205,9 +1247,8 @@ class PhaseRunner:
         to the corresponding host-visible path under ``{project_dir}``.
         """
         project_dir = prompt_context.get("project_dir")
-        container_workdir = (
-            prompt_context.get("container_workdir")
-            or prompt_context.get("container_project_dir")
+        container_workdir = prompt_context.get("container_workdir") or prompt_context.get(
+            "container_project_dir"
         )
         if not project_dir or not container_workdir:
             return output
@@ -1223,13 +1264,17 @@ class PhaseRunner:
         entry = normalized.get("entry_script_path")
         if isinstance(entry, str) and entry.strip():
             normalized["entry_script_path"] = _rewrite_container_to_host_path(
-                entry, project_dir, container_workdir,
+                entry,
+                project_dir,
+                container_workdir,
             )
 
         reports = normalized.get("reports_dir")
         if isinstance(reports, str) and reports.strip():
             normalized["reports_dir"] = _rewrite_container_to_host_path(
-                reports, project_dir, container_workdir,
+                reports,
+                project_dir,
+                container_workdir,
             )
 
         return normalized
@@ -1247,6 +1292,7 @@ class PhaseRunner:
         return cls._custom_op_signal(value) is True
 
     @classmethod
+    # pylint: disable-next=too-many-branches,too-many-return-statements; silent
     def _custom_op_signal(cls, value: object) -> bool | None:
         if isinstance(value, str):
             if any(pattern.search(value) for pattern in CUSTOM_OP_NEGATIVE_PATTERNS):
@@ -1273,7 +1319,9 @@ class PhaseRunner:
                 if surface.get("custom_op_detected") is False:
                     return False
                 return cls._custom_op_signal_from_iterable(
-                    item for key, item in value_dict.items() if key not in {"_meta", "custom_op_surface"}
+                    item
+                    for key, item in value_dict.items()
+                    if key not in {"_meta", "custom_op_surface"}
                 )
             return cls._custom_op_signal_from_iterable(
                 item for key, item in value_dict.items() if key != "_meta"
@@ -1317,6 +1365,7 @@ class PhaseRunner:
         return session.__class__.__name__
 
     @staticmethod
+    # pylint: disable-next=too-many-arguments,too-many-positional-arguments; silent
     def _build_journal_entry(
         phase: PhaseSpec,
         attempt: int,

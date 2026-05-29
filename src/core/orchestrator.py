@@ -2,32 +2,39 @@
 
 from __future__ import annotations
 
-import json
 import inspect
+import json
 from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid4
-
-from harness.session.manager import SessionManager
 
 from core.accelerator_context import extract_accelerator_context
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
 from core.execution_backend import get_container_prompt_context, get_execution_environment_context
-from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
+from core.phase_runner import PhaseRunner
+from core.phase_runner import SessionManagerLike as RunnerSessionManagerLike
 from core.platform_policy import PlatformPolicy, resolve_policy
 from core.prompt_loader import PromptLoader
-from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
-from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
+from core.repair_loop import (
+    RepairLoopEngine,
+    get_timeout,
+)
+from core.repair_loop import (
+    SessionManagerLike as RepairSessionManagerLike,
+)
 from core.state_machine import StateMachine
 from core.validator_engine import ValidatorEngine
-from rule_strategies import create_migrator_resolved
+from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
+from harness.session.manager import SessionManager
 
 # Kept as module-level references for test monkeypatch compatibility.
 # The resolver uses importlib to instantiate migrators by strategy config.
 from migrator.rule_based import RuleBasedMigrator  # noqa: F401
+# pylint: disable-next=unused-import; silent
 from migrator.rule_based_ppu import PPURuleBasedMigrator  # noqa: F401
+from rule_strategies import create_migrator_resolved
 
 JsonDict = dict[str, object]
 
@@ -44,38 +51,33 @@ _PHASE_GROUPS: tuple[frozenset[str], ...] = (
 _ERROR_RECOVERY_PHASES = frozenset({"error_recovery", "phase_error_recovery"})
 
 
-class _Phase4RunnerWithProjectDir(Protocol):
+class _Phase4RunnerWithProjectDir(Protocol):  # pylint: disable=too-few-public-methods; silent
     def __call__(
         self,
         project_dir: str,
         artifact_store: ArtifactStore,
         migrator: RuleBasedMigrator,
-    ) -> dict[str, object]:
-        ...
+    ) -> dict[str, object]: ...
 
 
-class _Phase4RunnerWithoutProjectDir(Protocol):
+class _Phase4RunnerWithoutProjectDir(Protocol):  # pylint: disable=too-few-public-methods; silent
     def __call__(
         self,
         artifact_store: ArtifactStore,
         migrator: RuleBasedMigrator,
-    ) -> dict[str, object]:
-        ...
+    ) -> dict[str, object]: ...
 
 
-class _GetOrCreateCall(Protocol):
-    def __call__(self, *, role: str, lifecycle: str) -> str:
-        ...
+class _GetOrCreateCall(Protocol):  # pylint: disable=too-few-public-methods; silent
+    def __call__(self, *, role: str, lifecycle: str) -> str: ...
 
 
-class _SendCommandCall(Protocol):
-    def __call__(self, session_id: str, command: str, timeout: int | None = None) -> str:
-        ...
+class _SendCommandCall(Protocol):  # pylint: disable=too-few-public-methods; silent
+    def __call__(self, session_id: str, command: str, timeout: int | None = None) -> str: ...
 
 
-class _CleanupAllCall(Protocol):
-    def __call__(self) -> int:
-        ...
+class _CleanupAllCall(Protocol):  # pylint: disable=too-few-public-methods; silent
+    def __call__(self) -> int: ...
 
 
 class _SessionManagerAdapter:
@@ -97,7 +99,7 @@ class _SessionManagerAdapter:
         return cleanup_all()
 
 
-class Orchestrator:
+class Orchestrator:  # pylint: disable=too-few-public-methods; silent
     """Wire the workflow loader, state machine, and phase engines together."""
 
     session_mgr: _SessionManagerAdapter
@@ -105,13 +107,15 @@ class Orchestrator:
     workflow_path: str
     _fw_config: dict[str, object] | None
 
-    def __init__(self, session_mgr: SessionManager | object, project_dir: str, workflow_path: str) -> None:
+    def __init__(
+        self, session_mgr: SessionManager | object, project_dir: str, workflow_path: str
+    ) -> None:
         self.session_mgr = _SessionManagerAdapter(session_mgr)
         self.project_dir = project_dir
         self.workflow_path = workflow_path
         self._fw_config = None
 
-    def run_workflow(
+    def run_workflow(  # pylint: disable=too-many-locals,too-many-statements; silent
         self,
         project_dir: str,
         user_command: str | None = None,
@@ -178,8 +182,12 @@ class Orchestrator:
             workflow.name,
         )
         repair_engine = RepairLoopEngine(
-            repair_session_mgr, artifact_store, prompt_loader, validator,
-            config=fw_config, exec_backend=exec_backend,
+            repair_session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            config=fw_config,
+            exec_backend=exec_backend,
             platform_policy=platform_policy,
         )
         migrator = Orchestrator._select_rule_based_migrator(platform_policy, workflow)
@@ -221,8 +229,12 @@ class Orchestrator:
                 session_mgr=runner_session_mgr,
                 project_dir=active_project_dir,
                 repair_history=repair_history,
-                last_artifact_path=str(repair_ctx.get("last_artifact_path", "(no artifact available)")),
-                attempt_log_content=str(repair_ctx.get("attempt_log_content", "(attempt log unavailable)")),
+                last_artifact_path=str(
+                    repair_ctx.get("last_artifact_path", "(no artifact available)")
+                ),
+                attempt_log_content=str(
+                    repair_ctx.get("attempt_log_content", "(attempt log unavailable)")
+                ),
                 execution_duration=str(repair_ctx.get("execution_duration", "(not available)")),
             )
 
@@ -320,7 +332,9 @@ class Orchestrator:
             self._journal(artifact_store, phase_id="phase_5_validation", status="succeeded")
 
             self._journal(artifact_store, phase_id="phase_6_report", status="started")
-            phase_6_output = runner.run_phase_6(active_project_dir, artifact_store, runner_session_mgr)
+            phase_6_output = runner.run_phase_6(
+                active_project_dir, artifact_store, runner_session_mgr
+            )
             phase_results["phase_6_report"] = phase_6_output
             self._advance_success_chain(state_machine, (_PHASE_GROUPS[7],))
             self._journal(artifact_store, phase_id="phase_6_report", status="succeeded")
@@ -328,7 +342,7 @@ class Orchestrator:
             result["terminal_state"] = state_machine.current_terminal()
             result["success"] = True
             return result
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
             failed_phase = self._handle_phase_failure(
                 artifact_store=artifact_store,
                 prompt_loader=prompt_loader,
@@ -362,11 +376,15 @@ class Orchestrator:
         phase_4_runner = runner.run_phase_4
         phase_4_signature = inspect.signature(phase_4_runner)
         if len(phase_4_signature.parameters) == 3:
-            return cast(_Phase4RunnerWithProjectDir, phase_4_runner)(project_dir, artifact_store, migrator)
+            return cast(_Phase4RunnerWithProjectDir, phase_4_runner)(
+                project_dir, artifact_store, migrator
+            )
         return cast(_Phase4RunnerWithoutProjectDir, phase_4_runner)(artifact_store, migrator)
 
     @staticmethod
-    def _select_rule_based_migrator(platform_policy: PlatformPolicy, workflow: object | None = None) -> object:
+    def _select_rule_based_migrator(
+        platform_policy: PlatformPolicy, workflow: object | None = None
+    ) -> object:
         """Select the appropriate rule-based migrator using configuration-driven resolution.
 
         Uses the strategy resolver with precedence:
@@ -378,10 +396,14 @@ class Orchestrator:
         This keeps the legacy Orchestrator path aligned with WorkflowExecutor.
         """
         backend = Orchestrator._phase_4_backend_from_workflow(workflow)
-        workflow_rule_migration = getattr(workflow, "rule_migration", None) if workflow is not None else None
+        workflow_rule_migration = (
+            getattr(workflow, "rule_migration", None) if workflow is not None else None
+        )
         return create_migrator_resolved(
             workflow_params_backend=backend,
-            workflow_rule_migration=workflow_rule_migration if isinstance(workflow_rule_migration, dict) else None,
+            workflow_rule_migration=workflow_rule_migration
+            if isinstance(workflow_rule_migration, dict)
+            else None,
             platform_policy_strategy=platform_policy.default_rule_migration_strategy,
         )
 
@@ -391,9 +413,16 @@ class Orchestrator:
         if not isinstance(phases, list):
             return None
         for phase in phases:
-            operation = getattr(phase, "params", {}).get("operation") if isinstance(getattr(phase, "params", None), dict) else None
+            operation = (
+                getattr(phase, "params", {}).get("operation")
+                if isinstance(getattr(phase, "params", None), dict)
+                else None
+            )
             phase_operation = getattr(phase, "operation", None) or operation
-            is_rule_phase = getattr(phase, "id", "") == "phase_4_rule_migration" or phase_operation == "rule_based_migration"
+            is_rule_phase = (
+                getattr(phase, "id", "") == "phase_4_rule_migration"
+                or phase_operation == "rule_based_migration"
+            )
             params = getattr(phase, "params", None)
             if is_rule_phase and isinstance(params, dict):
                 backend = params.get("backend")
@@ -408,7 +437,7 @@ class Orchestrator:
         status = str(phase_5_output.get("status", "")).strip().lower()
         return status in {"success", "succeeded", "pass", "passed"}
 
-    def _handle_phase_failure(
+    def _handle_phase_failure(  # pylint: disable=too-many-arguments; silent
         self,
         *,
         artifact_store: ArtifactStore,
@@ -447,7 +476,7 @@ class Orchestrator:
                 _ = state_machine.record_success(state_machine.current_phase)
         return failed_phase
 
-    def _run_error_recovery(
+    def _run_error_recovery(  # pylint: disable=too-many-arguments,too-many-locals; silent
         self,
         *,
         artifact_store: ArtifactStore,
@@ -491,13 +520,19 @@ class Orchestrator:
                 "env_context": self._serialize(env_context_val),
             },
         )
-        memo = self.session_mgr.send_command(session_id, prompt, timeout=get_timeout(getattr(self, '_fw_config', None), "session_timeout_repair"))
+        memo = self.session_mgr.send_command(
+            session_id,
+            prompt,
+            timeout=get_timeout(getattr(self, "_fw_config", None), "session_timeout_repair"),
+        )
         recovery_output: JsonDict = {
             "failed_phase": failed_phase,
             "failure_log": failure_log,
             "recovery_memo": memo,
         }
-        raw_path = artifact_store.save_phase_output("phase_error_recovery", recovery_output, attempt=1)
+        raw_path = artifact_store.save_phase_output(
+            "phase_error_recovery", recovery_output, attempt=1
+        )
         canonical_path = artifact_store.mark_validated("phase_error_recovery", recovery_output)
         self._journal(
             artifact_store,
@@ -556,7 +591,10 @@ class Orchestrator:
             _ = state_machine.record_success(current_phase)
 
     def _advance_to_group(self, state_machine: StateMachine, target_group: frozenset[str]) -> None:
-        while state_machine.current_phase is not None and state_machine.current_phase not in target_group:
+        while (
+            state_machine.current_phase is not None
+            and state_machine.current_phase not in target_group
+        ):
             current_phase = state_machine.current_phase
             if current_phase in _ERROR_RECOVERY_PHASES:
                 break
@@ -602,7 +640,11 @@ class Orchestrator:
 
     @staticmethod
     def _serialize(value: object) -> str:
-        return value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False, default=str)
+        return (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, indent=2, ensure_ascii=False, default=str)
+        )
 
     def _resolve_execution_backend(
         self,
@@ -614,6 +656,7 @@ class Orchestrator:
         if eb_cfg is None or eb_cfg.mode == "local":
             return None
 
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.execution_backend import ContainerBackend, auto_select_backend
 
         if eb_cfg.mode == "auto":
@@ -629,7 +672,9 @@ class Orchestrator:
 
     def _auto_select_image(self, config: object) -> object:
         """Run agent image-selection for ``mode=auto`` before container creation."""
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.execution_backend import ContainerBackend
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.types import ExecutionBackendConfig as _EBC
 
         if getattr(config, "mode", None) != "container":
@@ -648,9 +693,11 @@ class Orchestrator:
         if not candidates:
             try:
                 probe = ContainerBackend(config)
+                # pylint: disable-next=protected-access; silent
                 discovered = probe._discover_local_images()
-            except Exception as exc:
-                import logging
+            except Exception as exc:  # pylint: disable=broad-exception-caught; silent
+                import logging  # pylint: disable=import-outside-toplevel; silent
+
                 logging.getLogger(__name__).warning("Auto image discovery failed: %s", exc)
                 discovered = []
 
@@ -658,8 +705,11 @@ class Orchestrator:
                 candidates = discovered
                 is_discovered = True
             else:
-                import logging
-                logging.getLogger(__name__).info("Auto mode: no images and no local images discovered; falling back to local")
+                import logging  # pylint: disable=import-outside-toplevel; silent
+
+                logging.getLogger(__name__).info(
+                    "Auto mode: no images and no local images discovered; falling back to local"
+                )
                 return _EBC(mode="local")
 
         selected = self._send_image_selection_prompt(candidates, is_discovered)
@@ -683,10 +733,12 @@ class Orchestrator:
                 timeout=config.timeout,
                 cleanup=config.cleanup,
             )
-            import logging
+            import logging  # pylint: disable=import-outside-toplevel; silent
+
             logging.getLogger(__name__).info("Auto image selection chosen: %s", selected)
         else:
-            import logging
+            import logging  # pylint: disable=import-outside-toplevel; silent
+
             logging.getLogger(__name__).warning(
                 "Auto image selection returned invalid value %r; falling back to local",
                 selected,
@@ -695,31 +747,28 @@ class Orchestrator:
 
         return config
 
-    def _send_image_selection_prompt(
+    def _send_image_selection_prompt(  # pylint: disable=too-many-locals; silent
         self,
         candidates: list[str],
         is_discovered: bool = False,
     ) -> str | None:
         """Ask the main engineer session to select an image from the list."""
+        # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
         from core.prompt_loader import PromptLoader
+        # pylint: disable-next=import-outside-toplevel; silent
         from harness.session.manager import extract_json_response as _extract
 
-        prompts_dir = (
-            Path(__file__).resolve().parent.parent / "prompts"
-        )
+        prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
         prompt_loader = PromptLoader(prompts_dir)
 
-        candidates_text = "\n".join(f"  {i+1}. {img}" for i, img in enumerate(candidates))
+        candidates_text = "\n".join(f"  {i + 1}. {img}" for i, img in enumerate(candidates))
 
         guidance = (
             "Select the most appropriate image for running the migration workflow. "
             "Consider image suitability for Python, PyTorch, and target hardware."
         )
         if is_discovered:
-            guidance = (
-                "These are the images already available on the host. "
-                + guidance
-            )
+            guidance = "These are the images already available on the host. " + guidance
 
         prompt_text = prompt_loader.load_prompt(
             "container_image_select",
@@ -742,8 +791,9 @@ class Orchestrator:
             if isinstance(parsed, dict):
                 selected = parsed.get("selected_image")
                 return str(selected) if selected else None
-        except Exception as exc:
-            import logging
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
+            import logging  # pylint: disable=import-outside-toplevel; silent
+
             logging.getLogger(__name__).warning("Image selection prompt failed: %s", exc)
 
         return None
@@ -762,11 +812,17 @@ class Orchestrator:
         return get_container_prompt_context(backend, probe_facts)
 
     @staticmethod
-    def _build_execution_environment_context(backend: object, container_ctx: dict[str, str] | None = None) -> str:
+    def _build_execution_environment_context(
+        backend: object, container_ctx: dict[str, str] | None = None
+    ) -> str:
+        # pylint: disable-next=import-outside-toplevel; silent
         from core.execution_backend import LocalBackend as _LocalBackend
+
         probe_facts: dict[str, object] | None = None
         if container_ctx and "container_env_facts" in container_ctx:
+            # pylint: disable-next=import-outside-toplevel,redefined-outer-name,reimported; silent
             import json
+
             try:
                 probe_facts = json.loads(container_ctx["container_env_facts"])
             except (json.JSONDecodeError, TypeError):
@@ -781,9 +837,10 @@ class Orchestrator:
             return
         try:
             backend.cleanup()
-        except Exception as exc:
+        except Exception as exc:  # pylint: disable=broad-exception-caught; silent
             # Cleanup failures are logged, never crash the workflow.
-            import logging
+            import logging  # pylint: disable=import-outside-toplevel; silent
+
             logger = logging.getLogger(__name__)
             logger.error("Execution backend cleanup failed: %s", exc)
 

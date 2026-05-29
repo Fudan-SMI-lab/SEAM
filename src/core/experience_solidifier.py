@@ -1,4 +1,9 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportExplicitAny=false, reportAny=false, reportUnannotatedClassAttribute=false, reportImplicitOverride=false, reportArgumentType=false, reportUnusedParameter=false
+# pyright: reportMissingTypeArgument=false,
+# reportUnknownParameterType=false, reportUnknownVariableType=false,
+# reportUnknownMemberType=false, reportUnknownArgumentType=false,
+# reportExplicitAny=false, reportAny=false,
+# reportUnannotatedClassAttribute=false, reportImplicitOverride=false,
+# reportArgumentType=false, reportUnusedParameter=false
 """Specialized experience solidifiers."""
 
 from __future__ import annotations
@@ -8,7 +13,7 @@ import re
 from typing import Any
 
 
-class BaseSolidifier:
+class BaseSolidifier:  # pylint: disable=too-few-public-methods; silent
     exp_type = "experience"
 
     def solidify(self, exp: dict, artifact_ctx: dict, run_id: str, store: Any) -> dict:
@@ -25,11 +30,13 @@ class BaseSolidifier:
         return "\n".join(f"- {value}" for value in values)
 
 
-class SkillSolidifier(BaseSolidifier):
+class SkillSolidifier(BaseSolidifier):  # pylint: disable=too-few-public-methods; silent
     exp_type = "skill"
 
     def solidify(self, exp: dict, artifact_ctx: dict, run_id: str, store: Any) -> dict:
-        skill_name = exp.get("skill_name") or exp.get("name") or self._slug(exp.get("title", "skill"))
+        skill_name = (
+            exp.get("skill_name") or exp.get("name") or self._slug(exp.get("title", "skill"))
+        )
         exp["skill_name"] = skill_name
         exp.setdefault("name", skill_name)
         skill_data = {
@@ -45,7 +52,9 @@ class SkillSolidifier(BaseSolidifier):
             "trigger_fingerprint": exp.get("trigger_fingerprint", ""),
             "classifier": exp.get("classifier", {}),
             "occurrence_count": exp.get("occurrence_count", 1),
-            "when_to_use": exp.get("when_to_use", exp.get("symptom", exp.get("problem_description", ""))),
+            "when_to_use": exp.get(
+                "when_to_use", exp.get("symptom", exp.get("problem_description", ""))
+            ),
             "root_cause": exp.get("root_cause", ""),
             "fix_steps": exp.get("fix_steps", exp.get("steps", [])),
             "code_changes": exp.get("code_changes", []),
@@ -60,11 +69,15 @@ class SkillSolidifier(BaseSolidifier):
 
         references = exp.get("references", [])
         if references:
-            assets["references/sources.md"] = "# References\n\n" + self._markdown_list(references) + "\n"
+            assets["references/sources.md"] = (
+                "# References\n\n" + self._markdown_list(references) + "\n"
+            )
         elif exp.get("code_changes"):
             assets["examples/code_changes.json"] = exp.get("code_changes", [])
         else:
-            assets["tests/usage.md"] = f"# Usage Check\n\nApply `{skill_name}` when the trigger fingerprint matches.\n"
+            assets["tests/usage.md"] = (
+                f"# Usage Check\n\nApply `{skill_name}` when the trigger fingerprint matches.\n"
+            )
         return assets
 
     def _render_skill_markdown(self, data: dict) -> str:
@@ -125,18 +138,27 @@ class SkillSolidifier(BaseSolidifier):
         return "\n".join(lines) + "\n"
 
 
-class DocumentSolidifier(BaseSolidifier):
+class DocumentSolidifier(BaseSolidifier):  # pylint: disable=too-few-public-methods; silent
     exp_type = "document"
 
     def solidify(self, exp: dict, artifact_ctx: dict, run_id: str, store: Any) -> dict:
-        body = exp.get("body") or exp.get("problem_description") or exp.get("rough_fix_approach") or "No document body provided."
+        body = (
+            exp.get("body")
+            or exp.get("problem_description")
+            or exp.get("rough_fix_approach")
+            or "No document body provided."
+        )
         return {
             "document.md": f"# {exp.get('title', 'Untitled Document')}\n\n{body}\n",
-            "metadata.json": {"type": "document", "run_id": run_id, "classifier": exp.get("classifier", {})},
+            "metadata.json": {
+                "type": "document",
+                "run_id": run_id,
+                "classifier": exp.get("classifier", {}),
+            },
         }
 
 
-class RuleSolidifier(BaseSolidifier):
+class RuleSolidifier(BaseSolidifier):  # pylint: disable=too-few-public-methods; silent
     exp_type = "rule"
 
     def solidify(self, exp: dict, artifact_ctx: dict, run_id: str, store: Any) -> dict:
@@ -149,31 +171,56 @@ class RuleSolidifier(BaseSolidifier):
             "target_phases": exp.get("target_phases", []),
             "trigger_fingerprint": exp.get("trigger_fingerprint", ""),
         }
-        return {"rule.yaml": self._render_yaml(rule), "metadata.json": {"type": "rule", "run_id": run_id}}
+        return {
+            "rule.yaml": self._render_yaml(rule),
+            "metadata.json": {"type": "rule", "run_id": run_id},
+        }
 
     def _render_yaml(self, data: dict) -> str:
-        return "\n".join(f"{key}: {json.dumps(value) if isinstance(value, list) else value}" for key, value in data.items()) + "\n"
+        return (
+            "\n".join(
+                f"{key}: {json.dumps(value) if isinstance(value, list) else value}"
+                for key, value in data.items()
+            )
+            + "\n"
+        )
 
 
-class PromptSolidifier(BaseSolidifier):
+class PromptSolidifier(BaseSolidifier):  # pylint: disable=too-few-public-methods; silent
     exp_type = "prompt"
 
     def solidify(self, exp: dict, artifact_ctx: dict, run_id: str, store: Any) -> dict:
         proposal = {
             "title": exp.get("title", "Untitled Prompt Proposal"),
-            "phase_target": exp.get("phase_target", exp.get("target_phases", [""])[0] if exp.get("target_phases") else ""),
-            "current_prompt_issue": exp.get("current_prompt_issue", exp.get("problem_description", "")),
-            "suggested_improvement": exp.get("suggested_improvement", exp.get("rough_fix_approach", "")),
+            "phase_target": exp.get(
+                "phase_target",
+                exp.get("target_phases", [""])[0] if exp.get("target_phases") else "",
+            ),
+            "current_prompt_issue": exp.get(
+                "current_prompt_issue", exp.get("problem_description", "")
+            ),
+            "suggested_improvement": exp.get(
+                "suggested_improvement", exp.get("rough_fix_approach", "")
+            ),
             "target_roles": exp.get("target_roles", []),
             "trigger_fingerprint": exp.get("trigger_fingerprint", ""),
         }
-        return {"proposal.yaml": self._render_yaml(proposal), "metadata.json": {"type": "prompt", "run_id": run_id}}
+        return {
+            "proposal.yaml": self._render_yaml(proposal),
+            "metadata.json": {"type": "prompt", "run_id": run_id},
+        }
 
     def _render_yaml(self, data: dict) -> str:
-        return "\n".join(f"{key}: {json.dumps(value) if isinstance(value, list) else value}" for key, value in data.items()) + "\n"
+        return (
+            "\n".join(
+                f"{key}: {json.dumps(value) if isinstance(value, list) else value}"
+                for key, value in data.items()
+            )
+            + "\n"
+        )
 
 
-class ExperienceSolidifier:
+class ExperienceSolidifier:  # pylint: disable=too-few-public-methods; silent
     def __init__(self) -> None:
         self._solidifiers = {
             "skill": SkillSolidifier(),

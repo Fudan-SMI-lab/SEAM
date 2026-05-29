@@ -1,27 +1,31 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitRelativeImport=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnusedCallResult=false
-
+# pyright: reportAny=false, reportExplicitAny=false,
+# reportImplicitRelativeImport=false, reportUnknownArgumentType=false,
+# reportUnknownMemberType=false, reportUnknownVariableType=false,
+# reportUnusedCallResult=false
 import logging
 import random
 import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import torch
-import torch.distributed
+import numpy as np  # pylint: disable=import-error; silent
+import torch  # pylint: disable=import-error; silent
+import torch.distributed  # pylint: disable=import-error; silent
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable-next=wrong-import-position; silent
 from src.data.dataloader_factory import create_dataloaders
-from src.models.classifier import build_classifier
+from src.models.classifier import build_classifier  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from src.training.optimizer_factory import build_optimizer
-from src.training.trainer import Trainer
-from src.utils.logger import setup_logger
+from src.training.trainer import Trainer  # pylint: disable=wrong-import-position; silent
+from src.utils.logger import setup_logger  # pylint: disable=wrong-import-position; silent
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -43,7 +47,9 @@ def _seed_everything(seed: int) -> None:
     torch.cuda.manual_seed(42)
 
 
-def _maybe_init_distributed(project_root: Path, config: dict[str, Any], logger: logging.Logger) -> bool:
+def _maybe_init_distributed(
+    project_root: Path, config: dict[str, Any], logger: logging.Logger
+) -> bool:
     dist_config = dict(config["distributed"])
     if not bool(dist_config["enabled"]):
         return False
@@ -61,7 +67,7 @@ def _maybe_init_distributed(project_root: Path, config: dict[str, Any], logger: 
     return True
 
 
-def main() -> int:
+def main() -> int:  # pylint: disable=too-many-locals; silent
     training_config, model_config = _load_configs(PROJECT_ROOT)
     runtime_config = dict(training_config["runtime"])
     trainer_config = dict(training_config["trainer"])

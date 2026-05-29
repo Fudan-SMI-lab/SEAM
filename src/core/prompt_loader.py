@@ -11,7 +11,10 @@ class PromptLoader:
     prompts_dir: Path
 
     _OPTIONAL_SECTION_PATTERNS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("constraint_summary", r"\n## Migration Constraints(?: \(from Phase 1\.5\))?\n.*?(?=\n## |\Z)"),
+        (
+            "constraint_summary",
+            r"\n## Migration Constraints(?: \(from Phase 1\.5\))?\n.*?(?=\n## |\Z)",
+        ),
         ("user_constraints", r"\n## User-Provided Constraints \(for awareness\)\n.*?(?=\n## |\Z)"),
         ("user_constraints", r"\n## User-Provided Migration Constraints\n.*?(?=\n## |\Z)"),
     )
@@ -82,6 +85,5 @@ class PromptLoader:
         if not self.prompts_dir.exists():
             return []
         return sorted(
-            f.name for f in self.prompts_dir.iterdir()
-            if f.is_file() and f.name.endswith(".md")
+            f.name for f in self.prompts_dir.iterdir() if f.is_file() and f.name.endswith(".md")
         )

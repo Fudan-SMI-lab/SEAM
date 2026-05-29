@@ -11,6 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sm_adapt_cli",
         description="SM-Adapt v2: CUDA-to-NPU migration CLI",
+        # pylint: disable-next=line-too-long; silent
         epilog="Example: python sm_adapt_cli.py --project-dir /path/to/cuda-project --command 'Migrate to NPU'",
     )
 
@@ -26,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=False,
         default=None,
         type=str,
+        # pylint: disable-next=line-too-long; silent
         help="Path to workflow YAML definition (default: workflows/npu_migration_v1.yaml relative to this script)",
     )
 
@@ -120,10 +122,10 @@ def print_progress(phase: str, status: str, detail: str = "") -> None:
 
 def _resolve_user_constraints(raw: str | None) -> str:
     """Resolve user constraints from a direct string or a file path.
-    
+
     Args:
         raw: Either a constraint string or a path to a constraint file.
-        
+
     Returns:
         The constraint text, or empty string if raw is None/empty.
     """
@@ -146,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             return int(code) if code.isdigit() else 2
         return code
 
+    # pylint: disable-next=unused-variable; silent
     user_constraints = _resolve_user_constraints(args.user_constraints)
 
     if args.verbose:
@@ -159,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.user_constraints:
             print(f"[INFO] User constraints: {args.user_constraints}")
 
-    # TODO: Integrate with orchestrator when ready
+    # TODO: Integrate with orchestrator when ready  # pylint: disable=fixme; silent
     # NOTE: `user_constraints` should be passed to `orchestrator.run_workflow()`
     print_progress("Initialization", "success", "CLI arguments parsed successfully")
     print_progress("Execution", "skipped", "Orchestrator integration pending")

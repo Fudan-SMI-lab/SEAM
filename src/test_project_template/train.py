@@ -1,11 +1,10 @@
-import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+import torch  # pylint: disable=import-error; silent
+import torch.nn as nn  # pylint: disable=consider-using-from-import,import-error; silent
+import torch.optim as optim  # pylint: disable=consider-using-from-import,import-error; silent
+from torch.utils.data import DataLoader, TensorDataset  # pylint: disable=import-error; silent
 
 
-class SimpleMLP(nn.Module):
+class SimpleMLP(nn.Module):  # pylint: disable=too-few-public-methods; silent
     def __init__(self, input_dim=784, hidden_dim=256, output_dim=10):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -19,9 +18,10 @@ class SimpleMLP(nn.Module):
         return x
 
 
-def main():
+def main():  # pylint: disable=too-many-locals; silent
     # [E2E_TEST_INJECTION] Simulate a CUDA-specific import that breaks on NPU
     # The repair agent should remove this line after analyzing the error
+    # pylint: disable-next=import-error,import-outside-toplevel,unused-import; silent
     from apex_C import fused_layer_norm  # noqa: F401 - intentionally broken for E2E test
 
     # Device setup with CUDA string literals
@@ -35,7 +35,7 @@ def main():
     # Model and data
     model = SimpleMLP().to(device)
 
-    X_train = torch.randn(512, 784)
+    X_train = torch.randn(512, 784)  # pylint: disable=invalid-name; silent
     y_train = torch.randint(0, 10, (512,))
     dataset = TensorDataset(X_train.to(device), y_train.to(device))
     loader = DataLoader(dataset, batch_size=64, shuffle=True)

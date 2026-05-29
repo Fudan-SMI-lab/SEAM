@@ -4,7 +4,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.state_machine import StateMachine
+from core.state_machine import StateMachine  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from core.types import PhaseDefinition, WorkflowDefinition
 
 

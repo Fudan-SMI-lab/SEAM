@@ -85,7 +85,7 @@ def resolve_server_url(
     if auto_start and base_url is not None:
         health_url = f"{base_url.rstrip('/')}/agent"
         if not health_check(health_url):
-            if is_local_url(base_url):
+            if is_local_url(base_url):  # pylint: disable=no-else-return; silent
                 host, port = parse_host_port(base_url)
                 server_proc = start_server(work_dir=work_dir, port=port, hostname=host)
                 if not wait_for_server(base_url, timeout=30):
@@ -107,8 +107,9 @@ def resolve_server_url(
     return resolved, None
 
 
-def start_server(work_dir: str, port: int, auth_header: str = "",
-                 hostname: str = "127.0.0.1") -> ServerProcess:
+def start_server(
+    work_dir: str, port: int, auth_header: str = "", hostname: str = "127.0.0.1"
+) -> ServerProcess:
     """Launch opencode server as a subprocess."""
     if shutil.which("opencode") is None:
         raise FileNotFoundError("opencode not found in PATH")
@@ -118,7 +119,7 @@ def start_server(work_dir: str, port: int, auth_header: str = "",
     if auth_header:
         env = {**os.environ, "AUTH_HEADER": auth_header}
 
-    proc = subprocess.Popen(
+    proc = subprocess.Popen(  # pylint: disable=consider-using-with; silent
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

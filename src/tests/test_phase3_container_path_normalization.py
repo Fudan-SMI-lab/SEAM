@@ -1,6 +1,5 @@
 # pyright: reportPrivateUsage=false
 
-import json
 import sys
 from pathlib import Path
 
@@ -9,11 +8,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable-next=wrong-import-position; silent
 from core.phase_runner import PhaseRunner, PhaseSpec, _rewrite_container_to_host_path
-from core.prompt_loader import PromptLoader
-from core.validator_engine import ValidatorEngine
+from core.prompt_loader import PromptLoader  # pylint: disable=wrong-import-position; silent
+from core.validator_engine import ValidatorEngine  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from validators.validate_entry_script import REQUIRED_REPORT_TOKENS, validate
-
 
 # ── _rewrite_container_to_host_path ────────────────────────────────────
 
@@ -107,6 +107,7 @@ def test_rewrite_container_to_host_path_trailing_slash_boundary_exact():
     )
     assert result == "/srv/projects/my-project"
 
+
 # ── Phase 3 container path normalization ──────────────────────────────
 
 
@@ -114,7 +115,7 @@ def test_normalize_phase3_container_paths_normalizes_entry_script():
     runner = PhaseRunner(_noop_session_mgr(), _null_store(), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {
             "entry_script_path": "/workspace/validate_fwi.py",
@@ -135,7 +136,7 @@ def test_normalize_phase3_container_paths_normalizes_reports_dir():
     runner = PhaseRunner(_noop_session_mgr(), _null_store(), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {
             "entry_script_path": "/srv/projects/test-project/validate_fwi.py",
@@ -156,7 +157,7 @@ def test_normalize_phase3_container_paths_does_not_rewrite_run_command():
     runner = PhaseRunner(_noop_session_mgr(), _null_store(), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {
             "entry_script_path": "/workspace/v.py",
@@ -176,7 +177,7 @@ def test_normalize_phase3_container_paths_skips_without_context():
     runner = PhaseRunner(_noop_session_mgr(), _null_store(), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "/workspace/v.py"},
         {"project_dir": "/tmp"},
@@ -190,7 +191,7 @@ def test_normalize_phase3_container_paths_uses_container_project_dir_as_fallback
     runner = PhaseRunner(_noop_session_mgr(), _null_store(), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {"entry_script_path": "/workspace/v.py"},
         {
@@ -382,7 +383,7 @@ def test_phase3_container_path_normalization_allows_validator_to_find_file(tmp_p
     runner = PhaseRunner(_noop_session_mgr(), _null_store(), PromptLoader(), ValidatorEngine())
     spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
 
-    normalized = runner._normalize_output(
+    normalized = runner._normalize_output(  # pylint: disable=protected-access; silent
         spec,
         {
             "entry_script_path": "/workspace/validate_fwi.py",
@@ -390,7 +391,16 @@ def test_phase3_container_path_normalization_allows_validator_to_find_file(tmp_p
             "entry_script_kind": "custom_op_full_validation",
             "reports_dir": "/workspace/migration_reports",
             "operator_discovery_sources": list(
-                {"source", "bindings", "wrappers", "autograd", "aliases", "launch", "setup", "tests"}
+                {
+                    "source",
+                    "bindings",
+                    "wrappers",
+                    "autograd",
+                    "aliases",
+                    "launch",
+                    "setup",
+                    "tests",
+                }
             ),
             "operator_inventory_schema": {
                 "semantic_rows": "one row per fine-grained operator unit",
@@ -466,6 +476,7 @@ def test_phase3_container_path_normalization_allows_validator_to_find_file(tmp_p
 
 
 def test_workflow_executor_rewrites_entry_script_container_path():
+    # pylint: disable-next=import-outside-toplevel,reimported; silent
     from core.workflow_executor import _rewrite_container_to_host_path
 
     result = _rewrite_container_to_host_path(
@@ -477,6 +488,7 @@ def test_workflow_executor_rewrites_entry_script_container_path():
 
 
 def test_workflow_executor_rewrites_reports_dir_container_path():
+    # pylint: disable-next=import-outside-toplevel,reimported; silent
     from core.workflow_executor import _rewrite_container_to_host_path
 
     result = _rewrite_container_to_host_path(
@@ -488,6 +500,7 @@ def test_workflow_executor_rewrites_reports_dir_container_path():
 
 
 def test_workflow_executor_rewrite_passthrough_for_non_matching_paths():
+    # pylint: disable-next=import-outside-toplevel,reimported; silent
     from core.workflow_executor import _rewrite_container_to_host_path
 
     result = _rewrite_container_to_host_path(
@@ -499,6 +512,7 @@ def test_workflow_executor_rewrite_passthrough_for_non_matching_paths():
 
 
 def test_workflow_executor_rewrite_prefix_boundary_no_false_match():
+    # pylint: disable-next=import-outside-toplevel,reimported; silent
     from core.workflow_executor import _rewrite_container_to_host_path
 
     result = _rewrite_container_to_host_path(
@@ -510,6 +524,7 @@ def test_workflow_executor_rewrite_prefix_boundary_no_false_match():
 
 
 def test_workflow_executor_rewrite_prefix_boundary_deeper_no_match():
+    # pylint: disable-next=import-outside-toplevel,reimported; silent
     from core.workflow_executor import _rewrite_container_to_host_path
 
     result = _rewrite_container_to_host_path(
@@ -521,6 +536,7 @@ def test_workflow_executor_rewrite_prefix_boundary_deeper_no_match():
 
 
 def test_workflow_executor_rewrite_trailing_slash_boundary_still_matches():
+    # pylint: disable-next=import-outside-toplevel,reimported; silent
     from core.workflow_executor import _rewrite_container_to_host_path
 
     result = _rewrite_container_to_host_path(
@@ -530,16 +546,18 @@ def test_workflow_executor_rewrite_trailing_slash_boundary_still_matches():
     )
     assert result == "/srv/projects/my-project/validate.py"
 
+
 # ── WorkflowExecutor: _normalize_phase3_container_paths ───────────────
 
 
 def _make_minimal_executor(project_dir: str):
     """Create a WorkflowExecutor with minimal mocks for _normalize_llm_output testing."""
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.workflow_executor import WorkflowExecutor
 
     executor = WorkflowExecutor.__new__(WorkflowExecutor)
     executor.project_dir = project_dir
-    executor._container_context = {}
+    executor._container_context = {}  # pylint: disable=protected-access; silent
     return executor
 
 
@@ -557,6 +575,7 @@ def test_workflow_executor_normalize_phase3_normalizes_entry_script():
     }
     state = {"phase_1_project_analysis": {}}
 
+    # pylint: disable-next=protected-access; silent
     normalized = executor._normalize_llm_output(phase, output, context, state)
 
     assert normalized["entry_script_path"] == "/srv/projects/test-project/validate_fwi.py"
@@ -579,6 +598,7 @@ def test_workflow_executor_normalize_phase3_normalizes_reports_dir():
     }
     state = {"phase_1_project_analysis": {}}
 
+    # pylint: disable-next=protected-access; silent
     normalized = executor._normalize_llm_output(phase, output, context, state)
 
     assert normalized["reports_dir"] == "/srv/projects/test-project/migration_reports"
@@ -599,6 +619,7 @@ def test_workflow_executor_normalize_phase3_does_not_rewrite_run_command():
     }
     state = {"phase_1_project_analysis": {}}
 
+    # pylint: disable-next=protected-access; silent
     normalized = executor._normalize_llm_output(phase, output, context, state)
 
     assert normalized["run_command"] == "python3 /workspace/deep/nested/script.py"
@@ -616,6 +637,7 @@ def test_workflow_executor_normalize_phase3_skips_without_container_context():
     }
     state = {"phase_1_project_analysis": {}}
 
+    # pylint: disable-next=protected-access; silent
     normalized = executor._normalize_llm_output(phase, output, context, state)
 
     assert normalized["entry_script_path"] == "/workspace/v.py"
@@ -634,6 +656,7 @@ def test_workflow_executor_normalize_phase3_preserves_host_paths():
     }
     state = {"phase_1_project_analysis": {}}
 
+    # pylint: disable-next=protected-access; silent
     normalized = executor._normalize_llm_output(phase, output, context, state)
 
     assert normalized["entry_script_path"] == "/srv/projects/test-project/already_host.py"
@@ -672,6 +695,7 @@ def test_rewrite_container_root_workdir_does_not_rewrite_arbitrary_paths(path_st
 )
 def test_workflow_executor_rewrite_root_workdir_does_not_rewrite(path_str):
     """WorkflowExecutor copy of the helper must also guard against root workdir."""
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.workflow_executor import _rewrite_container_to_host_path as _we_rewrite
 
     result = _we_rewrite(
@@ -687,7 +711,8 @@ def test_workflow_executor_rewrite_root_workdir_does_not_rewrite(path_str):
 
 def _phase_def(phase_id: str):
     """Minimal PhaseDefinition for normalization testing."""
-    from core.types import PhaseDefinition
+    from core.types import PhaseDefinition  # pylint: disable=import-outside-toplevel; silent
+
     return PhaseDefinition(
         id=phase_id,
         name=phase_id,
@@ -712,5 +737,7 @@ def _noop_session_mgr():
 
 
 def _null_store():
+    # pylint: disable-next=import-outside-toplevel; silent
     from core.artifact_store import ArtifactStore
+
     return ArtifactStore("/tmp", "null-run")

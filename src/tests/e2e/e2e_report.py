@@ -30,7 +30,11 @@ def _truncate(text: str | None, limit: int = MAX_PREVIEW_CHARS) -> str:
 def _diff_snippet(old: str, new: str, label: str) -> str:
     old_lines = old.splitlines(keepends=True)
     new_lines = new.splitlines(keepends=True)
-    diff = list(difflib.unified_diff(old_lines, new_lines, fromfile=f"before/{label}", tofile=f"after/{label}", n=3))
+    diff = list(
+        difflib.unified_diff(
+            old_lines, new_lines, fromfile=f"before/{label}", tofile=f"after/{label}", n=3
+        )
+    )
     if not diff:
         return "No changes detected."
     if len(diff) > MAX_DIFF_LINES_PER_FILE:
@@ -89,13 +93,14 @@ def _build_phase_table(summary: dict) -> list[str]:
             num = p.get("phase_number", "?")
             label = p.get("label", p.get("phase_id", "?"))
             status = p.get("status", "UNKNOWN")
-            dur = f'{p.get("duration_seconds", 0):.2f}s'
+            dur = f"{p.get('duration_seconds', 0):.2f}s"
             err = _truncate(p.get("error"), 60)
             lines.append(f"| {num} | {label} | {status.upper()} | {dur} | {err} |")
     lines.append("")
     return lines
 
 
+# pylint: disable-next=too-many-locals; silent
 def _build_session_command_table(telemetry: dict) -> list[str]:
     lines: list[str] = []
     lines.append("## Session & Command Telemetry")
@@ -125,7 +130,7 @@ def _build_session_command_table(telemetry: dict) -> list[str]:
         for cmd in commands:
             seq = cmd.get("sequence", "?")
             phase = cmd.get("phase_id", "-")
-            dur = f'{cmd.get("duration_seconds", 0):.2f}s'
+            dur = f"{cmd.get('duration_seconds', 0):.2f}s"
             status = cmd.get("status", "?").upper()
             prompt = _truncate(cmd.get("command_preview"))
             resp = _truncate(cmd.get("response_preview"))
@@ -191,7 +196,10 @@ def _build_code_diff(before: dict | None, after: dict | None) -> list[str]:
         lines.append(_diff_snippet(old_content, new_content, filename))
         lines.append("")
 
-    lines.append(f"**Summary:** {changed_count} file(s) modified, {len(all_files) - changed_count} file(s) unchanged.")
+    lines.append(
+        # pylint: disable-next=line-too-long; silent
+        f"**Summary:** {changed_count} file(s) modified, {len(all_files) - changed_count} file(s) unchanged."
+    )
     lines.append("")
     return lines
 
@@ -222,7 +230,10 @@ def _build_artifacts_summary(summary: dict) -> list[str]:
     return lines
 
 
-def _build_recommendations(summary: dict | None, telemetry: dict | None, phase_results_data: dict | None) -> list[str]:
+def _build_recommendations(
+    # pylint: disable-next=unused-argument; silent
+    summary: dict | None, telemetry: dict | None, phase_results_data: dict | None
+) -> list[str]:
     lines: list[str] = []
     lines.append("## Recommendations")
     lines.append("")
@@ -237,17 +248,31 @@ def _build_recommendations(summary: dict | None, telemetry: dict | None, phase_r
     failed_phases = [p for p in phases if p.get("status") != "passed"]
     if failed_phases:
         for fp in failed_phases:
-            recommendations.append(f"- **{fp.get('label', fp.get('phase_id', '?'))}** failed: {fp.get('error', 'Unknown')}")
+            recommendations.append(
+                # pylint: disable-next=line-too-long; silent
+                f"- **{fp.get('label', fp.get('phase_id', '?'))}** failed: {fp.get('error', 'Unknown')}"
+            )
 
     overall = summary.get("overall_status", "FAIL")
     if overall == "PASS" and not failed_phases:
-        recommendations.append("- All phases completed successfully. The migration pipeline is functioning correctly.")
+        recommendations.append(
+            "- All phases completed successfully. The migration pipeline is functioning correctly."
+        )
 
-    if summary and summary.get("error_history") or (isinstance(phase_results_data, dict) and phase_results_data.get("error_history")):
-        recommendations.append("- Phase 5 encountered errors during validation. Review repair session logs for root causes.")
+    if (
+        summary
+        and summary.get("error_history")
+        or (isinstance(phase_results_data, dict) and phase_results_data.get("error_history"))
+    ):
+        recommendations.append(
+            # pylint: disable-next=line-too-long; silent
+            "- Phase 5 encountered errors during validation. Review repair session logs for root causes."
+        )
 
     if not recommendations:
-        recommendations.append("- No specific recommendations. Review the report data for further insights.")
+        recommendations.append(
+            "- No specific recommendations. Review the report data for further insights."
+        )
 
     lines.extend(recommendations)
     lines.append("")
@@ -293,9 +318,19 @@ def build_report(output_dir: Path, report_path: Path | None = None) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate a Markdown report from E2E test JSON artifacts.")
-    _ = parser.add_argument("output_dir", type=Path, help="Directory containing summary.json, telemetry.json, etc.")
-    _ = parser.add_argument("report_path", type=Path, nargs="?", default=None, help="Output report path (default: output_dir/e2e_report.md)")
+    parser = argparse.ArgumentParser(
+        description="Generate a Markdown report from E2E test JSON artifacts."
+    )
+    _ = parser.add_argument(
+        "output_dir", type=Path, help="Directory containing summary.json, telemetry.json, etc."
+    )
+    _ = parser.add_argument(
+        "report_path",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="Output report path (default: output_dir/e2e_report.md)",
+    )
     args = parser.parse_args()
     generated = build_report(args.output_dir, args.report_path)
     print(f"Report generated: {generated}")

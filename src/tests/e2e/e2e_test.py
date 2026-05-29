@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-# pyright: reportArgumentType=false, reportCallIssue=false, reportIndexIssue=false, reportOperatorIssue=false, reportPrivateUsage=false, reportUnknownMemberType=false
+# pyright: reportArgumentType=false, reportCallIssue=false,
+# reportIndexIssue=false, reportOperatorIssue=false,
+# reportPrivateUsage=false, reportUnknownMemberType=false
 from __future__ import annotations
 
 import argparse
@@ -26,17 +28,21 @@ if str(SCRIPT_DIR) not in sys.path:
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
+# pylint: disable-next=wrong-import-position; silent
 from core.accelerator_context import extract_accelerator_context
-from core.agent_io_logger import AgentIOLogger
-from core.artifact_store import ArtifactStore
+from core.agent_io_logger import AgentIOLogger  # pylint: disable=wrong-import-position; silent
+from core.artifact_store import ArtifactStore  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from core.config_loader import load_framework_config
+# pylint: disable-next=wrong-import-position; silent
 from core.paths import default_output_projects_root, execution_root
-from core.phase_runner import PhaseRunner
-from core.prompt_loader import PromptLoader
-from core.repair_loop import RepairLoopEngine
-from core.validator_engine import ValidatorEngine
-from harness.session.manager import SessionManager
-from migrator.rule_based import RuleBasedMigrator
+from core.phase_runner import PhaseRunner  # pylint: disable=wrong-import-position; silent
+from core.prompt_loader import PromptLoader  # pylint: disable=wrong-import-position; silent
+from core.repair_loop import RepairLoopEngine  # pylint: disable=wrong-import-position; silent
+from core.validator_engine import ValidatorEngine  # pylint: disable=wrong-import-position; silent
+from harness.session.manager import SessionManager  # pylint: disable=wrong-import-position; silent
+from migrator.rule_based import RuleBasedMigrator  # pylint: disable=wrong-import-position; silent
+# pylint: disable-next=wrong-import-position; silent
 from tests.e2e.e2e_observer import TelemetryObserver
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
@@ -66,7 +72,7 @@ class PhaseStatus:
 
 
 @dataclass
-class RunSummary:
+class RunSummary:  # pylint: disable=too-many-instance-attributes; silent
     run_id: str
     base_url: str
     workflow_path: str
@@ -88,7 +94,7 @@ class RunSummary:
     errors: list[str]
 
 
-class Ansi:
+class Ansi:  # pylint: disable=too-few-public-methods; silent
     RESET: str = "\033[0m"
     RED: str = "\033[31m"
     GREEN: str = "\033[32m"
@@ -116,13 +122,24 @@ def print_phase_running(phase_number: int, phase_total: int, label: str) -> None
     log(f"[Phase {phase_number}/{phase_total}] {label} — RUNNING")
 
 
-def print_phase_finished(phase_number: int, phase_total: int, label: str, passed: bool, duration_seconds: float, error: str | None = None) -> None:
+# pylint: disable-next=too-many-arguments,too-many-positional-arguments; silent
+def print_phase_finished(
+    phase_number: int,
+    phase_total: int,
+    label: str,
+    passed: bool,
+    duration_seconds: float,
+    error: str | None = None,
+) -> None:
     status = "PASSED" if passed else "FAILED"
     details = f" ({duration_seconds:.1f}s)"
     if error:
         details += f"\n  Error: {error}"
     color = Ansi.GREEN if passed else Ansi.RED
-    print(colorize(f"[Phase {phase_number}/{phase_total}] {label} — {status}{details}", color), flush=True)
+    print(
+        colorize(f"[Phase {phase_number}/{phase_total}] {label} — {status}{details}", color),
+        flush=True,
+    )
 
 
 def check_server_running(base_url: str) -> None:
@@ -138,7 +155,11 @@ def check_server_running(base_url: str) -> None:
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"OpenCode server is not reachable at {endpoint}: {exc}") from exc
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"curl exit code {completed.returncode}"
+        detail = (
+            completed.stderr.strip()
+            or completed.stdout.strip()
+            or f"curl exit code {completed.returncode}"
+        )
         raise RuntimeError(f"OpenCode server is not reachable at {endpoint}: {detail}")
 
 
@@ -166,12 +187,13 @@ def copy_project_light(src: Path, dst: Path) -> int:
                     if item.stat().st_size <= max_file_size:
                         _ = shutil.copy2(item, dst / item.name)
                         copied += 1
-                except Exception:
+                except Exception:  # pylint: disable=broad-exception-caught; silent
                     pass
     return copied
 
 
 def symlink_large_files(project_dir: Path, source_dir: Path) -> int:
+    # pylint: disable-next=line-too-long; silent
     """Create symlinks in project_dir for large files that exist in source_dir but were skipped during copy."""
     symlinked = 0
     for item in source_dir.rglob("*"):
@@ -183,7 +205,17 @@ def symlink_large_files(project_dir: Path, source_dir: Path) -> int:
         target = project_dir / relative
         if target.exists():
             continue
-        if item.suffix.lower() in {".bin", ".pt", ".pth", ".onnx", ".safetensors", ".tar", ".gz", ".zip", ".egg"}:
+        if item.suffix.lower() in {
+            ".bin",
+            ".pt",
+            ".pth",
+            ".onnx",
+            ".safetensors",
+            ".tar",
+            ".gz",
+            ".zip",
+            ".egg",
+        }:
             target.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(str(item.resolve()), str(target))
             symlinked += 1
@@ -210,11 +242,15 @@ def snapshot_python_files(project_dir: Path) -> dict[str, dict[str, str]]:
 
 def write_json(path: Path, payload: object) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    _ = path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
+    )
     return str(path)
 
 
-def sync_phase_alias(artifact_store: ArtifactStore, phase_id: str, payload: dict[str, object]) -> None:
+def sync_phase_alias(
+    artifact_store: ArtifactStore, phase_id: str, payload: dict[str, object]
+) -> None:
     _ = artifact_store.save_phase_output(phase_id, payload, attempt=1)
     _ = artifact_store.mark_validated(phase_id, payload)
 
@@ -252,7 +288,7 @@ def _build_env_context(
     return env
 
 
-def execute_phase(
+def execute_phase(  # pylint: disable=too-many-arguments; silent
     *,
     phase_number: int,
     phase_total: int,
@@ -279,7 +315,9 @@ def execute_phase(
             error=f"{exc.__class__.__name__}: {exc}",
         )
         phase_results.append(status)
-        print_phase_finished(phase_number, phase_total, label, False, duration_seconds, status.error)
+        print_phase_finished(
+            phase_number, phase_total, label, False, duration_seconds, status.error
+        )
         raise
     finally:
         observer.set_active_phase(None)
@@ -309,7 +347,7 @@ def copy_artifacts(temp_dir: Path, output_dir: Path) -> str | None:
     return str(destination)
 
 
-def build_summary(
+def build_summary(  # pylint: disable=too-many-arguments,too-many-locals; silent
     *,
     run_id: str,
     base_url: str,
@@ -329,7 +367,10 @@ def build_summary(
     errors: list[str],
     expected_phase_total: int,
 ) -> RunSummary:
-    passed = all(phase.status == "passed" for phase in phase_results) and len(phase_results) == expected_phase_total
+    passed = (
+        all(phase.status == "passed" for phase in phase_results)
+        and len(phase_results) == expected_phase_total
+    )
     return RunSummary(
         run_id=run_id,
         base_url=base_url,
@@ -354,7 +395,10 @@ def build_summary(
 
 
 def print_summary(summary: RunSummary) -> None:
-    headline = colorize(f"E2E {summary.overall_status}", Ansi.GREEN if summary.overall_status == "PASS" else Ansi.RED)
+    headline = colorize(
+        f"E2E {summary.overall_status}",
+        Ansi.GREEN if summary.overall_status == "PASS" else Ansi.RED,
+    )
     print()
     print(headline)
     print(f"- Output dir: {summary.output_dir}")
@@ -370,13 +414,16 @@ def print_summary(summary: RunSummary) -> None:
     print("- Phase timings:")
     for phase in summary.phases:
         suffix = f" - {phase.error}" if phase.error else ""
-        print(f"  - {phase.phase_id}: {phase.status.upper()} ({phase.duration_seconds:.2f}s){suffix}")
+        print(
+            f"  - {phase.phase_id}: {phase.status.upper()} ({phase.duration_seconds:.2f}s){suffix}"
+        )
     if summary.errors:
         print("- Errors:")
         for error in summary.errors:
             print(f"  - {error}")
 
 
+# pylint: disable-next=too-many-arguments,too-many-branches,too-many-locals,too-many-statements; silent
 def run_e2e(
     *,
     base_url: str | None,
@@ -410,7 +457,13 @@ def run_e2e(
 
     try:
         if server_auto_start and base_url is None:
-            from harness.server.lifecycle import find_available_port, start_server, stop_server, wait_for_server
+            # pylint: disable-next=import-outside-toplevel; silent
+            from harness.server.lifecycle import (
+                find_available_port,
+                start_server,
+                stop_server,
+                wait_for_server,
+            )
 
             port = server_port if server_port > 0 else find_available_port()
             base_url = f"http://127.0.0.1:{port}"
@@ -423,7 +476,7 @@ def run_e2e(
             base_url = base_url or DEFAULT_SERVER_URL
         check_server_running(base_url)
         log(f"OpenCode server reachable at {base_url}")
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught; silent
         print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
         return 1
 
@@ -431,14 +484,19 @@ def run_e2e(
         if project_dir is not None:
             project_name = project_dir.resolve().name
             timestamp = started_at.strftime("%Y%m%d_%H%M%S")
-            output_project_base = output_project_dir if output_project_dir else default_output_projects_root()
+            output_project_base = (
+                output_project_dir if output_project_dir else default_output_projects_root()
+            )
             output_project_base.mkdir(parents=True, exist_ok=True)
             dest = output_project_base / f"{project_name}_{timestamp}"
             log(f"Copying project {project_dir} to {dest}...")
             copied_count = copy_project_light(project_dir, dest)
             symlinked_count = symlink_large_files(dest, project_dir)
             temp_dir = dest.resolve()
-            log(f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}")
+            log(
+                # pylint: disable-next=line-too-long; silent
+                f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}"
+            )
             keep_temp_dir = True
         else:
             temp_dir = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-real-"))
@@ -454,10 +512,11 @@ def run_e2e(
             try:
                 session_mgr.override_agent(agent_name)
             except ValueError as exc:
-                raise RuntimeError(
-                    f"Cannot use --agent '{agent_name}': {exc}"
-                ) from exc
-        log(f"SessionManager created: detected_agent={session_mgr.active_agent}, overridden={agent_name is not None}")
+                raise RuntimeError(f"Cannot use --agent '{agent_name}': {exc}") from exc
+        log(
+            # pylint: disable-next=line-too-long; silent
+            f"SessionManager created: detected_agent={session_mgr.active_agent}, overridden={agent_name is not None}"
+        )
 
         agent_io_logger = AgentIOLogger.from_env(output_dir, run_id)
         observer = TelemetryObserver(session_mgr, output_dir, agent_io_logger=agent_io_logger)
@@ -474,7 +533,9 @@ def run_e2e(
         validator = ValidatorEngine()
         framework_config = load_framework_config(framework_config_path)
         runner = PhaseRunner(observer, artifact_store, prompt_loader, validator)
-        repair = RepairLoopEngine(observer, artifact_store, prompt_loader, validator, config=framework_config)
+        repair = RepairLoopEngine(
+            observer, artifact_store, prompt_loader, validator, config=framework_config
+        )
         migrator = RuleBasedMigrator()
 
         main_session_id = observer.get_or_create(role="main_engineer", lifecycle="persistent")
@@ -544,9 +605,13 @@ def run_e2e(
         for phase_alias in ("phase_2_venv_create", "phase_3_entry_script"):
             sync_phase_alias(artifact_store, phase_alias, phase_outputs.get(phase_alias, {}))
 
-        if isinstance(phase_2_3_outputs.get("phase_3_entry_script"), dict) and "project_dir" not in phase_2_3_outputs.get("phase_3_entry_script", {}):
+        if isinstance(
+            phase_2_3_outputs.get("phase_3_entry_script"), dict
+        ) and "project_dir" not in phase_2_3_outputs.get("phase_3_entry_script", {}):
             phase_2_3_outputs.setdefault("phase_3_entry_script", {})["project_dir"] = str(temp_dir)
-            sync_phase_alias(artifact_store, "phase_3_entry_script", phase_2_3_outputs["phase_3_entry_script"])
+            sync_phase_alias(
+                artifact_store, "phase_3_entry_script", phase_2_3_outputs["phase_3_entry_script"]
+            )
 
         phase_outputs["phase_3_entry_script"] = phase_outputs.get("phase_3_entry_script", {})
         phase_outputs["phase_3_entry_script"]["project_dir"] = str(temp_dir)
@@ -567,8 +632,12 @@ def run_e2e(
         log(f"Entry script resolved: {entry_script}")
 
         env_context = _build_env_context(
-            phase_outputs.get("phase_0_env_detect") if isinstance(phase_outputs.get("phase_0_env_detect"), dict) else {},
-            phase_outputs.get("phase_2_venv_create") if isinstance(phase_outputs.get("phase_2_venv_create"), dict) else {},
+            phase_outputs.get("phase_0_env_detect")
+            if isinstance(phase_outputs.get("phase_0_env_detect"), dict)
+            else {},
+            phase_outputs.get("phase_2_venv_create")
+            if isinstance(phase_outputs.get("phase_2_venv_create"), dict)
+            else {},
         )
         phase3_output = phase_outputs.get("phase_3_entry_script")
         phase3_contract = dict(phase3_output) if isinstance(phase3_output, dict) else None
@@ -581,7 +650,9 @@ def run_e2e(
             else {}
         )
         review_cfg_obj = framework_section.get("review", {})
-        review_cfg = cast(dict[str, object], review_cfg_obj) if isinstance(review_cfg_obj, dict) else {}
+        review_cfg = (
+            cast(dict[str, object], review_cfg_obj) if isinstance(review_cfg_obj, dict) else {}
+        )
         observer.set_metadata("effective_max_phase5_iter", effective_max_phase5_iter)
         log(f"Phase 5 config: max_iter={effective_max_phase5_iter}")
 
@@ -590,6 +661,7 @@ def run_e2e(
 
             def _review_fn(repair_ctx: dict[str, object]) -> dict[str, object]:
                 history = repair_ctx.get("history", [])
+                # pylint: disable-next=protected-access; silent
                 repair_history = RepairLoopEngine._format_history_summary(history)
                 return runner.run_review_check(
                     review_session_id=main_session_id,
@@ -602,16 +674,14 @@ def run_e2e(
                     attempt_log_content=str(
                         repair_ctx.get("attempt_log_content", "(attempt log unavailable)")
                     ),
-                    execution_duration=str(
-                        repair_ctx.get("execution_duration", "(not available)")
-                    ),
+                    execution_duration=str(repair_ctx.get("execution_duration", "(not available)")),
                 )
 
             result = repair.run(
                 entry_script,
                 str(temp_dir),
                 max_iterations=effective_max_phase5_iter,
-                logger=lambda msg: log(msg),
+                logger=lambda msg: log(msg),  # pylint: disable=unnecessary-lambda; silent
                 review_callable=_review_fn,
                 constraint_summary=constraint_summary,
                 env_context=env_context,
@@ -620,7 +690,10 @@ def run_e2e(
                 phase3_contract=phase3_contract,
             )
             _ = artifact_store.mark_validated("phase_5_validation", result)
-            log(f"Phase 5: Repair loop result: status={result.get('status')}, iterations={result.get('iteration_count')}")
+            log(
+                # pylint: disable-next=line-too-long; silent
+                f"Phase 5: Repair loop result: status={result.get('status')}, iterations={result.get('iteration_count')}"
+            )
             return result
 
         phase_5_output = execute_phase(
@@ -653,13 +726,15 @@ def run_e2e(
             observer=observer,
             phase_results=phase_results,
             runner=lambda: {
-                "after_snapshot": str(write_json(output_dir / "after_snapshot.json", snapshot_python_files(temp_dir))),
+                "after_snapshot": str(
+                    write_json(output_dir / "after_snapshot.json", snapshot_python_files(temp_dir))
+                ),
                 "artifact_dir": str(copy_artifacts(temp_dir, output_dir)),
             },
         )
 
         observer.record_event("artifacts_copied", artifact_dir=artifact_dir)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught; silent
         errors.append(f"{exc.__class__.__name__}: {exc}")
         traceback_path = output_dir / "traceback.txt"
         _ = traceback_path.write_text(traceback.format_exc(), encoding="utf-8")
@@ -676,8 +751,11 @@ def run_e2e(
             observer.set_metadata("cleaned_sessions", cleaned_sessions)
         if observer is not None:
             telemetry_paths = observer.save_metrics()
-            _ = write_json(output_dir / "phase_results.json", [asdict(phase) for phase in phase_results])
+            _ = write_json(
+                output_dir / "phase_results.json", [asdict(phase) for phase in phase_results]
+            )
         if server_proc is not None:
+            # pylint: disable-next=import-outside-toplevel; silent
             from harness.server.lifecycle import stop_server
 
             _ = stop_server(server_proc)
@@ -735,8 +813,12 @@ def run_e2e(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the real migration_utils E2E workflow against the test project template.")
-    _ = parser.add_argument("--server-url", default=None, help=f"OpenCode server URL (default: {DEFAULT_SERVER_URL})")
+    parser = argparse.ArgumentParser(
+        description="Run the real migration_utils E2E workflow against the test project template."
+    )
+    _ = parser.add_argument(
+        "--server-url", default=None, help=f"OpenCode server URL (default: {DEFAULT_SERVER_URL})"
+    )
     _ = parser.add_argument(
         "--max-phase5-iter",
         type=positive_int,
@@ -752,6 +834,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-dir",
         type=Path,
         default=None,
+        # pylint: disable-next=line-too-long; silent
         help="Use this directory instead of creating a temp dir (must contain train.py or similar).",
     )
     _ = parser.add_argument(
@@ -772,10 +855,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Path to a Markdown file containing user constraints, or raw constraint text.",
     )
-    _ = parser.add_argument("--review-gate", action="store_true", help="Enable review gate improvement mode")
-    _ = parser.add_argument("--framework-config", type=str, default=None, help="Path to framework config YAML")
-    _ = parser.add_argument("--server-no-auto-start", action="store_true", help="Disable auto-start of OpenCode server")
-    _ = parser.add_argument("--server-port", type=int, default=0, help="Specific port for auto-started server (0=auto)")
+    _ = parser.add_argument(
+        "--review-gate", action="store_true", help="Enable review gate improvement mode"
+    )
+    _ = parser.add_argument(
+        "--framework-config", type=str, default=None, help="Path to framework config YAML"
+    )
+    _ = parser.add_argument(
+        "--server-no-auto-start", action="store_true", help="Disable auto-start of OpenCode server"
+    )
+    _ = parser.add_argument(
+        "--server-port", type=int, default=0, help="Specific port for auto-started server (0=auto)"
+    )
     return parser
 
 

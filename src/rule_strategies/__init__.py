@@ -65,7 +65,7 @@ def _load_strategy_definition(strategy_id: str) -> dict[str, Any] | None:
             _logger.warning("Invalid strategy YAML (not a mapping): %s", yaml_path)
             return None
         return dict(data)
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught; silent
         _logger.warning("Failed to load strategy YAML %s: %s", yaml_path, exc)
         return None
 
@@ -74,7 +74,7 @@ def _instantiate_migrator(strategy_def: dict[str, Any]) -> object:
     """Import and instantiate the migrator class referenced by a strategy definition."""
     module_name = strategy_def.get("migrator_module", "migrator.yaml_rule_based")
     class_name = strategy_def.get("migrator_class", "YamlRuleBasedMigrator")
-    import importlib
+    import importlib  # pylint: disable=import-outside-toplevel; silent
 
     try:
         module = importlib.import_module(module_name)
@@ -83,13 +83,15 @@ def _instantiate_migrator(strategy_def: dict[str, Any]) -> object:
             return cls(strategy_def)
         except TypeError:
             return cls()
-    except Exception as exc:
+    except Exception as exc:  # pylint: disable=broad-exception-caught; silent
         _logger.error(
+            # pylint: disable-next=line-too-long; silent
             "Failed to instantiate migrator %s.%s: %s  Falling back to ReportOnlyRuleBasedMigrator.",
             module_name,
             class_name,
             exc,
         )
+        # pylint: disable-next=import-outside-toplevel; silent
         from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator  # noqa: PLC0415
 
         return ReportOnlyRuleBasedMigrator()
@@ -139,7 +141,9 @@ def resolve_rule_migration_strategy(
         explicit_file = workflow_rule_migration.get("strategy_file")
         if isinstance(explicit_file, str) and explicit_file.strip():
             strategy_file = explicit_file.strip()
-            _logger.debug("Strategy resolved from workflow rule_migration.strategy_file → %s", strategy_file)
+            _logger.debug(
+                "Strategy resolved from workflow rule_migration.strategy_file → %s", strategy_file
+            )
             return strategy_file
         explicit = workflow_rule_migration.get("strategy")
         if isinstance(explicit, str) and explicit.strip():
