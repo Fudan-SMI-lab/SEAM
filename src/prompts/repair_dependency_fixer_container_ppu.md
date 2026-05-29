@@ -49,6 +49,10 @@ Do NOT use, exec into, or install packages into pre-existing containers. They ma
 users or contain stale state. Always use the `actual_execution_command` provided by the framework
 — it targets the correct container for this workflow run.
 
+Do NOT stop, remove, recreate, or replace the framework-created container; if it is
+missing or not running, report an infrastructure/framework-state failure instead of
+attempting container lifecycle repair.
+
 当你在容器工作流中验证修复时，使用 `actual_execution_command` 来运行验证命令。
 不要直接在宿主机上运行 `{entry_script}`，因为该脚本需要在容器环境中执行。
 如果需要在容器内手动验证修复，请使用如下形式（替换实际容器ID）：
