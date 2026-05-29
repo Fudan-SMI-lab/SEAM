@@ -1,0 +1,368 @@
+# Normal-Entry E2E Migration: GLM-OCR with SGLang on PPU.
+#
+# This workflow is a variant derived from
+# ppu_migration_normal_entry_057_experiment.yaml, adapted for GLM-OCR
+# CLI testing on an SGLang PPU image.
+#
+# Key differences from the base 057 experiment workflow:
+#   (a) Uses an SGLang PPU image candidate instead of a vLLM image.
+#   (b) The generated entry command MUST handle SGLang server startup
+#       before invoking the GLM-OCR CLI, per USER_CONSTRAINTS.md.
+#       The workflow itself does NOT manage the SGLang server lifecycle.
+#   (c) No deepwave-specific dependency setup in the repair loop;
+#       GLM-OCR dependencies are handled by the container/base
+#       environment and the entry script itself.
+#   (d) Custom-op contract injection is disabled
+#       (disable_custom_op_contract_injection: true).
+#   (e) Phase 3 uses normal-entry prompts (no custom-op contract fields).
+#   (f) Container is kept after completion for post-migration inspection.
+#
+# PPU environments expose CUDA-compatible APIs (torch.cuda).
+# This workflow does NOT convert torch.cuda to torch.npu.
+#
+# NOTE: runtime: docker is emulated by Podman in this environment.
+# Do NOT run Docker/Podman when validating this file -- only parse/load it.
+# Docker CLI is emulated by Podman here, so runtime is acceptable.
+#
+# NOTE: SGLang server startup (e.g., via `python -m sglang.launch_server`)
+# must be included in the generated entry command according to
+# USER_CONSTRAINTS.md. The workflow itself does not auto-start the server.
+
+name: ppu_migration_glmocr_sglang
+version: "2.0-experiment"
+description: >
+  CUDA to PPU automated migration workflow for GLM-OCR CLI
+  application using SGLang as the inference backend. Custom-op
+  contract injection and final-gate route are disabled via workflow
+  configuration. Phase 3 omits custom-op contract fields by route
+  policy, and the generated entry command is responsible for
+  starting the SGLang server before invoking GLM-OCR CLI commands.
+
+target_platform:
+  preset: ppu_cuda_compatible
+
+execution_backend:
+  mode: auto
+  source: image
+  runtime: docker
+
+  images:
+    - "localhost/seam-auto-intentionally-missing:latest"
+    - "egslingjun-registry.cn-wulanchabu.cr.aliyuncs.com/egslingjun/inference-xpu-pytorch:26.04-v2.1.0-sglang0.5.10-torch2.9-cu130-20260508"
+
+  container_name_prefix: "seam-ppu-glmocr-sglang"
+
+  devices:
+    - /dev/alixpu
+    - /dev/alixpu_ctl
+    - /dev/alixpu_ppu0
+    - /dev/alixpu_ppu1
+    - /dev/alixpu_ppu2
+    - /dev/alixpu_ppu3
+    - /dev/alixpu_ppu4
+    - /dev/alixpu_ppu5
+    - /dev/alixpu_ppu6
+    - /dev/alixpu_ppu7
+
+  container_workdir: "/workspace"
+
+  cleanup: false
+
+globals:
+  max_repair_iterations: 5
+  stagnation_threshold: 3
+  review_gate_enabled: false
+  max_review_iterations: 3
+  max_entry_script_revisions: 2
+  disable_custom_op_contract_injection: true
+
+experience:
+  enabled: false
+  phase7_enabled: false
+
+agents:
+  main_engineer:
+    role: "main_engineer"
+    lifecycle: "persistent"
+  error_analyzer:
+    role: "error_analyzer"
+    lifecycle: "persistent"
+  dependency_fixer:
+    role: "dependency_fixer"
+    lifecycle: "persistent"
+  code_adapter:
+    role: "code_adapter"
+    lifecycle: "persistent"
+  operator_fixer:
+    role: "operator_fixer"
+    lifecycle: "persistent"
+
+hooks:
+  workflow_start:
+    - type: builtin
+      operation: "snapshot_project"
+      save_as: "before_snapshot"
+  workflow_end:
+    - type: builtin
+      operation: "snapshot_project"
+      save_as: "after_snapshot"
+    - type: builtin
+      operation: "copy_artifacts"
+    - type: builtin
+      operation: "write_summary"
+    - type: builtin
+      operation: "save_telemetry"
+
+terminals:
+  complete: "Migration complete"
+  complete_partial: "Partially complete"
+  failed: "Migration failed"
+
+phases:
+
+  - id: phase_0_env_detect
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_0_env_detect_ppu"
+    validator: env_detect
+    transitions:
+      on_success: phase_1_project_analysis
+
+  # -- Normal entry: Phase 1 follows ordinary project analysis (custom-op injection disabled globally) --
+  - id: phase_1_project_analysis
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_1_project_analysis_ppu_normal_entry_057"
+    validator: project_analysis
+    input_mapping:
+      project_dir: "${context.PROJECT_DIR}"
+    retrieve_experience: true
+    experience_query:
+      source: "project_context"
+      signals:
+        - dependencies
+        - cuda_patterns
+        - entry_script
+    transitions:
+      on_success: phase_1_5_constraint_summary
+
+  - id: phase_1_5_constraint_summary
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_1_5_constraint_summary_ppu"
+    validator: null
+    condition: "${context.USER_CONSTRAINTS} != ''"
+    input_mapping:
+      project_dir: "${context.PROJECT_DIR}"
+      user_constraints: "${context.USER_CONSTRAINTS}"
+    transitions:
+      on_success: phase_2_venv_create
+      on_skip: phase_2_venv_create
+
+  - id: phase_2_venv_create
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_2_venv_create_ppu_container_baseaware"
+    validator: venv
+    transitions:
+      on_success: phase_3_entry_script
+
+  # -- Normal entry: Phase 3 omits custom-op contract fields by route policy.
+  #    The generated entry command MUST include SGLang server startup before
+  #    the GLM-OCR CLI invocation, per USER_CONSTRAINTS.md. --
+  - id: phase_3_entry_script
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_3_entry_script_ppu_normal_entry_057"
+    validator: entry_script
+    transitions:
+      on_success: phase_35_static_validate
+
+  # -- Normal entry: Phase 3.5 validates headless/static compliance, no custom-op gate --
+  - id: phase_35_static_validate
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_35_static_validate_ppu_normal_entry_057"
+    validator: entry_static
+    transitions:
+      on_success: phase_4_rule_migration
+      on_failure: phase_3_entry_script
+
+  - id: phase_4_rule_migration
+    type: builtin
+    operation: "ppu_rule_based_migration"
+    validator: rule_migration
+    params:
+      pattern: "*.py"
+    transitions:
+      on_success: phase_5_validation
+
+  # -- Phase 5 custom_op_final_gate auto-skips (no contract fields) --
+  - id: phase_5_validation
+    type: loop
+    sub_workflow: repair_loop
+    input_mapping:
+      entry_script: "${state.phase_3_entry_script.run_command}"
+      project_dir: "${context.PROJECT_DIR}"
+    transitions:
+      on_success: phase_6_report
+      on_failure: complete
+
+  - id: phase_6_report
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_6_report_ppu"
+    validator: null
+    transitions:
+      on_success: phase_7a_evaluate
+      on_failure: complete
+
+  - id: phase_7a_evaluate
+    name: experience_evaluation
+    type: orchestration
+    handler: "experience_evaluator.ExperienceEvaluator.evaluate"
+    output_schema: {}
+    validator: null
+    retrieve_experience: false
+    transitions:
+      on_success: phase_7b_refine
+      on_failure: complete
+
+  - id: phase_7b_refine
+    name: experience_refinement
+    type: orchestration
+    handler: "experience_dispatcher.ExperienceDispatcher.dispatch_and_refine"
+    transitions:
+      on_success: complete
+      on_failure: complete
+
+# -- Repair loop uses the simpler structure (no deepwave-specific setup).
+#    GLM-OCR dependencies are handled by the container/base environment
+#    and the entry script.
+#    SGLang server startup must be included in the entry command. --
+sub_workflows:
+  repair_loop:
+    id: repair_loop
+    type: loop
+    max_iterations: 5
+    stagnation_threshold: 3
+    review_gate_enabled: false
+    max_review_iterations: 3
+    stop_conditions:
+      - condition: "$.script_exit_code == 0 and $.review_gate_enabled == false"
+        status: "success"
+      - condition: "$.script_exit_code == 0 and $.review_verdict_status == 'accept'"
+        status: "success"
+      - condition: "$.stagnation_count >= 3"
+        status: "stagnation"
+    phases:
+      - id: run_entry_script
+        type: shell
+        command: "${loop_vars.entry_script}"
+        cwd: "${loop_vars.project_dir}"
+        capture:
+          exit_code: "script_exit_code"
+          stdout: "script_stdout"
+          stderr: "script_stderr"
+          duration: "script_duration"
+        on_failure: "continue"
+
+      # -- custom_op_final_gate auto-skips when contract is absent --
+      - id: custom_op_final_gate
+        type: builtin
+        condition: "$.script_exit_code == 0"
+        params:
+          operation: "custom_op_final_gate"
+
+      - id: analyze_error
+        type: llm
+        agent: error_analyzer
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        prompt_template: "phase_error_recovery_container_ppu"
+        validator: repair_classification
+        output_as: "error_analysis"
+        retrieve_experience: true
+        experience_query:
+          source: "error_analysis"
+          signals:
+            - error_category
+            - error_stderr
+            - classification
+
+      - id: repair_dispatch
+        type: dispatch
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        route_field: "${error_analysis.repair_role}"
+        routes:
+          dependency_fixer: fix_dependency
+          code_adapter: fix_code
+          operator_fixer: fix_operator
+
+      - id: fix_dependency
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: dependency_fixer
+        prompt_template: "repair_dependency_fixer_container_ppu"
+
+      - id: fix_code
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: code_adapter
+        prompt_template: "repair_code_adapter_container_ppu"
+
+      - id: fix_operator
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: operator_fixer
+        prompt_template: "repair_operator_fixer_container_ppu"
+
+      - id: review_gate
+        type: review
+        condition: "$.script_exit_code == 0 and $.review_gate_enabled == true"
+        agent: main_engineer
+        prompt_template: "phase_5_review_container_ppu"
+        retry_json_parse: 2
+        verdicts:
+          accept:
+            action: "break"
+            set_status: "success"
+          reject:
+            action: "continue"
+            increment: "review_reject_count"
+            snapshot: true
+            then: "improvement_block"
+
+    blocks:
+      improvement_block:
+        phases:
+          - id: improvement_plan
+            type: llm
+            agent: error_analyzer
+            prompt_template: "phase_review_improvement_container_ppu"
+            output_as: "improvement_plan"
+
+          - id: improvement_dispatch
+            type: dispatch
+            route_field: "${improvement_plan.repair_role}"
+            routes:
+              dependency_fixer: imp_fix_dependency
+              code_adapter: imp_fix_code
+              operator_fixer: imp_fix_operator
+
+          - id: imp_fix_dependency
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: dependency_fixer
+            prompt_template: "repair_dependency_fixer_container_ppu"
+
+          - id: imp_fix_code
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: code_adapter
+            prompt_template: "repair_code_adapter_container_ppu"
+
+          - id: imp_fix_operator
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: operator_fixer
+            prompt_template: "repair_operator_fixer_container_ppu"
