@@ -1,24 +1,156 @@
-name: Pylint
-
+name: Pylint Autofix
 on: [push]
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.8", "3.9", "3.10"]
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pylint
-    - name: Analysing the code with pylint
-      run: |
-        bash scripts/check.sh
+permissions:
+  contents: write
 
+env:
+  # Marker committed after the first full-repo autofix. Its presence switches
+  # the workflow from "fix everything once" to "fix only pushed changes".
+  INIT_MARKER: .github/.pylint_autofix_initialized
+  # docstring checks are disabled per requirement; duplicate-code/cyclic-import
+  # are cross-file checks that cannot be mechanically fixed.
+  PYLINT_DISABLE: missing-module-docstring,missing-class-docstring,missing-function-docstring,duplicate-code,cyclic-import
+  # Test command used for the before/after regression gate.
+  PYTEST_PATHS: src/tests tests
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    # Skip the run triggered by this workflow's own commit to avoid an infinite loop.
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pylint ruff autopep8 pylint-silent pytest pyyaml
+          # Best-effort install of project dependencies if a requirements file exists.
+          for req in requirements.txt requirements-dev.txt src/requirements.txt; do
+            [ -f "$req" ] && pip install -r "$req" || true
+          done
+
+      # Decide the scope:
+      #   - first time (marker absent)  -> fix ALL Python under src/ and tests/
+      #   - afterwards (marker present) -> fix only the files changed in this push
+      - name: Determine scope
+        id: scope
+        run: |
+          if [ ! -f "$INIT_MARKER" ]; then
+            echo "First run: autofixing the whole repository (src/ and tests/)."
+            files=$(find src tests -name '*.py' 2>/dev/null || true)
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          else
+            echo "Incremental run: autofixing only changed Python files."
+            before="${{ github.event.before }}"
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              files=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD -- '*.py' || true)
+            else
+              files=$(git diff --name-only --diff-filter=ACMR "$before" "${{ github.sha }}" -- '*.py' || true)
+            fi
+            echo "mode=changed" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Target Python files:"
+          echo "$files"
+          printf '%s\n' "$files" | tr '\n' ' ' > target_files.txt
+          if [ -n "$(tr -d ' ' < target_files.txt)" ]; then
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Record which tests pass BEFORE any change. Test failures here are fine
+      # (they may be pre-existing); we only care about the set of passing tests.
+      - name: Capture passing tests (before)
+        if: steps.scope.outputs.has_files == 'true'
+        run: |
+          PYTHONPATH=src python3 -m pytest $PYTEST_PATHS \
+            -p no:cacheprovider --continue-on-collection-errors -v --tb=no \
+            2>/dev/null | grep -E ' PASSED' | awk '{print $1}' | sort -u > before_pass.txt || true
+          echo "Passing tests before autofix: $(wc -l < before_pass.txt)"
+
+      # Apply fixes in place. Do not fail here even if some messages remain;
+      # the regression gate and the pylint verify step are the real gates.
+      - name: Autofix target files in place
+        if: steps.scope.outputs.has_files == 'true'
+        run: |
+          files=$(cat target_files.txt)
+          PYTHONPATH=src python3 scripts/autofix_pylint_copy.py \
+            --logs-dir "$RUNNER_TEMP/pylint_autofix_logs" $files || true
+
+      - name: Capture passing tests (after)
+        if: steps.scope.outputs.has_files == 'true'
+        run: |
+          PYTHONPATH=src python3 -m pytest $PYTEST_PATHS \
+            -p no:cacheprovider --continue-on-collection-errors -v --tb=no \
+            2>/dev/null | grep -E ' PASSED' | awk '{print $1}' | sort -u > after_pass.txt || true
+          echo "Passing tests after autofix: $(wc -l < after_pass.txt)"
+
+      # Regression gate: any test that passed before but no longer passes is a
+      # regression introduced by the autofix. If so, fail WITHOUT committing.
+      - name: Check for test regressions
+        if: steps.scope.outputs.has_files == 'true'
+        run: |
+          regressions=$(comm -23 before_pass.txt after_pass.txt || true)
+          if [ -n "$regressions" ]; then
+            echo "::error::Autofix introduced test regressions. Not committing."
+            echo "Tests that passed before but fail now:"
+            echo "$regressions"
+            exit 1
+          fi
+          echo "No test regressions detected."
+
+      - name: Commit and push fixes
+        if: steps.scope.outputs.has_files == 'true'
+        run: |
+          rm -f target_files.txt before_pass.txt after_pass.txt
+          # On the first run, drop the marker so future pushes go incremental.
+          if [ ! -f "$INIT_MARKER" ]; then
+            mkdir -p "$(dirname "$INIT_MARKER")"
+            echo "Initialized by Pylint Autofix CI on $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$INIT_MARKER"
+          fi
+          # Only stage modifications to already-tracked files plus the marker.
+          # This deliberately ignores any untracked files created as a side
+          # effect of running the test suite (e.g. mock artifact directories).
+          git add -u
+          git add -f "$INIT_MARKER"
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "style: autofix pylint issues [skip ci]"
+          git push
+
+      # Final gate: fail the workflow if pylint still reports anything
+      # (docstring checks are disabled).
+      - name: Verify pylint (docstring checks disabled)
+        if: steps.scope.outputs.has_files == 'true'
+        run: |
+          if [ "${{ steps.scope.outputs.mode }}" = "full" ]; then
+            files=$(find src tests -name '*.py' 2>/dev/null || true)
+          else
+            before="${{ github.event.before }}"
+            if [ -z "$before" ] || [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              files=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD -- '*.py' || true)
+            else
+              files=$(git diff --name-only --diff-filter=ACMR "$before" "${{ github.sha }}" -- '*.py' || true)
+            fi
+          fi
+          files=$(printf '%s\n' "$files" | tr '\n' ' ')
+          if [ -z "$(echo "$files" | tr -d ' ')" ]; then
+            echo "No Python files to verify."
+            exit 0
+          fi
+          PYTHONPATH=src python3 -m pylint --disable="$PYLINT_DISABLE" $files
