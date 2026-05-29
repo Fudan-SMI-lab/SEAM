@@ -46,7 +46,12 @@ from core.custom_op_variants import (
     expanded_variant_contract_from_outputs,
     normalize_phase1_project_analysis,
 )
-from core.routes import SERVING_ROUTES, normalize_serving_phase1_surface, normalize_serving_phase3_contract
+from core.routes import (
+    SERVING_ROUTES,
+    normalize_serving_phase1_surface,
+    normalize_serving_phase3_contract,
+    serving_route_from_contract,
+)
 from core.phase_boundary import inject_phase_boundary
 from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_exec_env_ctx
 from harness.session.manager import extract_json_response
@@ -69,7 +74,10 @@ from core.repair_loop import (
 )
 from core.platform_policy import resolve_policy, PlatformPolicy
 from validators.validate_entry_script import validate as validate_entry_script, _extract_env_prefix
-from validators.validate_validation_final import validate_custom_op_final_gate
+from validators.validate_validation_final import (
+    validate_custom_op_final_gate,
+    validate_serving_final_gate,
+)
 from rule_strategies import create_migrator_resolved, resolve_rule_migration_strategy
 
 logger = logging.getLogger(__name__)
@@ -91,12 +99,13 @@ SUB_WORKFLOW_REPAIR_PHASE_ORDER = (
     "imp_fix_code",
     "imp_fix_operator",
 )
-SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
-SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 30000
+SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT: int | None = None
+SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT: int | None = None
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",
 }
+CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT = 100
 
 
 def _rewrite_container_to_host_path(
@@ -409,6 +418,25 @@ class WorkflowExecutor:
 
         backend = ContainerBackend(eb)
         backend.set_project_dir(self.project_dir)
+        if not backend.is_available():
+            runtime_cmd = getattr(backend, "_runtime_cmd", eb.runtime)
+            self._container_env_probe = {
+                "status": "container_runtime_unavailable",
+                "runtime": eb.runtime,
+                "runtime_cmd": runtime_cmd,
+                "deferred_until_execution": True,
+                "error": (
+                    f"Container runtime command '{runtime_cmd}' is not available; "
+                    "Phase 0/1 analysis may continue, but container execution will fail "
+                    "until the runtime is installed or exposed on PATH."
+                ),
+            }
+            self.exec_backend = backend
+            logger.warning(
+                "Container runtime %s is unavailable; deferring hard failure until container execution",
+                runtime_cmd,
+            )
+            return
         backend.preflight()
         self._container_env_probe = backend.probe_environment()
         self.exec_backend = backend
@@ -1431,7 +1459,7 @@ class WorkflowExecutor:
         return isinstance(report_paths, list) and isinstance(migration_summary, dict)
 
     @staticmethod
-    def _extract_output_format_from_prompt(prompt_text: str) -> str | None:
+    def _extract_output_format_from_prompt(prompt_text: object) -> str | None:
         return extract_output_format_from_prompt(prompt_text)
 
     @staticmethod
@@ -1476,8 +1504,8 @@ class WorkflowExecutor:
         self,
         phase: PhaseDefinition,
         config_keys: tuple[str, ...],
-        default_timeout: int,
-    ) -> int:
+        default_timeout: int | None,
+    ) -> int | None:
         for config_key in config_keys:
             raw_timeout = self.framework_config.get(config_key)
             if raw_timeout is None:
@@ -2211,7 +2239,7 @@ class WorkflowExecutor:
         if "project_analysis" in phase_id or phase_id == "phase_1":
             normalized["project_dir"] = prompt_context.get("project_dir", self.project_dir)
             self._normalize_project_analysis_variant_count(normalized)
-            normalize_serving_phase1_surface(normalized)
+            normalize_serving_phase1_surface(normalized, platform_policy=self.platform_policy)
 
         # phase_3_entry_script: inject entry_script_path and route-specific contracts.
         if "entry_script" in phase_id or phase_id == "phase_3":
@@ -2231,6 +2259,7 @@ class WorkflowExecutor:
                         route=str(ph1["migration_route"]),
                         project_dir=str(self.project_dir),
                         phase1_output=ph1,
+                        platform_policy=self.platform_policy,
                     )
                 elif normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(state, prompt_context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
@@ -2685,8 +2714,9 @@ class WorkflowExecutor:
             project_dir = str(context["PROJECT_DIR"])
         return validate_custom_op_opp_preflight(contract_map, project_dir)
 
-    @staticmethod
-    def _requires_custom_op_opp_preflight(contract: dict[str, object]) -> bool:
+    def _requires_custom_op_opp_preflight(self, contract: dict[str, object]) -> bool:
+        if self.platform_policy.id != "npu_ascend":
+            return False
         policy = contract.get("custom_op_evidence_policy")
         if isinstance(policy, str) and "require_real_ascend_cann_acl_opp_native_artifacts" in policy.lower():
             return True
@@ -2765,6 +2795,9 @@ class WorkflowExecutor:
 
         if operation == "custom_op_final_gate":
             return self._execute_custom_op_final_gate(state, context, loop_vars, loop_state)
+
+        if operation == "serving_final_gate":
+            return self._execute_serving_final_gate(state, context, loop_vars, loop_state)
 
         # Generic: just return
         if not operation:
@@ -2849,6 +2882,81 @@ class WorkflowExecutor:
             self._record_custom_op_gate_failure(loop_state, result)
         return "success", result
 
+    def _execute_serving_final_gate(
+        self,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+        loop_state: dict[str, Any] | None,
+    ) -> tuple[str, dict[str, Any]]:
+        contract = state.get("phase_3_entry_script")
+        if not isinstance(contract, dict):
+            result = {"operation": "serving_final_gate", "skipped": True, "passed": True, "route": None}
+            if loop_state is not None:
+                loop_state["serving_final_gate"] = result
+            return "success", result
+
+        route = serving_route_from_contract(cast(dict[str, object], contract))
+        if route not in SERVING_ROUTES:
+            result = {"operation": "serving_final_gate", "skipped": True, "passed": True, "route": route}
+            if loop_state is not None:
+                loop_state["serving_final_gate"] = result
+            return "success", result
+
+        gate_path = self._resolve_serving_final_gate_path(cast(dict[str, Any], contract), context, loop_vars)
+        result: dict[str, Any] = {
+            "operation": "serving_final_gate",
+            "skipped": False,
+            "path": str(gate_path),
+            "passed": False,
+            "route": route,
+            "errors": [],
+        }
+
+        if not gate_path.exists():
+            result["errors"] = [f"serving final gate report missing: {gate_path}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        try:
+            gate_size = gate_path.stat().st_size
+        except OSError as exc:
+            result["errors"] = [f"serving final gate report could not be stat'ed: {exc}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+        if gate_size > _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
+            result["errors"] = [f"serving final gate report too large: {gate_path}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+
+        try:
+            with gate_path.open("r", encoding="utf-8") as handle:
+                gate_data = cast(object, json.load(handle))
+        except (OSError, json.JSONDecodeError) as exc:
+            result["errors"] = [f"serving final gate report could not be read: {exc}"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+
+        if not isinstance(gate_data, dict):
+            result["errors"] = ["serving final gate report must be a JSON object"]
+            self._record_serving_gate_failure(loop_state, result)
+            return "success", result
+
+        gate_map = cast(dict[str, object], gate_data)
+        validation = validate_serving_final_gate(gate_map, expected_route=route)
+        result["passed"] = validation["passed"]
+        result["errors"] = validation["errors"]
+        result["summary"] = {
+            "migration_route": gate_map.get("migration_route"),
+            "serving_framework": gate_map.get("serving_framework"),
+            "serving_backend": gate_map.get("serving_backend"),
+            "full_migration_status": gate_map.get("full_migration_status"),
+        }
+        if loop_state is not None:
+            loop_state["serving_final_gate"] = result
+        if not validation["passed"]:
+            self._record_serving_gate_failure(loop_state, result)
+        return "success", result
+
     @staticmethod
     def _has_custom_op_contract(contract: dict[str, Any]) -> bool:
         return any(
@@ -2876,6 +2984,50 @@ class WorkflowExecutor:
             project_dir = self.project_dir
         return Path(str(project_dir)).resolve() / "migration_reports"
 
+    def _resolve_serving_final_gate_path(
+        self,
+        contract: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+    ) -> Path:
+        project_dir = None
+        if loop_vars and isinstance(loop_vars.get("project_dir"), str):
+            project_dir = loop_vars["project_dir"]
+        elif isinstance(context.get("PROJECT_DIR"), str):
+            project_dir = context["PROJECT_DIR"]
+        else:
+            project_dir = self.project_dir
+
+        project_path = Path(str(project_dir)).resolve()
+        reports_root = (project_path / "migration_reports").resolve()
+
+        def resolve_under_reports(candidate: Path) -> Path | None:
+            resolved = candidate.resolve()
+            try:
+                _ = resolved.relative_to(reports_root)
+            except ValueError:
+                return None
+            return resolved
+
+        report_paths = contract.get("required_report_paths")
+        if isinstance(report_paths, list):
+            for item in cast(list[object], report_paths):
+                if isinstance(item, str) and "serving_final_gate" in item:
+                    candidate = Path(item).expanduser()
+                    resolved = resolve_under_reports(candidate if candidate.is_absolute() else project_path / candidate)
+                    if resolved is not None:
+                        return resolved
+
+        reports_dir = contract.get("serving_reports_dir")
+        if isinstance(reports_dir, str) and reports_dir.strip():
+            candidate = Path(reports_dir).expanduser()
+            base = candidate if candidate.is_absolute() else project_path / candidate
+            resolved_base = resolve_under_reports(base)
+            if resolved_base is not None:
+                return resolved_base / "serving_final_gate.json"
+
+        return reports_root / "serving_final_gate.json"
+
     @staticmethod
     def _record_custom_op_gate_failure(loop_state: dict[str, Any] | None, result: dict[str, Any]) -> None:
         if loop_state is None:
@@ -2890,6 +3042,21 @@ class WorkflowExecutor:
         existing_stderr = str(loop_state.get("script_stderr") or "")
         loop_state["script_stderr"] = f"{existing_stderr}\n{gate_message}".strip()
         loop_state["custom_op_final_gate"] = result
+
+    @staticmethod
+    def _record_serving_gate_failure(loop_state: dict[str, Any] | None, result: dict[str, Any]) -> None:
+        if loop_state is None:
+            return
+        loop_state["script_exit_code"] = 1
+        errors = result.get("errors")
+        if isinstance(errors, list) and errors:
+            concise = "; ".join(str(error) for error in errors[:5])
+        else:
+            concise = "serving final gate failed"
+        gate_message = f"Serving final evidence gate failed: {concise}"
+        existing_stderr = str(loop_state.get("script_stderr") or "")
+        loop_state["script_stderr"] = f"{existing_stderr}\n{gate_message}".strip()
+        loop_state["serving_final_gate"] = result
 
     # ── Python phase ────────────────────────────────────────────────────
 
@@ -3215,7 +3382,13 @@ class WorkflowExecutor:
             error_sig = self._normalize_error_signature(
                 loop_state.get("script_stderr", "") or loop_state.get("last_error", "")
             )
-            if self._check_stagnation(error_sig, loop_state, stagnation_threshold):
+            effective_stagnation_threshold = self._effective_stagnation_threshold(
+                base_threshold=stagnation_threshold,
+                phase_id=phase.id,
+                state=state,
+                step_outputs=step_outputs,
+            )
+            if self._check_stagnation(error_sig, loop_state, effective_stagnation_threshold):
                 final_status = "stagnation"
                 logger.warning("Stagnation detected at iteration %d", iteration)
                 break
@@ -4465,6 +4638,47 @@ class WorkflowExecutor:
         return None
 
     # ── Stagnation detection ────────────────────────────────────────────
+
+    def _effective_stagnation_threshold(
+        self,
+        *,
+        base_threshold: int,
+        phase_id: str,
+        state: dict[str, Any],
+        step_outputs: dict[str, Any],
+    ) -> int:
+        if not self._active_custom_op_operator_repair(phase_id, state, step_outputs):
+            return base_threshold
+        raw_value = self.framework_config.get("custom_op_operator_stagnation_threshold")
+        try:
+            configured = int(raw_value) if raw_value is not None else CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid custom_op_operator_stagnation_threshold=%r; using default %s",
+                raw_value,
+                CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT,
+            )
+            configured = CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT
+        return max(base_threshold, configured)
+
+    def _active_custom_op_operator_repair(
+        self,
+        phase_id: str,
+        state: dict[str, Any],
+        step_outputs: dict[str, Any],
+    ) -> bool:
+        if phase_id != "phase_5_validation":
+            return False
+        phase3_contract = state.get("phase_3_entry_script")
+        if not isinstance(phase3_contract, dict) or not has_custom_op_contract(phase3_contract):
+            return False
+        error_analysis = step_outputs.get("error_analysis")
+        if isinstance(error_analysis, dict) and error_analysis.get("repair_role") == "operator_fixer":
+            return True
+        for value in step_outputs.values():
+            if isinstance(value, dict) and value.get("repair_role") == "operator_fixer":
+                return True
+        return False
 
     def _check_stagnation(
         self,

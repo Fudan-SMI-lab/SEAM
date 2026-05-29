@@ -52,7 +52,7 @@ class AssistedVerificationConfig:
     timeout_seconds: int = 30000
     verifier_role: str = "custom_op_verifier"
     verifier_lifecycle: str = "persistent"
-    verifier_agent: str = "Sisyphus-Junior"
+    verifier_agent: str = "hephaestus"
 
     @classmethod
     def from_framework_config(cls, framework_config: Mapping[str, object] | None) -> "AssistedVerificationConfig":
@@ -618,7 +618,7 @@ def build_phase3_verification_prompt(
     return (
         "# Phase 3 Custom-Op Validation-Coverage Verification\n\n"
         "You are the assisted verifier for SEAM. Use OpenCode tools to inspect the Phase 3 validation script and contract. Verify that the script/contract covers every verified Phase 1 custom-op unit, and for custom_op_variant projects every expanded variant identity.\n"
-        "Phase 3 has three routes: ordinary CUDA keeps the existing documented/project entry behavior unchanged; custom-op without variants must create/select a fail-closed validation script that checks per-fine-grained-unit Ascend OPP build/install provenance after Phase 5; custom-op with variants must additionally require one build.json row per expanded target variant, exact unit_identity set equality, and CANN/OPP build/install provenance for every expanded variant.\n"
+        "Phase 3 has three routes: ordinary CUDA keeps the existing documented/project entry behavior unchanged; custom-op without variants must create/select a fail-closed validation script that checks per-fine-grained-unit target-platform native build/install provenance after Phase 5; custom-op with variants must additionally require one build.json row per expanded target variant, exact unit_identity set equality, and target-platform native build/install provenance for every expanded variant. For Ascend policy this means Ascend C/CANN/OPP evidence; for PPU/MUXI or other policies use that platform's configured native custom-op evidence.\n"
         "If coverage is representative-only, sampled, family-only, non-executable, or missing per-variant obligations, report incomplete. Do not require Phase 5 migration_reports files to exist during Phase 3; accept a strict Phase 3 script contract when it declares the required reports and fails closed on missing/incomplete manifest, runtime, performance, build, and final-gate rows for every Phase 1 identity. covered_variant_identities may contain exact identity strings or structured count/base_units/axes summaries only when they prove the same exact Phase 1 set. Actual report existence/content is validated in Phase 5. This is a read-only verification step: do not modify files, do not create todos, do not launch background/sub-agent tasks, and do not continue after the JSON report.\n\n"
         f"Project dir: {project_dir}\n"
         f"Expected track: {inventory.track}\n"
