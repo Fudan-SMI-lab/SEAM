@@ -4,6 +4,7 @@ import pytest
 import tempfile
 import os
 from pathlib import Path
+from typing import cast
 
 from core.platform_policy import BUILTIN_PRESETS, PlatformPolicy
 from validators.validate_validation_final import (
@@ -19,7 +20,7 @@ class TestValidateCustomOpFinalGate:
 
     def test_legacy_npu_behavior_when_no_policy(self):
         """When platform_policy=None, NPU legacy behavior is preserved."""
-        data = {
+        data: dict[str, object] = {
             "inventory_count": 1,
             "manifest_entries": 1,
             "closed_pass_entries": 1,
@@ -36,7 +37,7 @@ class TestValidateCustomOpFinalGate:
     def test_npu_policy_still_works(self):
         """NPU policy preserves current behavior."""
         npu = BUILTIN_PRESETS["npu_ascend"]
-        data = {
+        data: dict[str, object] = {
             "inventory_count": 1,
             "manifest_entries": 1,
             "closed_pass_entries": 1,
@@ -98,7 +99,7 @@ class TestValidateCustomOpFinalGate:
             relative_src = "ppu_custom/src/kernel.cu"
             relative_log = "ppu_custom/build/build.log"
 
-            gate = {
+            gate: dict[str, object] = {
                 "inventory_count": 1,
                 "manifest_entries": 1,
                 "closed_pass_entries": 1,
@@ -248,7 +249,7 @@ class TestValidateCustomOpFinalGate:
             build_log = reports / "build.log"
             build_log.write_text("mxcc -shared kernel.cu -o libcustom.so # MACA MetaX build\n")
 
-            row = {
+            row: dict[str, object] = {
                 "name": "op_generic_musa",
                 "status": "FULL_PASS",
                 "unit_identity": "op_generic_musa",
@@ -322,7 +323,7 @@ class TestValidateCustomOpFinalGate:
                     "path": "migration_reports/performance.json",
                     "verified": True,
                     "unit_count": 1,
-                    "entries": {"op_generic_musa": row["performance_evidence"] | {"unit_identity": "op_generic_musa"}},
+                    "entries": {"op_generic_musa": {**cast(dict[str, object], row["performance_evidence"]), "unit_identity": "op_generic_musa"}},
                     "overall_baseline_seconds": 1.0,
                     "overall_custom_seconds": 0.5,
                     "overall_speedup_vs_baseline": 2.0,
@@ -1092,10 +1093,10 @@ class TestCPUBaselineConfig:
         assert _has_baseline_proof({"baseline_device": "cpu"}, policy) is True
         assert _has_baseline_proof({"cpu_baseline": True}, policy) is True
 
-    def test_cpu_baseline_rejected_by_default(self):
-        """Default CUDA-only baseline: cpu should NOT be accepted."""
+    def test_cpu_baseline_accepted_by_default_npu_policy(self):
+        """Default/legacy NPU validation uses CPU as the performance baseline."""
         from validators.validate_validation_final import _has_baseline_proof
-        assert _has_baseline_proof({"baseline_device": "cpu"}, None) is False
+        assert _has_baseline_proof({"baseline_device": "cpu"}, None) is True
 
     def test_cpu_baseline_does_not_imply_cpu_fallback_for_custom(self):
         """CPU baseline device value is accepted for BASELINE proof but custom device
@@ -1113,6 +1114,176 @@ class TestCPUBaselineConfig:
         policy = resolve_policy(tp, "test")
         assert _has_target_device_custom_proof({"custom_device": "cpu"}, policy) is False
         assert _has_target_device_custom_proof({"custom_device": "ppu"}, policy) is True
+
+
+def test_npu_final_gate_accepts_semicolon_separated_opp_source_paths(tmp_path):
+    """Strict Ascend OPP evidence may report multiple source files as a separated string."""
+    from validators.validate_validation_final import validate_custom_op_final_gate
+
+    root = tmp_path
+    reports = root / "migration_reports"
+    reports.mkdir()
+    (root / "opp" / "op_host").mkdir(parents=True)
+    (root / "opp" / "op_kernel").mkdir(parents=True)
+    (root / "opp" / "cmake_build" / "op_info").mkdir(parents=True)
+    (root / "opp" / "cmake_build" / "kernel_meta").mkdir(parents=True)
+    (root / "opp" / "cmake_build" / "include").mkdir(parents=True)
+    (root / "opp" / "op_host" / "a_host.cpp").write_text("aclrtLaunchKernel();", encoding="utf-8")
+    (root / "opp" / "op_host" / "b_host.cpp").write_text("aclrtLaunchKernel();", encoding="utf-8")
+    (root / "opp" / "op_kernel" / "a.cpp").write_text('#include "kernel_operator.h"\n__aicore__ void k(){}', encoding="utf-8")
+    (root / "opp" / "op_kernel" / "b.cpp").write_text('#include "kernel_operator.h"\n__aicore__ void k2(){}', encoding="utf-8")
+    (root / "opp" / "build.sh").write_text("cann ascendc op_host op_kernel install", encoding="utf-8")
+    (root / "opp" / "cmake_build" / "libcustom.so").write_bytes(b"\x7fELF kernel_operator aclrt op_host op_kernel aicore")
+    (root / "opp" / "cmake_build" / "op_info" / "aclnn_unit.json").write_text("{}", encoding="utf-8")
+    (root / "opp" / "cmake_build" / "kernel_meta" / "unit.o").write_bytes(b"kernel_operator aicore")
+    (root / "opp" / "cmake_build" / "include" / "aclrtlaunch_unit.h").write_text("aclrtLaunchKernel", encoding="utf-8")
+    build_log = reports / "ascendc_build.json"
+    build_log.write_text("CANN OPP AscendC op_host op_kernel install package kernel_operator.h -lascendcl", encoding="utf-8")
+    (reports / "performance.json").write_text(json.dumps({"unit_count": 1, "per_unit_entries": [{"unit_identity": "unit"}]}), encoding="utf-8")
+
+    row = {
+        "name": "unit",
+        "unit_identity": "unit",
+        "variant_or_signature": "unit/v1",
+        "inventory_granularity": "fine_grained",
+        "native_operator_symbols": ["unit_kernel"],
+        "kernel_functions": ["unit_kernel"],
+        "kernel_launch_sites": ["opp/op_kernel/a.cpp:unit_kernel"],
+        "public_entry_mapping": {"python_api": "ops.unit"},
+        "source_evidence": ["opp/op_kernel/a.cpp"],
+        "status": "PASS",
+        "opp_custom_op_artifact_evidence": {
+            "project_local": True,
+            "built": True,
+            "loaded": True,
+            "project_relative_path": "opp/cmake_build/libcustom.so",
+            "runtime_loaded_module_file": "opp/cmake_build/libcustom.so",
+            "op_host": "opp/op_host/a_host.cpp; opp/op_host/b_host.cpp",
+            "op_kernel": "opp/op_kernel/a.cpp; opp/op_kernel/b.cpp",
+            "opp_build_script": "opp/build.sh",
+            "generated_header_paths": ["opp/cmake_build/include/aclrtlaunch_unit.h"],
+            "op_info_paths": ["opp/cmake_build/op_info/aclnn_unit.json"],
+            "kernel_meta_paths": ["opp/cmake_build/kernel_meta/unit.o"],
+            "opp_install_evidence": {"path": "opp/cmake_build"},
+            "build_provenance": {"command": "bash opp/build.sh", "log_path": "migration_reports/ascendc_build.json"},
+        },
+        "adapter_evidence": {"imported": True, "passed": True},
+        "parity_evidence": {"verified": True, "passed": True},
+        "integration_e2e_evidence": {
+            "project_api_invoked": True,
+            "custom_op_route_executed": True,
+            "native_custom_op_route_executed": True,
+            "compiled_kernel_executed": True,
+        },
+        "public_api_route_evidence": {
+            "project_api_invoked": True,
+            "custom_op_route_executed": True,
+            "native_custom_op_route_executed": True,
+            "same_run": True,
+            "custom_call_count": 1,
+        },
+        "framework_integration_route_evidence": {
+            "project_api_invoked": True,
+            "custom_op_route_executed": True,
+            "native_custom_op_route_executed": True,
+            "compiled_kernel_executed": True,
+        },
+        "same_run_runtime_coverage": {
+            "same_run": True,
+            "custom_call_count": 1,
+            "project_api_route": True,
+            "custom_op_route_executed": True,
+            "native_custom_op_route_executed": True,
+            "compiled_kernel_executed": True,
+        },
+        "performance_evidence": {
+            "baseline_seconds": 1.0,
+            "custom_seconds": 0.5,
+            "speedup_vs_baseline": 2.0,
+            "baseline_device": "cpu",
+            "custom_device": "npu",
+            "cpu_baseline_invoked": True,
+            "npu_custom_invoked": True,
+            "project_api_invoked": True,
+            "custom_op_route_executed": True,
+        },
+        "no_fallback_no_zero_call_no_builtin_contamination": {
+            "passed": True,
+            "fallback_detected": False,
+            "zero_call_detected": False,
+            "builtin_contamination_detected": False,
+            "baseline_only_detected": False,
+            "stub_detected": False,
+        },
+    }
+    manifest = {"required_units": ["unit"]}
+    (reports / "migration_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    gate = {
+        "inventory_count": 1,
+        "manifest_entries": 1,
+        "closed_pass_entries": 1,
+        "remaining_entries": 0,
+        "full_migration_status": "FULL_PASS",
+        "project_e2e_passed": True,
+        "report_parity_passed": True,
+        "source_inventory": {
+            "discovery_complete": True,
+            "discovery_sources_checked": ["source", "bindings", "wrappers", "autograd", "aliases", "launch", "setup", "tests"],
+            "out_of_scope_source_groups": [],
+            "entries": [
+                {
+                    "unit_identity": "unit",
+                    "name": "unit",
+                    "variant_or_signature": "unit/v1",
+                    "inventory_granularity": "fine_grained",
+                    "native_operator_symbols": ["unit_kernel"],
+                    "kernel_functions": ["unit_kernel"],
+                    "kernel_launch_sites": ["opp/op_kernel/a.cpp:unit_kernel"],
+                    "public_entry_mapping": {"python_api": "ops.unit"},
+                    "source_evidence": ["opp/op_kernel/a.cpp"],
+                }
+            ],
+        },
+        "performance_report": {
+            "complete": True,
+            "unit_count": 1,
+            "path": "migration_reports/performance.json",
+            "project_relative_path": "migration_reports/performance.json",
+            "report_path": "migration_reports/performance.json",
+            "project_api_invoked": True,
+            "public_api_invoked": True,
+            "custom_op_route_executed": True,
+            "verified": True,
+            "baseline_device": "cpu",
+            "custom_device": "npu",
+            "cpu_baseline_invoked": True,
+            "npu_custom_invoked": True,
+            "overall_baseline_seconds": 1.0,
+            "overall_custom_seconds": 0.5,
+            "overall_speedup_vs_baseline": 2.0,
+            "overall_project_api_invoked": True,
+            "overall_custom_op_route_executed": True,
+            "overall_all_units_replaced": True,
+            "entries": {
+                "unit": {
+                    "unit_identity": "unit",
+                    "baseline_seconds": 1.0,
+                    "custom_seconds": 0.5,
+                    "speedup_vs_baseline": 2.0,
+                    "baseline_device": "cpu",
+                    "custom_device": "npu",
+                    "cpu_baseline_invoked": True,
+                    "npu_custom_invoked": True,
+                    "project_api_invoked": True,
+                    "custom_op_route_executed": True,
+                }
+            },
+        },
+        "rows": [row],
+    }
+
+    result = validate_custom_op_final_gate(gate, project_root=root)
+    assert result["passed"] is True, result["errors"]
 
 
 class TestUnitIdentityMatching:

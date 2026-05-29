@@ -8,7 +8,7 @@ external profile file is required.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +70,16 @@ class CustomOpEvidenceConfig:
 
 
 @dataclass(frozen=True)
+class ServingRuntimePolicy:
+    """Per-platform serving runtime/backend contract policy."""
+
+    backend: str = "generic"
+    execution_evidence_field: str = "accelerator_execution_evidence"
+    execution_observed_field: str = "accelerator_execution_observed"
+    runtime_evidence_field: str = "serving_runtime_evidence"
+
+
+@dataclass(frozen=True)
 class PlatformPolicy:
     """Accelerator platform policy for migration validation and guidance."""
 
@@ -82,6 +92,8 @@ class PlatformPolicy:
     custom_op_evidence: CustomOpEvidenceConfig = field(
         default_factory=CustomOpEvidenceConfig
     )
+
+    serving_runtime: ServingRuntimePolicy = field(default_factory=ServingRuntimePolicy)
 
     # -- Rule migration strategy selection --
     default_rule_migration_strategy: str = "report_only"
@@ -107,6 +119,8 @@ class PlatformPolicy:
 _NPU_ASCEND_EVIDENCE = CustomOpEvidenceConfig(
     target_device_values=["npu", "ascend", "torch_npu"],
     positive_boolean_fields=["npu_custom", "custom_npu", "npu_custom_invoked", "ascend_custom_invoked"],
+    performance_baseline_device_values=["cpu", "torch_cpu", "python_cpu", "cpu_reference"],
+    performance_baseline_boolean_fields=["cpu_baseline", "baseline_cpu", "cpu_baseline_invoked", "baseline_cpu_invoked"],
     artifact_path_tokens=[
         "/opp/", "/op_plugin", "ascend", "cann", "acl",
         "aclnn", "aicpu", "ascendc", "custom_op", "torch_npu",
@@ -229,6 +243,12 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="npu_ascend",
         display_name="Ascend NPU",
         custom_op_evidence=_NPU_ASCEND_EVIDENCE,
+        serving_runtime=ServingRuntimePolicy(
+            backend="ascend",
+            execution_evidence_field="npu_execution_evidence",
+            execution_observed_field="npu_execution_observed",
+            runtime_evidence_field="ascend_runtime_evidence",
+        ),
         default_rule_migration_strategy="cuda_to_npu",
         guidance_prefix="Ascend NPU",
         guidance_native_label="Ascend NPU",
@@ -238,6 +258,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
     "ppu_cuda_compatible": PlatformPolicy(
         id="ppu_cuda_compatible",
         display_name="PPU (CUDA-Compatible)",
+        serving_runtime=ServingRuntimePolicy(backend="ppu"),
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["ppu", "cuda", "gpu", "torch_cuda"],
             positive_boolean_fields=["ppu_custom", "custom_ppu", "ppu_custom_invoked", "cuda_custom", "custom_cuda"],
@@ -367,6 +388,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
     "musa_muxi": PlatformPolicy(
         id="musa_muxi",
         display_name="MUXI MUSA",
+        serving_runtime=ServingRuntimePolicy(backend="musa"),
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["musa", "muxi", "musa_gpu", "maca", "metax", "mxgpu", "torch_maca"],
             positive_boolean_fields=[
@@ -547,6 +569,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="generic_accelerator",
         display_name="Generic Accelerator",
         custom_op_evidence=_GENERIC_EVIDENCE,
+        serving_runtime=ServingRuntimePolicy(backend="generic"),
         guidance_prefix="Generic Accelerator",
         guidance_native_label="Target Accelerator",
         guidance_native_framework="target accelerator PyTorch primitives",
@@ -592,7 +615,7 @@ class TargetPlatformConfig:
     """Parsed ``target_platform`` block from workflow YAML."""
 
     preset: str
-    overrides: dict[str, Any] = field(default_factory=dict)
+    overrides: dict[str, object] = field(default_factory=dict)
 
 
 def parse_target_platform(raw: Any) -> TargetPlatformConfig | None:
@@ -606,15 +629,16 @@ def parse_target_platform(raw: Any) -> TargetPlatformConfig | None:
         raise ValueError(
             f"target_platform must be a mapping, got {type(raw).__name__}"
         )
-    preset = raw.get("preset")
+    raw_map = cast(dict[object, object], raw)
+    preset = raw_map.get("preset")
     if not preset or not isinstance(preset, str):
         raise ValueError("target_platform.preset must be a non-empty string")
-    overrides = raw.get("overrides")
+    overrides = raw_map.get("overrides")
     if overrides is not None and not isinstance(overrides, dict):
         raise ValueError("target_platform.overrides must be a mapping")
     return TargetPlatformConfig(
         preset=str(preset).strip(),
-        overrides=dict(overrides) if overrides else {},
+        overrides=cast(dict[str, object], overrides) if overrides else {},
     )
 
 
@@ -653,7 +677,7 @@ def _infer_policy_by_name(name: str) -> PlatformPolicy:
     return BUILTIN_PRESETS["generic_accelerator"]
 
 
-def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> PlatformPolicy:
+def _apply_overrides(base: PlatformPolicy, overrides: dict[str, object]) -> PlatformPolicy:
     """Apply user-supplied overrides from workflow YAML to a base policy.
 
     Only a whitelisted set of override keys is honoured to keep the
@@ -708,11 +732,33 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> Platfor
         )
 
     overridden_strategy = overrides.get("default_rule_migration_strategy")
+    serving_runtime = base.serving_runtime
+    serving_overrides = overrides.get("serving_runtime")
+    if isinstance(serving_overrides, dict):
+        serving_runtime = ServingRuntimePolicy(
+            backend=_string_override(serving_overrides, "backend", serving_runtime.backend),
+            execution_evidence_field=_string_override(
+                serving_overrides,
+                "execution_evidence_field",
+                serving_runtime.execution_evidence_field,
+            ),
+            execution_observed_field=_string_override(
+                serving_overrides,
+                "execution_observed_field",
+                serving_runtime.execution_observed_field,
+            ),
+            runtime_evidence_field=_string_override(
+                serving_overrides,
+                "runtime_evidence_field",
+                serving_runtime.runtime_evidence_field,
+            ),
+        )
 
     return PlatformPolicy(
         id=str(overridden_id) if isinstance(overridden_id, str) else base.id,
         display_name=str(overridden_display_name) if isinstance(overridden_display_name, str) else base.display_name,
         custom_op_evidence=ce,
+        serving_runtime=serving_runtime,
         default_rule_migration_strategy=(
             str(overridden_strategy)
             if isinstance(overridden_strategy, str) and overridden_strategy.strip()
@@ -725,7 +771,14 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> Platfor
     )
 
 
-def _list_override(overrides: dict[str, Any], key: str, default: list[str]) -> list[str]:
+def _string_override(overrides: dict[str, object], key: str, default: str) -> str:
+    value = overrides.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+def _list_override(overrides: dict[str, object], key: str, default: list[str]) -> list[str]:
     """Return an override list value or the default."""
     val = overrides.get(key)
     if isinstance(val, list):
@@ -733,7 +786,7 @@ def _list_override(overrides: dict[str, Any], key: str, default: list[str]) -> l
     return default
 
 
-def _bytes_list_override(overrides: dict[str, Any], key: str, default: list[bytes]) -> list[bytes]:
+def _bytes_list_override(overrides: dict[str, object], key: str, default: list[bytes]) -> list[bytes]:
     """Return an override list of bytes or the default."""
     val = overrides.get(key)
     if isinstance(val, list):
