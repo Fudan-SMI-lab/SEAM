@@ -1,0 +1,29 @@
+kind: workflow_selector
+name: "smoke-auto-select"
+description: "Smoke test: auto-select the best workflow with overrides applied"
+selector:
+  agent: "build"
+  fallback: "experience_memory_test.yaml"
+candidate_workflows:
+  - path: "npu_migration_v2.yaml"
+    description: "Ascend NPU migration (CUDA -> Ascend)"
+  - path: "ppu_migration_v2_container.yaml"
+    description: "PPU migration with container backend"
+  - path: "musa_muxi_migration_v2_container_baseaware_entryfix.yaml"
+    description: "MUSA/Muxi migration with container, base-aware dependency selection, and custom-op gate support"
+  - path: "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml"
+    description: "MUSA/Muxi migration with container and normal entry-script validation (no custom-op gate)"
+  - path: "musa_muxi_migration_v2_container_baseaware_entryfix_sglang.yaml"
+    description: "MUSA/Muxi migration with container, SGLang/MACA normal entry-script validation"
+  - path: "experience_memory_test.yaml"
+    description: "Experience memory test workflow"
+fallback: "experience_memory_test.yaml"
+overrides:
+  experience:
+    enabled: false
+    memory_enabled: false
+    phase7_enabled: false
+  globals:
+    max_repair_iterations: 8
+    review_gate_enabled: false
+    max_review_iterations: 2

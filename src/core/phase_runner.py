@@ -28,6 +28,7 @@ from core.custom_op_variants import (
 from core.execution_backend import get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_env_ctx
 from core.paths import resolve_relative_path, workspace_root
 from core.phase_boundary import inject_phase_boundary
+from core.platform_policy import PlatformPolicy, resolve_policy
 from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, resolve_phase6_timeout
 from core.prompt_loader import PromptLoader
 from core.routes import (
@@ -196,6 +197,7 @@ class PhaseRunner:
     max_retry: int
     phase_specs: dict[str, PhaseSpec]
     workflow: WorkflowDefinition | None
+    platform_policy: PlatformPolicy
     framework_config: dict[str, object]
     _runtime_skill_resolver: RuntimeSkillResolver | None
     _runtime_phase_index: dict[str, PhaseDefinition]
@@ -214,6 +216,10 @@ class PhaseRunner:
         self.prompt_loader = prompt_loader
         self.validator = validator
         self.workflow = workflow
+        self.platform_policy = resolve_policy(
+            getattr(workflow, "target_platform", None) if workflow is not None else None,
+            workflow.name if workflow is not None else "",
+        )
         self.framework_config = framework_config or {}
         self._runtime_skill_resolver = None
         self.max_retry = 3
@@ -974,7 +980,7 @@ class PhaseRunner:
         )
 
     @staticmethod
-    def _extract_output_format_from_prompt(prompt_text: str) -> str | None:
+    def _extract_output_format_from_prompt(prompt_text: object) -> str | None:
         return extract_output_format_from_prompt(prompt_text)
 
     def _run_assisted_verification(
@@ -1364,7 +1370,7 @@ class PhaseRunner:
             normalized["python_version"] = self._current_python_version()
         if phase.prompt_id == "phase_1_project_analysis":
             normalize_phase1_project_analysis(normalized, project_dir=prompt_context["project_dir"])
-            normalize_serving_phase1_surface(normalized)
+            normalize_serving_phase1_surface(normalized, platform_policy=self.platform_policy)
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
             previous_output_map = cast(dict[str, object], previous_outputs) if isinstance(previous_outputs, dict) else {}
@@ -1386,6 +1392,7 @@ class PhaseRunner:
                         route=phase1_route,
                         project_dir=str(prompt_context["project_dir"]),
                         phase1_output=phase1_output,
+                        platform_policy=self.platform_policy,
                     )
                 elif self._custom_op_required_signal(previous_output_map, context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")

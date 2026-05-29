@@ -322,6 +322,12 @@ sub_workflows:
         params:
           operation: "custom_op_final_gate"
 
+      - id: serving_final_gate
+        type: builtin
+        condition: "$.script_exit_code == 0"
+        params:
+          operation: "serving_final_gate"
+
       - id: analyze_error
         type: llm
         agent: error_analyzer

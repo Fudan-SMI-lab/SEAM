@@ -43,6 +43,7 @@ Choose the Python environment that the target runtime should actually use. Prefe
 - CPU fallback packages or CPU fallback code are not valid fixes.
 
 ## Hard Rules
+- Do not ask the user or call the `question` tool. If a decision is required, choose the safest autonomous option that advances validation evidence.
 - End with exactly one JSON object containing at least `venv_path`, `python_path`, and `installed_packages`.
 - `python_path` must be directly executable in the target runtime.
 - Do not claim installed packages were installed unless the install actually happened.

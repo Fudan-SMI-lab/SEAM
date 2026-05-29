@@ -11,6 +11,14 @@ This is a CUDA source-project migration workflow targeting the platform selected
 - Create a script only when no usable command exists, and then exercise all core project features.
 - Do not choose a smoke, MVP, import-only, direct-only, or partial command when the project has a broader migration target.
 
+## Route-Aware Phase 3 Contract
+- Ordinary CUDA route: preserve existing behavior. Select the documented/project validation command or last-resort non-custom-op smoke script exactly as before; do not add custom-op or serving report requirements.
+- Custom-op route without expanded variants: select or generate a fail-closed validation script contract. The script must fail after Phase 5 unless every fine-grained Phase 1 unit has corresponding target custom-op build/install provenance in the Phase 5 reports, strict `unit_identity` closure, runtime coverage, no-fallback evidence, and CPU-baseline vs target-custom performance evidence where platform policy requires it.
+- Custom-op route with expanded variants: apply the custom-op requirements and additionally require exact expanded variant identity closure across source inventory, manifest, runtime coverage, performance report, and final-gate rows. Collapsed rows, representative rows, and build.json existence-only checks are invalid.
+- vLLM serving route: return `entry_script_kind="vllm_serving_validation"`, `serving_framework="vllm"`, platform-policy `serving_backend`, the real project launch command, readiness probe, request validation, project demo/test/API files, expected outputs, runtime env, serving reports dir, required report paths, required checks, and serving validation obligations. The framework will normalize this into a generated `validate_vllm_serving.py` wrapper.
+- SGLang serving route: return `entry_script_kind="sglang_serving_validation"`, `serving_framework="sglang"`, platform-policy `serving_backend`, the same strict serving contract fields, and route/framework evidence tied to project-provided demo/test/API files. The framework will normalize this into a generated `validate_sglang_serving.py` wrapper.
+- For serving routes, do not use inline shell env prefixes as `run_command`; record environment setup in the serving contract and wrapper. Import-only and smoke-only serving checks are not valid final validation surfaces.
+
 ## Migration Constraints (from Phase 1.5)
 {constraint_summary}
 

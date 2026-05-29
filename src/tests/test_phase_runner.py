@@ -671,6 +671,8 @@ def test_run_phase_6_fallback_on_session_error(tmp_path: Path) -> None:
     assert summary["files_migrated"] == 0
     assert summary["files_skipped"] == 0
     assert summary["phase5_status"] == "success"
+    assert summary["migration_success"] is False
+    assert summary["phase5_terminal_failure"] is False
     assert session_mgr.send_calls[0][2] == 600
     assert session_mgr.send_calls[0][3] == 0
     assert all(Path(path).exists() for path in report_paths)
@@ -1917,3 +1919,39 @@ def test_phase_runner_phase1_normalizer_discovers_project_fields(tmp_path: Path)
     assert normalized["entry_script"] == "test_data_and_scripts/main.py"
     assert normalized["migration_route"] == "custom_op"
     assert validate_project_analysis(normalized)["passed"] is True
+
+
+def test_run_phase_6_fallback_preserves_phase5_stagnation_as_failure(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    artifact_store.save_phase_output(
+        "phase_5_validation",
+        {"status": "stagnation", "final_status": "stagnation", "script_exit_code": 1},
+        attempt=1,
+    )
+    artifact_store.mark_validated(
+        "phase_5_validation",
+        {"status": "stagnation", "final_status": "stagnation", "script_exit_code": 1},
+    )
+    session_mgr = Phase6SessionManager(
+        phase_6_response=json.dumps({"ok": False, "error": "Conversation history too large to compact - exceeds model context limit"})
+    )
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+    summary = cast(dict[str, object], result["migration_summary"])
+    report_paths = cast(list[str], result["report_paths"])
+    summary_report = Path(report_paths[0]).read_text(encoding="utf-8")
+
+    assert result["fallback"] is True
+    assert summary["overall_status"] == "partial"
+    assert summary["migration_success"] is False
+    assert summary["phase5_status"] == "stagnation"
+    assert summary["phase5_terminal_failure"] is True
+    assert "- Phase 5 status: stagnation" in summary_report
+    assert "- Migration success: False" in summary_report
+    assert "- Phase 5 terminal failure: True" in summary_report

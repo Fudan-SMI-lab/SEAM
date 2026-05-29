@@ -2,6 +2,7 @@ framework:
   stagnation_threshold: 3           # consecutive same-error breaks
   max_iterations: 10                # default max repair iterations
   max_entry_script_revisions: 2       # bounded Phase 5 entry command revisions
+  custom_op_operator_repair_agent: "hephaestus"  # direct custom-op agent for operator repairs
 
   review:
     enabled: false                    # opt-in review gate
@@ -17,7 +18,7 @@ framework:
     timeout_seconds: 30000
     verifier_role: "custom_op_verifier"
     verifier_lifecycle: "persistent"
-    verifier_agent: "Sisyphus-Junior"
+    verifier_agent: "hephaestus"
 
   server:
     url: ""                           # empty = auto-start

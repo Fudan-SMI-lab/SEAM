@@ -7,6 +7,13 @@ You are executing `{phase_name}` for `{project_dir}`.
 
 *Note: A detailed, project-specific constraint summary will be generated in Phase 1.5.*
 
+## Serving Route Detection
+- Classify `migration_route` as exactly one of `ordinary_cuda`, `custom_op`, `custom_op_with_variants`, `vllm_serving`, or `sglang_serving`.
+- Use `vllm_serving` only when project files show a vLLM serving runtime surface, and `sglang_serving` only when project files show an SGLang serving runtime surface. Do not infer either route from package availability alone.
+- For vLLM/SGLang routes, include `serving_runtime_surface` with `serving_framework`, `serving_backend`, `detection_complete`, `launch_command`, `launch_evidence`, `project_demo_or_test_evidence`, `project_test_files`, `readiness_probe`, `request_validation`, `expected_outputs`, `required_runtime_env`, and `unresolved_source_groups`.
+- Serving route classification is fail-closed: framework must match the route, launch/demo/API/test evidence must be project-local, `project_demo_or_test_evidence` and `project_test_files` must be non-empty, and `unresolved_source_groups` must be empty when `detection_complete=true`.
+- Keep serving backend evidence platform-policy driven. Do not copy Ascend-only CANN/`torch_npu` requirements into PPU/MUSA routes unless the selected platform policy explicitly requires them.
+
 ## Goal
 - Understand the project structure and likely execution path.
 - Extract dependency signals relevant to CUDA to NPU migration.

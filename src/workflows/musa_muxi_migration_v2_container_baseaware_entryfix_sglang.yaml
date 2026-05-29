@@ -1,64 +1,61 @@
-# Auto-mode variant of the PPU migration workflow — vLLM 0.18 smoke build.
-#
-# This file is based on ppu_migration_v2_container_vllm018_smoke.yaml but
-# uses execution_backend.mode: auto with candidate images to verify
-# agent-assisted image selection (not fixed-image fallback).
-#
-# PPU environments expose CUDA-compatible APIs (torch.cuda).
-# This workflow does NOT convert torch.cuda to torch.npu.
-#
-# NOTE: runtime: docker is emulated by Podman in this environment.
-# Do NOT run Docker/Podman when validating this file — only parse/load it.
-# Docker CLI is emulated by Podman here, so runtime is acceptable.
-
-name: ppu_migration_auto_vllm018_smoke
+name: musa_muxi_migration_v2_container_baseaware_entryfix_sglang
 version: "2.0"
 description: >
-  CUDA to PPU automated migration workflow with auto execution backend
-  and agent-assisted image selection. Verifies mode: auto with candidate
-  image list; the agent must choose the valid vLLM 0.18 image rather
-  than falling back to a fixed image.
-   PPU environments expose CUDA-compatible APIs via torch.cuda.
+  CUDA to MUSA/MUXI container workflow for SGLang/MACA normal entry-script validation.
+  This variant keeps the MUXI execution/backend policy but disables the
+  custom-op contract route so Phase 5 validates the entry behavior without
+  requiring custom-op final-gate reports.
 
 target_platform:
-  preset: ppu_cuda_compatible
+  preset: musa_muxi
+  overrides:
+    custom_op_evidence:
+      performance_validation: presence_only
+      performance_baseline_device_values:
+        - musa
+        - muxi
+        - torch_musa
+        - musa_gpu
+        - maca
+        - metax
+        - torch_maca
+        - mxgpu
+        - cpu
+        - torch_cpu
+      performance_baseline_boolean_fields:
+        - musa_baseline
+        - baseline_musa
+        - musa_baseline_invoked
+        - baseline_musa_invoked
+        - maca_baseline
+        - baseline_maca
+        - maca_baseline_invoked
+        - baseline_maca_invoked
+        - cpu_baseline
+        - baseline_cpu
+        - baseline_cpu_invoked
+        - baseline_cpu_invoked
+
+rule_migration:
+  strategy_file: rule_strategies/report_only.yaml
 
 execution_backend:
-  mode: auto
+  mode: container
   source: image
   runtime: docker
-
-  # Image candidates — the agent MUST select one from this list.
-  # The first candidate is intentionally invalid to prove real selection
-  # (not just a fixed-image fallback that ignores the list).
-  images:
-    - "localhost/seam-auto-intentionally-missing:latest"
-    - "egslingjun-registry.cn-wulanchabu.cr.aliyuncs.com/egslingjun/inference-xpu-pytorch:26.04-v2.1.0-vllm0.18.0-torch2.9-cu130-20260508"
-
-  container_name_prefix: "seam-ppu-smoke"
-
-  # PPU device passthrough — observed nodes in the current environment.
-  # PPU0–PPU7 exposed as individual device nodes.
+  image: "cr.metax-tech.com/public-ai-release/maca/sglang:0.5.9-maca.ai3.5.3.208-torch2.8-py310-ubuntu22.04-amd64"
+  container_name_prefix: "zihang-seam-musa-muxi-sglang"
   devices:
-    - /dev/alixpu
-    - /dev/alixpu_ctl
-    - /dev/alixpu_ppu0
-    - /dev/alixpu_ppu1
-    - /dev/alixpu_ppu2
-    - /dev/alixpu_ppu3
-    - /dev/alixpu_ppu4
-    - /dev/alixpu_ppu5
-    - /dev/alixpu_ppu6
-    - /dev/alixpu_ppu7
-    # Optional devices — comment out if not needed for specific runs:
-    # - /dev/alixpu-caps
-    # - /dev/alixpu-caps-imex-channels
-    # - /dev/alixpu_sep
-    # - /dev/dri
-
+    - /dev/mxcd
+    - /dev/dri
   container_workdir: "/workspace"
-
-  cleanup: true
+  env_vars:
+    PYTHONUNBUFFERED: "1"
+    MUSA_VISIBLE_DEVICES: "1"
+    MACA_VISIBLE_DEVICES: "1"
+    CUDA_VISIBLE_DEVICES: "1"
+  network_mode: host
+  cleanup: false
 
 globals:
   max_repair_iterations: 5
@@ -66,6 +63,7 @@ globals:
   review_gate_enabled: false
   max_review_iterations: 3
   max_entry_script_revisions: 2
+  custom_op_route_enabled: false
 
 experience:
   enabled: false
@@ -110,11 +108,10 @@ terminals:
   failed: "Migration failed"
 
 phases:
-
   - id: phase_0_env_detect
     type: llm
     agent: main_engineer
-    prompt_template: "phase_0_env_detect_ppu"
+    prompt_template: "phase_0_env_detect_musa"
     validator: env_detect
     transitions:
       on_success: phase_1_project_analysis
@@ -122,7 +119,7 @@ phases:
   - id: phase_1_project_analysis
     type: llm
     agent: main_engineer
-    prompt_template: "phase_1_project_analysis_ppu"
+    prompt_template: "phase_1_project_analysis_musa"
     validator: project_analysis
     input_mapping:
       project_dir: "${context.PROJECT_DIR}"
@@ -139,9 +136,9 @@ phases:
   - id: phase_1_5_constraint_summary
     type: llm
     agent: main_engineer
-    prompt_template: "phase_1_5_constraint_summary_ppu"
-    validator: null
     condition: "${context.USER_CONSTRAINTS} != ''"
+    prompt_template: "phase_1_5_constraint_summary_musa"
+    validator: null
     input_mapping:
       project_dir: "${context.PROJECT_DIR}"
       user_constraints: "${context.USER_CONSTRAINTS}"
@@ -152,7 +149,7 @@ phases:
   - id: phase_2_venv_create
     type: llm
     agent: main_engineer
-    prompt_template: "phase_2_venv_create_ppu"
+    prompt_template: "phase_2_venv_create_musa_container_baseaware"
     validator: venv
     transitions:
       on_success: phase_3_entry_script
@@ -160,7 +157,7 @@ phases:
   - id: phase_3_entry_script
     type: llm
     agent: main_engineer
-    prompt_template: "phase_3_entry_script_ppu"
+    prompt_template: "phase_3_entry_script_musa_container_baseaware_entryfix_normal"
     validator: entry_script
     transitions:
       on_success: phase_35_static_validate
@@ -168,7 +165,7 @@ phases:
   - id: phase_35_static_validate
     type: llm
     agent: main_engineer
-    prompt_template: "phase_35_static_validate_ppu"
+    prompt_template: "phase_35_static_validate_musa_baseaware"
     validator: entry_static
     transitions:
       on_success: phase_4_rule_migration
@@ -176,7 +173,7 @@ phases:
 
   - id: phase_4_rule_migration
     type: builtin
-    operation: "ppu_rule_based_migration"
+    operation: "rule_based_migration"
     validator: rule_migration
     params:
       pattern: "*.py"
@@ -196,7 +193,7 @@ phases:
   - id: phase_6_report
     type: llm
     agent: main_engineer
-    prompt_template: "phase_6_report_ppu"
+    prompt_template: "phase_6_report_musa"
     validator: null
     transitions:
       on_success: phase_7a_evaluate
@@ -264,7 +261,7 @@ sub_workflows:
         type: llm
         agent: error_analyzer
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
-        prompt_template: "phase_error_recovery_container_ppu"
+        prompt_template: "phase_error_recovery_container_musa"
         validator: repair_classification
         output_as: "error_analysis"
         retrieve_experience: true
@@ -288,25 +285,25 @@ sub_workflows:
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: dependency_fixer
-        prompt_template: "repair_dependency_fixer_container_ppu"
+        prompt_template: "repair_dependency_fixer_container_musa"
 
       - id: fix_code
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: code_adapter
-        prompt_template: "repair_code_adapter_container_ppu"
+        prompt_template: "repair_code_adapter_container_musa"
 
       - id: fix_operator
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: operator_fixer
-        prompt_template: "repair_operator_fixer_container_ppu"
+        prompt_template: "repair_operator_fixer_container_musa"
 
       - id: review_gate
         type: review
         condition: "$.script_exit_code == 0 and $.review_gate_enabled == true"
         agent: main_engineer
-        prompt_template: "phase_5_review_container_ppu"
+        prompt_template: "phase_5_review_container_musa"
         retry_json_parse: 2
         verdicts:
           accept:
@@ -324,7 +321,7 @@ sub_workflows:
           - id: improvement_plan
             type: llm
             agent: error_analyzer
-            prompt_template: "phase_review_improvement_container_ppu"
+            prompt_template: "phase_review_improvement_container_musa"
             output_as: "improvement_plan"
 
           - id: improvement_dispatch
@@ -339,16 +336,16 @@ sub_workflows:
             condition: "$.review_verdict_status is defined or true"
             type: llm
             agent: dependency_fixer
-            prompt_template: "repair_dependency_fixer_container_ppu"
+            prompt_template: "repair_dependency_fixer_container_musa"
 
           - id: imp_fix_code
             condition: "$.review_verdict_status is defined or true"
             type: llm
             agent: code_adapter
-            prompt_template: "repair_code_adapter_container_ppu"
+            prompt_template: "repair_code_adapter_container_musa"
 
           - id: imp_fix_operator
             condition: "$.review_verdict_status is defined or true"
             type: llm
             agent: operator_fixer
-            prompt_template: "repair_operator_fixer_container_ppu"
+            prompt_template: "repair_operator_fixer_container_musa"

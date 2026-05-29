@@ -7,7 +7,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 ## Context
 This is a CUDA - PPU migration workflow for a NORMAL APPLICATION DEMO. The selected command will become the target runtime validation surface after rule migration and repair. PPU exposes CUDA-compatible APIs (`torch.cuda`), so `torch.cuda` calls are expected and correct in this environment.
 
-This workflow uses the normal-entry route. Custom-op contract fields (`entry_script_kind`, `reports_dir`, `required_report_paths`, `required_checks`, `operator_discovery_sources`, etc.) are omitted by route policy — the framework disables custom-op contract injection for this workflow, and the target runtime custom_op_final_gate auto-skips when no contract fields are present.
+This workflow uses the normal-entry route. Custom-op/serving contract fields (`entry_script_kind`, `reports_dir`, `serving_reports_dir`, `required_report_paths`, `required_checks`, `operator_discovery_sources`, etc.) are omitted by route policy — the framework disables custom-op contract injection for this workflow, and the target runtime `custom_op_final_gate` / `serving_final_gate` auto-skip when no route contract fields are present.
 
 ## Goal
 - Identify the TRUE entry script or command that validates the project's full real-world migration target.

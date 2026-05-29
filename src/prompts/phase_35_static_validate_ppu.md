@@ -17,6 +17,7 @@ Examine the entry script file at `{entry_script_path}`. This path is a **host-vi
 3. **Interactive GUI/display calls**: `cv2.imshow()`, `cv2.waitKey()`, `matplotlib.pyplot.show()`, `Tk().mainloop()`, PyQt/PySide event loops.
 4. **Debug/REPL breakpoints**: `pdb.set_trace()`, `breakpoint()`, `IPython.embed()`, `code.interact()`.
 5. **Blocking waits**: `threading.Event().wait()`, `queue.get()` without timeout in the main execution path.
+6. **Serving validation wrappers**: for `vllm_serving_validation` and `sglang_serving_validation`, the selected entry must be the generated `validate_vllm_serving.py` or `validate_sglang_serving.py` wrapper. It must configure PPU/platform runtime env, execute the real project launch/demo/API request path, write `serving_final_gate.json`, and reject inline shell env prefixes, CPU fallback, and smoke/import-only checks.
 
 ## Custom-Op Contract Gate
 

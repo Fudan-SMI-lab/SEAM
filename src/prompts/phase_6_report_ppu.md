@@ -20,6 +20,7 @@ Use the full upstream context from `{previous_outputs}` and write reports into `
 - Do not invent credentials or redact non-existent secrets; report only what was actually observed.
 - Keep the reports specific to this run and grounded in `{previous_outputs}`.
 - For custom-op migrations, summarize compliance using the fine-grained source inventory, migration manifest, final gate, unit identities, variants/signatures, kernel launch sites, public-entry mappings, and any out-of-scope source groups.
+- For vLLM/SGLang serving migrations, summarize compliance from the current `serving_final_gate.json`: route/framework/backend, launch command, readiness probe, request validation, project demo/test/API files, expected outputs, accelerator runtime evidence, no-fallback flags, and final `full_migration_status`. Do not convert import-only, smoke-only, stale, or fallback evidence into migration success.
 - If report generation requires package installs or tooling setup, prefer PPU vendor index, PTG/t-head artifactory, or offline PPU wheelhouse. Public PyPI can contaminate the PPU environment.
 - After writing the reports, you may reason freely in your response, but end it with a single JSON object containing exactly the required keys for this phase. No other JSON objects should appear.
 
