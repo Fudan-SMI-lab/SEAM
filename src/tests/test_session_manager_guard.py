@@ -88,7 +88,7 @@ def test_send_command_returns_normal_text_when_idle_and_todos_complete() -> None
     assert result == "phase complete"
 
 
-def test_send_command_timeout_none_uses_finite_post_timeout() -> None:
+def test_send_command_timeout_none_uses_unbounded_post_timeout() -> None:
     manager = _manager_with_message({
         "info": {"finish": "stop"},
         "parts": [{"type": "text", "text": "phase complete"}],
@@ -98,7 +98,7 @@ def test_send_command_timeout_none_uses_finite_post_timeout() -> None:
 
     post_call = next(call for call in manager.calls if call["method"] == "POST")
     assert result == "phase complete"
-    assert post_call["timeout"] == manager_module.DEFAULT_SESSION_WAIT_TIMEOUT + 30
+    assert post_call["timeout"] is None
 
 
 def test_send_command_rejects_non_finite_timeout_without_posting() -> None:
@@ -152,6 +152,104 @@ def test_send_command_rejects_compaction_response_as_incomplete() -> None:
     assert result["ok"] is False
     assert "Compaction response is incomplete" in result["error"]
     assert not any(call["method"] == "GET" and call["path"] == "/session/status" for call in manager.calls)
+
+
+def test_send_command_allows_nested_task_usage_in_phase_prompts() -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "working"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [
+            {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "tool", "tool": "task", "state": {"status": "running"}}]},
+        ]},
+        ("POST", "/session/ses-1/abort"): {"ok": True, "data": {}},
+    })
+
+    result = manager.send_command(
+        "ses-1",
+        "Do not delegate, spawn nested agents, start background tasks, or ask another model/session to investigate.",
+        retries=0,
+    )
+
+    assert result == "working"
+    assert not any(call["method"] == "POST" and call["path"] == "/session/ses-1/abort" for call in manager.calls)
+
+
+def test_nested_task_prompt_does_not_enable_polling_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): [
+            {"ok": True, "data": {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "working"}]}},
+        ],
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): [
+            {"ok": True, "data": []},
+            {"ok": True, "data": [{"parts": [{"type": "tool", "tool": "task", "state": {"status": "running"}}]}]},
+        ],
+        ("POST", "/session/ses-1/abort"): {"ok": True, "data": {}},
+    })
+    monkeypatch.setattr(manager_module, "NESTED_TASK_GUARD_POLL_SECONDS", 0.01)
+
+    result = manager.send_command(
+        "ses-1",
+        "Do not delegate, spawn nested agents, start background tasks, or ask another model/session to investigate.",
+        retries=0,
+    )
+
+    assert result == "working"
+    assert not any(call["method"] == "POST" and call["path"] == "/session/ses-1/abort" for call in manager.calls)
+
+
+def test_send_command_aborts_blocking_question_tool_usage() -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "working"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [
+            {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "tool", "tool": "question", "state": {"status": "running"}}]},
+        ]},
+        ("POST", "/session/ses-1/abort"): {"ok": True, "data": {}},
+    })
+
+    result = json.loads(manager.send_command(
+        "ses-1",
+        "Do not ask questions or request clarification; return JSON.",
+        retries=0,
+    ))
+
+    assert result["ok"] is False
+    assert "blocking user questions" in result["error"]
+    assert any(call["method"] == "POST" and call["path"] == "/session/ses-1/abort" for call in manager.calls)
+
+
+def test_send_command_retries_runtime_errors_that_mention_old_guard_text() -> None:
+    class NestedGuardFailureManager(FakeSessionManager):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.send_attempts: int = 0
+
+        def _send_message_raw(
+            self,
+            session_id: str,
+            text: str,
+            agent: str = "",
+            timeout: int | float | None = None,
+        ) -> str:
+            self.send_attempts += 1
+            raise RuntimeError(
+                "Phase repair command forbids nested agents/background tasks, but session ses-1 used nested tool 'task'"
+            )
+
+    manager = NestedGuardFailureManager()
+
+    result = json.loads(manager.send_command("ses-1", "do work", retries=2))
+
+    assert result["ok"] is False
+    assert "forbids nested agents/background tasks" in result["error"]
+    assert manager.send_attempts == 3
 
 
 def test_send_command_recovers_empty_post_response_from_latest_history() -> None:
@@ -461,16 +559,21 @@ def test_send_command_surfaces_auth_error_after_observed_idle(monkeypatch: pytes
     assert len(status_calls) == 2
 
 
-def test_wait_for_idle_timeout_none_uses_finite_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    manager = _manager_with_message(
-        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "still running"}]},
-        status_type="running",
-    )
-    times = iter([0.0, 0.0, 30001.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 30001.0))
+def test_wait_for_idle_timeout_none_waits_until_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "eventually idle"}]},
+        },
+        ("GET", "/session/status"): [
+            {"ok": True, "data": {"ses-1": {"type": "running"}}},
+            {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ],
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [{"todos": [{"status": "completed"}]}]},
+    })
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
-    assert manager.wait_for_idle("ses-1", timeout_s=None, interval_s=0) is False
+    assert manager.wait_for_idle("ses-1", timeout_s=None, interval_s=0) is True
 
 
 def test_hard_error_wait_timeout_none_uses_finite_cap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -510,6 +613,45 @@ def test_wait_for_idle_returns_idle_when_status_empty_and_no_todos(monkeypatch: 
     manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
 
     assert manager.wait_for_idle("ses-1", timeout_s=1, interval_s=0) is True
+
+
+def test_wait_for_idle_returns_idle_when_empty_status_and_stale_todos(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "phase complete"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [
+            {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "phase complete"}]},
+            {"todos": [{"status": "in_progress", "content": "stale phase-local todo"}]},
+        ]},
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    assert manager.wait_for_idle("ses-1", timeout_s=1, interval_s=0) is True
+
+
+def test_wait_for_idle_looks_past_latest_stale_todo_after_empty_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): lambda call: {
+            "ok": True,
+            "data": [
+                {"todos": [{"status": "in_progress", "content": "stale phase-local todo"}]},
+                {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "phase complete"}]},
+            ],
+        }
+        if call.get("query") == {"limit": 20}
+        else {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "stale phase-local todo"}]}]},
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    assert manager.wait_for_idle("ses-1", timeout_s=1, interval_s=0) is True
+    message_calls = [call for call in manager.calls if call["method"] == "GET" and call["path"] == "/session/ses-1/message"]
+    assert message_calls[0]["query"] == {"limit": 20}
 
 
 def test_wait_for_idle_tolerant_empty_status_no_todos(monkeypatch: pytest.MonkeyPatch) -> None:

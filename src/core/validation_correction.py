@@ -82,6 +82,7 @@ def build_validation_correction_prompt(
 
     final_contract = (
         "\n\nYou may reason, explain, or analyze before the JSON. A single parseable JSON object is mandatory. "
+        "Do not ask the user, call the question tool, offer choices, or wait for confirmation; choose the safest correction that advances validation. "
         "The last thing in your response must be one complete JSON object matching the expected shape. "
         "Do not put prose, markdown, or any other text after that final JSON object. "
         "Preserve previously-correct fields and only change what is needed to satisfy validation."

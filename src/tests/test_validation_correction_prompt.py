@@ -25,6 +25,7 @@ build_runner = HELPERS_MODULE.build_runner
 
 from core.workflow_executor import WorkflowExecutor
 from core.phase_runner import PhaseRunner, PhaseSpec
+from core.validation_correction import extract_output_format_from_prompt
 from core.validator_engine import ValidationResult
 
 
@@ -60,7 +61,7 @@ def test_extract_output_format_empty() -> None:
 
 
 def test_extract_output_format_none() -> None:
-    assert WorkflowExecutor._extract_output_format_from_prompt(None) is None
+    assert extract_output_format_from_prompt(None) is None
 
 
 def test_extract_output_format_no_section() -> None:
@@ -98,6 +99,8 @@ def test_validation_correction_with_output_format() -> None:
     assert "Expected output format" in prompt
     assert '{"platform": "npu"}' in prompt
     assert "You may reason" in prompt
+    assert "Do not ask the user" in prompt
+    assert "call the question tool" in prompt
     assert "single parseable JSON object" in prompt
 
 
@@ -118,6 +121,7 @@ def test_parse_failure_prompt_content() -> None:
     assert "prose" in prompt
     assert "Expected output format" in prompt
     assert "last" in prompt.lower()
+    assert "do not ask the user" in prompt.lower()
     assert "single parseable json object" in prompt.lower()
 
 

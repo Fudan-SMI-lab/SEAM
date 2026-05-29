@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.artifact_store import ArtifactStore
 from core.prompt_loader import PromptLoader
-from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, force_custom_op_operator_routing_if_needed
+from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, _operator_custom_op_target_units, force_custom_op_operator_routing_if_needed
 from core.runtime_artifacts import write_operator_repair_context_artifact
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
@@ -26,21 +26,21 @@ class MockSessionManager:
 
     def __init__(self, analyzer_response: dict[str, str]) -> None:
         self.analyzer_response = analyzer_response
-        self.get_or_create_calls: list[tuple[str, str]] = []
-        self.send_command_calls: list[tuple[str, str, int]] = []
-        self._session_ids: dict[tuple[str, str], str] = {}
+        self.get_or_create_calls: list[tuple[str, str, str]] = []
+        self.send_command_calls: list[tuple[str, str, str, int]] = []
+        self._session_ids: dict[tuple[str, str, str], str] = {}
         self._next_id: int = 1
 
-    def get_or_create(self, role: str, lifecycle: str) -> str:
-        self.get_or_create_calls.append((role, lifecycle))
-        key = (role, lifecycle)
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
+        self.get_or_create_calls.append((role, lifecycle, agent))
+        key = (role, lifecycle, agent)
         if key not in self._session_ids:
             self._session_ids[key] = f"session-{self._next_id}"
             self._next_id += 1
         return self._session_ids[key]
 
-    def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
-        self.send_command_calls.append((session_id, command, timeout))
+    def send_command(self, session_id: str, command: str, agent: str = "", timeout: object = None) -> str:
+        self.send_command_calls.append((session_id, command, agent, int(timeout) if isinstance(timeout, int) else 600))
         if session_id == "session-1":
             return json.dumps(self.analyzer_response)
         return json.dumps({"status": "ok", "session_id": session_id})
@@ -55,6 +55,183 @@ def build_engine(base_dir: Path, session_mgr: MockSessionManager) -> tuple[Repai
         validator=ValidatorEngine(),
     )
     return engine, artifact_store
+
+
+def test_operator_custom_op_target_units_reads_nested_expanded_variant_inventory() -> None:
+    units = [f"deepwave:axis=a:dtype=float32:variant={index}" for index in range(240)]
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "expanded_variant_inventory": {
+            "variant_axes_detected": True,
+            "unit_identities": units,
+            "expanded_operator_instances_count": 240,
+        },
+        "operator_inventory_schema": {"fine_grained_operator_units": ["collapsed:fallback"]},
+    }
+
+    assert _operator_custom_op_target_units(phase3_contract) == units
+
+
+def test_repair_loop_extends_stagnation_only_for_custom_op_operator_repair() -> None:
+    engine, *_ = build_mocked_engine()
+    custom_op_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+    }
+    operator_classification: dict[str, object] = {"repair_role": "operator_fixer"}
+
+    assert engine._effective_stagnation_threshold(
+        classification=operator_classification,
+        phase3_contract=custom_op_contract,
+    ) == 100
+    assert engine._effective_stagnation_threshold(
+        classification={"repair_role": "code_adapter"},
+        phase3_contract=custom_op_contract,
+    ) == 3
+    assert engine._effective_stagnation_threshold(
+        classification=operator_classification,
+        phase3_contract=None,
+    ) == 3
+
+
+def test_strict_custom_op_final_gate_missing_evidence_reroutes_before_stagnation() -> None:
+    engine, *_ = build_mocked_engine()
+    error_text = (
+        "strict custom-op final gate failed: missing or insufficient per-expanded-variant evidence "
+        "for acoustic:backward_cuda:ndim=1d:dtype=float:accuracy=2"
+    )
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "expanded_variant_inventory": ["acoustic:backward_cuda:ndim=1d:dtype=float:accuracy=2"],
+        "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+    }
+    analyzer_classification: dict[str, object] = {
+        "category": "communication_error",
+        "root_cause": "final gate evidence missing",
+        "suggested_fix": "retry validation",
+        "repair_role": "dependency_fixer",
+    }
+
+    routed = force_custom_op_operator_routing_if_needed(
+        analyzer_classification,
+        error_text=error_text,
+        phase3_contract=phase3_contract,
+    )
+
+    assert routed["category"] == "operator"
+    assert routed["repair_role"] == "operator_fixer"
+    assert engine._effective_stagnation_threshold(
+        classification=routed,
+        phase3_contract=phase3_contract,
+    ) == 100
+    assert engine._effective_stagnation_threshold(
+        classification=analyzer_classification,
+        phase3_contract=None,
+    ) == 3
+
+
+def test_custom_op_operator_repair_uses_non_orchestrator_agent() -> None:
+    engine, *_ = build_mocked_engine()
+    custom_op_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+    }
+
+    assert engine._repair_agent_for_role(
+        repair_role="operator_fixer",
+        phase3_contract=custom_op_contract,
+    ) == "hephaestus"
+    assert engine._repair_agent_for_role(
+        repair_role="operator_fixer",
+        phase3_contract=None,
+    ) == ""
+    assert engine._repair_agent_for_role(
+        repair_role="dependency_fixer",
+        phase3_contract=custom_op_contract,
+    ) == ""
+
+
+def test_custom_op_operator_repair_agent_can_be_configured() -> None:
+    engine, *_ = build_mocked_engine()
+    engine.config = {"framework": {"custom_op_operator_repair_agent": "hephaestus"}}
+    custom_op_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+    }
+
+    assert engine._repair_agent_for_role(
+        repair_role="operator_fixer",
+        phase3_contract=custom_op_contract,
+    ) == "hephaestus"
+
+
+def test_custom_op_repair_allows_nested_task_tool() -> None:
+    class NestedTaskSessionManager(MockSessionManager):
+        def _http(self, _method: str, _path: str, query: object = None) -> dict[str, object]:
+            return {
+                "ok": True,
+                "data": [{"parts": [{"type": "tool", "tool": "task", "state": {"status": "completed"}}]}],
+            }
+
+    session_mgr = NestedTaskSessionManager({})
+    engine, _ = build_engine(Path("/tmp"), session_mgr)
+
+    error = engine._repair_session_nested_task_error("session-2")
+
+    assert error == ""
+
+
+def test_repair_loop_keeps_repair_session_after_nested_task_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_calls: list[str] = []
+
+    class NestedTaskRepairSessionManager(MockSessionManager):
+        def cleanup_session(self, session_id: str) -> bool:
+            cleanup_calls.append(session_id)
+            for key, value in list(self._session_ids.items()):
+                if value == session_id:
+                    del self._session_ids[key]
+            return True
+
+        def _http(self, _method: str, path: str, query: object = None) -> dict[str, object]:
+            session_id = path.split("/")[2]
+            if session_id == "session-2":
+                return {
+                    "ok": True,
+                    "data": [{"parts": [{"type": "tool", "tool": "task", "state": {"status": "completed"}}]}],
+                }
+            return {"ok": True, "data": []}
+
+    session_mgr = NestedTaskRepairSessionManager({
+        "category": "operator",
+        "root_cause": "custom-op final gate evidence is incomplete",
+        "suggested_fix": "repair custom-op reports inline",
+        "repair_role": "operator_fixer",
+    })
+    engine, _artifact_store = build_engine(tmp_path, session_mgr)
+
+    outcomes = [
+        CompletedProcess(args="python validate.py", returncode=1, stdout="", stderr="gate error one"),
+        CompletedProcess(args="python validate.py", returncode=1, stdout="", stderr="gate error two"),
+    ]
+
+    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: outcomes.pop(0))
+
+    result = cast(RunResult, cast(object, engine.run(
+        "python validate.py",
+        str(tmp_path),
+        max_iterations=2,
+        phase3_contract=_custom_op_phase3_contract(tmp_path),
+    )))
+
+    assert cleanup_calls == []
+    assert result["repair_session_ids"] == {"operator_fixer": "session-2"}
+    assert session_mgr.get_or_create_calls == [
+        ("error_analyzer", "persistent", ""),
+        ("operator_fixer", "persistent", "hephaestus"),
+    ]
 
 
 class SessionManagerMock:
@@ -172,8 +349,8 @@ def test_repair_loop_detects_stagnation_and_reuses_repair_session(tmp_path: Path
     assert "error_category" in error_history[0]
     assert "fix_summary" in error_history[0]
     assert session_mgr.get_or_create_calls == [
-        ("error_analyzer", "persistent"),
-        ("dependency_fixer", "persistent"),
+        ("error_analyzer", "persistent", ""),
+        ("dependency_fixer", "persistent", ""),
     ]
 
     saved = artifact_store.load_phase_output("phase_5_validation")
@@ -455,8 +632,8 @@ def test_repair_loop_reuses_error_analyzer_session_across_runs(tmp_path: Path, m
     assert second["success"] is True
     assert first["error_analyzer_session_id"] == second["error_analyzer_session_id"] == "session-1"
     assert session_mgr.get_or_create_calls == [
-        ("error_analyzer", "persistent"),
-        ("error_analyzer", "persistent"),
+        ("error_analyzer", "persistent", ""),
+        ("error_analyzer", "persistent", ""),
     ]
 
 
@@ -487,7 +664,7 @@ def test_repair_loop_passes_logger_to_analyzer(tmp_path: Path, monkeypatch: pyte
 
 
 def test_format_history_summary_empty_and_nonempty() -> None:
-    from core.repair_loop import ClassificationDict, RepairLoopEngine
+    from core.repair_loop import RepairLoopEngine
     assert RepairLoopEngine._format_history_summary([]) == "(No previous repair attempts)"
     history: list[dict[str, object]] = [
         {"iteration": 1, "exit_code": 1, "error_category": "dependency",
@@ -503,7 +680,7 @@ def test_format_history_summary_empty_and_nonempty() -> None:
 
 def test_error_analyzer_json_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     call_count = 0
-    def mock_send(session_id: str, command: str, timeout: int = 600) -> str:
+    def mock_send(session_id: str, command: str, agent: str = "", timeout: object = None) -> str:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -511,7 +688,7 @@ def test_error_analyzer_json_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         return '{"category": "dependency", "root_cause": "missing", "suggested_fix": "install", "repair_role": "dependency_fixer"}'
 
     session_mgr = MockSessionManager({})
-    session_mgr.send_command = mock_send  # type: ignore
+    session_mgr.send_command = mock_send
 
     engine, _ = build_engine(tmp_path, session_mgr)
     monkeypatch.setattr("subprocess.run", lambda *_args, **kw: CompletedProcess(
@@ -977,7 +1154,7 @@ def test_review_gate_result_structure() -> None:
 
 def test_analyze_error_timeout_returns_default_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     """_analyze_error with TimeoutError retries 3 times then returns communication_error default."""
-    engine, session_mgr, _artifact_store, prompt_loader, _validator = build_mocked_engine()
+    engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
 
     call_count = [0]
@@ -1005,7 +1182,7 @@ def test_analyze_error_timeout_returns_default_classification(monkeypatch: pytes
 
 def test_analyze_error_connection_refused_returns_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """_analyze_error with ConnectionRefusedError retries 3 times then returns default classification."""
-    engine, session_mgr, _artifact_store, prompt_loader, _validator = build_mocked_engine()
+    engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
 
     call_count = [0]
@@ -1033,7 +1210,7 @@ def test_analyze_error_connection_refused_returns_default(monkeypatch: pytest.Mo
 
 def test_analyze_error_success_no_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     """_analyze_error with valid JSON response succeeds on first call, no retries needed."""
-    engine, session_mgr, _artifact_store, prompt_loader, _validator = build_mocked_engine()
+    engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
 
     call_count = [0]
@@ -1090,7 +1267,7 @@ def test_repair_call_timeout_retries_and_continues(tmp_path: Path, monkeypatch: 
 
     repair_call_count = [0]
 
-    def mock_send(session_id: str, command: str, timeout: int = 600) -> str:
+    def mock_send(session_id: str, command: str, agent: str = "", timeout: object = None) -> str:
         # Analyzer calls succeed; repair calls always timeout
         if session_id == "repair-1":
             repair_call_count[0] += 1
@@ -1133,7 +1310,7 @@ def test_repair_session_error_marks_fix_attempt_communication_error(tmp_path: Pa
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     (tmp_path / "dummy.py").write_text("x = 1\n", encoding="utf-8")
 
-    def mock_send(session_id: str, _command: str, timeout: int = 600) -> str:
+    def mock_send(session_id: str, _command: str, agent: str = "", timeout: int = 600) -> str:
         if session_id == "repair-1":
             return '{"ok": false, "error": "Compaction response is incomplete"}'
         return "{}"
@@ -1162,6 +1339,7 @@ def test_repair_session_error_marks_fix_attempt_communication_error(tmp_path: Pa
     assert result["status"] == "max_iterations"
     assert result["error_history"][0].get("repair_role") == "operator_fixer"
     assert "Compaction response is incomplete" in str(result["error_history"][0].get("fix_summary", ""))
+    assert result["repair_session_ids"] == {}
     extract_summary.assert_not_called()
 
 
@@ -1230,15 +1408,15 @@ def _custom_op_gate_report() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cuda",
-            "custom_device": "npu",
+            "baseline_device": "cpu",
+            "custom_device": "ascend_opp",
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cuda",
-            "overall_custom_device": "npu",
+            "overall_baseline_device": "cpu",
+            "overall_custom_device": "ascend_opp",
             "entries": [
                 {
                     "unit_identity": "op_1",
@@ -1246,8 +1424,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
-                    "custom_device": "npu",
+                    "baseline_device": "cpu",
+                    "custom_device": "ascend_opp",
                 }
             ],
         },
@@ -1321,8 +1499,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                 "custom_seconds": 0.01,
                 "speedup_vs_baseline": 2.0,
                 "project_api_invoked": True,
-                "baseline_device": "cuda",
-                "custom_device": "npu",
+                "baseline_device": "cpu",
+                "custom_device": "ascend_opp",
             },
             "no_fallback_no_zero_call_no_builtin_contamination": {
                 "passed": True,
@@ -1699,8 +1877,8 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
 
     assert result["success"] is False
     assert result["repair_session_ids"] == {"operator_fixer": "session-2"}
-    assert ("operator_fixer", "persistent") in session_mgr.get_or_create_calls
-    assert ("code_adapter", "persistent") not in session_mgr.get_or_create_calls
+    assert ("operator_fixer", "persistent", "hephaestus") in session_mgr.get_or_create_calls
+    assert not any(call[0] == "code_adapter" for call in session_mgr.get_or_create_calls)
     assert result["error_history"][0].get("error_category") == "operator"
     assert result["error_history"][0].get("repair_role") == "operator_fixer"
 
@@ -1728,7 +1906,7 @@ def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: 
 
 
 def test_custom_op_negative_evidence_without_contract_does_not_force_operator() -> None:
-    classification = {
+    classification: dict[str, object] = {
         "category": "dependency",
         "root_cause": "vendor torch is missing",
         "suggested_fix": "select the container base environment",

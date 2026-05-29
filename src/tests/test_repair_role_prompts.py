@@ -310,3 +310,16 @@ def test_normal_entry_prompts_exist() -> None:
     """Sanity: all expected normal-entry prompt files exist."""
     for filename in _NORMAL_ENTRY_PROMPT_FILES:
         assert (PROMPTS_DIR / filename).exists(), f"{filename} is missing"
+
+
+def test_custom_op_variant_service_prompt_keeps_strict_variant_scope_clauses() -> None:
+    prompt = (PROMPTS_DIR / "repair_custom_op_variant_service.md").read_text(encoding="utf-8")
+
+    assert "Treat every expanded variant axis declared by the Phase 3 contract as required scope" in prompt
+    assert "missing_by_dtype" in prompt
+    assert "blocking defects" in prompt
+    assert '"inventory_count": 1' in prompt
+    assert '"manifest_entries": 1' in prompt
+    assert '"closed_pass_entries": 1' in prompt
+    assert '"closed_pass_entries": 0' not in prompt
+    assert "inventory_count`, `manifest_entries`, and `closed_pass_entries` must be equal" in prompt
