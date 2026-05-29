@@ -201,6 +201,9 @@ _PYTORCH_EXTENSION_ONLY_TOKENS = (
 )
 
 _OP_HOST_SOURCE_FIELDS = (
+    "op_host",
+    "op_host_path",
+    "op_host_paths",
     "op_host_source_path",
     "op_host_sources",
     "op_host_source_paths",
@@ -209,6 +212,9 @@ _OP_HOST_SOURCE_FIELDS = (
 )
 
 _OP_KERNEL_SOURCE_FIELDS = (
+    "op_kernel",
+    "op_kernel_path",
+    "op_kernel_paths",
     "op_kernel_source_path",
     "op_kernel_sources",
     "op_kernel_source_paths",
@@ -313,6 +319,10 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
     expected_framework = serving_framework_for_route(route)
     if data.get("serving_framework") != expected_framework:
         errors.append(f"serving_framework must be '{expected_framework}' for migration_route={route}")
+    serving_backend = data.get("serving_backend")
+    if not isinstance(serving_backend, str) or not serving_backend.strip():
+        errors.append("serving_backend must be a non-empty string")
+        serving_backend = ""
 
     full_status = data.get("full_migration_status")
     _reject_blocking_status(full_status, "full_migration_status", errors)
@@ -324,12 +334,14 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
             errors.append(f"{field} must be a non-empty list of project validation evidence")
 
     required_checks = set(_string_values(data.get("required_checks")))
+    backend_execution_check = "npu_execution_evidence" if serving_backend == "ascend" else "accelerator_execution_evidence"
+    backend_fallback_check = "no_cuda_fallback" if serving_backend == "ascend" else "no_forbidden_runtime_fallback"
     for check in (
         "project_demo_or_test_execution",
         "serving_api_request_validation",
         "readiness_probe_passed",
-        "npu_execution_evidence",
-        "no_cuda_fallback",
+        backend_execution_check,
+        backend_fallback_check,
         "no_cpu_fallback",
         "fresh_serving_report",
         "route_framework_match",
@@ -341,16 +353,21 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
         errors.append("readiness_probe must prove the serving endpoint became ready")
     if not _truthy_evidence(data.get("request_validation")):
         errors.append("request_validation must prove actual project API/demo requests succeeded")
-    if not _truthy_evidence(data.get("npu_execution_evidence")):
-        errors.append("npu_execution_evidence must prove real NPU execution")
+    execution_evidence_field = "npu_execution_evidence" if serving_backend == "ascend" else "accelerator_execution_evidence"
+    if not _truthy_evidence(data.get(execution_evidence_field)):
+        errors.append(f"{execution_evidence_field} must prove real accelerator execution")
 
     if data.get("project_demo_or_test_executed") is not True:
         errors.append("project_demo_or_test_executed must be true")
     if data.get("serving_api_validated") is not True:
         errors.append("serving_api_validated must be true")
-    if data.get("npu_execution_observed") is not True:
-        errors.append("npu_execution_observed must be true")
-    _validate_ascend_serving_runtime_evidence(data, errors)
+    execution_observed_field = "npu_execution_observed" if serving_backend == "ascend" else "accelerator_execution_observed"
+    if data.get(execution_observed_field) is not True:
+        errors.append(f"{execution_observed_field} must be true")
+    if serving_backend == "ascend":
+        _validate_ascend_serving_runtime_evidence(data, errors)
+    else:
+        _validate_generic_serving_runtime_evidence(data, errors)
 
     for field in ("cuda_fallback_detected", "cpu_fallback_detected", "import_only", "smoke_only"):
         if data.get(field) is not False:
@@ -379,6 +396,22 @@ def _validate_ascend_serving_runtime_evidence(data: dict[str, object], errors: l
     framework = data.get("serving_framework")
     if isinstance(framework, str) and evidence.get(f"{framework}_imported") is not True:
         errors.append(f"ascend_runtime_evidence.{framework}_imported must be true")
+
+
+def _validate_generic_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
+    evidence_value = data.get("serving_runtime_evidence")
+    if not isinstance(evidence_value, Mapping):
+        errors.append("serving_runtime_evidence must be present for serving FULL_PASS validation")
+        return
+    evidence = cast(Mapping[object, object], evidence_value)
+    backend = data.get("serving_backend")
+    if evidence.get("serving_backend") != backend:
+        errors.append("serving_runtime_evidence.serving_backend must match serving_backend")
+    if evidence.get("forbidden_runtime_markers_absent") is not True:
+        errors.append("serving_runtime_evidence.forbidden_runtime_markers_absent must be true")
+    framework = data.get("serving_framework")
+    if isinstance(framework, str) and evidence.get(f"{framework}_imported") is not True:
+        errors.append(f"serving_runtime_evidence.{framework}_imported must be true")
 
 
 def validate_custom_op_final_gate(
@@ -2161,7 +2194,8 @@ def _path_candidates_from_fields(evidence: Mapping[object, object], fields: tupl
 
 def _path_candidates_from_value(value: object) -> list[str]:
     if isinstance(value, str):
-        return [_strip_source_location(value)]
+        parts = re.split(r"[;\n]+", value)
+        return [_strip_source_location(part.strip()) for part in parts if part.strip()]
     if isinstance(value, Mapping):
         candidates: list[str] = []
         for item in cast(Mapping[object, object], value).values():
@@ -2773,8 +2807,11 @@ def _validate_baseline_and_custom_device_proof(
         return
     effective_policy = None if (platform_policy is not None and platform_policy.id == "npu_ascend" and not require_strict_ascend_opp_producer) else platform_policy
     if not _has_baseline_proof(evidence, effective_policy):
-        baseline_devices = get_performance_baseline_device_values(effective_policy)
-        errors.append(f"{label} must prove timings include a baseline path ({', '.join(sorted(baseline_devices))})")
+        if effective_policy is None or effective_policy.id == "npu_ascend":
+            errors.append(f"{label} must prove timings include a real CPU baseline path")
+        else:
+            baseline_devices = get_performance_baseline_device_values(effective_policy)
+            errors.append(f"{label} must prove timings include a baseline path ({', '.join(sorted(baseline_devices))})")
     if not _has_target_device_custom_proof(evidence, effective_policy):
         errors.append(f"{label} must prove timings include a target-device custom-op path")
     if require_strict_ascend_opp_producer:
@@ -2883,11 +2920,7 @@ def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
 
 def _has_baseline_proof(evidence: Mapping[object, object], platform_policy: PlatformPolicy | None = None) -> bool:
     if platform_policy is None:
-        return _has_device_value(
-            evidence,
-            ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"),
-            {"cuda", "gpu", "torch_cuda"},
-        )
+        return _has_cpu_baseline_proof(evidence)
     if platform_policy.id == "npu_ascend":
         return _has_cpu_baseline_proof(evidence)
     boolean_fields = get_performance_baseline_boolean_fields(platform_policy)

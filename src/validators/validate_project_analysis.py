@@ -378,8 +378,10 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
         errors.append(
             f"serving_runtime_surface.serving_framework must be '{expected_framework}' for migration_route={migration_route}"
         )
-    if surface.get("serving_backend") != "ascend":
-        errors.append("serving_runtime_surface.serving_backend must be 'ascend' for vLLM/SGLang routes")
+    serving_backend = surface.get("serving_backend")
+    if not isinstance(serving_backend, str) or not serving_backend.strip():
+        errors.append("serving_runtime_surface.serving_backend must be a non-empty string for serving routes")
+        serving_backend = ""
 
     detection_complete = surface.get("detection_complete")
     if not isinstance(detection_complete, bool):
@@ -421,10 +423,13 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
         surface,
         "required_runtime_env",
         errors,
-        non_empty_message="serving_runtime_surface.required_runtime_env must list required NPU/serving runtime environment evidence",
+        non_empty_message="serving_runtime_surface.required_runtime_env must list required serving accelerator runtime environment evidence",
         require_non_empty=True,
     )
-    _validate_ascend_serving_surface_contract(str(migration_route), surface, errors)
+    if serving_backend == "ascend":
+        _validate_ascend_serving_surface_contract(str(migration_route), surface, errors)
+    else:
+        _validate_generic_serving_surface_contract(surface, errors)
     for field_name in ("readiness_probe", "request_validation"):
         value = surface.get(field_name)
         if not isinstance(value, dict) or not value:
@@ -455,6 +460,27 @@ def _validate_ascend_serving_surface_contract(route: str, surface: dict[str, obj
         for expected in _string_list_from_object(required.get(field_name)):
             if expected.lower() not in observed:
                 errors.append(f"serving_runtime_surface.{field_name} missing Ascend requirement: {expected}")
+
+
+def _validate_generic_serving_surface_contract(surface: dict[str, object], errors: list[str]) -> None:
+    runtime_setup = surface.get("runtime_env_setup")
+    if not isinstance(runtime_setup, dict) or not runtime_setup:
+        errors.append("serving_runtime_surface.runtime_env_setup must describe serving accelerator runtime setup")
+    for field_name in ("required_import_probes", "forbidden_runtime_markers"):
+        _validate_string_list(
+            surface,
+            field_name,
+            errors,
+            non_empty_message=f"serving_runtime_surface.{field_name} must list serving runtime requirements",
+            require_non_empty=True,
+        )
+    _validate_string_list(
+        surface,
+        "serving_runtime_checks",
+        errors,
+        non_empty_message="serving_runtime_surface.serving_runtime_checks must list generic serving runtime checks",
+        require_non_empty=True,
+    )
 
 
 def _normalized_set(values: list[str]) -> set[str]:

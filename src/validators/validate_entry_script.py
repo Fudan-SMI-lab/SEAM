@@ -57,6 +57,16 @@ REQUIRED_SERVING_CHECKS = {
     "fresh_serving_report",
     "route_framework_match",
 }
+GENERIC_REQUIRED_SERVING_CHECKS = {
+    "project_demo_or_test_execution",
+    "serving_api_request_validation",
+    "readiness_probe_passed",
+    "accelerator_execution_evidence",
+    "no_forbidden_runtime_fallback",
+    "no_cpu_fallback",
+    "fresh_serving_report",
+    "route_framework_match",
+}
 
 REQUIRED_SERVING_REPORT_TOKENS = ("serving", "final", "gate")
 
@@ -65,6 +75,14 @@ REQUIRED_SERVING_OBLIGATIONS = {
     "npu_execution_evidence",
     "reject_import_only_or_smoke_only",
     "reject_cuda_or_cpu_fallback",
+    "fresh_report_paths",
+    "route_framework_match",
+}
+GENERIC_REQUIRED_SERVING_OBLIGATIONS = {
+    "actual_project_demo_test_or_api_validation",
+    "accelerator_execution_evidence",
+    "reject_import_only_or_smoke_only",
+    "reject_forbidden_runtime_or_cpu_fallback",
     "fresh_report_paths",
     "route_framework_match",
 }
@@ -244,8 +262,10 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
     expected_framework = serving_framework_for_route(route)
     if data.get("serving_framework") != expected_framework:
         errors.append(f"serving_framework must be '{expected_framework}' for {entry_script_kind}")
-    if data.get("serving_backend") != "ascend":
-        errors.append("serving_backend must be 'ascend' for vLLM/SGLang serving contracts")
+    serving_backend = data.get("serving_backend")
+    if not isinstance(serving_backend, str) or not serving_backend.strip():
+        errors.append("serving_backend must be a non-empty string for serving contracts")
+        serving_backend = ""
 
     _validate_serving_entry_script_path(data, expected_framework or "", errors)
     _validate_serving_run_command(data, errors)
@@ -269,12 +289,14 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
         errors.append("required_report_paths must include a serving_final_gate report path")
 
     required_checks = set(_string_list(data.get("required_checks")) or [])
-    missing_checks = sorted(REQUIRED_SERVING_CHECKS - required_checks)
+    expected_checks = REQUIRED_SERVING_CHECKS if serving_backend == "ascend" else GENERIC_REQUIRED_SERVING_CHECKS
+    missing_checks = sorted(expected_checks - required_checks)
     if missing_checks:
         errors.append("required_checks missing serving checks: " + ", ".join(missing_checks))
 
     obligations = set(_string_list(data.get("serving_validation_obligations")) or [])
-    missing_obligations = sorted(REQUIRED_SERVING_OBLIGATIONS - obligations)
+    expected_obligations = REQUIRED_SERVING_OBLIGATIONS if serving_backend == "ascend" else GENERIC_REQUIRED_SERVING_OBLIGATIONS
+    missing_obligations = sorted(expected_obligations - obligations)
     if missing_obligations:
         errors.append("serving_validation_obligations missing: " + ", ".join(missing_obligations))
 
@@ -282,7 +304,10 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
         values = _string_list(data.get(field))
         if values is None or not values:
             errors.append(f"{field} must be a non-empty list for serving contracts")
-    _validate_ascend_serving_contract_fields(data, route, errors)
+    if serving_backend == "ascend":
+        _validate_ascend_serving_contract_fields(data, route, errors)
+    else:
+        _validate_generic_serving_contract_fields(data, errors)
 
     for field in ("readiness_probe", "request_validation"):
         value = data.get(field)
@@ -296,14 +321,14 @@ def _validate_serving_entry_script_path(data: dict[str, object], expected_framew
     if not isinstance(entry_script_path, str) or not entry_script_path.strip():
         return
     if not Path(entry_script_path).name == f"validate_{expected_framework}_serving.py":
-        errors.append("entry_script_path must point to the generated Ascend serving validation wrapper")
+        errors.append("entry_script_path must point to the generated serving validation wrapper")
     if not isinstance(project_dir, str) or not project_dir.strip():
         errors.append("project_dir must be present for serving contracts")
         return
     project_root = Path(project_dir).expanduser().resolve(strict=False)
     resolved = _resolve_project_local_path(entry_script_path, project_root)
     if resolved is None or not resolved.is_file():
-        errors.append("entry_script_path must be an existing project-local Ascend serving wrapper")
+        errors.append("entry_script_path must be an existing project-local serving wrapper")
 
 
 def _validate_serving_run_command(data: dict[str, object], errors: list[str]) -> None:
@@ -319,9 +344,22 @@ def _validate_serving_run_command(data: dict[str, object], errors: list[str]) ->
         return
     if tokens[0].endswith("python") or tokens[0].endswith("python3"):
         if len(tokens) < 2 or Path(tokens[1]).name != Path(entry_script_path).name:
-            errors.append("run_command must execute the generated Ascend serving wrapper with project .venv python")
+            errors.append("run_command must execute the generated serving wrapper with project .venv python")
     else:
         errors.append("run_command for serving contracts must invoke python directly, not inline env prefixes or shell wrappers")
+
+
+def _validate_generic_serving_contract_fields(data: dict[str, object], errors: list[str]) -> None:
+    runtime_setup = data.get("runtime_env_setup")
+    if not isinstance(runtime_setup, dict) or not runtime_setup:
+        errors.append("runtime_env_setup must describe serving accelerator runtime setup")
+    for field_name in ("required_import_probes", "forbidden_runtime_markers"):
+        values = _string_list(data.get(field_name))
+        if values is None or not values:
+            errors.append(f"{field_name} must list serving runtime requirements")
+    runtime_checks = _string_list(data.get("serving_runtime_checks"))
+    if runtime_checks is None or not runtime_checks:
+        errors.append("serving_runtime_checks must list generic serving runtime checks")
 
 
 def _validate_ascend_serving_contract_fields(data: dict[str, object], route: str, errors: list[str]) -> None:

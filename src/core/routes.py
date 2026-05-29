@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from core.ascend_runtime import merge_ascend_serving_contract, write_ascend_serving_validation_wrapper
+from core.ascend_runtime import merge_serving_runtime_contract, write_serving_validation_wrapper
+from core.platform_policy import PlatformPolicy
 
 
 ORDINARY_CUDA = "ordinary_cuda"
@@ -81,6 +82,13 @@ SERVING_REQUIRED_CHECKS = (
     "route_framework_match",
 )
 
+GENERIC_SERVING_REQUIRED_CHECKS = tuple(
+    "accelerator_execution_evidence" if check == "npu_execution_evidence"
+    else "no_forbidden_runtime_fallback" if check == "no_cuda_fallback"
+    else check
+    for check in SERVING_REQUIRED_CHECKS
+)
+
 SERVING_VALIDATION_OBLIGATIONS = (
     "actual_project_demo_test_or_api_validation",
     "npu_execution_evidence",
@@ -88,6 +96,13 @@ SERVING_VALIDATION_OBLIGATIONS = (
     "reject_cuda_or_cpu_fallback",
     "fresh_report_paths",
     "route_framework_match",
+)
+
+GENERIC_SERVING_VALIDATION_OBLIGATIONS = tuple(
+    "accelerator_execution_evidence" if obligation == "npu_execution_evidence"
+    else "reject_forbidden_runtime_or_cpu_fallback" if obligation == "reject_cuda_or_cpu_fallback"
+    else obligation
+    for obligation in SERVING_VALIDATION_OBLIGATIONS
 )
 
 CUSTOM_OP_PHASE3_ONLY_FIELDS = (
@@ -103,7 +118,38 @@ CUSTOM_OP_PHASE3_ONLY_FIELDS = (
 
 
 
-def normalize_serving_phase1_surface(output: dict[str, object]) -> None:
+def _policy_backend(platform_policy: PlatformPolicy | None) -> str:
+    if platform_policy is None:
+        return "generic"
+    return platform_policy.serving_runtime.backend
+
+
+def _resolve_serving_backend(
+    explicit_backend: object,
+    platform_policy: PlatformPolicy | None,
+) -> str:
+    if isinstance(explicit_backend, str) and explicit_backend.strip():
+        return explicit_backend.strip()
+    return _policy_backend(platform_policy)
+
+
+def serving_required_checks_for_backend(backend: str) -> tuple[str, ...]:
+    if backend == "ascend":
+        return SERVING_REQUIRED_CHECKS
+    return GENERIC_SERVING_REQUIRED_CHECKS
+
+
+def serving_validation_obligations_for_backend(backend: str) -> tuple[str, ...]:
+    if backend == "ascend":
+        return SERVING_VALIDATION_OBLIGATIONS
+    return GENERIC_SERVING_VALIDATION_OBLIGATIONS
+
+
+def normalize_serving_phase1_surface(
+    output: dict[str, object],
+    *,
+    platform_policy: PlatformPolicy | None = None,
+) -> None:
     route_value = output.get("migration_route")
     if not isinstance(route_value, str) or not is_serving_route(route_value):
         return
@@ -116,10 +162,11 @@ def normalize_serving_phase1_surface(output: dict[str, object]) -> None:
     else:
         surface = {}
     surface["serving_framework"] = framework
-    surface["serving_backend"] = "ascend"
+    backend = _resolve_serving_backend(surface.get("serving_backend"), platform_policy)
+    surface["serving_backend"] = backend
     if "detection_complete" not in surface:
         surface["detection_complete"] = True
-    merge_ascend_serving_contract(surface, route_value)
+    merge_serving_runtime_contract(surface, route_value, backend)
     output["serving_runtime_surface"] = surface
 
 def normalize_serving_phase3_contract(
@@ -128,6 +175,7 @@ def normalize_serving_phase3_contract(
     route: str,
     project_dir: str | Path,
     phase1_output: Mapping[str, object] | None = None,
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     entry_kind = serving_entry_kind_for_route(route)
     framework = serving_framework_for_route(route)
@@ -163,11 +211,14 @@ def normalize_serving_phase3_contract(
             launch_command = entry_command
             contract["launch_command"] = entry_command
 
-    merge_ascend_serving_contract(contract, route)
-    contract["required_checks"] = list(SERVING_REQUIRED_CHECKS)
+    explicit_backend = contract.get("serving_backend") or surface.get("serving_backend")
+    backend = _resolve_serving_backend(explicit_backend, platform_policy)
+    merge_serving_runtime_contract(contract, route, backend)
+    required_checks = list(serving_required_checks_for_backend(backend))
+    contract["required_checks"] = required_checks
     contract["serving_reports_dir"] = str(project_path / "migration_reports" / "serving")
     contract["required_report_paths"] = ["migration_reports/serving/serving_final_gate.json"]
-    contract["serving_validation_obligations"] = list(SERVING_VALIDATION_OBLIGATIONS)
+    contract["serving_validation_obligations"] = list(serving_validation_obligations_for_backend(backend))
 
     if not contract.get("project_test_files"):
         contract["project_test_files"] = ["project-provided serving demo/test/API path from Phase 1 serving surface"]
@@ -178,15 +229,16 @@ def normalize_serving_phase3_contract(
     if not isinstance(contract.get("request_validation"), Mapping):
         contract["request_validation"] = {"type": "project_demo_or_api_request", "success_condition": "project request succeeds"}
 
-    script_path = write_ascend_serving_validation_wrapper(
+    script_path = write_serving_validation_wrapper(
         project_dir=project_path,
         route=route,
+        backend=backend,
         launch_command=launch_command or contract.get("launch_command") or "",
         readiness_probe=contract.get("readiness_probe"),
         request_validation=contract.get("request_validation"),
         project_test_files=contract.get("project_test_files"),
         expected_outputs=contract.get("expected_outputs"),
-        required_checks=list(SERVING_REQUIRED_CHECKS),
+        required_checks=required_checks,
     )
     current_path = contract.get("entry_script_path")
     current_command = contract.get("run_command")

@@ -25,6 +25,7 @@ from core.telemetry_bridge import TelemetryBridge
 from core.prompt_loader import PromptLoader
 from core.config import load_workflow
 from core.validator_engine import ValidatorEngine
+from core.platform_policy import TargetPlatformConfig
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 
@@ -566,6 +567,39 @@ def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
     )
 
 
+def test_custom_op_opp_preflight_is_ascend_policy_only(tmp_path: Path):
+    contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "custom_op_evidence_policy": "require_real_ppu_custom_op_artifacts",
+        "expanded_variant_contract": {"variants": ["op.float32"]},
+    }
+    ppu_executor = WorkflowExecutor(
+        WorkflowDefinition(
+            name="ppu_migration_v2",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+            target_platform=TargetPlatformConfig(preset="ppu_cuda_compatible"),
+        ),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+    ascend_executor = WorkflowExecutor(
+        WorkflowDefinition(
+            name="npu_migration_v2",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+            target_platform=TargetPlatformConfig(preset="npu_ascend"),
+        ),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+
+    assert ppu_executor._requires_custom_op_opp_preflight(contract) is False
+    assert ascend_executor._requires_custom_op_opp_preflight(contract) is True
+
+
 class TestRuntimeSkillPromptAssembly:
     def _executor_for_runtime_skills(self, workflow, skill_root: Path, experience_store=None):
         session_mgr = MagicMock()
@@ -926,7 +960,7 @@ def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_p
     assert "unsupported custom op" not in fix_prompt
     assert "port custom op" not in fix_prompt
     assert "RuntimeError: unsupported custom op" not in fix_prompt
-    assert "Ascend NPU 原生修复" in fix_prompt
+    assert "所选目标平台/后端的原生修复" in fix_prompt
     assert "CPU fallback" in fix_prompt
     assert "不要启动后台检索/后台 agents 后提前返回" in fix_prompt
     assert "modified_files: []" in fix_prompt
@@ -1178,7 +1212,7 @@ def _run_single_llm_subphase(
     return session_mgr
 
 
-def test_fix_operator_without_explicit_timeout_uses_finite_default_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+def test_fix_operator_without_explicit_timeout_is_unbounded_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.INFO, logger="core.workflow_executor")
 
     session_mgr = _run_single_llm_subphase(
@@ -1191,12 +1225,12 @@ def test_fix_operator_without_explicit_timeout_uses_finite_default_and_logs(tmp_
         },
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 30000
+    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
     log_text = caplog.text
     assert "phase_id=fix_operator" in log_text
     assert "agent_id=operator_fixer" in log_text
     assert "session_id=session:operator_fixer" in log_text
-    assert "timeout=30000" in log_text
+    assert "timeout=None" in log_text
     assert "prompt_length=" in log_text
     assert "raw_response_length=" in log_text
 
@@ -1233,7 +1267,7 @@ def test_invalid_repair_timeout_config_uses_default_and_logs_warning(
         framework_config={"session_timeout_repair": "not-an-int"},
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 30000
+    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
     assert "Invalid session_timeout_repair" in caplog.text
 
 
@@ -1286,7 +1320,7 @@ def test_analyze_error_specific_timeout_overrides_repair_timeout(tmp_path: Path)
     assert session_mgr.send_command.call_args.kwargs["timeout"] == 45
 
 
-def test_analyze_error_without_explicit_timeout_uses_finite_default(tmp_path: Path):
+def test_analyze_error_without_explicit_timeout_is_unbounded(tmp_path: Path):
     session_mgr = _run_single_llm_subphase(
         tmp_path,
         {
@@ -1297,7 +1331,7 @@ def test_analyze_error_without_explicit_timeout_uses_finite_default(tmp_path: Pa
         },
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 600
+    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
 
 
 def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(tmp_path: Path):
@@ -2135,7 +2169,7 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
     assert "cuda_custom_op_skill_test_prompt.md" not in fix_prompt
     assert "第1、2、3、5、6、7点要求" not in fix_prompt
     assert ".skills" not in fix_prompt
-    assert "Ascend NPU 原生修复" in fix_prompt
+    assert "所选目标平台/后端的原生修复" in fix_prompt
     assert "CPU fallback" in fix_prompt
     assert "Review rejected custom operator setup" not in fix_prompt
     assert "Read /skills/runtime-card/SKILL.md" not in fix_prompt
@@ -3410,14 +3444,15 @@ def _custom_op_gate_payload() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cuda",
+            "baseline_device": "cpu",
             "custom_device": "npu",
+            "cpu_baseline_invoked": True,
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cuda",
+            "overall_baseline_device": "cpu",
             "overall_custom_device": "npu",
             "entries": [
                 {
@@ -3426,8 +3461,9 @@ def _custom_op_gate_payload() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
+                    "baseline_device": "cpu",
                     "custom_device": "npu",
+                    "cpu_baseline_invoked": True,
                 }
             ],
         },
@@ -3502,8 +3538,9 @@ def _custom_op_gate_payload() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
+                    "baseline_device": "cpu",
                     "custom_device": "npu",
+                    "cpu_baseline_invoked": True,
                 },
                 "no_fallback_no_zero_call_no_builtin_contamination": {
                     "passed": True,
@@ -3595,6 +3632,108 @@ def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
         project_dir=str(tmp_path),
         output_dir=str(tmp_path),
     )
+
+
+def _serving_gate_workflow(max_iterations: int = 1) -> WorkflowDefinition:
+    return WorkflowDefinition(
+        name="serving_gate_workflow",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={"error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}},
+        sub_workflows={
+            "repair_loop": SubWorkflowDefinition(
+                id="repair_loop",
+                type="loop",
+                max_iterations=max_iterations,
+                stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+                phases=[
+                    {
+                        "id": "run_entry_script",
+                        "type": "shell",
+                        "command": "python -c \"print('ok')\"",
+                        "on_failure": "continue",
+                    },
+                    {
+                        "id": "serving_final_gate",
+                        "type": "builtin",
+                        "condition": "$.script_exit_code == 0",
+                        "params": {"operation": "serving_final_gate"},
+                    },
+                    {
+                        "id": "analyze_error",
+                        "type": "llm",
+                        "condition": "$.script_exit_code != 0",
+                        "prompt_template": "analyze_prompt",
+                        "agent": "error_analyzer",
+                        "output_as": "error_analysis",
+                    },
+                ],
+            )
+        },
+    )
+
+
+def _serving_gate_executor(tmp_path: Path) -> WorkflowExecutor:
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.return_value = json.dumps({
+        "repair_role": "code_adapter",
+        "category": "validation",
+        "root_cause": "serving final gate failed",
+        "suggested_fix": "complete serving evidence",
+    })
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: template
+    return WorkflowExecutor(
+        _serving_gate_workflow(),
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+
+def _serving_gate_payload() -> dict[str, object]:
+    return {
+        "migration_route": "vllm_serving",
+        "serving_framework": "vllm",
+        "serving_backend": "generic",
+        "full_migration_status": "FULL_PASS",
+        "project_test_files": ["demo.py"],
+        "expected_outputs": ["ok"],
+        "required_checks": [
+            "project_demo_or_test_execution",
+            "serving_api_request_validation",
+            "readiness_probe_passed",
+            "accelerator_execution_evidence",
+            "no_forbidden_runtime_fallback",
+            "no_cpu_fallback",
+            "fresh_serving_report",
+            "route_framework_match",
+        ],
+        "readiness_probe": {"passed": True},
+        "request_validation": {"passed": True},
+        "accelerator_execution_evidence": {"passed": True},
+        "project_demo_or_test_executed": True,
+        "serving_api_validated": True,
+        "accelerator_execution_observed": True,
+        "serving_runtime_evidence": {
+            "serving_backend": "generic",
+            "vllm_imported": True,
+            "forbidden_runtime_markers_absent": True,
+        },
+        "cuda_fallback_detected": False,
+        "cpu_fallback_detected": False,
+        "import_only": False,
+        "smoke_only": False,
+    }
 
 
 
@@ -3912,6 +4051,22 @@ def test_experience_memory_workflow_has_custom_op_final_gate_after_entry_script(
     assert gate_phase["params"] == {"operation": "custom_op_final_gate"}
 
 
+def test_experience_memory_workflow_has_serving_final_gate_after_custom_op_gate() -> None:
+    workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+    workflow = load_workflow(str(workflow_path))
+
+    phase_ids = [phase.get("id") for phase in workflow.sub_workflows["repair_loop"].phases if isinstance(phase, dict)]
+    assert "serving_final_gate" in phase_ids
+    assert phase_ids.index("custom_op_final_gate") < phase_ids.index("serving_final_gate") < phase_ids.index("analyze_error")
+
+    gate_phase = next(
+        phase for phase in workflow.sub_workflows["repair_loop"].phases
+        if isinstance(phase, dict) and phase.get("id") == "serving_final_gate"
+    )
+    assert gate_phase["type"] == "builtin"
+    assert gate_phase["params"] == {"operation": "serving_final_gate"}
+
+
 def test_experience_memory_custom_op_gate_skips_for_non_custom_contract(tmp_path: Path) -> None:
     workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
     workflow = load_workflow(str(workflow_path))
@@ -4109,6 +4264,136 @@ def test_non_custom_project_skips_custom_op_final_gate(tmp_path: Path) -> None:
         "operation": "custom_op_final_gate",
         "skipped": True,
         "passed": True,
+    }
+    executor.session_mgr.send_command.assert_not_called()
+
+
+def test_missing_serving_final_gate_blocks_phase5_success(tmp_path: Path) -> None:
+    executor = _serving_gate_executor(tmp_path)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "vllm_serving_validation",
+            "migration_route": "vllm_serving",
+            "run_command": "python validate_vllm_serving.py",
+            "required_report_paths": ["migration_reports/serving_final_gate.json"],
+        }
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "failure"
+    assert result["loop_state"]["script_exit_code"] == 1
+    assert "Serving final evidence gate failed" in result["loop_state"]["script_stderr"]
+    assert result["loop_state"]["serving_final_gate"]["passed"] is False
+    executor.session_mgr.send_command.assert_called_once()
+
+
+def test_serving_final_gate_ignores_outside_project_report_path(tmp_path: Path) -> None:
+    outside_reports = tmp_path.parent / f"{tmp_path.name}_outside_reports"
+    outside_reports.mkdir()
+    outside_gate = outside_reports / "serving_final_gate.json"
+    outside_gate.write_text(json.dumps(_serving_gate_payload()), encoding="utf-8")
+    executor = _serving_gate_executor(tmp_path)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "vllm_serving_validation",
+            "migration_route": "vllm_serving",
+            "run_command": "python validate_vllm_serving.py",
+            "required_report_paths": [str(outside_gate)],
+        }
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    expected_path = str((tmp_path / "migration_reports" / "serving_final_gate.json").resolve())
+    assert result["status"] == "failure"
+    assert result["loop_state"]["serving_final_gate"]["path"] == expected_path
+    assert any("report missing" in error for error in result["loop_state"]["serving_final_gate"]["errors"])
+
+
+def test_valid_serving_final_gate_allows_phase5_success(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir()
+    (reports_dir / "serving_final_gate.json").write_text(json.dumps(_serving_gate_payload()), encoding="utf-8")
+    executor = _serving_gate_executor(tmp_path)
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "vllm_serving_validation",
+            "migration_route": "vllm_serving",
+            "run_command": "python validate_vllm_serving.py",
+            "required_report_paths": ["migration_reports/serving_final_gate.json"],
+        }
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "success"
+    assert result["loop_state"]["script_exit_code"] == 0
+    assert result["loop_state"]["serving_final_gate"]["passed"] is True
+    executor.session_mgr.send_command.assert_not_called()
+
+
+def test_non_serving_project_skips_serving_final_gate(tmp_path: Path) -> None:
+    executor = _serving_gate_executor(tmp_path)
+    state = {"phase_3_entry_script": {"run_command": "python validate.py"}}
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "success"
+    assert result["loop_state"]["script_exit_code"] == 0
+    assert result["loop_state"]["serving_final_gate"] == {
+        "operation": "serving_final_gate",
+        "skipped": True,
+        "passed": True,
+        "route": None,
     }
     executor.session_mgr.send_command.assert_not_called()
 
@@ -4453,6 +4738,36 @@ class TestWorkflowExecutorContainerPreflight:
         )
         assert isinstance(executor.exec_backend, ContainerBackend)
         assert executor.exec_backend._container_id == "init-cid"
+
+    @patch("subprocess.run")
+    def test_container_workflow_defers_missing_runtime_until_execution(self, mock_run, tmp_path: Path):
+        mock_run.side_effect = FileNotFoundError("docker not found")
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        )
+
+        assert isinstance(executor.exec_backend, ContainerBackend)
+        assert executor._container_env_probe is not None
+        assert executor._container_env_probe["status"] == "container_runtime_unavailable"
+        assert executor._container_env_probe["deferred_until_execution"] is True
+
+        phase = PhaseDefinition(
+            id="shell", name="S", prompt_template="", output_schema={},
+            type="shell", on_failure="break",
+        )
+        setattr(phase, "command", "echo hello")
+
+        status, output = executor._execute_shell_phase(phase, {}, {}, loop_state={})
+
+        assert status == "failure"
+        assert output["exit_code"] == 1
+        assert "docker not found" in output["stderr"]
 
 
 # ── Container context injection into LLM prompts ──────────────────────
@@ -5235,3 +5550,39 @@ class TestProductionWorkflowPlatformPolicy:
         devices = get_performance_baseline_device_values(ppu)
         assert "cpu" not in devices, "Default baseline must NOT include CPU"
         assert "cuda" in devices
+
+
+def test_custom_op_operator_repair_uses_higher_stagnation_threshold(tmp_path: Path) -> None:
+    workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=[])
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+        }
+    }
+    step_outputs = {"error_analysis": {"repair_role": "operator_fixer"}}
+
+    threshold = executor._effective_stagnation_threshold(
+        base_threshold=3,
+        phase_id="phase_5_validation",
+        state=state,
+        step_outputs=step_outputs,
+    )
+
+    assert threshold > 3
+    assert threshold == 100
+    assert executor._effective_stagnation_threshold(
+        base_threshold=3,
+        phase_id="phase_5_validation",
+        state=state,
+        step_outputs={"error_analysis": {"repair_role": "code_adapter"}},
+    ) == 3
