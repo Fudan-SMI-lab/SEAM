@@ -5,15 +5,17 @@ import json
 import logging
 import math
 import os
+import queue
 import re
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 logger = logging.getLogger("harness.session.manager")
 
@@ -22,8 +24,15 @@ COMPACTION_TOKENS = {"compaction", "summary"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
 FALLBACK_AGENT_NAME = "Atlas"
 _DEFAULT_HTTP_TIMEOUT = object()
-DEFAULT_SESSION_WAIT_TIMEOUT = 30000.0
+DEFAULT_SESSION_WAIT_TIMEOUT: float | None = None
 DEFAULT_HARD_ERROR_WAIT_TIMEOUT = 300.0
+NESTED_TASK_GUARD_POLL_SECONDS = 1.0
+_NON_BLOCKING_QUESTION_GUARD_PHRASES = (
+    "do not ask questions",
+    "do not ask the user",
+    "do not call question",
+)
+_FORBIDDEN_GUARDED_TOOLS = {"question"}
 
 
 class SessionManagerError(RuntimeError):
@@ -257,6 +266,8 @@ class MigrationSessionManager:
                 break
             except (SessionTransportError, SessionCompacted, urllib.error.URLError, RuntimeError, ValueError) as exc:
                 last_error = exc
+                if "blocking user question" in str(exc):
+                    break
                 if attempt >= retries:
                     break
                 time.sleep(2 ** attempt)
@@ -264,7 +275,12 @@ class MigrationSessionManager:
         return json.dumps({"ok": False, "error": str(last_error or 'unknown session error')})
 
     @staticmethod
-    def _effective_wait_timeout(timeout: int | float | None) -> float:
+    def _command_forbids_nested_tasks(command: str) -> bool:
+        text = command.lower()
+        return any(phrase in text for phrase in _NON_BLOCKING_QUESTION_GUARD_PHRASES)
+
+    @staticmethod
+    def _effective_wait_timeout(timeout: int | float | None) -> float | None:
         if timeout is None:
             return DEFAULT_SESSION_WAIT_TIMEOUT
         timeout_value = float(timeout)
@@ -722,10 +738,116 @@ class MigrationSessionManager:
             return signal
         return self._session_completion_from_sqlite(session_id)
 
+    @staticmethod
+    def _status_payload_is_empty(payload: Any) -> bool:
+        return payload in (None, "") or payload == {} or payload == []
+
+    def _http_assistant_completion_state(self, session_id: str, limit: int = 20) -> bool | None:
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": limit})
+        if not resp.get("ok"):
+            status = resp.get("status")
+            if status in {401, 403}:
+                raise SessionAuthError(f"GET /session/{session_id}/message unauthorized: {resp.get('details') or resp.get('error') or status}")
+            if isinstance(status, int) and status in HARD_HTTP_STATUSES:
+                raise SessionServerError(f"GET /session/{session_id}/message failed: {resp.get('details') or resp.get('error') or status}")
+            return self._session_completion_from_sqlite(session_id)
+
+        data = resp.get("data")
+        messages = data if isinstance(data, list) else [data]
+        for message in reversed(messages):
+            state = self._http_message_completion_state(message)
+            if state is not None:
+                return state
+        return None
+
+    def _http_message_completion_state(self, payload: Any) -> bool | None:
+        if not isinstance(payload, dict):
+            return None
+        if self._is_compaction_payload(payload):
+            return True
+
+        info = payload.get("info")
+        info_dict = info if isinstance(info, dict) else {}
+        role = str(payload.get("role") or info_dict.get("role") or "").lower()
+        if role and role != "assistant":
+            return None
+
+        finish = str(payload.get("finish") or info_dict.get("finish") or "").lower()
+        if finish in RUNNING_TOKENS:
+            return True
+        if finish not in {"stop", "success"}:
+            return None
+        return False
+
+    def _session_used_forbidden_nested_tool(self, session_id: str) -> str:
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
+        if not resp.get("ok"):
+            return ""
+        data = resp.get("data")
+        messages = data if isinstance(data, list) else [data]
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            parts = message.get("parts")
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if not isinstance(part, dict):
+                    continue
+                tool_name = str(part.get("tool", "")).strip().lower()
+                if tool_name in _FORBIDDEN_GUARDED_TOOLS:
+                    return tool_name
+        return ""
+
+    def _raise_if_forbidden_nested_tool_used(self, _session_id: str, _enabled: bool) -> None:
+        if not _enabled:
+            return
+        tool_name = self._session_used_forbidden_nested_tool(_session_id)
+        if not tool_name:
+            return
+        _ = self.abort_session(_session_id)
+        raise RuntimeError(
+            f"Phase automation forbids blocking user questions, but session {_session_id} used guarded tool {tool_name!r}"
+        )
+
+    def _post_session_message_with_guard(
+        self,
+        session_id: str,
+        payload: dict[str, Any],
+        http_timeout: float | None,
+        nested_task_guard: bool,
+    ) -> dict[str, Any]:
+        if not nested_task_guard:
+            return self._http("POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout)
+
+        result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+        def post_message() -> None:
+            try:
+                response = self._http("POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout)
+            except Exception as exc:
+                result_queue.put(("error", exc))
+            else:
+                result_queue.put(("response", response))
+
+        thread = threading.Thread(target=post_message, name=f"session-post-{session_id}", daemon=True)
+        thread.start()
+        while True:
+            try:
+                kind, value = result_queue.get(timeout=NESTED_TASK_GUARD_POLL_SECONDS)
+            except queue.Empty:
+                self._raise_if_forbidden_nested_tool_used(session_id, True)
+                continue
+            if kind == "error" and isinstance(value, Exception):
+                raise value
+            if kind == "response" and isinstance(value, dict):
+                return cast(dict[str, Any], value)
+            raise RuntimeError("Unexpected guarded session response payload")
+
     def wait_for_idle(self, session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0) -> bool:
         started = time.time()
         effective_timeout = self._effective_wait_timeout(timeout_s)
-        while time.time() - started < effective_timeout:
+        while effective_timeout is None or time.time() - started < effective_timeout:
             status = self._http("GET", "/session/status")
             if not status.get("ok"):
                 error_status = status.get("status")
@@ -740,6 +862,14 @@ class MigrationSessionManager:
             if token in RUNNING_TOKENS:
                 time.sleep(interval_s)
                 continue
+
+            if not token and self._status_payload_is_empty(data):
+                assistant_state = self._http_assistant_completion_state(session_id)
+                if assistant_state is True:
+                    time.sleep(interval_s)
+                    continue
+                if assistant_state is False:
+                    return True
 
             todo_state = self._session_has_incomplete_todos(session_id)
             if todo_state is True:
@@ -766,8 +896,9 @@ class MigrationSessionManager:
         interval_s: float = 1.0,
     ) -> None:
         started = time.time()
-        hard_error_timeout = DEFAULT_HARD_ERROR_WAIT_TIMEOUT if timeout is None else min(
-            self._effective_wait_timeout(timeout),
+        configured_timeout = self._effective_wait_timeout(timeout)
+        hard_error_timeout = DEFAULT_HARD_ERROR_WAIT_TIMEOUT if configured_timeout is None else min(
+            configured_timeout,
             DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
         )
         deadline = started + hard_error_timeout
@@ -856,12 +987,14 @@ class MigrationSessionManager:
 
     def _send_message_raw(self, session_id: str, text: str, agent: str = "", timeout: int | float | None = None) -> str:
         command_text = text
+        nested_task_guard = self._command_forbids_nested_tasks(command_text)
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if agent:
             payload["agent"] = agent
-        http_timeout = self._effective_wait_timeout(timeout) + 30
+        effective_timeout = self._effective_wait_timeout(timeout)
+        http_timeout = None if effective_timeout is None else effective_timeout + 30
         previous_text = self._last_message_text_tolerant(session_id)
-        resp = self._http("POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout)
+        resp = self._post_session_message_with_guard(session_id, payload, http_timeout, nested_task_guard)
         if not resp.get("ok"):
             status = resp.get("status")
             detail = resp.get("details") or resp.get("error") or "request failed"
@@ -887,14 +1020,18 @@ class MigrationSessionManager:
 
         text = self._extract_message_text(data)
         if not text:
+            self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
             text = self._recover_empty_response_text(session_id, timeout, previous_text, command_text=command_text)
             if not text:
                 raise RuntimeError("Empty session response")
             return text
 
-        if not self.wait_for_idle(session_id, timeout_s=self._effective_wait_timeout(timeout), interval_s=1.0):
+        self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
+        if not self.wait_for_idle(session_id, timeout_s=effective_timeout, interval_s=1.0):
+            self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
             raise TimeoutError("Session still running or has incomplete todos")
 
+        self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
         return text
 
     def _recover_empty_response_text(

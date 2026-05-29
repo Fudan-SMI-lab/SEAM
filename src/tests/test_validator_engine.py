@@ -190,15 +190,15 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cuda",
-            "custom_device": "npu",
+            "baseline_device": "cpu",
+            "custom_device": "ascend_opp",
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cuda",
-            "overall_custom_device": "npu",
+            "overall_baseline_device": "cpu",
+            "overall_custom_device": "ascend_opp",
             "entries": [
                 {
                     "unit_identity": "ScalarFwd2D",
@@ -206,8 +206,8 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
-                    "custom_device": "npu",
+                    "baseline_device": "cpu",
+                    "custom_device": "ascend_opp",
                 }
             ],
         },
@@ -283,8 +283,8 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cuda",
-                    "custom_device": "npu",
+                    "baseline_device": "cpu",
+                    "custom_device": "ascend_opp",
                 },
                 "no_fallback_no_zero_call_no_builtin_contamination": _valid_no_fallback_evidence(),
             }
@@ -900,21 +900,38 @@ def test_custom_op_final_gate_accepts_native_artifact_under_python_bindings_dir(
 def test_custom_op_final_gate_accepts_indexed_device_strings() -> None:
     payload = _valid_custom_op_final_gate()
     performance_report = cast(dict[str, object], payload["performance_report"])
-    performance_report["baseline_device"] = "cuda:0"
+    performance_report["baseline_device"] = "cpu"
     performance_report["custom_device"] = "npu:0"
-    performance_report["overall_baseline_device"] = "torch.cuda"
+    performance_report["overall_baseline_device"] = "torch.cpu"
     performance_report["overall_custom_device"] = "Ascend 910B"
     entries = cast(list[dict[str, object]], performance_report["entries"])
-    entries[0]["baseline_device"] = "cuda:0"
+    entries[0]["baseline_device"] = "cpu"
     entries[0]["custom_device"] = "torch_npu.npu"
     rows = cast(list[dict[str, object]], payload["rows"])
     performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
-    performance_evidence["baseline_device"] = "torch.cuda"
+    performance_evidence["baseline_device"] = "torch.cpu"
     performance_evidence["custom_device"] = "npu:0"
 
     result = validate_custom_op_final_gate(payload)
 
     assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_custom_op_final_gate_rejects_cuda_performance_baseline() -> None:
+    payload = _valid_custom_op_final_gate()
+    performance_report = cast(dict[str, object], payload["performance_report"])
+    performance_report["baseline_device"] = "cuda"
+    performance_report["overall_baseline_device"] = "torch.cuda"
+    entries = cast(list[dict[str, object]], performance_report["entries"])
+    entries[0]["baseline_device"] = "cuda:0"
+    rows = cast(list[dict[str, object]], payload["rows"])
+    performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
+    performance_evidence["baseline_device"] = "torch.cuda"
+
+    result = validate_custom_op_final_gate(payload)
+
+    assert result["passed"] is False
+    assert any("real CPU baseline path" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_rejects_diagnostic_only_baseline() -> None:
@@ -1153,8 +1170,8 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
                 "custom_seconds": 0.01,
                 "speedup_vs_baseline": 2.0,
                 "project_api_invoked": True,
-                "baseline_device": "cuda",
-                "custom_device": "npu",
+                "baseline_device": "cpu",
+                "custom_device": "ascend_opp",
             }
         )
     source_inventory["entries"] = entries
@@ -1164,13 +1181,13 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
         "unit_count": 2,
         "path": "migration_reports/performance.json",
         "project_api_invoked": True,
-        "baseline_device": "cuda",
-        "custom_device": "npu",
+        "baseline_device": "cpu",
+        "custom_device": "ascend_opp",
         "overall_baseline_seconds": 0.05,
         "overall_custom_seconds": 0.04,
         "overall_speedup_vs_baseline": 1.25,
-        "overall_baseline_device": "cuda",
-        "overall_custom_device": "npu",
+        "overall_baseline_device": "cpu",
+        "overall_custom_device": "ascend_opp",
         "overall_evidence": {
             "project_api_invoked": True,
             "custom_op_route_executed": True,

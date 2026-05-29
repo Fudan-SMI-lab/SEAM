@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +95,7 @@ _REPAIR_PROMPT_IDS_CONTAINER = {
     "code_adapter": "repair_code_adapter_container",
     "operator_fixer": "repair_operator_fixer_container",
 }
+_CUSTOM_OP_OPERATOR_REPAIR_AGENT_DEFAULT = "hephaestus"
 
 
 def _workspace_root() -> str:
@@ -122,10 +124,12 @@ def _operator_custom_op_target_units(phase3_contract: dict[str, object] | None) 
     if not isinstance(phase3_contract, dict):
         return []
     variant_overlay = expanded_variant_contract_from_contract(phase3_contract)
-    units = variant_overlay.get("unit_identities")
-    if isinstance(units, list):
-        unit_items = cast(list[object], units)
-        return [str(unit).strip() for unit in unit_items if isinstance(unit, str) and unit.strip()]
+    inventory = variant_overlay.get("expanded_variant_inventory")
+    if isinstance(inventory, dict):
+        units = cast(dict[str, object], inventory).get("unit_identities")
+        if isinstance(units, list):
+            unit_items = cast(list[object], units)
+            return [str(unit).strip() for unit in unit_items if isinstance(unit, str) and unit.strip()]
     schema_obj = phase3_contract.get("operator_inventory_schema")
     if isinstance(schema_obj, dict):
         schema = cast(dict[str, object], schema_obj)
@@ -195,7 +199,7 @@ def _operator_custom_op_guidance(
     schema_checklist = "\n".join([
         "",
         "Final-gate evidence object schema (every in-scope row MUST satisfy):",
-        "- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, project_relative_path, runtime_loaded_module_file, build_provenance={command, log_path}",
+        "- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, project_relative_path, runtime_loaded_module_file, op_host/op_kernel concrete project-relative source paths, opp_build_script or CMakeLists.txt path, install/provenance path, generated OPP artifact paths, build_provenance={command, log_path}; for Ascend this log must describe a real CANN/OPP/AscendC build/install flow and must not be stale CUDAExtension/NpuExtension/ATen/libtorch-only metadata",
         "- adapter_evidence: object/dict with imported=true, passed=true",
         "- parity_evidence: object/dict with verified=true, passed=true",
         "- integration_e2e_evidence: object/dict with project_api_invoked=true, custom_op_route_executed=true, native_custom_op_route_executed=true",
@@ -231,7 +235,7 @@ def _operator_custom_op_guidance(
     return "".join([
         f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n",
         "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n",
-        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
+        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, concrete op_host and op_kernel/AscendC source paths, an OPP build script path, install/provenance evidence, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
         schema_checklist,
         perf_mode_note,
         "\n",
@@ -243,10 +247,13 @@ def _operator_custom_op_guidance(
 def _operator_repair_has_custom_op_contract(phase3_contract: dict[str, object] | None) -> bool:
     return isinstance(phase3_contract, dict) and _has_custom_op_contract_fields(phase3_contract)
 _STAGNATION_THRESHOLD = 3
+_CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT = 100
 __all__ = ["RepairLoopEngine", "SessionManagerLike", "ReviewGateState", "_get_timeout", "force_custom_op_operator_routing_if_needed"]
 
 
 _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
+    r"strict custom[-_ ]op final gate failed",
+    r"missing or insufficient per-expanded-variant evidence",
     r"custom[-_ ]op final evidence gate failed",
     r"custom_op_final_gate",
     r"full_migration_status",
@@ -264,6 +271,8 @@ _CUSTOM_OP_OPERATOR_EVIDENCE_PATTERNS = (
     r"custom[-_ ]op evidence",
 )
 _CUSTOM_OP_STRONG_OPERATOR_EVIDENCE_PATTERNS = (
+    r"strict custom[-_ ]op final gate failed",
+    r"missing or insufficient per-expanded-variant evidence",
     r"custom[-_ ]op final evidence gate failed",
     r"custom_op_final_gate",
     r"full_migration_status",
@@ -404,10 +413,10 @@ def get_timeout(config: ConfigDict | None, key: str, default: int | None = None)
 
 
 class SessionManagerLike(Protocol):
-    def get_or_create(self, role: str, lifecycle: str) -> str:
+    def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         ...
 
-    def send_command(self, session_id: str, command: str, timeout: object = None) -> str:
+    def send_command(self, session_id: str, command: str, agent: str = "", timeout: object = None) -> str:
         ...
 
 
@@ -469,6 +478,87 @@ class RepairLoopEngine:
             "repair_role": "dependency_fixer",
             "raw_response": raw_response,
         }
+
+    def _effective_stagnation_threshold(
+        self,
+        *,
+        classification: Mapping[str, object],
+        phase3_contract: dict[str, object] | None,
+    ) -> int:
+        if classification.get("repair_role") != "operator_fixer":
+            return _STAGNATION_THRESHOLD
+        if not _operator_repair_has_custom_op_contract(phase3_contract):
+            return _STAGNATION_THRESHOLD
+        configured = self._framework_int(
+            "custom_op_operator_stagnation_threshold",
+            _CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT,
+        )
+        return max(_STAGNATION_THRESHOLD, configured)
+
+    def _repair_agent_for_role(
+        self,
+        *,
+        repair_role: str,
+        phase3_contract: dict[str, object] | None,
+    ) -> str:
+        if repair_role != "operator_fixer":
+            return ""
+        if not _operator_repair_has_custom_op_contract(phase3_contract):
+            return ""
+        return self._framework_str(
+            "custom_op_operator_repair_agent",
+            _CUSTOM_OP_OPERATOR_REPAIR_AGENT_DEFAULT,
+        )
+
+    def _framework_int(self, key: str, default: int) -> int:
+        framework_config = self.config.get("framework") if self.config else None
+        if isinstance(framework_config, dict):
+            framework_map = cast(dict[str, object], framework_config)
+            raw_value = framework_map.get(key)
+            if isinstance(raw_value, bool):
+                return default
+            if isinstance(raw_value, (int, float, str)):
+                try:
+                    value = int(raw_value)
+                except (TypeError, ValueError):
+                    return default
+                return value if value > 0 else default
+        return default
+
+    def _framework_str(self, key: str, default: str) -> str:
+        framework_config = self.config.get("framework") if self.config else None
+        if isinstance(framework_config, dict):
+            framework_map = cast(dict[str, object], framework_config)
+            raw_value = framework_map.get(key)
+            if isinstance(raw_value, str) and raw_value.strip():
+                return raw_value.strip()
+        return default
+
+    def _repair_session_nested_task_error(self, _repair_session_id: str) -> str:
+        return ""
+
+    def _discard_repair_session(
+        self,
+        repair_session_ids: dict[str, str],
+        repair_role: str,
+        repair_session_id: str,
+    ) -> None:
+        cached_session_id = repair_session_ids.get(repair_role)
+        if cached_session_id == repair_session_id:
+            _ = repair_session_ids.pop(repair_role, None)
+        cleanup_session = getattr(self.session_mgr, "cleanup_session", None)
+        if callable(cleanup_session):
+            try:
+                _ = cleanup_session(repair_session_id)
+            except Exception:
+                return
+            return
+        abort_session = getattr(self.session_mgr, "abort_session", None)
+        if callable(abort_session):
+            try:
+                _ = abort_session(repair_session_id)
+            except Exception:
+                return
 
     @staticmethod
     def _log(msg: str, logger: Callable[[str], None] | None) -> None:
@@ -654,6 +744,7 @@ class RepairLoopEngine:
         last_fix_instruction = ""
         last_fix_response = ""
         last_fix_metadata: FixMetadataDict = {}
+        last_stagnation_threshold = _STAGNATION_THRESHOLD
         entry_script_revision_count = 0
         max_entry_script_revisions = self._max_entry_script_revisions()
         entry_script_revision_requests: list[dict[str, object]] = []
@@ -665,8 +756,9 @@ class RepairLoopEngine:
             )
             written_reports = scaffold_result.get("written_reports")
             if isinstance(written_reports, list) and written_reports:
+                written_report_paths = cast(list[object], written_reports)
                 self._log(
-                    f"Custom-op report scaffold refreshed {len(written_reports)} fail-closed reports",
+                    f"Custom-op report scaffold refreshed {len(written_report_paths)} fail-closed reports",
                     logger,
                 )
 
@@ -963,6 +1055,12 @@ class RepairLoopEngine:
                     script_cwd=str(script_cwd),
                     env_vars=dict(env_vars),
                 )
+                classification = cast(ClassificationDict, cast(object, force_custom_op_operator_routing_if_needed(
+                    cast(dict[str, object], cast(object, classification)),
+                    error_text=error_text,
+                    history=context.history,
+                    phase3_contract=active_phase3_contract,
+                )))
                 last_classification = classification
                 self._log(
                     f"[Iter {iteration}] Analyzer classified -> category={classification.get('category')}, role={classification.get('repair_role')}",
@@ -1010,32 +1108,42 @@ class RepairLoopEngine:
                     status = "max_iterations"
                     continue
 
-                if repeated_error_count >= _STAGNATION_THRESHOLD:
+                stagnation_threshold = self._effective_stagnation_threshold(
+                    classification=classification,
+                    phase3_contract=active_phase3_contract,
+                )
+                last_stagnation_threshold = stagnation_threshold
+                if repeated_error_count >= stagnation_threshold:
                     status = "stagnation"
                     self._log(
-                        f"[Iter {iteration}] STOP: Same error repeated {_STAGNATION_THRESHOLD}x, stagnating",
+                        f"[Iter {iteration}] STOP: Same error repeated {stagnation_threshold}x, stagnating",
                         logger,
                     )
                     fix_attempt = {
                         "status": "stagnation",
-                        "message": "Repeated identical execution error three times; escalating.",
+                        "message": f"Repeated identical execution error {stagnation_threshold} times; escalating.",
                     }
                 else:
                     repair_role = str(classification["repair_role"])
+                    repair_agent = self._repair_agent_for_role(
+                        repair_role=repair_role,
+                        phase3_contract=active_phase3_contract,
+                    )
                     repair_session_id = repair_session_ids.get(repair_role)
                     if repair_session_id is None:
                         repair_session_id = self.session_mgr.get_or_create(
                             role=repair_role,
                             lifecycle="persistent",
+                            agent=repair_agent,
                         )
                         repair_session_ids[repair_role] = repair_session_id
                         self._log(
-                            f"[Iter {iteration}] Created new repair session {repair_session_id} (role: {repair_role})",
+                            f"[Iter {iteration}] Created new repair session {repair_session_id} (role: {repair_role}, agent: {repair_agent or 'default'})",
                             logger,
                         )
                     else:
                         self._log(
-                            f"[Iter {iteration}] Reusing repair session {repair_session_id} (role: {repair_role})",
+                            f"[Iter {iteration}] Reusing repair session {repair_session_id} (role: {repair_role}, agent: {repair_agent or 'default'})",
                             logger,
                         )
 
@@ -1068,6 +1176,7 @@ class RepairLoopEngine:
                             repair_response = self.session_mgr.send_command(
                                 repair_session_id,
                                 repair_prompt,
+                                agent=repair_agent,
                                 timeout=_get_timeout(self.config, "session_timeout_repair"),
                             )
                             session_error = self._session_error_from_response(repair_response)
@@ -1075,6 +1184,11 @@ class RepairLoopEngine:
                                 self._log(
                                     f"[Iter {iteration}] Repair LLM session error: {session_error}",
                                     logger,
+                                )
+                                self._discard_repair_session(
+                                    repair_session_ids,
+                                    repair_role,
+                                    repair_session_id,
                                 )
                                 repair_failed = True
                                 repair_error = session_error
@@ -1124,8 +1238,19 @@ class RepairLoopEngine:
                             repair_response_text,
                             max_retries=2,
                         )
+                        nested_task_error = self._repair_session_nested_task_error(repair_session_id)
+                        if nested_task_error:
+                            fix_metadata = {
+                                "modified_files": [],
+                                "summary": nested_task_error,
+                            }
+                            self._discard_repair_session(
+                                repair_session_ids,
+                                repair_role,
+                                repair_session_id,
+                            )
                         fix_attempt = {
-                            "status": "sent",
+                            "status": "forbidden_nested_task" if nested_task_error else "sent",
                             "repair_role": repair_role,
                             "repair_session_id": repair_session_id,
                             "instruction": repair_prompt,
@@ -1158,7 +1283,7 @@ class RepairLoopEngine:
             self._log(f"Phase 5 completed: SUCCESS (iteration {context.iteration_count})", logger)
         elif status == "stagnation":
             self._log(
-                f"Phase 5 completed: STAGNATION (identical error repeated {_STAGNATION_THRESHOLD}x)",
+                f"Phase 5 completed: STAGNATION (identical error repeated {last_stagnation_threshold}x)",
                 logger,
             )
         elif status == "passed_with_reviews":
@@ -1233,6 +1358,13 @@ class RepairLoopEngine:
         ))
         analyzer_prompt_id = "phase_error_recovery_container" if isinstance(getattr(self, "exec_backend", None), ContainerBackend) else "phase_error_recovery"
         analyzer_prompt = self.prompt_loader.load_prompt(analyzer_prompt_id, prompt_context)
+        analyzer_prompt += (
+            "\n\n## Execution Discipline\n"
+            "Use the supplied failure log, Phase 3 contract, fix history, and artifact paths first. "
+            "You may use available tools, nested agents, or background work when that is necessary to classify the failure correctly. "
+            "Do not ask the user or call the question tool; make the best autonomous repair-routing decision. "
+            "Return exactly one JSON object with category, root_cause, suggested_fix, and repair_role.\n"
+        )
         max_send_retries = 2
         retry_delays = [5, 15]
         raw_response: str | None = None

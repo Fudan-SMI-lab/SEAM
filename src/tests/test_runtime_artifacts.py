@@ -145,27 +145,28 @@ def test_operator_repair_context_lists_expanded_variants_as_missing_report_scope
 
 def test_scaffold_or_refresh_custom_op_canonical_reports_fail_closed_for_full_variant_scope(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
-    units = [f"variant_route:dtype={'double' if i >= 2 else 'float'}:variant={i}" for i in range(4)]
+    units = [f"variant_route:dtype={'double' if i >= 30 else 'float'}:variant={i}" for i in range(60)]
     phase3_contract: dict[str, object] = {
         "entry_script_kind": "custom_op_full_validation",
         "reports_dir": str(project_dir / "migration_reports"),
         "expanded_variant_inventory": {
             "variant_axes_detected": True,
             "unit_identities": units,
-            "expanded_operator_instances_count": 4,
+            "expanded_operator_instances_count": 60,
         },
     }
 
     result = scaffold_or_refresh_custom_op_canonical_reports(project_dir=str(project_dir), phase3_contract=phase3_contract)
 
     reports_dir = project_dir / "migration_reports"
-    assert result["unit_count"] == 4
+    assert result["unit_count"] == 60
     assert {path.name for path in reports_dir.iterdir()} == set(CANONICAL_CUSTOM_OP_REPORT_NAMES)
     gate = json.loads((reports_dir / "custom_op_final_gate.json").read_text(encoding="utf-8"))
     assert gate["full_migration_status"] == "INCOMPLETE"
     assert gate["closed_pass_entries"] == 0
-    assert gate["remaining_entries"] == 4
+    assert gate["remaining_entries"] == 60
     assert [row["unit_identity"] for row in gate["strict_per_unit_ledger"]] == units
+    assert gate["strict_per_unit_ledger"][50]["unit_identity"] == units[50]
     assert all(row["strict_pass"] is False for row in gate["strict_per_unit_ledger"])
 
 

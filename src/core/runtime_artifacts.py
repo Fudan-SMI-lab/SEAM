@@ -566,7 +566,7 @@ def _expanded_variant_units_from_contract(contract: dict[str, object]) -> list[s
     inventory = overlay.get("expanded_variant_inventory")
     if not isinstance(inventory, dict):
         return []
-    return _string_list(cast(dict[str, object], inventory).get("unit_identities"))[:50]
+    return _string_list(cast(dict[str, object], inventory).get("unit_identities"))
 
 
 def _expanded_variant_count_from_contract(contract: dict[str, object], units: list[str]) -> int | None:
