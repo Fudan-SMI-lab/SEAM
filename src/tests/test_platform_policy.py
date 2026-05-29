@@ -38,6 +38,10 @@ class TestBuiltinPresets:
         assert len(p.custom_op_evidence.native_build_log_tokens) > 0
         assert len(p.custom_op_evidence.native_binary_tokens) > 0
         assert len(p.custom_op_evidence.native_source_tokens) > 0
+        assert "cpu" in p.custom_op_evidence.performance_baseline_device_values
+        assert "torch_cpu" in p.custom_op_evidence.performance_baseline_device_values
+        assert "cuda" not in p.custom_op_evidence.performance_baseline_device_values
+        assert "cpu_baseline" in p.custom_op_evidence.performance_baseline_boolean_fields
         assert p.custom_op_evidence.custom_op_evidence_policy != ""
         assert p.default_rule_migration_strategy == "cuda_to_npu"
 
