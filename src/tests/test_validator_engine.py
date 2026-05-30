@@ -763,7 +763,7 @@ def test_custom_op_final_gate_rejects_evidence_only_native_marker_artifact(tmp_p
         source_path.parent.mkdir(parents=True, exist_ok=True)
     _ = (tmp_path / host_source).write_text(
         "extern \"C\" int pointnet2_ascend_record_unit_call(unsigned long i) { return 1000 + i; }\n"
-        "const char* marker = \"aclrt libascendcl op_host evidence\";\n",
+        + "const char* marker = \"aclrt libascendcl op_host evidence\";\n",
         encoding="utf-8",
     )
     _ = (tmp_path / kernel_source).write_text(
@@ -773,8 +773,8 @@ def test_custom_op_final_gate_rejects_evidence_only_native_marker_artifact(tmp_p
     build_log = tmp_path / "migration_reports" / "ascend_custom_op_build.log"
     _ = build_log.write_text(
         f"command: g++ -shared {host_source} {kernel_source} -lascendcl -o {fake_path}\n"
-        "native_tokens: -lascendcl libascendcl aclrt op_host op_kernel aicore kernel_operator.h\n"
-        "returncode: 0\n",
+        + "native_tokens: -lascendcl libascendcl aclrt op_host op_kernel aicore kernel_operator.h\n"
+        + "returncode: 0\n",
         encoding="utf-8",
     )
 
@@ -949,6 +949,37 @@ def test_custom_op_final_gate_rejects_diagnostic_only_baseline() -> None:
     assert result["passed"] is False
     assert any("diagnostic-only" in error for error in result["errors"])
 
+
+def test_custom_op_final_gate_rejects_copied_zero_iteration_speedup() -> None:
+    payload = _valid_custom_op_final_gate()
+    payload["device"] = "npu"
+    performance_report = cast(dict[str, object], payload["performance_report"])
+    performance_report["overall_baseline_seconds"] = 0.009861016273498535
+    performance_report["overall_custom_seconds"] = 0.009861016273498535
+    performance_report["overall_speedup_vs_baseline"] = 1.0
+    performance_report["measure_iterations"] = 0
+    performance_report["overall_project_api_invoked"] = True
+    performance_report["overall_all_units_replaced"] = True
+    entries = cast(list[dict[str, object]], performance_report["entries"])
+    entries[0]["baseline_seconds"] = 0.009861016273498535
+    entries[0]["custom_seconds"] = 0.009861016273498535
+    entries[0]["speedup_vs_baseline"] = 1.0
+    entries[0]["iterations"] = 0
+    rows = cast(list[dict[str, object]], payload["rows"])
+    performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
+    performance_evidence["baseline_seconds"] = 0.009861016273498535
+    performance_evidence["custom_seconds"] = 0.009861016273498535
+    performance_evidence["speedup_vs_baseline"] = 1.0
+    performance_evidence["measure_iterations"] = 0
+
+    result = validate_custom_op_final_gate(payload)
+
+    assert result["passed"] is False
+    assert any("zero measurement iterations" in error for error in result["errors"])
+    assert any(
+        "must not copy identical baseline_seconds and custom_seconds" in error
+        for error in result["errors"]
+    )
 
 def test_custom_op_final_gate_rejects_missing_complete_performance_report() -> None:
     payload = _valid_custom_op_final_gate()
