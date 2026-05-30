@@ -31,6 +31,14 @@ _NON_BLOCKING_QUESTION_GUARD_PHRASES = (
     "do not ask questions",
     "do not ask the user",
     "do not call question",
+    "do not request clarification",
+    "do not ask for clarification",
+    "without requesting clarification",
+    "without asking for clarification",
+    "ask for clarification if",
+    "ask for clarification when",
+    "request clarification if",
+    "request clarification when",
 )
 _FORBIDDEN_GUARDED_TOOLS = {"question"}
 
@@ -779,6 +787,38 @@ class MigrationSessionManager:
             return None
         return False
 
+    def _completed_latest_response_payload(
+        self,
+        session_id: str,
+        *,
+        previous_text: str = "",
+        command_text: str = "",
+    ) -> dict[str, Any] | None:
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
+        if not resp.get("ok"):
+            return None
+        data = resp.get("data")
+        messages = data if isinstance(data, list) else [data]
+        candidates: list[dict[str, Any]] = []
+        previous = previous_text.strip()
+        command = command_text.strip()
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            message = cast(dict[str, Any], item)
+            if self._http_message_completion_state(message) is not False:
+                continue
+            text = self._extract_message_text(message).strip()
+            if not text or text == previous or text == command:
+                continue
+            candidates.append(message)
+        if not candidates:
+            return None
+        for message in candidates:
+            if extract_json_response(self._extract_message_text(message)):
+                return message
+        return candidates[0]
+
     def _session_used_forbidden_nested_tool(self, session_id: str) -> str:
         resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
         if not resp.get("ok"):
@@ -816,10 +856,9 @@ class MigrationSessionManager:
         payload: dict[str, Any],
         http_timeout: float | None,
         nested_task_guard: bool,
+        previous_text: str = "",
+        command_text: str = "",
     ) -> dict[str, Any]:
-        if not nested_task_guard:
-            return self._http("POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout)
-
         result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
 
         def post_message() -> None:
@@ -836,9 +875,24 @@ class MigrationSessionManager:
             try:
                 kind, value = result_queue.get(timeout=NESTED_TASK_GUARD_POLL_SECONDS)
             except queue.Empty:
-                self._raise_if_forbidden_nested_tool_used(session_id, True)
+                if nested_task_guard:
+                    self._raise_if_forbidden_nested_tool_used(session_id, True)
+                recovered = self._completed_latest_response_payload(
+                    session_id,
+                    previous_text=previous_text,
+                    command_text=command_text,
+                )
+                if recovered is not None:
+                    return {"ok": True, "data": recovered}
                 continue
             if kind == "error" and isinstance(value, Exception):
+                recovered = self._completed_latest_response_payload(
+                    session_id,
+                    previous_text=previous_text,
+                    command_text=command_text,
+                )
+                if recovered is not None:
+                    return {"ok": True, "data": recovered}
                 raise value
             if kind == "response" and isinstance(value, dict):
                 return cast(dict[str, Any], value)
@@ -994,7 +1048,14 @@ class MigrationSessionManager:
         effective_timeout = self._effective_wait_timeout(timeout)
         http_timeout = None if effective_timeout is None else effective_timeout + 30
         previous_text = self._last_message_text_tolerant(session_id)
-        resp = self._post_session_message_with_guard(session_id, payload, http_timeout, nested_task_guard)
+        resp = self._post_session_message_with_guard(
+            session_id,
+            payload,
+            http_timeout,
+            nested_task_guard,
+            previous_text=previous_text,
+            command_text=command_text,
+        )
         if not resp.get("ok"):
             status = resp.get("status")
             detail = resp.get("details") or resp.get("error") or "request failed"
