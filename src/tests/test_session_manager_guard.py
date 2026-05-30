@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -225,6 +226,54 @@ def test_send_command_aborts_blocking_question_tool_usage() -> None:
     assert any(call["method"] == "POST" and call["path"] == "/session/ses-1/abort" for call in manager.calls)
 
 
+def test_send_command_aborts_question_when_prompt_only_forbids_clarification() -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "working"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [
+            {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "tool", "tool": "question", "state": {"status": "running"}}]},
+        ]},
+        ("POST", "/session/ses-1/abort"): {"ok": True, "data": {}},
+    })
+
+    result = json.loads(manager.send_command(
+        "ses-1",
+        "Do not request clarification; choose the safest valid repair and return JSON.",
+        retries=0,
+    ))
+
+    assert result["ok"] is False
+    assert "blocking user questions" in result["error"]
+    assert any(call["method"] == "POST" and call["path"] == "/session/ses-1/abort" for call in manager.calls)
+
+
+def test_send_command_aborts_question_for_clarification_continuation_prompt() -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "text", "text": "working"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [
+            {"info": {"role": "assistant", "finish": "stop"}, "parts": [{"type": "tool", "tool": "question", "state": {"status": "running"}}]},
+        ]},
+        ("POST", "/session/ses-1/abort"): {"ok": True, "data": {}},
+    })
+
+    result = json.loads(manager.send_command(
+        "ses-1",
+        "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.",
+        retries=0,
+    ))
+
+    assert result["ok"] is False
+    assert "blocking user questions" in result["error"]
+    assert any(call["method"] == "POST" and call["path"] == "/session/ses-1/abort" for call in manager.calls)
+
+
 def test_send_command_retries_runtime_errors_that_mention_old_guard_text() -> None:
     class NestedGuardFailureManager(FakeSessionManager):
         def __init__(self) -> None:
@@ -250,6 +299,117 @@ def test_send_command_retries_runtime_errors_that_mention_old_guard_text() -> No
     assert result["ok"] is False
     assert "forbids nested agents/background tasks" in result["error"]
     assert manager.send_attempts == 3
+
+
+def test_send_command_recovers_json_when_latest_completed_message_is_followup(monkeypatch: pytest.MonkeyPatch) -> None:
+    json_message = {
+        "info": {"role": "assistant", "finish": "stop"},
+        "parts": [{"type": "text", "text": "```json\n{\"ok\": true, \"phase\": 1}\n```"}],
+    }
+    followup = {
+        "info": {"role": "assistant", "finish": "stop"},
+        "parts": [{"type": "text", "text": "What should I do next?"}],
+    }
+    compaction = {
+        "info": {"role": "assistant", "finish": "stop", "mode": "compaction", "summary": True},
+        "parts": [{"type": "compaction"}],
+    }
+
+    def blocking_post(_call: dict[str, Any]) -> Response:
+        raise TimeoutError("simulated transport wait should be bypassed by recovery")
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): blocking_post,
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [followup, compaction, json_message]},
+    })
+    monkeypatch.setattr(manager_module, "NESTED_TASK_GUARD_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+
+    result = manager.send_command("ses-1", "do work", timeout=120, retries=0)
+
+    assert "\"phase\": 1" in result
+    assert "What should I do next" not in result
+
+
+def test_send_command_recovers_completed_history_for_finite_timeout_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    completed = {
+        "info": {"role": "assistant", "finish": "stop"},
+        "parts": [{"type": "text", "text": "finite timeout recovered"}],
+    }
+    old_message = {
+        "info": {"role": "assistant", "finish": "stop"},
+        "parts": [{"type": "text", "text": "old assistant text"}],
+    }
+    latest_message_calls = 0
+
+    def blocking_post(_call: dict[str, Any]) -> Response:
+        raise TimeoutError("simulated transport wait should be bypassed by recovery")
+
+    def message_route(call: dict[str, Any]) -> Response:
+        nonlocal latest_message_calls
+        if call.get("query") == {"limit": 1}:
+            return {"ok": True, "data": [old_message]}
+        if call.get("query") == {"limit": 20}:
+            latest_message_calls += 1
+            return {"ok": True, "data": [completed, old_message]}
+        return {"ok": True, "data": [completed]}
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): blocking_post,
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    monkeypatch.setattr(manager_module, "NESTED_TASK_GUARD_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+
+    result = manager.send_command("ses-1", "do work", timeout=120, retries=0)
+
+    assert result == "finite timeout recovered"
+    assert latest_message_calls >= 1
+
+
+def test_send_command_recovers_completed_history_when_post_stream_never_finishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    completed = {
+        "info": {"role": "assistant", "finish": "stop"},
+        "parts": [{"type": "text", "text": "recovered phase complete"}],
+    }
+    old_message = {
+        "info": {"role": "assistant", "finish": "stop"},
+        "parts": [{"type": "text", "text": "old assistant text"}],
+    }
+    release_post = threading.Event()
+    latest_message_calls = 0
+
+    def blocking_post(_call: dict[str, Any]) -> Response:
+        release_post.wait()
+        return {"ok": True, "data": completed}
+
+    def message_route(call: dict[str, Any]) -> Response:
+        nonlocal latest_message_calls
+        if call.get("query") == {"limit": 1}:
+            return {"ok": True, "data": [old_message]}
+        if call.get("query") == {"limit": 20}:
+            latest_message_calls += 1
+            return {"ok": True, "data": [old_message] if latest_message_calls == 1 else [completed, old_message]}
+        return {"ok": True, "data": [completed]}
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): blocking_post,
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    monkeypatch.setattr(manager_module, "NESTED_TASK_GUARD_POLL_SECONDS", 0.0)
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+
+    try:
+        result = manager.send_command("ses-1", "do work", timeout=None, retries=0)
+    finally:
+        release_post.set()
+
+    assert result == "recovered phase complete"
+    assert any(call["method"] == "POST" and call["path"] == "/session/ses-1/message" for call in manager.calls)
+    assert latest_message_calls >= 2
 
 
 def test_send_command_recovers_empty_post_response_from_latest_history() -> None:
@@ -528,6 +688,19 @@ def test_wait_for_idle_times_out_while_session_is_running(monkeypatch: pytest.Mo
     manager = _manager_with_message(
         {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "still running"}]},
         status_type="running",
+    )
+    times = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+
+    assert manager.wait_for_idle("ses-1", timeout_s=1, interval_s=0) is False
+
+
+def test_wait_for_idle_times_out_while_todos_remain_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = _manager_with_message(
+        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "waiting on todo"}]},
+        history={"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "repair"}]}]},
+        status_type="idle",
     )
     times = iter([0.0, 0.0, 2.0])
     monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
