@@ -2775,10 +2775,13 @@ if __name__ == "__main__":
 
 
 def _strict_expanded_variant_script_is_sufficient(script_text: str) -> bool:
+    if "SEAM_STRICT_EXPANDED_VARIANT_VALIDATOR_V1" not in script_text:
+        return False
+    if "SEAM_STRICT_CUSTOM_OP_FINAL_GATE_SCAFFOLD_V1" not in script_text:
+        return False
+
     normalized = script_text.lower()
     required_terms = (
-        "seam_strict_expanded_variant_validator_v1",
-        "seam_strict_custom_op_final_gate_scaffold_v1",
         "migration_reports",
         "migration_manifest.json",
         "runtime_coverage.json",

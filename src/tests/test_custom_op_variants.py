@@ -687,6 +687,37 @@ def test_strict_expanded_variant_generated_script_builds_full_pass_gate_from_com
     assert validation == {"passed": True, "errors": [], "warnings": []}
 
 
+def test_strict_expanded_variant_script_generation_overwrites_keyword_only_script(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    script_path = project_dir / "validate_custom_ops_full.py"
+    script_path.parent.mkdir(parents=True)
+    keyword_only_text = """
+# migration_reports migration_manifest.json runtime_coverage.json performance.json build.json
+# implementation_resolution.json custom_op_final_gate.json evidence_validation.json
+# expanded_variant_inventory variant_axis_coverage per_variant unit_identity source_inventory
+# runtime_coverage_report performance_report required report missing per-expanded-variant
+""".lstrip()
+    _ = script_path.write_text(keyword_only_text, encoding="utf-8")
+    target: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "entry_script_path": "validate_custom_ops_full.py",
+        "run_command": "python validate_custom_ops_full.py",
+    }
+
+    ensure_strict_expanded_variant_validation_script(
+        target,
+        _expanded_variant_overlay(["op_alpha:float32"]),
+        project_dir=str(project_dir),
+    )
+
+    rewritten = script_path.read_text(encoding="utf-8")
+    assert rewritten != keyword_only_text
+    assert "SEAM_STRICT_EXPANDED_VARIANT_VALIDATOR_V1" in rewritten
+    assert "SEAM_STRICT_CUSTOM_OP_FINAL_GATE_SCAFFOLD_V1" in rewritten
+    assert target["entry_script_path"] == str(script_path)
+    assert target["run_command"] == f"python {script_path}"
+
+
 def test_strict_expanded_variant_script_generation_preserves_sufficient_existing_script(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     script_path = project_dir / "validate_custom_ops_full.py"
