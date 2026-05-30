@@ -44,6 +44,7 @@ PLAIN_EXPORT_PATTERN = re.compile(
     RETURN_TYPE_PATTERN
     + r"\s+(?P<name>[A-Za-z_]\w*(?:_cuda|_gpu))\s*\("
 )
+PYBIND_DEF_PATTERN = re.compile(r'\bm\.def\s*\(\s*["\'](?P<name>[A-Za-z_]\w*)["\']')
 
 
 @dataclass(frozen=True)
@@ -141,7 +142,35 @@ def _extract_native_units_from_text(
                 line_number=_line_number(text, match.start()),
             )
         )
+
+    if "PYBIND11_MODULE" in text and cuda_text:
+        family = _family_from_path(relative_path)
+        for match in PYBIND_DEF_PATTERN.finditer(text):
+            name = match.group("name")
+            if not _pybind_symbol_is_cuda_related(name, cuda_text):
+                continue
+            units.append(
+                NativeUnit(
+                    identity=f"{family}:{name}",
+                    family=family,
+                    symbol=name,
+                    source_path=relative_path,
+                    line_number=_line_number(text, match.start()),
+                )
+            )
     return units
+
+
+def _pybind_symbol_is_cuda_related(name: str, cuda_text: str) -> bool:
+    tokens = [token for token in re.split(r"_+", name.lower()) if token]
+    if not tokens:
+        return False
+    symbol_pattern = r"[A-Za-z_]\w*(?:kernel|cuda|gpu|wrapper)[A-Za-z0-9_]*"
+    for match in re.finditer(symbol_pattern, cuda_text, flags=re.IGNORECASE):
+        symbol = match.group(0).lower()
+        if all(token in symbol for token in tokens):
+            return True
+    return False
 
 
 def _macro_unit_is_cuda_related(macro: str, name: str, text: str, suffix: str, cuda_text: str) -> bool:

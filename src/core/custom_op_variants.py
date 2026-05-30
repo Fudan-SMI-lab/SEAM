@@ -12,6 +12,7 @@ import sys
 from typing import cast
 
 from core.custom_op_source_discovery import discover_required_cuda_native_units_from_project
+from core.routes import SGLANG_SERVING, VLLM_SERVING
 
 
 PHASE1_REQUIRED_DISCOVERY_SOURCES = (
@@ -49,6 +50,14 @@ ENTRY_SCRIPT_CANDIDATES = (
 )
 CUDA_TEXT_PATTERN = re.compile(
     r"\b(?:CUDAExtension|CppExtension|torch\.utils\.cpp_extension|PYBIND11_MODULE|TORCH_LIBRARY|__global__|cudaLaunchKernel|\.cu\b|\.cuh\b|torch\.ops)\b"
+)
+VLLM_STRONG_PATTERN = re.compile(
+    r"\b(?:vllm\s+serve|mineru-vllm-server|vllm-async-engine|AsyncLLM|AsyncEngineArgs|vllm\.entrypoints|from\s+vllm\b|import\s+vllm\b)",
+    re.IGNORECASE,
+)
+SGLANG_STRONG_PATTERN = re.compile(
+    r"\b(?:sglang\s+serve|python\s+-m\s+sglang|sglang\.launch_server|from\s+sglang\b|import\s+sglang\b)",
+    re.IGNORECASE,
 )
 NON_TARGET_VARIANT_VALUES = frozenset({"cpu", "host", "baseline", "reference", "native", "none", "default"})
 PHASE1_MIGRATION_ROUTES = frozenset(
@@ -167,6 +176,19 @@ def normalize_phase1_project_analysis(output: dict[str, object], *, project_dir:
             output,
             default_route="custom_op_with_variants" if _surface_has_active_variant_metadata(surface_map) else "custom_op",
         )
+    elif isinstance(surface_value, dict) and _surface_requires_custom_op_route(cast(Mapping[object, object], surface_value)):
+        surface_map = cast(dict[str, object], surface_value)
+        _normalize_phase1_route(
+            output,
+            default_route="custom_op_with_variants" if _surface_has_active_variant_metadata(surface_map) else "custom_op",
+        )
+    else:
+        route = _discover_serving_route(root)
+        if route is not None:
+            output["migration_route"] = route
+            _ensure_serving_runtime_surface(output, root, route)
+        else:
+            _normalize_phase1_route(output, default_route="ordinary_cuda")
 
 
 def normalize_project_analysis_expanded_variants(output: dict[str, object]) -> None:
@@ -209,16 +231,116 @@ def _is_string_list(value: object) -> bool:
 
 
 def _normalize_phase1_route(output: dict[str, object], *, default_route: str) -> None:
+    if default_route in {"custom_op", "custom_op_with_variants"}:
+        output["migration_route"] = default_route
+        return
+
     route = output.get("migration_route")
-    if isinstance(route, str) and route in PHASE1_MIGRATION_ROUTES and route not in {"ordinary_cuda", "custom_op"}:
+    if isinstance(route, str) and route in PHASE1_MIGRATION_ROUTES:
+        if route == "ordinary_cuda" and default_route != "ordinary_cuda":
+            output["migration_route"] = default_route
         return
     raw_route = output.get("route")
     if isinstance(raw_route, str) and raw_route in PHASE1_MIGRATION_ROUTES:
-        route = raw_route
-    if route not in PHASE1_MIGRATION_ROUTES or route in {"ordinary_cuda", "custom_op"}:
-        output["migration_route"] = default_route
-    else:
-        output["migration_route"] = route
+        if raw_route == "ordinary_cuda" and default_route != "ordinary_cuda":
+            output["migration_route"] = default_route
+        else:
+            output["migration_route"] = raw_route
+        return
+    output["migration_route"] = default_route
+
+
+def _surface_requires_custom_op_route(surface: Mapping[object, object]) -> bool:
+    if surface.get("custom_op_detected") is not True:
+        return False
+    if surface.get("discovery_complete") is True:
+        return True
+    for field in ("fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols", "source_evidence"):
+        if _string_sequence(surface.get(field)):
+            return True
+    return False
+
+
+def _discover_serving_route(root: Path | None) -> str | None:
+    if root is None or not root.is_dir():
+        return None
+    vllm_evidence: list[str] = []
+    sglang_evidence: list[str] = []
+    for path in _iter_project_source_files(root, suffixes={".py", ".toml", ".txt", ".md", ".yaml", ".yml", ".sh"}):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if VLLM_STRONG_PATTERN.search(text):
+            vllm_evidence.append(relative)
+        if SGLANG_STRONG_PATTERN.search(text):
+            sglang_evidence.append(relative)
+    if sglang_evidence:
+        return SGLANG_SERVING
+    if vllm_evidence:
+        return VLLM_SERVING
+    return None
+
+
+def _ensure_serving_runtime_surface(output: dict[str, object], root: Path | None, route: str) -> None:
+    surface_value = output.get("serving_runtime_surface")
+    surface = dict(cast(Mapping[str, object], surface_value)) if isinstance(surface_value, Mapping) else {}
+    framework = "sglang" if route == SGLANG_SERVING else "vllm"
+    evidence = _serving_evidence(root, framework)
+    launch_command = _serving_launch_command(root, framework)
+    demo_files = _serving_demo_or_test_files(root)
+    surface.setdefault("launch_command", launch_command)
+    surface.setdefault("launch_evidence", evidence or [f"project-local files mention {framework} serving launch"])
+    surface.setdefault("project_demo_or_test_evidence", demo_files or evidence or ["project-local README/config documents serving API usage"])
+    surface.setdefault("project_test_files", demo_files or evidence or ["README.md"])
+    surface.setdefault("readiness_probe", {"type": "http", "path": "/health"})
+    surface.setdefault("request_validation", {"type": "openai-compatible-http", "path": "/v1/chat/completions"})
+    surface.setdefault("expected_outputs", ["HTTP 200 response from project serving API request"])
+    surface.setdefault("required_runtime_env", [framework, "torch", "target accelerator runtime"])
+    surface.setdefault("unresolved_source_groups", [])
+    surface.setdefault("detection_complete", True)
+    output["serving_runtime_surface"] = surface
+
+
+def _serving_evidence(root: Path | None, framework: str) -> list[str]:
+    if root is None or not root.is_dir():
+        return []
+    pattern = SGLANG_STRONG_PATTERN if framework == "sglang" else VLLM_STRONG_PATTERN
+    evidence: list[str] = []
+    for path in _iter_project_source_files(root, suffixes={".py", ".toml", ".txt", ".md", ".yaml", ".yml", ".sh"}):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if pattern.search(text):
+            evidence.append(path.relative_to(root).as_posix())
+        if len(evidence) >= 5:
+            break
+    return evidence
+
+
+def _serving_launch_command(root: Path | None, framework: str) -> str:
+    evidence = _serving_evidence(root, framework)
+    if framework == "sglang":
+        return "sglang serve --model-path <project-model> --port 8080"
+    if any("pyproject.toml" in item for item in evidence):
+        return "mineru-vllm-server"
+    return "vllm serve <project-model> --port 8000"
+
+
+def _serving_demo_or_test_files(root: Path | None) -> list[str]:
+    if root is None or not root.is_dir():
+        return []
+    candidates: list[str] = []
+    for path in _iter_project_source_files(root, suffixes={".py", ".md", ".yaml", ".yml"}):
+        relative = path.relative_to(root).as_posix()
+        lowered = relative.lower()
+        if "test" in lowered or "example" in lowered or "readme" in lowered or "config" in lowered:
+            candidates.append(relative)
+        if len(candidates) >= 5:
+            break
+    return candidates
 
 
 def _surface_has_active_variant_metadata(surface: dict[str, object]) -> bool:
