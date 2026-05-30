@@ -47,6 +47,8 @@ from core.custom_op_variants import (
     normalize_phase1_project_analysis,
 )
 from core.routes import (
+    CUSTOM_OP,
+    CUSTOM_OP_WITH_VARIANTS,
     SERVING_ROUTES,
     normalize_serving_phase1_surface,
     normalize_serving_phase3_contract,
@@ -68,6 +70,7 @@ from core.validation_correction import (
 )
 from core.repair_loop import (
     _operator_custom_op_guidance,
+    _operator_custom_op_progress_block,
     _operator_generic_guidance,
     _operator_repair_has_custom_op_contract,
     force_custom_op_operator_routing_if_needed,
@@ -99,8 +102,8 @@ SUB_WORKFLOW_REPAIR_PHASE_ORDER = (
     "imp_fix_code",
     "imp_fix_operator",
 )
-SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT: int | None = None
-SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT: int | None = None
+SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT: int | None = 4 * 60 * 60
+SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT: int | None = SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",
@@ -1895,6 +1898,14 @@ class WorkflowExecutor:
                             entry_script=str(entry_script),
                             phase3_contract=phase3_contract,
                         )
+                        input_ctx["phase1_phase3_repair_scope"] = self._custom_op_phase1_phase3_repair_scope(phase3_contract)
+                        input_ctx["operator_repair_progress_block"] = _operator_custom_op_progress_block(
+                            phase3_contract, self.project_dir
+                        )
+                        input_ctx["strict_custom_op_acceptance_contract"] = (
+                            "For active custom-op contracts, success requires current project-local migration reports "
+                            "and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted."
+                        )
                         input_ctx["operator_custom_op_guidance"] = _operator_custom_op_guidance(
                             operator_context_path,
                             project_dir=self.project_dir,
@@ -1955,6 +1966,14 @@ class WorkflowExecutor:
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
                             phase3_contract=phase3_contract,
+                        )
+                        input_ctx["phase1_phase3_repair_scope"] = self._custom_op_phase1_phase3_repair_scope(phase3_contract)
+                        input_ctx["operator_repair_progress_block"] = _operator_custom_op_progress_block(
+                            phase3_contract, self.project_dir
+                        )
+                        input_ctx["strict_custom_op_acceptance_contract"] = (
+                            "For active custom-op contracts, success requires current project-local migration reports "
+                            "and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted."
                         )
                         input_ctx["operator_custom_op_guidance"] = _operator_custom_op_guidance(
                             operator_context_path,
@@ -2021,6 +2040,14 @@ class WorkflowExecutor:
         if isinstance(ph, dict):
             return str(ph.get("constraint_summary", ""))
         return ""
+
+    def _custom_op_phase1_phase3_repair_scope(self, phase3_contract: dict[str, object] | None) -> str:
+        phase1 = self.state.get("phase_1_project_analysis") if isinstance(self.state, dict) else None
+        scope = {
+            "phase_1_project_analysis": phase1 if isinstance(phase1, dict) else {},
+            "phase_3_entry_script": phase3_contract if isinstance(phase3_contract, dict) else {},
+        }
+        return json.dumps(scope, indent=2, ensure_ascii=False, default=str)
 
     def _serialize_entry_script_contract(self, state: dict[str, Any]) -> str:
         contract = state.get("phase_3_entry_script", {}) if isinstance(state, dict) else {}
@@ -2261,9 +2288,14 @@ class WorkflowExecutor:
                         phase1_output=ph1,
                         platform_policy=self.platform_policy,
                     )
-                elif normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(state, prompt_context):
+                elif (
+                    isinstance(ph1, dict)
+                    and ph1.get("migration_route") in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
+                ) or normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(state, prompt_context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
                     normalized["project_dir"] = str(self.project_dir)
+                    if isinstance(ph1, dict) and ph1.get("migration_route") in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}:
+                        normalized["migration_route"] = str(ph1["migration_route"])
                 variant_overlay = expanded_variant_contract_from_outputs(state)
                 if variant_overlay:
                     apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)

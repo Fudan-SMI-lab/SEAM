@@ -6,6 +6,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core import repair_loop
+from core.platform_policy import BUILTIN_PRESETS
 from core.prompt_loader import PromptLoader
 
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
@@ -78,7 +79,7 @@ def test_operator_fixer_prompt_is_generic_without_custom_op_guidance() -> None:
     assert "(No review available)" not in prompt
     assert "/tmp/test_project" in prompt
     assert "python train.py" in prompt
-    assert "Ascend NPU 原生修复" in prompt
+    assert "所选目标平台/后端的原生修复" in prompt
     assert "CPU fallback" in prompt
     assert "不要启动后台检索/后台 agents 后提前返回" in prompt
     assert "modified_files: []" in prompt
@@ -318,8 +319,46 @@ def test_custom_op_variant_service_prompt_keeps_strict_variant_scope_clauses() -
     assert "Treat every expanded variant axis declared by the Phase 3 contract as required scope" in prompt
     assert "missing_by_dtype" in prompt
     assert "blocking defects" in prompt
+    assert "HARDWARE_LIMITATION_ACCEPTED" not in prompt
+    assert "Use only the platform-specific repair strategies explicitly present" in prompt
+    assert "selected-platform native build/install logs and artifacts" in prompt
+    assert "toolchain_or_kernel_attempts" in prompt
+    assert "alternate observed/allowlisted CANN toolkit" not in prompt
+    assert "alternate CANN/toolkit candidates" not in prompt
+    assert "Do not modify `/usr/local/Ascend`" not in prompt
     assert '"inventory_count": 1' in prompt
     assert '"manifest_entries": 1' in prompt
     assert '"closed_pass_entries": 1' in prompt
     assert '"closed_pass_entries": 0' not in prompt
     assert "inventory_count`, `manifest_entries`, and `closed_pass_entries` must be equal" in prompt
+
+
+def test_variant_repair_strategy_is_npu_only_in_dynamic_guidance() -> None:
+    npu_text = repair_loop._operator_custom_op_guidance(
+        "/tmp/ctx.json",
+        project_dir="/tmp/test",
+        entry_script="run.py",
+        platform_policy=BUILTIN_PRESETS["npu_ascend"],
+    )
+    ppu_text = repair_loop._operator_custom_op_guidance(
+        "/tmp/ctx.json",
+        project_dir="/tmp/test",
+        entry_script="run.py",
+        platform_policy=BUILTIN_PRESETS["ppu_cuda_compatible"],
+    )
+    muxi_text = repair_loop._operator_custom_op_guidance(
+        "/tmp/ctx.json",
+        project_dir="/tmp/test",
+        entry_script="run.py",
+        platform_policy=BUILTIN_PRESETS["musa_muxi"],
+    )
+
+    assert "HARDWARE_LIMITATION_ACCEPTED" in npu_text
+    assert "alternate observed/allowlisted CANN/toolkit" in npu_text
+    assert "you must attempt a real Ascend target-platform kernel" in npu_text
+    assert "/usr/local/Ascend" in npu_text
+    for text in (ppu_text, muxi_text):
+        assert "HARDWARE_LIMITATION_ACCEPTED" not in text
+        assert "alternate observed/allowlisted CANN" not in text
+        assert "real Ascend target-platform kernel" not in text
+        assert "/usr/local/Ascend" not in text

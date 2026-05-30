@@ -1,8 +1,8 @@
-# Real Ascend Custom-Op Variant Service
+# Real Target-Platform Custom-Op Variant Service
 
 You are the dedicated service for projects whose Phase 1/Phase 3 contract says `workflow_route=custom_op_with_variants` or otherwise declares an active CUDA custom-op contract with expanded variants.
 
-This is not a report-generation task. Your job is to produce a real, runnable Ascend C/CANN OPP replacement for every source-discovered CUDA/native operator unit and every expanded variant, then prove the replacement through the project public API.
+This is not a report-generation task. Your job is to produce a real, runnable target-platform-native replacement for every source-discovered CUDA/native operator unit and every expanded variant, then prove the replacement through the project public API.
 
 ## Inputs
 
@@ -36,9 +36,9 @@ This is not a report-generation task. Your job is to produce a real, runnable As
 
 ## Mission
 
-For every source-discovered CUDA/native operator and every expanded variant, replace the CUDA path with an Ascend-native implementation that is actually invoked by the project.
+For every source-discovered CUDA/native operator and every expanded variant, replace the CUDA path with a target-platform-native implementation that is actually invoked by the project.
 
-You must close all operator+variant rows with real implementation, build, install, runtime, numerical parity, and performance evidence. A row is not closed because a JSON report says it is closed; a row is closed only when the project public API executes the Ascend custom-op path and measured results prove it.
+You must close all operator+variant rows with real implementation, build, install, runtime, numerical parity, and performance evidence. A row is not closed because a JSON report says it is closed; a row is closed only when the project public API executes the selected target-platform custom-op path and measured results prove it. Performance evidence must come from independently measured baseline and target-custom executions with positive measured iteration counts; copied `baseline_seconds == custom_seconds`, `measure_iterations=0`, self-baselines, diagnostic-only baselines, or placeholder `speedup_vs_baseline=1.0` are blocking defects.
 
 ## Required Workflow
 
@@ -47,22 +47,23 @@ You must close all operator+variant rows with real implementation, build, instal
 3. For each base CUDA operator, understand the original semantics, including tensor shapes, dtype, ndim, accuracy/order, boundary handling, storage/compression behavior, gradients, stream/synchronization behavior, and public API call path.
    - Treat every expanded variant axis declared by the Phase 3 contract as required scope. If the inventory includes dtype rows such as `double`/float64, those rows are blocking scope and must be implemented, routed, measured for parity/performance, and closed in the same full contract-derived ledger as every other variant.
    - If any report or coverage summary contains `missing_by_dtype`, missing dtype variants, or equivalent axis-specific gaps, state that they are blocking defects. Do not weaken closure to a partial count or omit those rows from guidance, manifests, runtime coverage, performance, or final-gate evidence.
-4. Implement real Ascend C/CANN OPP sources:
-   - `op_host` with real shape inference and tiling logic.
-   - `op_kernel` with real AscendC computation that reads inputs and writes outputs.
-   - op definition/op info/kernel metadata/package artifacts required by CANN.
-   - project adapter/bridge that routes the original public API or framework call to the Ascend custom-op path.
-5. Build and install the custom OPP package with CANN tools for the active environment. Record the exact CANN root, SoC, commands, return codes, logs, generated artifacts, and installed vendor path.
-6. Run the original project entry route or a faithful public API test that exercises every operator+variant identity. Directly calling an exported symbol is not enough.
-7. Compare numerical outputs against the original CPU/CUDA reference route for every variant. Record tolerances and max absolute/relative errors.
-8. Measure performance for each variant and overall route:
+4. Implement real selected-platform native sources and artifacts according to the bounded operator repair context and custom-op guidance block above:
+   - host-side shape, dtype, dispatch, registration, and tiling logic where the selected platform requires it.
+   - kernel/device code that reads inputs and writes outputs; no placeholder/no-op bodies.
+   - package/metadata/binary artifacts required by the selected platform toolchain.
+   - project adapter/bridge that routes the original public API or framework call to the selected target-platform custom-op path.
+5. If an expanded variant is blocked by the active toolkit/hardware combination, treat that row as repair backlog, not success. Use only the platform-specific repair strategies explicitly present in the guidance block above.
+6. Build and install the native custom-op package or compiled artifact with the selected platform toolchain. Record the exact toolchain root/version/image, device/SoC, commands, return codes, logs, generated artifacts, and install/provenance path.
+7. Run the original project entry route or a faithful public API test that exercises every operator+variant identity. Directly calling an exported symbol is not enough.
+8. Compare numerical outputs against the original CPU/CUDA reference route for every variant. Record tolerances and max absolute/relative errors.
+9. Measure performance for each variant and overall route:
    - baseline time from the reference route,
-   - Ascend custom-op route time,
+   - selected target-platform custom-op route time,
    - speedup or slowdown ratio,
    - warmup and measurement counts,
    - hardware/device and environment.
-9. Generate reports only after the real implementation and measurements exist. Reports are a serialization of evidence, not the evidence itself.
-10. Rerun `{entry_script}` and the framework strict final-gate validator. Return success only after both pass in the current run.
+10. Generate reports only after the real implementation and measurements exist. Reports are a serialization of evidence, not the evidence itself.
+11. Rerun `{entry_script}` and the framework strict final-gate validator. Return success only after both pass in the current run.
 
 ## Execution Discipline
 
@@ -76,7 +77,7 @@ You must close all operator+variant rows with real implementation, build, instal
 
 You must not return success if any of these are true:
 
-- Any AscendC kernel body only ignores arguments, returns immediately, copies no data, writes no output, or contains placeholder/no-op logic.
+- Any target-platform kernel body only ignores arguments, returns immediately, copies no data, writes no output, or contains placeholder/no-op logic.
 - Any host tiling/infer-shape function is a trivial `return 0` without real shape/tiling work.
 - The runtime artifact is only an x86/host `.so` exporting `int op(void) { return 0; }` symbols.
 - performance numbers are constants, formulas, fabricated ratios, report-only values, or not measured from the public API route.
@@ -85,6 +86,7 @@ You must not return success if any of these are true:
 - Reports predate the current validation command, exceed strict gate size limits, or cannot pass `validate_custom_op_final_gate`.
 - The implementation relies on CPU fallback, CUDA fallback, ATen-only replacement, `NpuExtension`/`CppExtension` only, Python shim only, monkeypatching, fake artifacts, generated headers without compiled kernels, or report-only evidence.
 - Any expanded variant remains unimplemented, untested, unmeasured, or only mapped to a family-level implementation without variant-specific evidence.
+- Any row is counted as `FULL_PASS` only when the ledger closes every in-scope row with real implementation, runtime, parity, performance, and final-gate evidence. Hardware/toolkit limitation is a repair signal, not a success signal.
 
 If a real implementation cannot be completed in this call, return `INCOMPLETE` with the exact remaining operators, variants, and blockers. Do not claim `FULL_PASS`.
 
@@ -93,12 +95,12 @@ If a real implementation cannot be completed in this call, return `INCOMPLETE` w
 Each row in `migration_reports/custom_op_final_gate.json` must contain machine-checkable evidence matching the framework validator, including at least:
 
 - `unit_identity`, `base_unit_identity`, source symbol, launch site, and public route mapping.
-- `opp_custom_op_artifact_evidence` object with `project_local=true` or `in_project=true`, `path` or `project_relative_path`, `built/present/loaded/verified=true`, native compiled artifact path, runtime loaded artifact path, op_host source, op_kernel/AscendC source, generated header, op_info, kernel_meta, build log, install log, and CANN/OPP producer proof.
+- `opp_custom_op_artifact_evidence` object with `project_local=true` or `in_project=true`, `path` or `project_relative_path`, `built/present/loaded/verified=true`, native compiled artifact path, runtime loaded artifact path, platform-native source paths, generated metadata when required, build log, install log, and selected-platform producer proof.
 - `adapter_evidence` object with `imported/loaded/linked/adapter_callable=true` or equivalent accepted fields.
 - `integration_e2e_evidence` object with `project_api_invoked=true` or `public_api_invoked=true`, plus `native_custom_op_route_executed=true` or `opp_kernel_executed=true`.
 - `public_api_route_evidence` or `framework_integration_route_evidence` with `same_run=true`, custom call count > 0, public/framework entry invocation proof, native OPP execution proof, and matching `unit_identity`.
 - `same_run_runtime_coverage` object with `same_run=true`, project/public API route proof, native custom-op/OPP execution proof, and positive custom call count.
-- `performance_evidence` object with positive `baseline_seconds`, `custom_seconds`, `speedup_vs_baseline`, public/project API timing proof, CPU/reference baseline proof, and Ascend OPP route proof.
+- `performance_evidence` object with positive `baseline_seconds`, `custom_seconds`, `speedup_vs_baseline`, public/project API timing proof, CPU/reference baseline proof, and selected-platform native custom-op route proof.
 - `no_fallback_no_zero_call_no_builtin_contamination` object proving no fallback, no zero-call, no builtin-only, no ATen-only, no CPU/CUDA route, and no synthetic/report-only contamination.
 
 ## Required Final JSON
@@ -112,10 +114,11 @@ Return one JSON object only:
   "commands_run": ["commands actually run"],
   "implemented_units": ["unit identities truly implemented"],
   "remaining_units": ["unit identities not yet closed"],
-  "build_evidence": ["CANN build/install logs and artifacts"],
-  "runtime_evidence": ["public API runs proving Ascend custom-op execution"],
+  "build_evidence": ["selected-platform native build/install logs and artifacts"],
+  "runtime_evidence": ["public API runs proving selected-platform custom-op execution"],
   "parity_evidence": ["commands/reports proving numerical correctness"],
   "performance_evidence": ["commands/reports proving speed ratio"],
+  "toolchain_or_kernel_attempts": ["platform-allowed toolchain candidates or handwritten kernels attempted for hardware/toolchain-limited variants"],
   "final_gate": {
     "path": "migration_reports/custom_op_final_gate.json",
     "validated_by_framework": true,

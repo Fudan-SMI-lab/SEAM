@@ -667,11 +667,11 @@ def test_run_phase_6_fallback_on_session_error(tmp_path: Path) -> None:
     report_paths = cast(list[str], result["report_paths"])
 
     assert result["fallback"] is True
-    assert summary["overall_status"] == "partial"
+    assert summary["overall_status"] == "pass"
     assert summary["files_migrated"] == 0
     assert summary["files_skipped"] == 0
     assert summary["phase5_status"] == "success"
-    assert summary["migration_success"] is False
+    assert summary["migration_success"] is True
     assert summary["phase5_terminal_failure"] is False
     assert session_mgr.send_calls[0][2] == 600
     assert session_mgr.send_calls[0][3] == 0
@@ -683,6 +683,42 @@ def test_run_phase_6_fallback_on_session_error(tmp_path: Path) -> None:
 
     phase_6_entries = [e for e in artifact_store.get_journal() if e["phase_id"] == "phase_6_report"]
     assert phase_6_entries[-1]["status"] == "fallback"
+
+
+def test_run_phase_6_fallback_preserves_phase5_success_as_success(tmp_path: Path) -> None:
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    artifact_store.save_phase_output(
+        "phase_5_validation",
+        {"status": "success", "script_exit_code": 0},
+        attempt=1,
+    )
+    artifact_store.mark_validated(
+        "phase_5_validation",
+        {"status": "success", "script_exit_code": 0},
+    )
+    session_mgr = Phase6SessionManager(
+        phase_6_response=json.dumps({"ok": False, "error": "Conversation history too large to compact"})
+    )
+    runner = PhaseRunner(
+        session_mgr=session_mgr,
+        artifact_store=artifact_store,
+        prompt_loader=PromptLoader(),
+        validator=ValidatorEngine(),
+    )
+
+    result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
+    summary = cast(dict[str, object], result["migration_summary"])
+    report_paths = cast(list[str], result["report_paths"])
+    summary_report = Path(report_paths[0]).read_text(encoding="utf-8")
+
+    assert result["fallback"] is True
+    assert summary["overall_status"] == "pass"
+    assert summary["migration_success"] is True
+    assert summary["phase5_status"] == "success"
+    assert summary["phase5_terminal_failure"] is False
+    assert "- Phase 5 status: success" in summary_report
+    assert "- Migration success: True" in summary_report
+    assert "- Phase 5 terminal failure: False" in summary_report
 
 
 def test_run_phase_6_fallback_on_timeout_exception(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateSta
 from core.runtime_artifacts import write_operator_repair_context_artifact
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
+from validators.validate_validation_final import validate_custom_op_final_gate
 
 
 class MockSessionManager:
@@ -1525,6 +1526,17 @@ def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
         json.dumps({"required_units": ["op_1"]}),
         encoding="utf-8",
     )
+
+
+def test_custom_op_final_gate_rejects_hardware_limitation_accepted_status() -> None:
+    gate = _custom_op_gate_report()
+    rows = cast(list[dict[str, object]], gate["rows"])
+    rows[0]["status"] = "HARDWARE_LIMITATION_ACCEPTED"
+
+    result = validate_custom_op_final_gate(gate)
+
+    assert result["passed"] is False
+    assert any("HARDWARE_LIMITATION_ACCEPTED" in error for error in result["errors"])
 
 
 def test_operator_repair_context_artifact_includes_inventory_goal_and_entry_rules(tmp_path: Path) -> None:

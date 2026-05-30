@@ -32,6 +32,8 @@ from core.platform_policy import PlatformPolicy, resolve_policy
 from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, resolve_phase6_timeout
 from core.prompt_loader import PromptLoader
 from core.routes import (
+    CUSTOM_OP,
+    CUSTOM_OP_WITH_VARIANTS,
     SERVING_ROUTES,
     normalize_serving_phase1_surface,
     normalize_serving_phase3_contract,
@@ -1394,9 +1396,14 @@ class PhaseRunner:
                         phase1_output=phase1_output,
                         platform_policy=self.platform_policy,
                     )
-                elif self._custom_op_required_signal(previous_output_map, context):
+                elif (
+                    isinstance(phase1_route, str)
+                    and phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
+                ) or self._custom_op_required_signal(previous_output_map, context):
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
                     normalized["project_dir"] = str(prompt_context["project_dir"])
+                    if isinstance(phase1_route, str) and phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}:
+                        normalized["migration_route"] = phase1_route
                 variant_overlay = expanded_variant_contract_from_outputs(previous_output_map)
                 if variant_overlay:
                     apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
