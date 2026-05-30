@@ -1212,7 +1212,7 @@ def _run_single_llm_subphase(
     return session_mgr
 
 
-def test_fix_operator_without_explicit_timeout_is_unbounded_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+def test_fix_operator_without_explicit_timeout_uses_four_hour_default_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
     caplog.set_level(logging.INFO, logger="core.workflow_executor")
 
     session_mgr = _run_single_llm_subphase(
@@ -1225,12 +1225,12 @@ def test_fix_operator_without_explicit_timeout_is_unbounded_and_logs(tmp_path: P
         },
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 14400
     log_text = caplog.text
     assert "phase_id=fix_operator" in log_text
     assert "agent_id=operator_fixer" in log_text
     assert "session_id=session:operator_fixer" in log_text
-    assert "timeout=None" in log_text
+    assert "timeout=14400" in log_text
     assert "prompt_length=" in log_text
     assert "raw_response_length=" in log_text
 
@@ -1267,7 +1267,7 @@ def test_invalid_repair_timeout_config_uses_default_and_logs_warning(
         framework_config={"session_timeout_repair": "not-an-int"},
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 14400
     assert "Invalid session_timeout_repair" in caplog.text
 
 
@@ -1320,7 +1320,7 @@ def test_analyze_error_specific_timeout_overrides_repair_timeout(tmp_path: Path)
     assert session_mgr.send_command.call_args.kwargs["timeout"] == 45
 
 
-def test_analyze_error_without_explicit_timeout_is_unbounded(tmp_path: Path):
+def test_analyze_error_without_explicit_timeout_uses_four_hour_default(tmp_path: Path):
     session_mgr = _run_single_llm_subphase(
         tmp_path,
         {
@@ -1331,7 +1331,71 @@ def test_analyze_error_without_explicit_timeout_is_unbounded(tmp_path: Path):
         },
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 14400
+
+
+def test_repair_default_timeout_applies_to_each_subphase_call(tmp_path: Path):
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "fix_code",
+                "type": "llm",
+                "prompt_template": "repair_code_adapter",
+                "agent": "code_adapter",
+            },
+            {
+                "id": "fix_operator",
+                "type": "llm",
+                "prompt_template": "repair_operator_fixer",
+                "agent": "operator_fixer",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="multi_subphase_timeout",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "code_adapter": {"role": "code_adapter", "lifecycle": "persistent"},
+            "operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = ['{"fixed": true}', '{"fixed": true}']
+    prompt_loader.load_prompt.side_effect = lambda template, _ctx: f"prompt:{template}"
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    executor._run_sub_workflow(
+        sub_workflow,
+        loop_vars={},
+        state={},
+        context={},
+        sub_wf_phases=sub_workflow.phases,
+        step_outputs={},
+        loop_history=[],
+        loop_state={},
+    )
+
+    assert [call.kwargs["timeout"] for call in session_mgr.send_command.call_args_list] == [14400, 14400]
 
 
 def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(tmp_path: Path):
@@ -5203,6 +5267,84 @@ def test_we_inject_llm_baseline_context_early_phase_empty(temp_dir):
     assert json.loads(previous_outputs) == {}
 
 
+def test_phase3_normalization_inherits_custom_op_route_from_phase1(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+        validator="entry_script",
+        agent="main_engineer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(name="route-propagation", version="1.0", phases=[phase], terminals=["complete"]),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+
+    normalized = executor._normalize_llm_output(
+        phase,
+        {"entry_script_path": "validate_custom_ops_full.py", "run_command": "python validate_custom_ops_full.py"},
+        {},
+        {
+            "phase_1_project_analysis": {
+                "migration_route": "custom_op",
+                "custom_op_surface": {
+                    "custom_op_detected": True,
+                    "fine_grained_operator_units": ["bindings:gather_points"],
+                },
+            }
+        },
+    )
+
+    assert normalized["entry_script_kind"] == "custom_op_full_validation"
+    assert normalized["migration_route"] == "custom_op"
+    assert normalized["project_dir"] == str(tmp_path)
+
+
+def test_custom_op_variant_service_context_keys_are_injected(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="fix_operator",
+        name="Fix Operator",
+        prompt_template="repair_operator_fixer",
+        output_schema={},
+        type="llm",
+        agent="operator_fixer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(name="repair-context", version="1.0", phases=[phase], terminals=["complete"]),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+    executor.artifact_store.artifact_dir = str(tmp_path / ".sm-artifacts")
+    state = {
+        "phase_1_project_analysis": {"migration_route": "custom_op", "custom_op_surface": {"custom_op_detected": True}},
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "migration_route": "custom_op",
+            "reports_dir": str(tmp_path / "migration_reports"),
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            "required_checks": ["custom_op_final_gate"],
+        },
+    }
+    input_ctx: dict[str, object] = {"project_dir": str(tmp_path)}
+
+    executor._inject_sub_workflow_context(
+        input_ctx,
+        "fix_operator",
+        {"script_stderr": "custom op failed", "error_analysis": {"repair_role": "operator_fixer"}},
+        {"entry_script": "python validate_custom_ops_full.py"},
+        state,
+        [],
+    )
+
+    assert "phase1_phase3_repair_scope" in input_ctx
+    assert "operator_repair_progress_block" in input_ctx
+    assert "strict_custom_op_acceptance_contract" in input_ctx
+    assert "operator_custom_op_guidance" in input_ctx
+
+
 # ── disable_custom_op_contract_injection flag regression ──────────────────
 
 
@@ -5437,10 +5579,11 @@ def test_phase_6_report_session_error_generates_fallback(tmp_path: Path) -> None
 
     phase6 = result["state"]["phase_6_report"]
     assert phase6["fallback"] is True
-    assert phase6["migration_summary"]["overall_status"] == "partial"
+    assert phase6["migration_summary"]["overall_status"] == "pass"
     assert phase6["migration_summary"]["files_migrated"] == 0
     assert phase6["migration_summary"]["files_skipped"] == 0
     assert phase6["migration_summary"]["phase5_status"] == "success"
+    assert phase6["migration_summary"]["migration_success"] is True
     assert session_mgr.send_calls[0][2] == 600
     assert session_mgr.send_calls[0][3] == 0
     assert all(Path(path).exists() for path in phase6["report_paths"])

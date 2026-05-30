@@ -216,6 +216,19 @@ def _operator_custom_op_guidance(
         "full_migration_status == FULL_PASS\n"
         "Script exit code 0 alone is NOT sufficient; the final-gate schema MUST validate."
     )
+    npu_variant_repair_strategy = (
+        "\nNPU-only variant repair strategy: if any custom_op_with_variants row is blocked by the active "
+        "Ascend CANN/toolkit/hardware combination or appears as HARDWARE_LIMITATION_ACCEPTED, treat it as repair "
+        "backlog, not final success. For npu_ascend only, you may try an alternate observed/allowlisted CANN/toolkit "
+        "root or container image, recording exact version/root/image, driver/SoC, commands, return codes, logs, "
+        "generated artifacts, and install path. Treat observed system CANN roots as read-only; do not modify "
+        "/usr/local/Ascend, shared CANN installs, global OPP vendor directories, host compiler/toolchain installs, "
+        "or other global system paths. Use an isolated container, read-only toolkit root, or project-local temporary "
+        "install/cache. If observed/allowlisted CANN/toolkit candidates cannot close the row, you must attempt a "
+        "real Ascend target-platform kernel for the missing variant: concrete AscendC/ACL/CANN OPP host+kernel "
+        "sources when vendor primitives are missing. The row only closes after "
+        "project public API execution, parity, performance, and strict final-gate evidence pass for that exact variant."
+    )
 
     if platform_policy is not None and platform_policy.id != "npu_ascend":
         native_label = platform_policy.guidance_native_label
@@ -237,6 +250,7 @@ def _operator_custom_op_guidance(
         "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n",
         "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, concrete op_host and op_kernel/AscendC source paths, an OPP build script path, install/provenance evidence, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
         schema_checklist,
+        npu_variant_repair_strategy,
         perf_mode_note,
         "\n",
         f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, ",

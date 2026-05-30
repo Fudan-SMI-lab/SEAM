@@ -78,16 +78,17 @@ def build_phase6_fallback_report(
     phase_statuses = _phase_statuses(prior_outputs)
     files_migrated, files_skipped = _migration_file_counts(prior_outputs)
     phase5_status = phase_statuses.get("phase_5_validation", "missing")
+    phase5_success = phase5_status in {"success", "passed"}
     migration_summary = {
-        "overall_status": "partial",
-        "migration_success": False,
+        "overall_status": "pass" if phase5_success else "partial",
+        "migration_success": phase5_success,
         "files_migrated": files_migrated,
         "files_skipped": files_skipped,
         "phase6_fallback": True,
         "fallback_reason": reason,
         "phase4_strategy": _phase4_strategy(prior_outputs),
         "phase5_status": phase5_status,
-        "phase5_terminal_failure": phase5_status not in {"success", "passed"},
+        "phase5_terminal_failure": not phase5_success,
         "completed_phase_count": sum(1 for status in phase_statuses.values() if status != "missing"),
     }
 
