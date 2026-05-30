@@ -37,6 +37,7 @@ BLOCKING_STATUSES = {
     "INCOMPLETE",
     "FAILED",
     "BLOCKED",
+    "HARDWARE_LIMITATION_ACCEPTED",
     "TODO",
     "FOLLOW_UP",
     "FUTURE_WORK",
@@ -485,7 +486,12 @@ def validate_custom_op_final_gate(
         perf_mode = get_performance_validation_mode(platform_policy)
         if perf_mode != "disabled":
             _validate_performance_report_completeness(
-                data_mapping, row_items, manifest_entries, errors, platform_policy
+                data_mapping,
+                row_items,
+                manifest_entries,
+                errors,
+                platform_policy,
+                require_strict_ascend_opp_producer,
             )
         _validate_required_manifest_units(
             row_items,
@@ -688,7 +694,22 @@ def _requires_strict_ascend_opp_producer_closure(
     policy_text = policy_value.strip().lower() if isinstance(policy_value, str) else ""
     if "require_real_ascend_cann_acl_opp_native_artifacts" in policy_text:
         return True
-    return bool(expanded_variant_units) or _has_strict_expanded_variant_metadata(data)
+    if bool(expanded_variant_units) or _has_strict_expanded_variant_metadata(data):
+        return True
+    return _gate_declares_ascend_custom_op_target(data)
+
+
+def _gate_declares_ascend_custom_op_target(data: Mapping[object, object]) -> bool:
+    device = data.get("device") or data.get("target_device") or data.get("serving_backend")
+    if isinstance(device, str) and _is_npu_like_device(_normalize_token(device)):
+        return True
+    for field_name in ("custom_device", "custom_backend", "target_backend", "route", "migration_route"):
+        value = data.get(field_name)
+        if isinstance(value, str):
+            normalized = _normalize_token(value)
+            if _is_npu_like_device(normalized) or "ascend_opp" in normalized:
+                return True
+    return False
 
 
 def _has_strict_expanded_variant_metadata(data: Mapping[object, object]) -> bool:
@@ -1817,7 +1838,9 @@ def _validate_performance_report_completeness(
         platform_policy,
         require_strict_ascend_opp_producer,
     )
-    _validate_overall_performance_report(report_map, errors, platform_policy)
+    _validate_overall_performance_report(
+        report_map, errors, platform_policy, require_strict_ascend_opp_producer
+    )
 
     row_names = _extract_row_names(row_items)
     if manifest_entries is not None:
@@ -1845,7 +1868,12 @@ def _validate_performance_report_completeness(
             _validate_performance_report_entry(entry, unit_name, errors, platform_policy, require_strict_ascend_opp_producer)
 
 
-def _validate_overall_performance_report(report: Mapping[object, object], errors: list[str], platform_policy: PlatformPolicy | None = None) -> None:
+def _validate_overall_performance_report(
+    report: Mapping[object, object],
+    errors: list[str],
+    platform_policy: PlatformPolicy | None = None,
+    require_strict_ascend_opp_producer: bool = False,
+) -> None:
     perf_mode = get_performance_validation_mode(platform_policy)
     if perf_mode == "full":
         required_positive = (
@@ -1884,6 +1912,9 @@ def _validate_overall_performance_report(report: Mapping[object, object], errors
         errors.append("performance_report must prove overall timing ran through the project API after all custom-op units were replaced")
     if not all_units_replaced_proven:
         errors.append("performance_report must prove overall timing was measured after all source-discovered custom-op units were replaced")
+    _validate_independent_performance_measurement(
+        report, "performance_report", errors, require_strict_ascend_opp_producer
+    )
 
 
 def _performance_report_path_proves_required_file(report: Mapping[object, object]) -> bool:
@@ -2817,7 +2848,65 @@ def _validate_baseline_and_custom_device_proof(
     if require_strict_ascend_opp_producer:
         if _has_self_or_same_route_baseline(evidence):
             errors.append(f"{label} must not use self-baseline, same-route, or same-NPU placeholder timings; compare CPU baseline runtime against Ascend OPP/custom-op runtime")
+        _validate_independent_performance_measurement(
+            evidence, label, errors, require_strict_ascend_opp_producer
+        )
         _validate_speedup_formula(evidence, label, errors)
+
+
+def _validate_independent_performance_measurement(
+    evidence: Mapping[object, object],
+    label: str,
+    errors: list[str],
+    require_strict_ascend_opp_producer: bool,
+) -> None:
+    if not require_strict_ascend_opp_producer:
+        return
+    if not _has_positive_measurement_iterations(evidence):
+        errors.append(f"{label} must include positive measured iteration counts for real performance evidence")
+    if _has_zero_measurement_iterations(evidence):
+        errors.append(f"{label} must not report zero measurement iterations for performance evidence")
+    baseline = evidence.get("baseline_seconds") or evidence.get("overall_baseline_seconds")
+    custom = evidence.get("custom_seconds") or evidence.get("overall_custom_seconds")
+    if _positive_number(baseline) and _positive_number(custom):
+        if abs(cast(float, baseline) - cast(float, custom)) <= 1e-12:
+            errors.append(f"{label} must not copy identical baseline_seconds and custom_seconds; measure CPU baseline and Ascend custom-op runtime independently")
+
+
+def _has_positive_measurement_iterations(evidence: Mapping[object, object]) -> bool:
+    for field_name in (
+        "measure_iterations",
+        "measured_iterations",
+        "iterations",
+        "timing_iterations",
+        "baseline_measure_iterations",
+        "custom_measure_iterations",
+        "overall_measure_iterations",
+    ):
+        value = evidence.get(field_name)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return True
+    return False
+
+
+def _has_zero_measurement_iterations(evidence: Mapping[object, object]) -> bool:
+    for field_name in (
+        "measure_iterations",
+        "measured_iterations",
+        "iterations",
+        "timing_iterations",
+        "baseline_measure_iterations",
+        "custom_measure_iterations",
+        "overall_measure_iterations",
+    ):
+        value = evidence.get(field_name)
+        if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
+            return True
+    return False
+
+
+def _normalize_token(value: str) -> str:
+    return value.strip().lower().replace("-", "_").replace(" ", "_").replace(".", "_")
 
 
 def _has_cpu_baseline_proof(evidence: Mapping[object, object]) -> bool:
