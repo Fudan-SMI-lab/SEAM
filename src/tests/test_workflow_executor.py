@@ -2490,6 +2490,113 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
     }
 
 
+
+def test_passed_final_gate_absorbs_stale_script_failure_before_stagnation(tmp_path: Path):
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=3,
+        stagnation_threshold=1,
+        stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+        phases=[],
+    )
+    workflow = WorkflowDefinition(
+        name="final_gate_absorption",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    executor._run_sub_workflow = MagicMock(return_value={
+        "status": "success",
+        "step_outputs": {
+            "script_exit_code": 1,
+            "script_stderr": "stale runtime failure",
+            "serving_final_gate": {"passed": True, "skipped": False},
+        },
+    })
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    assert result["status"] == "success"
+    assert result["iterations"] == 1
+    assert result["loop_state"]["script_exit_code"] == 0
+    assert "script_stderr" not in result["loop_state"]
+    assert "last_error" not in result["loop_state"]
+
+
+def test_skipped_final_gate_does_not_absorb_stale_script_failure(tmp_path: Path):
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=3,
+        stagnation_threshold=1,
+        stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+        phases=[],
+    )
+    workflow = WorkflowDefinition(
+        name="final_gate_absorption",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    executor._run_sub_workflow = MagicMock(return_value={
+        "status": "success",
+        "step_outputs": {
+            "script_exit_code": 1,
+            "script_stderr": "stale runtime failure",
+            "custom_op_final_gate": {"passed": True, "skipped": True},
+        },
+    })
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    assert result["status"] == "stagnation"
+    assert result["iterations"] == 1
+    assert result["loop_state"]["script_exit_code"] == 1
+    assert result["loop_state"]["script_stderr"] == "stale runtime failure"
+
 def test_failed_next_validation_records_experience_verification_failure(tmp_path: Path):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
