@@ -1606,6 +1606,68 @@ def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tm
     assert normalized["category"] == "pathing"
     assert normalized["repair_role"] == "code_adapter"
 
+def test_phase5_entry_command_refreshes_expanded_variant_strict_script(tmp_path: Path) -> None:
+    stale_script = tmp_path / "validate_custom_ops_full.py"
+    stale_script.write_text("print('stale')\n", encoding="utf-8")
+    workflow = WorkflowDefinition(name="refresh-expanded", version="1.0", phases=[], terminals=["complete"])
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="run_entry_script",
+        name="Run Entry",
+        prompt_template="",
+        output_schema={},
+        type="shell",
+        on_failure="continue",
+    )
+    setattr(phase, "command", "${loop_vars.entry_script}")
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_kind": "custom_op_full_validation",
+            "entry_script_path": str(stale_script),
+            "run_command": f"python {stale_script}",
+            "project_dir": str(tmp_path),
+            "expanded_variant_inventory": {
+                "variant_axes_detected": True,
+                "unit_identities": ["op_alpha:float32", "op_alpha:float16"],
+                "expanded_operator_instances_count": 2,
+            },
+            "variant_axis_coverage": {
+                "all_axes_covered": True,
+                "axes": {"dtype": ["float32", "float16"]},
+            },
+            "per_variant_performance_report": {
+                "required": True,
+                "one_entry_per_expanded_variant": True,
+            },
+        }
+    }
+    loop_vars: dict[str, object] = {"entry_script": f"python {stale_script}", "project_dir": str(tmp_path)}
+
+    status, output = executor._execute_shell_phase(
+        phase,
+        state=state,
+        context={},
+        loop_vars=loop_vars,
+        loop_state={},
+    )
+
+    assert status == "success"
+    assert output["exit_code"] != 0
+    refreshed = stale_script.read_text(encoding="utf-8")
+    assert "SEAM_STRICT_EXPANDED_VARIANT_VALIDATOR_V1" in refreshed
+    assert "EXPANDED_VARIANT_CONTRACT" in refreshed
+    assert loop_vars["entry_script"] == state["phase_3_entry_script"]["run_command"]
+    assert state["phase_3_entry_script"]["reports_dir"] == str(tmp_path / "migration_reports")
+
+
 def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target_script = tmp_path / "expanded_target.py"
     target_script.write_text("from pathlib import Path\nPath('expanded-ran').write_text('yes')\n", encoding="utf-8")
