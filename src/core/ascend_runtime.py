@@ -338,6 +338,9 @@ import subprocess
 import sys
 import time
 from typing import cast
+import urllib.error
+import urllib.parse
+import urllib.request
 
 
 ROUTE = __ROUTE_JSON__
@@ -352,6 +355,9 @@ REQUIRED_CHECKS = __REQUIRED_CHECKS_JSON__
 IMPORT_PROBES = __IMPORT_PROBES_JSON__
 FORBIDDEN_MARKERS = __FORBIDDEN_MARKERS_JSON__
 REPORTS_DIR = Path(__REPORTS_DIR_JSON__)
+STARTUP_TIMEOUT_SECONDS = 900.0
+DEFAULT_SERVING_HOST = "127.0.0.1"
+DEFAULT_SERVING_PORT = "8000"
 
 
 def main() -> int:
@@ -402,13 +408,7 @@ def main() -> int:
     if FRAMEWORK == "vllm":
         env.setdefault("VLLM_TARGET_DEVICE", "npu")
 
-    command_result = run_command_with_watchdog(
-        command,
-        cwd=project_root,
-        env=env,
-        timeout_seconds=float_env("SEAM_SERVING_COMMAND_TIMEOUT_SECONDS", 14400.0, minimum=1.0),
-        idle_timeout_seconds=float_env("SEAM_SERVING_COMMAND_IDLE_TIMEOUT_SECONDS", 3600.0, minimum=0.0),
-    )
+    command_result = run_serving_validation(command, cwd=project_root, env=env)
     combined = "\n".join([
         str(command_result.get("stdout_tail") or ""),
         str(command_result.get("stderr_tail") or ""),
@@ -421,6 +421,10 @@ def main() -> int:
     status = "FULL_PASS" if returncode == 0 and not forbidden_hits and not command_timed_out else "FAILED"
     if status == "FULL_PASS":
         failure_reason = ""
+    elif command_result.get("server_failure_reason"):
+        failure_reason = str(command_result.get("server_failure_reason"))
+    elif command_result.get("api_error"):
+        failure_reason = str(command_result.get("api_error"))
     elif command_result.get("idle_timed_out") is True:
         failure_reason = "serving command made no output progress before the local idle watchdog interrupted it"
     elif command_result.get("timed_out") is True:
@@ -437,6 +441,255 @@ def main() -> int:
         input_path_evidence=input_evidence,
     )
     return 0 if status == "FULL_PASS" else 1
+
+
+def run_serving_validation(command: list[str], *, cwd: Path, env: dict[str, str]) -> dict[str, object]:
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    stdout_path = REPORTS_DIR / "serving_command_stdout.log"
+    stderr_path = REPORTS_DIR / "serving_command_stderr.log"
+    started_at = time.time()
+    before_processes = project_process_snapshot(cwd)
+    health_passed = False
+    health_response = ""
+    api_passed = False
+    api_response = ""
+    api_error = ""
+    model_id = ""
+    server_failure_reason = ""
+    server_exited_cleanly = False
+    endpoints = resolve_serving_endpoints(command)
+    health_url = endpoints["health_url"]
+    models_url = endpoints["models_url"]
+    api_url = endpoints["api_url"]
+
+    with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
+        try:
+            timeout_seconds = float_env("SEAM_SERVING_STARTUP_TIMEOUT_SECONDS", STARTUP_TIMEOUT_SECONDS, minimum=1.0)
+            health_passed, health_response = wait_for_health(timeout_seconds, process, stderr_path, health_url)
+            if health_passed:
+                model_id = resolve_served_model_id(models_url)
+                api_passed, api_response, api_error = validate_openai_api(model_id, api_url)
+            else:
+                server_failure_reason = health_response or "server health endpoint never became reachable"
+        except Exception as exc:
+            server_failure_reason = f"validation exception: {exc}"
+            api_error = str(exc)
+        finally:
+            if process.poll() is None:
+                terminate_process_group(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=30)
+                    server_exited_cleanly = True
+                except subprocess.TimeoutExpired:
+                    terminate_process_group(process.pid, signal.SIGKILL)
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    server_failure_reason = server_failure_reason or "server did not stop within 30s after SIGTERM"
+            elif process.returncode == 0:
+                server_exited_cleanly = True
+            elif not server_failure_reason:
+                server_failure_reason = f"server process exited with return code {process.returncode}"
+            cleaned_processes = cleanup_new_project_processes(cwd, before_processes)
+
+    ended_at = time.time()
+    validation_succeeded = health_passed and api_passed and server_exited_cleanly and not server_failure_reason
+    server_returncode = process.returncode if process.returncode is not None else -1
+    normalized_returncode = 0 if validation_succeeded else server_returncode if server_returncode not in (0, -signal.SIGTERM) else 1
+    return {
+        "returncode": normalized_returncode,
+        "server_returncode": server_returncode,
+        "stdout_tail": file_tail(stdout_path),
+        "stderr_tail": file_tail(stderr_path),
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+        "timed_out": False,
+        "idle_timed_out": False,
+        "timeout_reason": "",
+        "timeout_seconds": STARTUP_TIMEOUT_SECONDS,
+        "idle_timeout_seconds": 0,
+        "duration_seconds": round(ended_at - started_at, 3),
+        "cleaned_processes": cleaned_processes,
+        "health_probe_passed": health_passed,
+        "health_probe_url": health_url,
+        "health_response": health_response[:2000],
+        "api_validation_passed": api_passed,
+        "api_validation_url": api_url,
+        "api_response": api_response[:4000],
+        "api_error": api_error[:2000],
+        "served_model_id": model_id,
+        "server_exited_cleanly": server_exited_cleanly,
+        "server_failure_reason": server_failure_reason,
+    }
+
+
+def resolve_serving_endpoints(command: list[str]) -> dict[str, str]:
+    base_url = resolve_server_base_url(command)
+    return {
+        "health_url": resolve_probe_url(READINESS_PROBE, base_url, "/health"),
+        "models_url": build_serving_url("/v1/models", base_url),
+        "api_url": resolve_probe_url(REQUEST_VALIDATION, base_url, default_openai_validation_path()),
+    }
+
+
+def default_openai_validation_path() -> str:
+    if FRAMEWORK in {"vllm", "sglang"}:
+        return "/v1/chat/completions"
+    return "/"
+
+
+def resolve_server_base_url(command: list[str]) -> str:
+    for config in (READINESS_PROBE, REQUEST_VALIDATION):
+        if isinstance(config, dict):
+            value = config.get("url") or config.get("endpoint")
+            if isinstance(value, str) and is_absolute_http_url(value):
+                parsed = urllib.parse.urlparse(value)
+                host = normalize_probe_host(parsed.hostname or DEFAULT_SERVING_HOST)
+                port = f":{parsed.port}" if parsed.port is not None else ""
+                return f"{parsed.scheme}://{host}{port}"
+    host = command_flag_value(command, ("--host", "--host-ip", "--http-host", "--api-server-host")) or DEFAULT_SERVING_HOST
+    port = command_flag_value(command, ("--port", "--http-port", "--api-server-port")) or DEFAULT_SERVING_PORT
+    host = normalize_probe_host(host)
+    return f"http://{host}:{port}"
+
+
+def resolve_probe_url(config: object, base_url: str, default_path: str) -> str:
+    if isinstance(config, dict):
+        value = config.get("url") or config.get("endpoint") or config.get("path")
+        if isinstance(value, str) and value.strip():
+            return build_serving_url(value.strip(), base_url)
+    return build_serving_url(default_path, base_url)
+
+
+def build_serving_url(value: str, base_url: str) -> str:
+    if is_absolute_http_url(value):
+        return normalize_http_url(value)
+    path = value if value.startswith("/") else f"/{value}"
+    return urllib.parse.urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+
+
+def normalize_http_url(value: str) -> str:
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.netloc:
+        return value
+    host = normalize_probe_host(parsed.hostname or DEFAULT_SERVING_HOST)
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    netloc = f"{host}{port}"
+    return urllib.parse.urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+
+def is_absolute_http_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def command_flag_value(tokens: list[str], flags: tuple[str, ...]) -> str:
+    for index, token in enumerate(tokens):
+        for flag in flags:
+            if token == flag and index + 1 < len(tokens):
+                return tokens[index + 1]
+            prefix = f"{flag}="
+            if token.startswith(prefix):
+                return token[len(prefix):]
+    return ""
+
+
+def normalize_probe_host(host: str) -> str:
+    candidate = host.strip() or DEFAULT_SERVING_HOST
+    if candidate in {"0.0.0.0", "::", "[::]", "*"}:
+        return DEFAULT_SERVING_HOST
+    return candidate
+
+
+def wait_for_health(total_timeout: float, process: subprocess.Popen, stderr_path: Path, health_url: str) -> tuple[bool, str]:
+    started = time.time()
+    while time.time() - started < total_timeout:
+        if process.poll() is not None:
+            stderr_tail = file_tail(stderr_path, limit=5000)
+            return False, f"server process exited early (rc={process.returncode}): {stderr_tail[:1000]}"
+        try:
+            req = urllib.request.Request(health_url, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                if response.status == 200:
+                    return True, body
+        except Exception:
+            pass
+        time.sleep(5.0)
+    return False, f"health endpoint not reachable after {total_timeout}s: {health_url}"
+
+
+def resolve_served_model_id(models_url: str) -> str:
+    try:
+        req = urllib.request.Request(models_url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        payload = json.loads(body)
+        data = payload.get("data", [])
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+                    return item["id"].strip()
+    except Exception:
+        pass
+    return model_name_from_launch_command()
+
+
+def model_name_from_launch_command() -> str:
+    tokens = shlex.split(LAUNCH_COMMAND)
+    for flag in ("--served-model-name", "--served_model_name", "--model", "--model-path", "--model_path"):
+        if flag in tokens and tokens.index(flag) + 1 < len(tokens):
+            return tokens[tokens.index(flag) + 1]
+    if "serve" in tokens and tokens.index("serve") + 1 < len(tokens):
+        return tokens[tokens.index("serve") + 1]
+    return ""
+
+
+def validate_openai_api(model_id: str, api_url: str) -> tuple[bool, str, str]:
+    if not model_id:
+        return False, "", "no served model id available from /v1/models or launch command"
+    payload = json.dumps(openai_validation_payload(api_url, model_id)).encode("utf-8")
+    req = urllib.request.Request(
+        api_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            if response.status == 200:
+                return True, body, ""
+            return False, body, f"unexpected HTTP status {response.status}"
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return False, body, f"HTTP {exc.code}: {body[:1000]}"
+    except Exception as exc:
+        return False, "", f"{exc.__class__.__name__}: {exc}"
+
+
+def openai_validation_payload(api_url: str, model_id: str) -> dict[str, object]:
+    path = urllib.parse.urlparse(api_url).path.rstrip("/")
+    if path.endswith("/v1/completions") or path.endswith("/completions") and not path.endswith("/chat/completions"):
+        return {"model": model_id, "prompt": "Hello", "max_tokens": 8, "temperature": 0.0}
+    if path.endswith("/v1/embeddings") or path.endswith("/embeddings"):
+        return {"model": model_id, "input": "Hello"}
+    return {
+        "model": model_id,
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8,
+        "temperature": 0.0,
+    }
 
 
 def build_serving_env(env: dict[str, str], backend: str) -> tuple[dict[str, str], dict[str, object]]:
