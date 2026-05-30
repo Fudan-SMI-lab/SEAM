@@ -2490,6 +2490,8 @@ class WorkflowExecutor:
             cwd = cmd["cwd"]
 
         entry_script_command = self._is_phase5_entry_script_command(phase, loop_vars)
+        if entry_script_command:
+            cmd = self._refresh_expanded_variant_entry_script_command(cmd, state, context, loop_vars)
         timeout = phase.timeout
 
         # Container backend path
@@ -2504,6 +2506,32 @@ class WorkflowExecutor:
             phase, cmd, cwd, entry_script_command, timeout, state, context,
             loop_vars=loop_vars, loop_state=loop_state,
         )
+
+    def _refresh_expanded_variant_entry_script_command(
+        self,
+        cmd: object,
+        state: dict[str, Any],
+        context: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+    ) -> object:
+        contract = state.get("phase_3_entry_script")
+        if not isinstance(contract, dict):
+            return cmd
+        overlay = expanded_variant_contract_from_outputs({"phase_3_entry_script": contract})
+        if not overlay:
+            return cmd
+        refreshed = dict(contract)
+        project_dir = str(loop_vars.get("project_dir") or context.get("PROJECT_DIR") or self.project_dir) if isinstance(loop_vars, dict) else str(context.get("PROJECT_DIR") or self.project_dir)
+        refreshed["project_dir"] = project_dir
+        apply_expanded_variant_contract(refreshed, overlay, include_required_checks=True)
+        ensure_strict_expanded_variant_validation_script(refreshed, overlay, project_dir=project_dir)
+        command = refreshed.get("run_command")
+        if not isinstance(command, str) or not command.strip():
+            return cmd
+        state["phase_3_entry_script"] = refreshed
+        if loop_vars is not None:
+            loop_vars["entry_script"] = command
+        return command
 
     def _execute_shell_phase_container(
         self,
