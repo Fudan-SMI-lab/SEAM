@@ -16,6 +16,7 @@ from core.custom_op_variants import normalize_phase1_project_analysis
 from core.custom_op_variants import normalize_project_analysis_expanded_variants
 from core.custom_op_variants import source_template_expanded_variants
 from core.platform_policy import BUILTIN_PRESETS
+from core.routes import normalize_serving_phase1_surface
 from validators.validate_validation_final import validate_custom_op_final_gate
 from validators.validate_project_analysis import validate as validate_project_analysis
 
@@ -278,6 +279,98 @@ def test_normalize_phase1_project_analysis_infers_real_deepwave_240_inventory() 
     assert axes["ndim"] == ["1d", "2d", "3d"]
     assert axes["accuracy"] == ["2", "4", "6", "8"]
     assert axes["dtype"] == ["float", "double"]
+
+
+def test_normalize_phase1_project_analysis_detects_real_pointnet2_custom_ops() -> None:
+    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "pointnet2_ops"
+    assert project_dir.is_dir()
+    output: dict[str, object] = {"migration_route": "ordinary_cuda"}
+
+    normalize_phase1_project_analysis(output, project_dir=str(project_dir))
+
+    surface = cast(dict[str, object], output["custom_op_surface"])
+    assert output["migration_route"] == "custom_op"
+    assert surface["custom_op_detected"] is True
+    units = cast(list[str], surface["fine_grained_operator_units"])
+    names = cast(list[str], surface["discovered_operator_names"])
+    assert len(units) == 9
+    assert set(names) == {
+        "gather_points",
+        "gather_points_grad",
+        "furthest_point_sampling",
+        "three_nn",
+        "three_interpolate",
+        "three_interpolate_grad",
+        "ball_query",
+        "group_points",
+        "group_points_grad",
+    }
+
+
+def test_source_backed_custom_op_route_overrides_serving_guess() -> None:
+    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "pointnet2_ops"
+    output: dict[str, object] = {"migration_route": "sglang_serving"}
+
+    normalize_phase1_project_analysis(output, project_dir=str(project_dir))
+
+    assert output["migration_route"] == "custom_op"
+
+
+def test_normalize_phase1_project_analysis_detects_sglang_serving(tmp_path: Path) -> None:
+    project_dir = tmp_path / "glm_ocr_like"
+    project_dir.mkdir()
+    _ = (project_dir / "README.md").write_text(
+        "SGLANG_ENABLE_SPEC_V2=1 sglang serve --model-path zai-org/GLM-OCR --port 8080\n",
+        encoding="utf-8",
+    )
+    output: dict[str, object] = {
+        "dependencies": ["torch", "flask"],
+        "cuda_detected": True,
+        "entry_script": "glmocr/cli.py",
+        "migration_route": "ordinary_cuda",
+    }
+
+    normalize_phase1_project_analysis(output, project_dir=str(project_dir))
+    normalize_serving_phase1_surface(output, platform_policy=BUILTIN_PRESETS["npu_ascend"])
+
+    assert output["migration_route"] == "sglang_serving"
+    surface = cast(dict[str, object], output["serving_runtime_surface"])
+    assert surface["serving_framework"] == "sglang"
+    assert validate_project_analysis(output)["passed"] is True
+
+
+def test_normalize_phase1_project_analysis_detects_vllm_serving(tmp_path: Path) -> None:
+    project_dir = tmp_path / "mineru_like"
+    project_dir.mkdir()
+    _ = (project_dir / "pyproject.toml").write_text(
+        '[project.optional-dependencies]\nvllm = ["vllm>=0.10.1.1"]\n'
+        '[project.scripts]\nmineru-vllm-server = "mineru.cli.vlm_server:vllm_server"\n',
+        encoding="utf-8",
+    )
+    output: dict[str, object] = {
+        "dependencies": ["torch"],
+        "cuda_detected": True,
+        "entry_script": "mineru.cli.client:main",
+    }
+
+    normalize_phase1_project_analysis(output, project_dir=str(project_dir))
+    normalize_serving_phase1_surface(output, platform_policy=BUILTIN_PRESETS["npu_ascend"])
+
+    assert output["migration_route"] == "vllm_serving"
+    surface = cast(dict[str, object], output["serving_runtime_surface"])
+    assert surface["serving_framework"] == "vllm"
+    assert validate_project_analysis(output)["passed"] is True
+
+
+def test_normalize_phase1_project_analysis_defaults_plain_cuda_to_ordinary(tmp_path: Path) -> None:
+    project_dir = tmp_path / "plain_cuda"
+    project_dir.mkdir()
+    _ = (project_dir / "main.py").write_text("import torch\nx = torch.zeros(1).cuda()\n", encoding="utf-8")
+    output: dict[str, object] = {"dependencies": ["torch"], "cuda_detected": True, "entry_script": "main.py"}
+
+    normalize_phase1_project_analysis(output, project_dir=str(project_dir))
+
+    assert output["migration_route"] == "ordinary_cuda"
 
 
 def test_normalize_project_analysis_expanded_variants_recovers_deepwave_like_240_inventory(tmp_path: Path) -> None:
