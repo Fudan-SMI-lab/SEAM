@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Mapping, Sequence
 from itertools import product
 from pathlib import Path
@@ -2431,7 +2432,7 @@ def ensure_strict_expanded_variant_validation_script(
 
     candidate_script_path = _phase3_validation_script_path(target, project_root)
     existing_text = _read_text_if_file(candidate_script_path)
-    if _strict_expanded_variant_script_is_sufficient(existing_text):
+    if _strict_expanded_variant_script_is_sufficient(existing_text, unit_identities):
         script_path = candidate_script_path
     else:
         script_path = project_root / "validate_custom_ops_full.py"
@@ -2775,10 +2776,12 @@ if __name__ == "__main__":
 '''
 
 
-def _strict_expanded_variant_script_is_sufficient(script_text: str) -> bool:
+def _strict_expanded_variant_script_is_sufficient(script_text: str, unit_identities: list[str]) -> bool:
     if "SEAM_STRICT_EXPANDED_VARIANT_VALIDATOR_V1" not in script_text:
         return False
     if "SEAM_STRICT_CUSTOM_OP_FINAL_GATE_SCAFFOLD_V1" not in script_text:
+        return False
+    if _expanded_variant_contract_unit_identities(script_text) != unit_identities:
         return False
 
     normalized = script_text.lower()
@@ -2802,6 +2805,37 @@ def _strict_expanded_variant_script_is_sufficient(script_text: str) -> bool:
         "per-expanded-variant",
     )
     return all(term in normalized for term in required_terms)
+
+
+def _expanded_variant_contract_unit_identities(script_text: str) -> list[str] | None:
+    match = re.search(
+        r"EXPANDED_VARIANT_CONTRACT\s*=\s*json\.loads\(\s*((?:'[^'\\]*(?:\\.[^'\\]*)*')|(?:\"[^\"\\]*(?:\\.[^\"\\]*)*\"))\s*\)",
+        script_text,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    try:
+        contract_json = cast(object, ast.literal_eval(match.group(1)))
+        if not isinstance(contract_json, str):
+            return None
+        contract = cast(object, json.loads(contract_json))
+    except (SyntaxError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(contract, Mapping):
+        return None
+    contract_map = cast(Mapping[str, object], contract)
+    inventory = contract_map.get("expanded_variant_inventory")
+    if not isinstance(inventory, Mapping):
+        return None
+    inventory_map = cast(Mapping[str, object], inventory)
+    embedded_units = inventory_map.get("unit_identities")
+    if not isinstance(embedded_units, list):
+        return None
+    embedded_unit_values = cast(list[object], embedded_units)
+    if not all(isinstance(unit, str) for unit in embedded_unit_values):
+        return None
+    return cast(list[str], embedded_unit_values)
 
 
 def _phase3_hardened_run_command(raw_command: object, script_path: Path) -> str:

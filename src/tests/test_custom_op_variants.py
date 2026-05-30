@@ -748,13 +748,24 @@ def test_strict_expanded_variant_script_generation_preserves_sufficient_existing
     project_dir = tmp_path / "project"
     script_path = project_dir / "validate_custom_ops_full.py"
     script_path.parent.mkdir(parents=True)
-    sufficient_text = """
+    contract = {
+        "expanded_variant_inventory": {
+            "variant_axes_detected": True,
+            "unit_identities": ["op_alpha:float32"],
+            "expanded_operator_instances_count": 1,
+        },
+        "variant_axis_coverage": {},
+        "per_variant_performance_report": {},
+    }
+    sufficient_text = f"""
+import json
 # SEAM_STRICT_EXPANDED_VARIANT_VALIDATOR_V1
 # SEAM_STRICT_CUSTOM_OP_FINAL_GATE_SCAFFOLD_V1
 # migration_reports migration_manifest.json runtime_coverage.json performance.json build.json
 # implementation_resolution.json custom_op_final_gate.json evidence_validation.json
 # expanded_variant_inventory variant_axis_coverage per_variant unit_identity source_inventory
 # runtime_coverage_report performance_report required report missing per-expanded-variant
+EXPANDED_VARIANT_CONTRACT = json.loads({json.dumps(contract, sort_keys=True)!r})
 """.lstrip()
     _ = script_path.write_text(sufficient_text, encoding="utf-8")
     target: dict[str, object] = {
@@ -766,6 +777,60 @@ def test_strict_expanded_variant_script_generation_preserves_sufficient_existing
     ensure_strict_expanded_variant_validation_script(target, _expanded_variant_overlay(["op_alpha:float32"]), project_dir=str(project_dir))
 
     assert script_path.read_text(encoding="utf-8") == sufficient_text
+    assert target["entry_script_path"] == str(script_path)
+    assert target["run_command"] == f"python {script_path}"
+
+
+def test_strict_expanded_variant_script_generation_rewrites_marker_script_with_mismatched_contract(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    script_path = project_dir / "validate_custom_ops_full.py"
+    script_path.parent.mkdir(parents=True)
+    stale_text = """
+import json
+
+# SEAM_STRICT_EXPANDED_VARIANT_VALIDATOR_V1
+# SEAM_STRICT_CUSTOM_OP_FINAL_GATE_SCAFFOLD_V1
+# migration_reports migration_manifest.json runtime_coverage.json performance.json build.json
+# implementation_resolution.json custom_op_final_gate.json evidence_validation.json
+# expanded_variant_inventory variant_axis_coverage per_variant unit_identity source_inventory
+# runtime_coverage_report performance_report required report missing per-expanded-variant
+EXPANDED_VARIANT_CONTRACT = json.loads('{"expanded_variant_inventory":{"unit_identities":[]}}')
+
+def discover_variant_units():
+    return ["op_alpha:float32", "op_alpha:float16", "op_beta:float32"]
+""".lstrip()
+    _ = script_path.write_text(stale_text, encoding="utf-8")
+    target: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "entry_script_path": "validate_custom_ops_full.py",
+        "run_command": "python validate_custom_ops_full.py",
+    }
+    units = ["op_alpha:float32", "op_alpha:float16"]
+
+    ensure_strict_expanded_variant_validation_script(target, _expanded_variant_overlay(units), project_dir=str(project_dir))
+
+    rewritten = script_path.read_text(encoding="utf-8")
+    assert rewritten != stale_text
+    assert "discover_variant_units" not in rewritten
+    assert "EXPANDED_VARIANT_CONTRACT = json.loads" in rewritten
+    _write_complete_generic_custom_op_reports(project_dir, units)
+    result = subprocess.run(
+        [sys.executable, str(script_path)],
+        cwd=project_dir,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    gate = cast(
+        dict[str, object],
+        json.loads((project_dir / "migration_reports" / "custom_op_final_gate.json").read_text(encoding="utf-8")),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert gate["inventory_count"] == 2
+    assert [cast(dict[str, object], row)["unit_identity"] for row in cast(list[object], gate["rows"])] == units
     assert target["entry_script_path"] == str(script_path)
     assert target["run_command"] == f"python {script_path}"
 
