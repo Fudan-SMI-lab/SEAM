@@ -128,9 +128,13 @@ def _resolve_serving_backend(
     explicit_backend: object,
     platform_policy: PlatformPolicy | None,
 ) -> str:
+    policy_backend = _policy_backend(platform_policy)
     if isinstance(explicit_backend, str) and explicit_backend.strip():
-        return explicit_backend.strip()
-    return _policy_backend(platform_policy)
+        backend = explicit_backend.strip()
+        if backend in {"vllm", "sglang"} and platform_policy is not None:
+            return policy_backend
+        return backend
+    return policy_backend
 
 
 def serving_required_checks_for_backend(backend: str) -> tuple[str, ...]:
@@ -185,7 +189,8 @@ def normalize_serving_phase3_contract(
     for field in CUSTOM_OP_PHASE3_ONLY_FIELDS:
         _ = contract.pop(field, None)
 
-    project_path = Path(project_dir)
+    project_path = Path(project_dir).expanduser().resolve(strict=False)
+    contract["project_dir"] = str(project_path)
     surface: Mapping[str, object] = {}
     if phase1_output is not None:
         maybe_surface = phase1_output.get("serving_runtime_surface")
@@ -210,6 +215,7 @@ def normalize_serving_phase3_contract(
         if isinstance(entry_command, str) and entry_command.strip():
             launch_command = entry_command
             contract["launch_command"] = entry_command
+    service_launch_command = str(launch_command or contract.get("launch_command") or "")
 
     explicit_backend = contract.get("serving_backend") or surface.get("serving_backend")
     backend = _resolve_serving_backend(explicit_backend, platform_policy)
@@ -233,23 +239,20 @@ def normalize_serving_phase3_contract(
         project_dir=project_path,
         route=route,
         backend=backend,
-        launch_command=launch_command or contract.get("launch_command") or "",
+        launch_command=service_launch_command,
         readiness_probe=contract.get("readiness_probe"),
         request_validation=contract.get("request_validation"),
         project_test_files=contract.get("project_test_files"),
         expected_outputs=contract.get("expected_outputs"),
         required_checks=required_checks,
     )
-    current_path = contract.get("entry_script_path")
-    current_command = contract.get("run_command")
-    path_is_custom = isinstance(current_path, str) and "custom_op" in current_path.lower()
-    command_is_custom = isinstance(current_command, str) and "custom_op" in current_command.lower()
-
-    if not isinstance(current_path, str) or not current_path.strip() or path_is_custom or Path(str(current_path)).name != script_path.name:
-        contract["entry_script_path"] = str(script_path)
-    if not isinstance(current_command, str) or not current_command.strip() or command_is_custom or script_path.name not in current_command:
-        venv_python = project_path / ".venv" / "bin" / "python"
-        contract["run_command"] = f"{venv_python} {contract['entry_script_path']}"
+    contract["entry_script_path"] = str(script_path)
+    venv_python = project_path / ".venv" / "bin" / "python"
+    wrapper_command = f"{venv_python} {script_path}"
+    contract["run_command"] = wrapper_command
+    contract["launch_command"] = wrapper_command
+    if service_launch_command:
+        contract["service_launch_command"] = service_launch_command
 
     contract["entry_script_kind"] = entry_kind
     contract["migration_route"] = route
