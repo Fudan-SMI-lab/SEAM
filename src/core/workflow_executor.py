@@ -3320,6 +3320,29 @@ class WorkflowExecutor:
 
     # ── Loop phase ──────────────────────────────────────────────────────
 
+    def _absorb_passed_final_gate_success(
+        self,
+        loop_state: dict[str, Any],
+        step_outputs: dict[str, Any],
+    ) -> bool:
+        for gate_key in ("serving_final_gate", "custom_op_final_gate"):
+            gate_result = step_outputs.get(gate_key)
+            if not isinstance(gate_result, dict):
+                gate_result = loop_state.get(gate_key)
+            if (
+                isinstance(gate_result, dict)
+                and gate_result.get("passed") is True
+                and gate_result.get("skipped") is not True
+            ):
+                loop_state["script_exit_code"] = 0
+                step_outputs["script_exit_code"] = 0
+                loop_state.pop("script_stderr", None)
+                step_outputs.pop("script_stderr", None)
+                loop_state.pop("last_error", None)
+                step_outputs.pop("last_error", None)
+                return True
+        return False
+
     def _execute_loop_phase(self, phase: PhaseDefinition, state: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         """Execute a loop-type phase with sub-workflow, stop conditions, stagnation."""
         params = getattr(phase, "params", {}) or {}
@@ -3392,6 +3415,7 @@ class WorkflowExecutor:
             # Merge step_outputs for next iterations
             loop_state.update(iter_result.get("step_outputs", {}))
             step_outputs.update(iter_result.get("step_outputs", {}))
+            self._absorb_passed_final_gate_success(loop_state, step_outputs)
             self._stamp_pending_experience_verifications(loop_state, iteration)
             verification_signal = self._record_pending_experience_verification(
                 loop_state, step_outputs, iteration
