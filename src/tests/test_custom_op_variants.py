@@ -11,6 +11,7 @@ from typing import cast
 
 
 from core.assisted_verification import validate_phase1_assisted_report
+from core.custom_op_variants import apply_expanded_variant_contract
 from core.custom_op_variants import ensure_strict_expanded_variant_validation_script
 from core.custom_op_variants import normalize_phase1_project_analysis
 from core.custom_op_variants import normalize_project_analysis_expanded_variants
@@ -18,6 +19,7 @@ from core.custom_op_variants import source_template_expanded_variants
 from core.platform_policy import BUILTIN_PRESETS
 from core.routes import normalize_serving_phase1_surface
 from validators.validate_validation_final import validate_custom_op_final_gate
+from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_project_analysis import validate as validate_project_analysis
 
 
@@ -603,6 +605,30 @@ def test_normalize_project_analysis_collapses_deepwave_iso_family_aliases(tmp_pa
     assert normalized_surface["expanded_operator_instances_count"] == 240
 
 
+def test_expanded_variant_contract_injects_custom_op_phase3_defaults(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    target: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "entry_script_path": "validate_custom_ops_full.py",
+        "run_command": "python validate_custom_ops_full.py",
+        "project_dir": str(project_dir),
+    }
+    overlay = _expanded_variant_overlay(["op_alpha:float32", "op_alpha:float16"])
+
+    apply_expanded_variant_contract(target, overlay, include_required_checks=True)
+    ensure_strict_expanded_variant_validation_script(target, overlay, project_dir=str(project_dir))
+
+    result = validate_entry_script(target)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+    assert target["reports_dir"] == str(project_dir / "migration_reports")
+    assert target["phase5_entry_script_revision_allowed"] is True
+    required_checks = cast(list[object], target["required_checks"])
+    assert "expanded_variant_inventory" in required_checks
+    assert "variant_axis_coverage" in required_checks
+    assert "per_variant_performance_report" in required_checks
+
+
 def test_strict_expanded_variant_script_generation_is_deterministic_and_fail_closed(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     target: dict[str, object] = {
@@ -767,7 +793,7 @@ def _expanded_variant_overlay(unit_identities: list[str]) -> dict[str, object]:
             "unit_identities": unit_identities,
             "expanded_operator_instances_count": len(unit_identities),
         },
-        "variant_axis_coverage": {"required": True, "axes": ["dtype"]},
+        "variant_axis_coverage": {"all_axes_covered": True, "axes": {"dtype": ["float32", "float16"]}},
         "per_variant_performance_report": {"required": True, "one_entry_per_expanded_variant": True},
     }
 

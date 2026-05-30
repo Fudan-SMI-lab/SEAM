@@ -2405,6 +2405,7 @@ def apply_expanded_variant_contract(
         if value is not None and (overwrite or field_name not in target):
             target[field_name] = value
     if include_required_checks:
+        _ensure_custom_op_phase3_contract_defaults(target)
         _append_required_variant_checks(target)
 
 
@@ -2872,6 +2873,87 @@ def _positive_count(value: object, *, default: int) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return default
+
+
+def _ensure_custom_op_phase3_contract_defaults(target: dict[str, object]) -> None:
+    if target.get("entry_script_kind") != "custom_op_full_validation":
+        return
+    project_root = _phase3_project_root(target, None)
+    if project_root is None:
+        return
+    reports_dir = project_root / "migration_reports"
+    _ = target.setdefault("reports_dir", str(reports_dir))
+    _ = target.setdefault(
+        "required_report_paths",
+        [
+            str(reports_dir / "operator_inventory.json"),
+            str(reports_dir / "migration_manifest.json"),
+            str(reports_dir / "preflight.json"),
+            str(reports_dir / "baseline.json"),
+            str(reports_dir / "runtime_coverage.json"),
+            str(reports_dir / "performance.json"),
+            str(reports_dir / "build.json"),
+            str(reports_dir / "implementation_resolution.json"),
+            str(reports_dir / "custom_op_final_gate.json"),
+            str(reports_dir / "evidence_validation.json"),
+            str(reports_dir / "summary.json"),
+        ],
+    )
+    _ = target.setdefault(
+        "required_checks",
+        [
+            "inventory_manifest_equality",
+            "closed_pass_count_equals_manifest_entries",
+            "remaining_entries_zero",
+            "full_migration_status_full_pass",
+            "fine_grained_operator_unit_inventory",
+            "kernel_launch_site_inventory",
+            "public_entry_mapping",
+            "inventory_granularity_fine",
+            "per_entry_target_custom_op_artifact_evidence",
+            "per_entry_adapter_evidence",
+            "per_entry_parity_evidence",
+            "integration_e2e_evidence",
+            "same_run_runtime_coverage",
+            "performance_evidence",
+            "complete_performance_report",
+            "overall_speedup_report",
+            "no_fallback_no_zero_call_no_builtin_contamination",
+            "native_operator_symbol_inventory",
+        ],
+    )
+    _ = target.setdefault(
+        "operator_inventory_schema",
+        {
+            "semantic_rows": "one row per fine-grained source-discovered operator unit",
+            "fine_grained_operator_units": "complete list of source-discovered units",
+            "unit_identity": "stable per-unit id",
+            "variant_or_signature": "source-discovered variant/signature",
+            "native_operator_symbols": "native/exported symbols per row",
+            "kernel_functions": "CUDA/Ascend kernel functions per row",
+            "kernel_launch_sites": "kernel launch sites per row",
+            "public_entry_mapping": "public API to unit mapping per row",
+            "source_evidence": "source files/functions per row",
+            "inventory_granularity": "fine_grained",
+            "out_of_scope_source_groups": "excluded source families with reason",
+        },
+    )
+    _ = target.setdefault(
+        "operator_discovery_sources",
+        ["source", "bindings", "wrappers", "autograd", "aliases", "launch", "setup", "tests"],
+    )
+    _ = target.setdefault(
+        "validation_obligations",
+        [
+            "project_local_artifact",
+            "runtime_project_api",
+            "numeric_performance",
+            "complete_speedup_report",
+            "overall_speedup_report",
+            "no_fallback",
+        ],
+    )
+    _ = target.setdefault("phase5_entry_script_revision_allowed", True)
 
 
 def _append_required_variant_checks(target: dict[str, object]) -> None:
