@@ -344,8 +344,6 @@ def _has_custom_op_contract_fields(contract: dict[str, object]) -> bool:
         field in contract
         for field in (
             "reports_dir",
-            "required_report_paths",
-            "required_checks",
             "operator_discovery_sources",
             "operator_inventory_schema",
             "validation_obligations",
