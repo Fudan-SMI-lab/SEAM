@@ -612,6 +612,38 @@ def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(tm
     assert any("existing file for custom-op contracts" in error for error in result["errors"])
 
 
+def test_custom_op_final_gate_rejects_collapsed_rows_when_expanded_variant_inventory_requires_more_units() -> None:
+    payload = _valid_custom_op_final_gate()
+    payload["expanded_variant_inventory"] = {
+        "variant_axes_detected": True,
+        "expanded_operator_instances_count": 2,
+        "unit_identities": ["ScalarFwd2D:dim2:float32", "ScalarFwd2D:dim3:float32"],
+    }
+
+    result = validate_custom_op_final_gate(payload)
+
+    assert result["passed"] is False
+    assert any("rows must exactly match expanded variant unit identities" in error for error in result["errors"])
+    assert any("source_inventory must exactly match expanded variant unit identities" in error for error in result["errors"])
+    assert any("performance_report must exactly match expanded variant unit identities" in error for error in result["errors"])
+    assert any("custom-op final gate counts must equal expanded variant unit count" in error for error in result["errors"])
+
+
+def test_custom_op_final_gate_accepts_zero_inventory_when_no_custom_ops_detected() -> None:
+    payload: dict[str, object] = {
+        "custom_op_detected": False,
+        "discovery_complete": True,
+        "inventory_count": 0,
+        "manifest_entries": 0,
+        "closed_pass_entries": 0,
+        "remaining_entries": 0,
+    }
+
+    result = validate_custom_op_final_gate(payload)
+
+    assert result == {"passed": True, "errors": [], "warnings": []}
+
+
 def test_custom_op_final_gate_accepts_valid_full_pass_report() -> None:
     result = validate_custom_op_final_gate(_valid_custom_op_final_gate())
 

@@ -431,6 +431,18 @@ def validate_custom_op_final_gate(
     errors: list[str] = []
     resolved_project_root = _resolve_existing_project_root(project_root, errors)
 
+    custom_op_detected = data.get("custom_op_detected")
+    if custom_op_detected is False and data.get("discovery_complete") is True:
+        inventory_count_val = data.get("inventory_count", 0)
+        manifest_entries_val = data.get("manifest_entries", 0)
+        closed_pass_entries_val = data.get("closed_pass_entries", 0)
+        if (
+            (isinstance(inventory_count_val, int) and inventory_count_val == 0)
+            and (isinstance(manifest_entries_val, int) and manifest_entries_val == 0)
+            and (isinstance(closed_pass_entries_val, int) and closed_pass_entries_val == 0)
+        ):
+            return {"passed": True, "errors": [], "warnings": []}
+
     inventory_count = _int_field(data, "inventory_count", errors)
     manifest_entries = _int_field(data, "manifest_entries", errors)
     closed_pass_entries = _int_field(data, "closed_pass_entries", errors)
