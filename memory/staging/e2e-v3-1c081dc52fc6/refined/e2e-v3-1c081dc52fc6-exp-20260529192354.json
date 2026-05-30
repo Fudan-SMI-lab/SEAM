@@ -1,0 +1,59 @@
+{
+  "_raw": "The user wants me to refine candidate-002 into a production-ready rule. Let me analyze the provided information carefully.\n\nCandidate details:\n- Title: numpy>=2.0 breaks CANN 8.1.RC1 TBE compiler \u2014 pin to numpy<2.0\n- Recommended Type: rule\n- Category: dependency_issue\n- Subtype: numpy_2_cann_tbe_incompat\n- Confidence: 0.82\n- Triggers: numpy_version_gte_2_0_detected_after_torch_npu_install_in_NPU_environment\n\nThe artifact evidence mentions:\n- SUMMARY_REPORT.md: line 104 notes numpy>=2.0 incompatible with CANN 8.1.RC1 TBE\n- TOOLS_EXECUTION_REPORT.md: line 37 shows `pip install numpy==1.26.4` as command 11\n- validated/phase_2_venv_create_canonical.json: line 13 confirms numpy==1.26.4\n- execution_journal.jsonl: phase_2 duration 369s\n\nThe involved source code (validate_entry.py) shows `import numpy as np` is used in the project.\n\nNow, for a \"rule\" type, the schema is:\n\n```json\n{\n  \"type\": \"rule\",\n  \"title\": \"...\",\n  \"pattern\": \"...\",\n  \"replacement\": \"...\",\n  \"file_patterns\": [\"*.py\"],\n  \"meta\": {\n    \"source_run_id\": \"...\",\n    \"confidence\": 0.82,\n    \"refiner_reasoning\": \"...\"\n  }\n}\n```\n\nWait, but for a rule about dependency pinning (version constraints), the traditional \"pattern/replacement\" on source code doesn't quite fit. The evaluator classified this as a \"rule\" type with the pattern being about detecting numpy version and the replacement being the pip command to pin it.\n\nLet me look at the rule example from the prompt:\n```json\n{\n  \"type\": \"rule\",\n  \"title\": \"Replace torch.cuda.stream with torch.npu.stream\",\n  \"pattern\": \"torch\\\\.cuda\\\\.stream\\\\(([^)]+)\\\\)\",\n  \"replacement\": \"torch.npu.stream(\\\\1)\",\n  \"file_patterns\": [\"*.py\"],\n  \"meta\": {\n    \"source_run_id\": \"run-def456\",\n    \"confidence\": 0.99\n  }\n}\n```\n\nSo for a dependency-inspection rule, the \"pattern\" could be the detection condition (numpy version >= 2.0) and the \"replacement\" could be the fix command. But that's a bit unusual for a rule type. Let me consider if this should actually be a \"skill\" type instead, since it involves multiple steps (detect version, determine fix, execute pip command).\n\nActually, looking at the evaluator's classification more carefully:\n- type: rule\n- target_roles: dependency_installer\n- target_phases: phase_2_venv_create\n- solidifier: rule_solidifier\n- trigger_fingerprint: numpy_version_gte_2_0_detected...\n\nThe evaluator explicitly says this is a \"rule\" type, and it should be solidifier: \"rule_solidifier\". So I should output a rule type.\n\nBut the rule schema has `pattern`, `replacement`, and `file_patterns` which implies text replacement in files. This is about dependency version management, not source code transformation. \n\nHmm, I think for dependency-installation rules, the pattern can be thought of differently - perhaps:\n- `pattern`: the detection condition (checking numpy version via requirements or pip freeze)\n- `replacement`: the fix action (pip install command to downgrade)\n- `file_patterns`: could be `[\"requirements.txt\", \"setup.py\", \"pyproject.toml\"]`\n\nBut that's stretching the schema. Let me re-read the task description...\n\nLooking at the example output types again, the rule example is about code pattern replacement. But the task says \"Return exactly one JSON object matching the schema for the appropriate type above.\" Since the evaluator classified this as a \"rule\", and the rule has specific fields (pattern, replacement, file_patterns), I should follow that schema.\n\nFor a dependency rule, I think the pattern could be a text pattern to detect in dependency files, and the replacement could be the correct version constraint. But in this case, it's more about the installed environment, not source files.\n\nLet me just follow the evaluator's classification and produce a rule with the appropriate fields. The `pattern` field represents what to detect (numpy>=2.0 in the environment or dependency specs), and `replacement` represents the fix command.\n\nActually, I think for dependency-management rules, I can make the pattern detect numpy version specifications that would resolve to >=2.0, and the replacement would be the pinning constraint. The `file_patterns` would target dependency specification files.\n\nLet me think about what makes the most sense for this specific candidate. The issue is:\n1. numpy 2.0+ breaks CANN 8.1.RC1 TBE compiler\n2. The fix is to pin numpy to <2.0 (specifically 1.26.4)\n3. This is detected by checking numpy version after torch_npu install\n\nFor a \"rule\" type, the pattern could match dependency specifications that don't constrain numpy version, and the replacement would be adding the constraint. Or the pattern could match the detected condition in pip freeze output.\n\nI think the most practical approach for a rule is:\n- `pattern`: A detection regex for pip freeze output showing numpy>=2.0\n- `replacement`: The pip command to fix it\n- `file_patterns`: The dependency files where this constraint should be enforced\n\nActually, I think I'm overcomplicating this. Let me just produce a clean rule JSON following the schema. The `pattern` can be something like `numpy>=2\\.` to match numpy 2.x versions, and `replacement` can be the pip install command.\n\nLet me construct the JSON output now.\n{\n  \"type\": \"rule\",\n  \"title\": \"Pin numpy<2.0 for CANN 8.1.RC1 TBE compiler compatibility on NPU\",\n  \"pattern\": \"numpy>=2\\\\.\\\\d\",\n  \"replacement\": \"numpy>=1.26,<2.0\",\n  \"file_patterns\": [\"requirements.txt\", \"setup.py\", \"setup.cfg\", \"pyproject.toml\", \"*.txt\"],\n  \"meta\": {\n    \"source_run_id\": \"candidate-002\",\n    \"confidence\": 0.82,\n    \"refiner_reasoning\": \"numpy 2.0+ removed np.bool, np.int, np.float aliases and changed array protocol behaviors, which breaks the Ascend Tensor Boost Engine (TBE) compiler in CANN 8.1.RC1. pip defaults to latest numpy (2.x) unless constrained. TOOLS_EXECUTION_REPORT.md confirms the fix was `pip install numpy==1.26.4` as command 11 in the fix sequence, and validated/phase_2_venv_create_canonical.json line 13 confirms final state numpy==1.26.4. Phase 2 took 369s reflecting trial-and-error resolution. This version pin is essential for any NPU migration using torch_npu on CANN 8.1.RC1.\"\n  }\n}",
+  "meta": {
+    "source_run_id": "e2e-v3-1c081dc52fc6",
+    "created_at": "2026-05-29T19:23:54.139586+00:00"
+  },
+  "type": "rule",
+  "target_roles": [
+    "dependency_installer"
+  ],
+  "target_phases": [
+    "phase_2_venv_create"
+  ],
+  "trigger_fingerprint": "numpy_version_gte_2_0_detected_after_torch_npu_install_in_NPU_environment",
+  "solidifier": "rule_solidifier",
+  "classifier": {
+    "type": "rule",
+    "target_roles": [
+      "dependency_installer"
+    ],
+    "target_phases": [
+      "phase_2_venv_create"
+    ],
+    "solidifier": "rule_solidifier",
+    "reasoning": "CANN version pinning to numpy <2.0 is a known compatibility constraint for the entire Ascend TBE stack. numpy 2.0+ introduced breaking API changes (removed np.bool, np.int, np.float aliases and changed array protocol behaviors) that are incompatible with the Ascend Tensor Boost Engine (TBE) compiler in CANN 8.1.RC1. This causes cryptic compilation failures or silent errors during torch_npu kernel execution. The fix is mechanically repeatable: after torch_npu install, verify numpy version; if >=2.0.0, downgrade to 'numpy>=1.26,<2.0'. This is a deterministic detection\u2192repair rule suitable for automated enforcement in the dependency-install phase.",
+    "confidence": 0.82,
+    "trigger_fingerprint": "numpy_version_gte_2_0_detected_after_torch_npu_install_in_NPU_environment"
+  },
+  "candidate_id": "candidate-002",
+  "title": "numpy>=2.0 breaks CANN 8.1.RC1 TBE compiler \u2014 pin to numpy<2.0",
+  "problem_description": "numpy 2.0+ introduced breaking API changes (removed np.bool, np.int, np.float aliases and changed several array protocol behaviors) that are incompatible with the Ascend Tensor Boost Engine (TBE) compiler in CANN 8.1.RC1. This causes cryptic compilation failures or silent errors during torch_npu kernel execution. pip default resolution picks the latest numpy (2.x) unless explicitly constrained.",
+  "rough_fix_approach": "After installing torch_npu and before running any model code, verify numpy version with `python -c 'import numpy; print(numpy.__version__)'`. If version >= 2.0.0, downgrade: `pip install 'numpy>=1.26,<2.0'`. numpy 1.26.4 is the last known-good release for CANN 8.1.RC1.",
+  "recommended_type": "rule",
+  "tags": [
+    "torch-npu",
+    "numpy",
+    "cann-8.1",
+    "tbe-compiler",
+    "version-pinning"
+  ],
+  "category": "dependency_issue",
+  "subtype": "numpy_2_cann_tbe_incompat",
+  "confidence": 0.82,
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/08_SpeechGPT-2.0-preview_20260529_185349",
+  "_asset_contents": {
+    "rule.yaml": "title: numpy>=2.0 breaks CANN 8.1.RC1 TBE compiler \u2014 pin to numpy<2.0\npattern: \nreplacement: \nfile_patterns: [\"*.py\"]\ntarget_roles: [\"dependency_installer\"]\ntarget_phases: [\"phase_2_venv_create\"]\ntrigger_fingerprint: numpy_version_gte_2_0_detected_after_torch_npu_install_in_NPU_environment\n",
+    "metadata.json": {
+      "type": "rule",
+      "run_id": "e2e-v3-1c081dc52fc6"
+    }
+  },
+  "asset_names": [
+    "metadata.json",
+    "rule.yaml"
+  ],
+  "id": "e2e-v3-1c081dc52fc6-exp-20260529192354",
+  "run_id": "e2e-v3-1c081dc52fc6",
+  "created_at": "2026-05-29T19:23:54.139719+00:00"
+}

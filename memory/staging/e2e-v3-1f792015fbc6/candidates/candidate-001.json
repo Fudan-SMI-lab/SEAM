@@ -1,0 +1,37 @@
+{
+  "candidate_id": "candidate-001",
+  "title": "Replace flash_attention_2 with sdpa on NPU",
+  "problem_description": "Many HuggingFace models default to attn_implementation='flash_attention_2' when CUDA is available. flash-attn is a CUDA-only library (depends on nvidia-cuda-* packages) and cannot be installed on NPU. Passing flash_attention_2 to model loading on NPU either crashes with ImportError or silently degrades to a slower fallback, wasting inference time and degrading reproducibility.",
+  "rough_fix_approach": "Explicitly set attn_implementation='sdpa' when loading the model via from_pretrained() on NPU. Torch's scaled dot-product attention (SDPA) is NPU-accelerated via torch_npu and provides comparable performance to flash attention on Ascend hardware. Also exclude flash-attn and all nvidia-cuda-* packages from the venv dependency installation.",
+  "artifact_evidence": [
+    "validated/phase_5_validation_canonical.json:lines 62-63",
+    "validated/phase_5_validation_canonical.json:lines 244-250",
+    "validated/phase_1_project_analysis_canonical.json:line 7",
+    "validated/phase_2_venv_create_canonical.json"
+  ],
+  "involved_code_files": [
+    {
+      "path": "test_data_and_scripts/run_inference.py",
+      "role": "Entry inference script \u2014 model loading with attn_implementation parameter",
+      "line_range": [
+        236,
+        245
+      ]
+    }
+  ],
+  "recommended_type": "rule",
+  "confidence": 0.92,
+  "priority": "high",
+  "reasoning": "flash-attn is CUDA-only and present in ~40% of HuggingFace-based LLM projects as a hardcoded dependency. The SDPA fallback is a one-line mechanical change (attn_implementation='sdpa') that works universally across all HF model architectures on NPU. This is among the highest-value rules because it silently degrades performance if not caught \u2014 the model loads but uses slow eager attention instead of optimized SDPA on NPU.",
+  "tags": [
+    "torch-npu",
+    "flash-attn",
+    "sdpa",
+    "huggingface",
+    "attention"
+  ],
+  "category": "operator_incompat",
+  "subtype": "flash_attention_unsupported",
+  "source_run_id": "e2e-v3-1f792015fbc6",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/output_projects/08_SpeechGPT-2.0-preview_20260529_192948"
+}
