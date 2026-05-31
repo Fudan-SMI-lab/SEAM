@@ -753,7 +753,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent",
         type=str,
         default=None,
-        help="Override the auto-detected agent name (e.g., 'Atlas (Plan Executor)').",
+        help="Override the auto-detected agent name (e.g., 'Sisyphus (Orchestrator)').",
     )
     _ = parser.add_argument(
         "--output-project-dir",
