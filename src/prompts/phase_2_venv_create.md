@@ -19,6 +19,14 @@ You are executing `{phase_name}` for `{project_dir}`.
 4. Install NPU-related dependencies needed for Ascend execution, including `torch_npu` when compatible with the Python and PyTorch versions.
 5. Record the final environment path, interpreter path, and a concise list of installed packages relevant to execution.
 
+## CRITICAL - Scope Boundary
+- **DO NOT** create, edit, or generate ANY Python scripts, validation files, or documentation files.
+- **DO NOT** analyze project source code beyond what is needed to identify and install dependencies.
+- **DO NOT** create migration scripts, test scripts, custom operator validation scripts, or serving wrapper scripts.
+- **DO NOT** modify any existing project files.
+- Your ONLY mission: create the virtual environment, install all required dependencies, and report the result.
+- Script creation belongs to later phases (Phase 3, Phase 5).  You are Phase 2 — venv only.
+
 ## Hard Rules
 - Use domestic mirrors first for all installs, including sources such as 阿里云镜像, 清华镜像, or other reachable domestic mirrors.
 - Do not use foreign package indexes unless domestic mirrors are unavailable; if a fallback is unavoidable, keep it explicit in intermediate notes.

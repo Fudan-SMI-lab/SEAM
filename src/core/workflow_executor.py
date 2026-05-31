@@ -1185,8 +1185,13 @@ class WorkflowExecutor:
         if not isinstance(resolved, str):
             return bool(resolved)
 
-        # Step 2: Handle $.field_name shorthand (not ${} format)
+        # Step 2: Sanitize dangling comparison operators after ${} resolution.
+        # When a leading ${VAR} resolves to empty string, the expression may start
+        # with a bare operator (e.g. " != ''").  Prepending '' makes it valid Python.
         expr = resolved
+        expr = re.sub(r'^\s*(!=|==|>=|<=|>|<)\s', r"'' \1 ", expr)
+
+        # Step 3: Handle $.field_name shorthand (not ${} format)
         if "$." in expr:
             def dollar_repl(m: re.Match[str]) -> str:
                 field = m.group(1)
@@ -1820,6 +1825,19 @@ class WorkflowExecutor:
             if isinstance(ph3, dict):
                 input_ctx.setdefault("entry_script_path",
                                      ph3.get("entry_script_path", "(not available)"))
+        if "phase_3_entry_script" in pid or "phase_3" in pid:
+            ph35 = state.get("phase_35_static_validate", {})
+            if isinstance(ph35, dict) and ph35.get("validation_passed") is False:
+                fix_plan = ph35.get("fix_plan", "")
+                issues = ph35.get("issues", [])
+                issues_str = "\n".join(f"  - {i}" for i in issues) if isinstance(issues, list) else str(issues)
+                feedback = (
+                    "=== Phase 3.5 VALIDATION FAILED - FIX THE FOLLOWING BEFORE RETRYING ===\n"
+                    f"Issues found by Phase 3.5:\n{issues_str}\n\n"
+                    f"Fix plan:\n{fix_plan}"
+                )
+                current = input_ctx.get("constraint_summary", "")
+                input_ctx["constraint_summary"] = f"{current}\n\n{feedback}" if current else feedback
         if "phase_6" in pid:
             input_ctx.setdefault("report_dir", self._artifact_report_dir())
 

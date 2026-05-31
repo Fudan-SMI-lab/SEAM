@@ -105,7 +105,7 @@ phases:
     validator: entry_script
     transitions:
       on_success: phase_35_static_validate
-      on_failure: phase_3_entry_script
+      on_failure: phase_35_static_validate
 
   - id: phase_35_static_validate
     type: llm

@@ -1281,7 +1281,7 @@ class PhaseRunner:
         "phase_1_project_analysis": [],
         "phase_2_venv_create": [],
         "phase_1_5_constraint_summary": [],
-        "phase_3_entry_script": [],
+        "phase_3_entry_script": ["phase_35_static_validate"],
         "phase_35_static_validate": ["phase_3_entry_script"],
     }
 
