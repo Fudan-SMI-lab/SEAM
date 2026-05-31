@@ -7,7 +7,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 ## Context
 This is a CUDA-to-MUSA/MUXI workflow. The selected command becomes the target runtime validation surface after rule migration and repair. MUSA execution should use `torch_musa`, `torch.musa`, MUSA SDK/compiler/runtime, or MUSA-supported accelerator primitives. If the actual MUXI environment exposes MACA/MetaX-compatible packages, use the observed vendor stack without changing the evidence schema.
 
-This workflow uses the normal-entry route. Custom-op/serving contract fields (`entry_script_kind`, `reports_dir`, `serving_reports_dir`, `required_report_paths`, `required_checks`, `operator_discovery_sources`, `operator_inventory_schema`, `performance_report_schema`, `validation_obligations`) are omitted by route policy — the framework disables custom-op contract injection for this workflow, and the target runtime `custom_op_final_gate` / `serving_final_gate` auto-skip when no route contract fields are present.
+This workflow uses the normal-entry route. Custom-op/serving contract fields (`entry_script_kind`, `reports_dir`, `serving_reports_dir`, `required_report_paths`, `required_checks`, `operator_discovery_sources`, `operator_inventory_schema`, `performance_report_schema`, `validation_obligations`) are omitted by route policy — the framework disables custom-op contract injection for this workflow, and the target runtime `custom_op_final_gate` / `serving_final_gate` auto-skips when no route contract fields are present.
 
 ## Goal
 - Identify the TRUE entry script or command that validates the project's full real-world migration target.
