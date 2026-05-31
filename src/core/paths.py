@@ -6,11 +6,6 @@ from os import environ
 from pathlib import Path
 
 
-def _parent_workspace_root() -> Path:
-    """Return the workspace directory that contains SEAM."""
-    return src_root().parent.parent
-
-
 def src_root() -> Path:
     """Return the canonical src/ package root."""
     return Path(__file__).resolve().parent.parent
@@ -35,13 +30,12 @@ def default_output_projects_root() -> Path:
     """Return the output-project copy destination for E2E runs.
 
     Controlled via ``MIGRATION_OUTPUT_PROJECTS_ROOT`` environment variable.
-    Falls back to ``<workspace>/output_projects`` (outside the repo) so that
-    mutable output directories are not placed inside the controller tree.
+    Falls back to ``<local_repo>/output_projects``.
     """
     env_override = environ.get("MIGRATION_OUTPUT_PROJECTS_ROOT", "").strip()
     if env_override:
         return Path(env_override).expanduser().resolve()
-    return _parent_workspace_root() / "output_projects"
+    return execution_root() / "output_projects"
 
 
 def legacy_workspace_root() -> Path:

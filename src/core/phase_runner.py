@@ -22,6 +22,7 @@ from core.custom_op_opp_preflight import has_custom_op_contract, has_explicit_no
 from core.custom_op_variants import (
     apply_expanded_variant_contract,
     ensure_strict_expanded_variant_validation_script,
+    ensure_strict_non_variant_custom_op_validation_script,
     expanded_variant_contract_from_outputs,
     normalize_phase1_project_analysis,
 )
@@ -1410,6 +1411,11 @@ class PhaseRunner:
                     ensure_strict_expanded_variant_validation_script(
                         normalized,
                         variant_overlay,
+                        project_dir=str(prompt_context["project_dir"]),
+                    )
+                else:
+                    ensure_strict_non_variant_custom_op_validation_script(
+                        normalized,
                         project_dir=str(prompt_context["project_dir"]),
                     )
             normalized = self._normalize_phase3_container_paths(
