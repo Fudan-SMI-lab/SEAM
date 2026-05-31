@@ -31,6 +31,9 @@ _NON_BLOCKING_QUESTION_GUARD_PHRASES = (
     "do not ask questions",
     "do not ask the user",
     "do not call question",
+    "do not call the question tool",
+    "question tool is disabled",
+    "never call question",
     "do not request clarification",
     "do not ask for clarification",
     "without requesting clarification",
@@ -820,8 +823,13 @@ class MigrationSessionManager:
         return candidates[0]
 
     def _session_used_forbidden_nested_tool(self, session_id: str) -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 200})
         if not resp.get("ok"):
+            logging.getLogger("harness.session").warning(
+                "Failed to fetch session %s messages for forbidden-tool guard: %s",
+                session_id,
+                resp.get("details") or resp.get("error") or "unknown error",
+            )
             return ""
         data = resp.get("data")
         messages = data if isinstance(data, list) else [data]
@@ -912,6 +920,7 @@ class MigrationSessionManager:
                 return False
 
             data = status.get("data")
+            self._raise_if_forbidden_nested_tool_used(session_id, True)
             token = self._extract_status_token(data, session_id)
             if token in RUNNING_TOKENS:
                 time.sleep(interval_s)

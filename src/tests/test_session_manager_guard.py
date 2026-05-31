@@ -478,6 +478,7 @@ def test_send_command_waits_for_incomplete_todos_until_complete(monkeypatch: pyt
     manager = _manager_with_message(
         {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "phase complete"}]},
         history=[
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "even older assistant text"}]}]},
             {"ok": True, "data": [{"parts": [{"type": "text", "text": "old assistant text"}]}]},
             {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "rerun validator"}]}]},
             {"ok": True, "data": [{"todos": [{"status": "completed", "content": "rerun validator"}]}]},
@@ -824,7 +825,7 @@ def test_wait_for_idle_looks_past_latest_stale_todo_after_empty_status(monkeypat
 
     assert manager.wait_for_idle("ses-1", timeout_s=1, interval_s=0) is True
     message_calls = [call for call in manager.calls if call["method"] == "GET" and call["path"] == "/session/ses-1/message"]
-    assert message_calls[0]["query"] == {"limit": 20}
+    assert message_calls[0]["query"] == {"limit": 200}
 
 
 def test_wait_for_idle_tolerant_empty_status_no_todos(monkeypatch: pytest.MonkeyPatch) -> None:
