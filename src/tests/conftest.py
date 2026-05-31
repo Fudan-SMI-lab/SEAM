@@ -58,9 +58,29 @@ else:
 NO_REAL_SQLITE3 = _NO_REAL_SQLITE3
 
 import pytest
+import uuid
+from pathlib import Path
+
+
+OUTPUT_PROJECTS = Path(__file__).resolve().parent.parent.parent / "output_projects"
 
 
 @pytest.fixture
 def base_path():
     """Return the base path for test fixtures."""
     return __file__
+
+
+@pytest.fixture
+def project_root(request: pytest.FixtureRequest) -> Path:
+    """Per-test project directory under output_projects/test_artifacts/.
+
+    Creates ``output_projects/test_artifacts/{test_name}_{uuid_short}/``,
+    persists after the test (no automatic cleanup), so artifacts are
+    inspectable under the target output_projects area.
+    """
+    test_name = request.node.name
+    uid = uuid.uuid4().hex[:8]
+    root = OUTPUT_PROJECTS / "test_artifacts" / f"{test_name}_{uid}"
+    root.mkdir(parents=True, exist_ok=True)
+    return root

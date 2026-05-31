@@ -69,6 +69,48 @@ class CustomOpEvidenceConfig:
     """Boolean fields that prove a baseline path was exercised."""
 
 
+# -- Platform-agnostic serving check / obligation defaults -------------------
+_GENERIC_SERVING_REQUIRED_CHECKS = (
+    "project_demo_or_test_execution",
+    "serving_api_request_validation",
+    "readiness_probe_passed",
+    "accelerator_execution_evidence",
+    "no_forbidden_runtime_fallback",
+    "no_cpu_fallback",
+    "fresh_serving_report",
+    "route_framework_match",
+)
+
+_GENERIC_SERVING_VALIDATION_OBLIGATIONS = (
+    "actual_project_demo_test_or_api_validation",
+    "accelerator_execution_evidence",
+    "reject_import_only_or_smoke_only",
+    "reject_forbidden_runtime_or_cpu_fallback",
+    "fresh_report_paths",
+    "route_framework_match",
+)
+
+_NPU_SERVING_REQUIRED_CHECKS = (
+    "project_demo_or_test_execution",
+    "serving_api_request_validation",
+    "readiness_probe_passed",
+    "npu_execution_evidence",
+    "no_cuda_fallback",
+    "no_cpu_fallback",
+    "fresh_serving_report",
+    "route_framework_match",
+)
+
+_NPU_SERVING_VALIDATION_OBLIGATIONS = (
+    "actual_project_demo_test_or_api_validation",
+    "npu_execution_evidence",
+    "reject_import_only_or_smoke_only",
+    "reject_cuda_or_cpu_fallback",
+    "fresh_report_paths",
+    "route_framework_match",
+)
+
+
 @dataclass(frozen=True)
 class ServingRuntimePolicy:
     """Per-platform serving runtime/backend contract policy."""
@@ -77,6 +119,10 @@ class ServingRuntimePolicy:
     execution_evidence_field: str = "accelerator_execution_evidence"
     execution_observed_field: str = "accelerator_execution_observed"
     runtime_evidence_field: str = "serving_runtime_evidence"
+    required_checks: tuple[str, ...] = _GENERIC_SERVING_REQUIRED_CHECKS
+    """Check keys required in serving final-gate ``required_checks`` list."""
+    validation_obligations: tuple[str, ...] = _GENERIC_SERVING_VALIDATION_OBLIGATIONS
+    """Obligation keys injected into serving phase-3 contract."""
 
 
 @dataclass(frozen=True)
@@ -247,7 +293,9 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             backend="ascend",
             execution_evidence_field="npu_execution_evidence",
             execution_observed_field="npu_execution_observed",
-            runtime_evidence_field="ascend_runtime_evidence",
+            runtime_evidence_field="npu_runtime_evidence",
+            required_checks=_NPU_SERVING_REQUIRED_CHECKS,
+            validation_obligations=_NPU_SERVING_VALIDATION_OBLIGATIONS,
         ),
         default_rule_migration_strategy="cuda_to_npu",
         guidance_prefix="Ascend NPU",

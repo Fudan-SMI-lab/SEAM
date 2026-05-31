@@ -11,7 +11,7 @@ from core.custom_op_source_discovery import (
     NativeUnit,
     discover_required_cuda_native_units_from_project,
 )
-from core.ascend_runtime import ascend_serving_contract_fields
+from core.serving_runtime import npu_serving_contract_fields
 from core.routes import MIGRATION_ROUTES, is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 
@@ -445,11 +445,11 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
 
 
 def _validate_ascend_serving_surface_contract(route: str, surface: dict[str, object], errors: list[str]) -> None:
-    required = ascend_serving_contract_fields(route)
+    required = npu_serving_contract_fields(route)
     runtime_setup = surface.get("runtime_env_setup")
     if not isinstance(runtime_setup, dict) or not runtime_setup:
         errors.append("serving_runtime_surface.runtime_env_setup must describe CANN/Ascend environment setup")
-    for field_name in ("required_import_probes", "forbidden_runtime_markers", "ascend_runtime_checks"):
+    for field_name in ("required_import_probes", "forbidden_runtime_markers", "npu_runtime_checks"):
         _validate_string_list(surface, field_name, errors, require_non_empty=True)
     required_env = _normalized_set(_string_list_values(surface, "required_runtime_env"))
     for token in ("cann", "torch_npu", "tbe", "te"):

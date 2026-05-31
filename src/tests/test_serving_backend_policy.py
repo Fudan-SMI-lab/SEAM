@@ -42,23 +42,23 @@ def _phase1_surface(route: str = "vllm_serving") -> dict[str, object]:
     }
 
 
-def _normalized_contract(tmp_path: Path, policy_id: str, route: str = "vllm_serving") -> dict[str, object]:
-    tmp_path.mkdir(parents=True, exist_ok=True)
+def _normalized_contract(project_root: Path, policy_id: str, route: str = "vllm_serving") -> dict[str, object]:
+    project_root.mkdir(parents=True, exist_ok=True)
     policy = BUILTIN_PRESETS[policy_id]
     phase1 = _phase1_surface(route)
     normalize_serving_phase1_surface(phase1, platform_policy=policy)
-    contract: dict[str, object] = {"project_dir": str(tmp_path)}
+    contract: dict[str, object] = {"project_dir": str(project_root)}
     normalize_serving_phase3_contract(
         contract,
         route=route,
-        project_dir=tmp_path,
+        project_dir=project_root,
         phase1_output=phase1,
         platform_policy=policy,
     )
     return contract
 
 
-def test_serving_phase3_contract_uses_wrapper_command_as_launch_contract(tmp_path: Path) -> None:
+def test_serving_phase3_contract_uses_wrapper_command_as_launch_contract(project_root: Path) -> None:
     phase1 = _phase1_surface("sglang_serving")
     surface = _dict_value(phase1["serving_runtime_surface"])
     surface["launch_command"] = "sglang serve --model-path tiny --port 8080"
@@ -68,12 +68,12 @@ def test_serving_phase3_contract_uses_wrapper_command_as_launch_contract(tmp_pat
     normalize_serving_phase3_contract(
         contract,
         route="sglang_serving",
-        project_dir=tmp_path,
+        project_dir=project_root,
         phase1_output=phase1,
         platform_policy=BUILTIN_PRESETS["generic_accelerator"],
     )
 
-    assert contract["project_dir"] == str(tmp_path)
+    assert contract["project_dir"] == str(project_root)
     assert contract["entry_script_kind"] == "sglang_serving_validation"
     assert contract["migration_route"] == "sglang_serving"
     assert contract["service_launch_command"] == "sglang serve --model-path tiny --port 8080"
@@ -113,25 +113,25 @@ def test_phase1_serving_backend_framework_name_uses_platform_backend() -> None:
     assert normalized["serving_backend"] == "ascend"
 
 
-def test_generic_phase1_and_phase3_serving_are_not_ascend_forced(tmp_path: Path) -> None:
+def test_generic_phase1_and_phase3_serving_are_not_ascend_forced(project_root: Path) -> None:
     phase1 = _phase1_surface()
     normalize_serving_phase1_surface(phase1, platform_policy=BUILTIN_PRESETS["generic_accelerator"])
     surface = _dict_value(phase1["serving_runtime_surface"])
     assert surface["serving_backend"] == "generic"
-    assert "ascend_runtime_checks" not in surface
+    assert "npu_runtime_checks" not in surface
     assert "torch_npu" not in _string_list(surface.get("required_import_probes", []))
 
-    contract = _normalized_contract(tmp_path, "generic_accelerator")
+    contract = _normalized_contract(project_root, "generic_accelerator")
     required_checks = _string_list(contract["required_checks"])
     assert contract["serving_backend"] == "generic"
     assert "accelerator_execution_evidence" in required_checks
     assert "npu_execution_evidence" not in required_checks
-    assert "ascend_runtime_checks" not in contract
+    assert "npu_runtime_checks" not in contract
     assert validate_entry_script(contract)["passed"] is True
 
 
-def test_generic_generated_serving_wrapper_has_no_npu_runtime_code(tmp_path: Path) -> None:
-    contract = _normalized_contract(tmp_path, "generic_accelerator")
+def test_generic_generated_serving_wrapper_has_no_npu_runtime_code(project_root: Path) -> None:
+    contract = _normalized_contract(project_root, "generic_accelerator")
     wrapper_path = Path(str(contract["entry_script_path"]))
     wrapper = wrapper_path.read_text(encoding="utf-8")
 
@@ -148,9 +148,9 @@ def test_generic_generated_serving_wrapper_has_no_npu_runtime_code(tmp_path: Pat
     assert '"cpu_fallback_detected": cpu_fallback_detected' in wrapper
 
 
-def test_ppu_and_muxi_phase3_contracts_use_platform_backend(tmp_path: Path) -> None:
-    ppu_contract = _normalized_contract(tmp_path / "ppu", "ppu_cuda_compatible")
-    muxi_contract = _normalized_contract(tmp_path / "muxi", "musa_muxi", route="sglang_serving")
+def test_ppu_and_muxi_phase3_contracts_use_platform_backend(project_root: Path) -> None:
+    ppu_contract = _normalized_contract(project_root / "ppu", "ppu_cuda_compatible")
+    muxi_contract = _normalized_contract(project_root / "muxi", "musa_muxi", route="sglang_serving")
 
     assert ppu_contract["serving_backend"] == "ppu"
     assert muxi_contract["serving_backend"] == "musa"
@@ -161,24 +161,24 @@ def test_ppu_and_muxi_phase3_contracts_use_platform_backend(tmp_path: Path) -> N
         assert "npu_execution_evidence" not in required_checks
         assert "no_forbidden_runtime_fallback" in required_checks
         assert "no_cuda_fallback" not in required_checks
-        assert "ascend_runtime_checks" not in contract
+        assert "npu_runtime_checks" not in contract
         assert "CUDA_VISIBLE_DEVICES" not in forbidden_markers
         assert "NCCL_" not in forbidden_markers
         assert "torch.cuda.memory" not in forbidden_markers
         assert validate_entry_script(contract)["passed"] is True
 
 
-def test_explicit_phase1_backend_wins_over_policy(tmp_path: Path) -> None:
+def test_explicit_phase1_backend_wins_over_policy(project_root: Path) -> None:
     phase1 = _phase1_surface()
     surface = _dict_value(phase1["serving_runtime_surface"])
     surface["serving_backend"] = "explicit_backend"
 
     normalize_serving_phase1_surface(phase1, platform_policy=BUILTIN_PRESETS["npu_ascend"])
-    contract: dict[str, object] = {"project_dir": str(tmp_path)}
+    contract: dict[str, object] = {"project_dir": str(project_root)}
     normalize_serving_phase3_contract(
         contract,
         route="vllm_serving",
-        project_dir=tmp_path,
+        project_dir=project_root,
         phase1_output=phase1,
         platform_policy=BUILTIN_PRESETS["npu_ascend"],
     )
@@ -189,20 +189,20 @@ def test_explicit_phase1_backend_wins_over_policy(tmp_path: Path) -> None:
     assert "npu_execution_evidence" not in required_checks
 
 
-def test_npu_ascend_policy_keeps_ascend_contract(tmp_path: Path) -> None:
-    contract = _normalized_contract(tmp_path, "npu_ascend")
+def test_npu_ascend_policy_keeps_ascend_contract(project_root: Path) -> None:
+    contract = _normalized_contract(project_root, "npu_ascend")
     required_checks = _string_list(contract["required_checks"])
     required_import_probes = _string_list(contract["required_import_probes"])
 
     assert contract["serving_backend"] == "ascend"
     assert "npu_execution_evidence" in required_checks
-    assert "ascend_runtime_checks" in contract
+    assert "npu_runtime_checks" in contract
     assert "torch_npu" in required_import_probes
     assert validate_entry_script(contract)["passed"] is True
 
 
-def test_npu_ascend_generated_serving_wrapper_keeps_ascend_runtime_code(tmp_path: Path) -> None:
-    contract = _normalized_contract(tmp_path, "npu_ascend")
+def test_npu_ascend_generated_serving_wrapper_keeps_npu_runtime_code(project_root: Path) -> None:
+    contract = _normalized_contract(project_root, "npu_ascend")
     wrapper_path = Path(str(contract["entry_script_path"]))
     wrapper = wrapper_path.read_text(encoding="utf-8")
 
@@ -212,15 +212,15 @@ def test_npu_ascend_generated_serving_wrapper_keeps_ascend_runtime_code(tmp_path
     assert 'env.setdefault("VLLM_TARGET_DEVICE", "npu")' in wrapper
 
 
-def test_serving_phase3_contract_replaces_stale_same_name_wrapper(tmp_path: Path) -> None:
+def test_serving_phase3_contract_replaces_stale_same_name_wrapper(project_root: Path) -> None:
     phase1 = _phase1_surface("vllm_serving")
     normalize_serving_phase1_surface(phase1, platform_policy=BUILTIN_PRESETS["npu_ascend"])
-    stale_dir = tmp_path / "stale"
+    stale_dir = project_root / "stale"
     stale_dir.mkdir()
     stale_wrapper = stale_dir / "validate_vllm_serving.py"
     _ = stale_wrapper.write_text("old wrapper", encoding="utf-8")
     contract: dict[str, object] = {
-        "project_dir": str(tmp_path),
+        "project_dir": str(project_root),
         "entry_script_path": str(stale_wrapper),
         "run_command": f"{stale_dir / '.venv' / 'bin' / 'python'} {stale_wrapper}",
     }
@@ -228,19 +228,19 @@ def test_serving_phase3_contract_replaces_stale_same_name_wrapper(tmp_path: Path
     normalize_serving_phase3_contract(
         contract,
         route="vllm_serving",
-        project_dir=tmp_path,
+        project_dir=project_root,
         phase1_output=phase1,
         platform_policy=BUILTIN_PRESETS["npu_ascend"],
     )
 
-    generated_wrapper = tmp_path / "validate_vllm_serving.py"
+    generated_wrapper = project_root / "validate_vllm_serving.py"
     assert contract["entry_script_path"] == str(generated_wrapper)
-    assert contract["run_command"] == f"{tmp_path / '.venv' / 'bin' / 'python'} {generated_wrapper}"
+    assert contract["run_command"] == f"{project_root / '.venv' / 'bin' / 'python'} {generated_wrapper}"
     assert "resolve_serving_endpoints" in generated_wrapper.read_text(encoding="utf-8")
 
 
-def test_npu_ascend_generated_serving_wrapper_validates_live_openai_api(tmp_path: Path) -> None:
-    contract = _normalized_contract(tmp_path, "npu_ascend")
+def test_npu_ascend_generated_serving_wrapper_validates_live_openai_api(project_root: Path) -> None:
+    contract = _normalized_contract(project_root, "npu_ascend")
     wrapper_path = Path(str(contract["entry_script_path"]))
     wrapper = wrapper_path.read_text(encoding="utf-8")
 
@@ -256,19 +256,19 @@ def test_npu_ascend_generated_serving_wrapper_validates_live_openai_api(tmp_path
     assert "http://127.0.0.1:19001" not in wrapper
 
 
-def test_npu_ascend_generated_serving_wrapper_derives_urls_from_launch_command(tmp_path: Path) -> None:
+def test_npu_ascend_generated_serving_wrapper_derives_urls_from_launch_command(project_root: Path) -> None:
     phase1 = _phase1_surface("vllm_serving")
     surface = _dict_value(phase1["serving_runtime_surface"])
     surface["launch_command"] = "vllm serve tiny --host 0.0.0.0 --port 19001"
     surface["readiness_probe"] = {"type": "http", "path": "/health"}
     surface["request_validation"] = {"type": "openai-compatible-http", "path": "/v1/chat/completions"}
     normalize_serving_phase1_surface(phase1, platform_policy=BUILTIN_PRESETS["npu_ascend"])
-    contract: dict[str, object] = {"project_dir": str(tmp_path)}
+    contract: dict[str, object] = {"project_dir": str(project_root)}
 
     normalize_serving_phase3_contract(
         contract,
         route="vllm_serving",
-        project_dir=tmp_path,
+        project_dir=project_root,
         phase1_output=phase1,
         platform_policy=BUILTIN_PRESETS["npu_ascend"],
     )
@@ -284,19 +284,19 @@ def test_npu_ascend_generated_serving_wrapper_derives_urls_from_launch_command(t
     assert endpoints["api_url"] == "http://127.0.0.1:19001/v1/chat/completions"
 
 
-def test_serving_wrapper_normalizes_absolute_wildcard_probe_urls(tmp_path: Path) -> None:
+def test_serving_wrapper_normalizes_absolute_wildcard_probe_urls(project_root: Path) -> None:
     phase1 = _phase1_surface("vllm_serving")
     surface = _dict_value(phase1["serving_runtime_surface"])
     surface["launch_command"] = "vllm serve tiny --host 0.0.0.0 --port 19001"
     surface["readiness_probe"] = {"type": "http", "url": "http://0.0.0.0:19002/health"}
     surface["request_validation"] = {"type": "openai-compatible-http", "url": "http://0.0.0.0:19002/v1/completions"}
     normalize_serving_phase1_surface(phase1, platform_policy=BUILTIN_PRESETS["generic_accelerator"])
-    contract: dict[str, object] = {"project_dir": str(tmp_path)}
+    contract: dict[str, object] = {"project_dir": str(project_root)}
 
     normalize_serving_phase3_contract(
         contract,
         route="vllm_serving",
-        project_dir=tmp_path,
+        project_dir=project_root,
         phase1_output=phase1,
         platform_policy=BUILTIN_PRESETS["generic_accelerator"],
     )
@@ -311,9 +311,9 @@ def test_serving_wrapper_normalizes_absolute_wildcard_probe_urls(tmp_path: Path)
     assert endpoints["api_url"] == "http://127.0.0.1:19002/v1/completions"
 
 
-def test_all_vllm_wrappers_use_dynamic_openai_validation_without_project_hardcoding(tmp_path: Path) -> None:
+def test_all_vllm_wrappers_use_dynamic_openai_validation_without_project_hardcoding(project_root: Path) -> None:
     for policy_id in ("npu_ascend", "ppu_cuda_compatible", "musa_muxi", "generic_accelerator"):
-        project_dir = tmp_path / policy_id
+        project_dir = project_root / policy_id
         project_dir.mkdir(parents=True, exist_ok=True)
         phase1 = _phase1_surface("vllm_serving")
         surface = _dict_value(phase1["serving_runtime_surface"])
@@ -407,7 +407,7 @@ def _final_gate_payload(backend: str) -> dict[str, object]:
         ]
         payload["npu_execution_evidence"] = {"passed": True}
         payload["npu_execution_observed"] = True
-        payload["ascend_runtime_evidence"] = {
+        payload["npu_runtime_evidence"] = {
             "serving_backend": "ascend",
             "cann_env_loaded": True,
             "torch_npu_imported": True,
@@ -447,9 +447,9 @@ def test_validation_final_gate_rejects_generic_npu_only_evidence() -> None:
 
 def test_validation_final_gate_keeps_strict_ascend_evidence() -> None:
     payload = _final_gate_payload("ascend")
-    _ = payload.pop("ascend_runtime_evidence")
+    _ = payload.pop("npu_runtime_evidence")
 
     result = validate_serving_final_gate(payload)
 
     assert result["passed"] is False
-    assert any("ascend_runtime_evidence" in error for error in result["errors"])
+    assert any("npu_runtime_evidence" in error for error in result["errors"])

@@ -3040,7 +3040,7 @@ class WorkflowExecutor:
             return "success", result
 
         gate_map = cast(dict[str, object], gate_data)
-        validation = validate_serving_final_gate(gate_map, expected_route=route)
+        validation = validate_serving_final_gate(gate_map, expected_route=route, platform_policy=self.platform_policy)
         result["passed"] = validation["passed"]
         result["errors"] = validation["errors"]
         result["summary"] = {

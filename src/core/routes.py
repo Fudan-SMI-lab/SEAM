@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from core.ascend_runtime import merge_serving_runtime_contract, write_serving_validation_wrapper
+from core.serving_runtime import merge_serving_runtime_contract, write_serving_validation_wrapper
 from core.platform_policy import PlatformPolicy
 
 
@@ -137,13 +137,31 @@ def _resolve_serving_backend(
     return policy_backend
 
 
-def serving_required_checks_for_backend(backend: str) -> tuple[str, ...]:
+def serving_required_checks_for_backend(
+    backend: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> tuple[str, ...]:
+    if (
+        platform_policy is not None
+        and backend == platform_policy.serving_runtime.backend
+        and platform_policy.serving_runtime.required_checks
+    ):
+        return platform_policy.serving_runtime.required_checks
     if backend == "ascend":
         return SERVING_REQUIRED_CHECKS
     return GENERIC_SERVING_REQUIRED_CHECKS
 
 
-def serving_validation_obligations_for_backend(backend: str) -> tuple[str, ...]:
+def serving_validation_obligations_for_backend(
+    backend: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> tuple[str, ...]:
+    if (
+        platform_policy is not None
+        and backend == platform_policy.serving_runtime.backend
+        and platform_policy.serving_runtime.validation_obligations
+    ):
+        return platform_policy.serving_runtime.validation_obligations
     if backend == "ascend":
         return SERVING_VALIDATION_OBLIGATIONS
     return GENERIC_SERVING_VALIDATION_OBLIGATIONS
@@ -220,11 +238,11 @@ def normalize_serving_phase3_contract(
     explicit_backend = contract.get("serving_backend") or surface.get("serving_backend")
     backend = _resolve_serving_backend(explicit_backend, platform_policy)
     merge_serving_runtime_contract(contract, route, backend)
-    required_checks = list(serving_required_checks_for_backend(backend))
+    required_checks = list(serving_required_checks_for_backend(backend, platform_policy=platform_policy))
     contract["required_checks"] = required_checks
     contract["serving_reports_dir"] = str(project_path / "migration_reports" / "serving")
     contract["required_report_paths"] = ["migration_reports/serving/serving_final_gate.json"]
-    contract["serving_validation_obligations"] = list(serving_validation_obligations_for_backend(backend))
+    contract["serving_validation_obligations"] = list(serving_validation_obligations_for_backend(backend, platform_policy=platform_policy))
 
     if not contract.get("project_test_files"):
         contract["project_test_files"] = ["project-provided serving demo/test/API path from Phase 1 serving surface"]

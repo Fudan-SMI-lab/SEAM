@@ -7,7 +7,7 @@ import shlex
 from pathlib import Path
 from typing import cast
 
-from core.ascend_runtime import ascend_serving_contract_fields
+from core.serving_runtime import npu_serving_contract_fields
 from core.routes import SERVING_ENTRY_KINDS, serving_framework_for_route, serving_route_from_contract
 from core.validator_engine import ValidationDict
 
@@ -40,7 +40,7 @@ SERVING_FIELDS = {
     "runtime_env_setup",
     "required_import_probes",
     "forbidden_runtime_markers",
-    "ascend_runtime_checks",
+    "npu_runtime_checks",
     "required_checks",
     "serving_reports_dir",
     "required_report_paths",
@@ -305,7 +305,7 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
         if values is None or not values:
             errors.append(f"{field} must be a non-empty list for serving contracts")
     if serving_backend == "ascend":
-        _validate_ascend_serving_contract_fields(data, route, errors)
+        _validate_npu_serving_contract_fields(data, route, errors)
     else:
         _validate_generic_serving_contract_fields(data, errors)
 
@@ -362,12 +362,12 @@ def _validate_generic_serving_contract_fields(data: dict[str, object], errors: l
         errors.append("serving_runtime_checks must list generic serving runtime checks")
 
 
-def _validate_ascend_serving_contract_fields(data: dict[str, object], route: str, errors: list[str]) -> None:
-    required = ascend_serving_contract_fields(route)
+def _validate_npu_serving_contract_fields(data: dict[str, object], route: str, errors: list[str]) -> None:
+    required = npu_serving_contract_fields(route)
     runtime_setup = data.get("runtime_env_setup")
     if not isinstance(runtime_setup, dict) or not runtime_setup:
         errors.append("runtime_env_setup must describe CANN/Ascend environment setup")
-    for field in ("required_import_probes", "forbidden_runtime_markers", "ascend_runtime_checks"):
+    for field in ("required_import_probes", "forbidden_runtime_markers", "npu_runtime_checks"):
         values = _string_list(data.get(field))
         if values is None or not values:
             errors.append(f"{field} must be a non-empty list for Ascend serving contracts")

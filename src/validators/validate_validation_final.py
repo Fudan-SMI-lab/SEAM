@@ -307,8 +307,17 @@ def validate(data: dict[str, object]) -> ValidationDict:
     return {"passed": not errors, "errors": errors, "warnings": []}
 
 
-def validate_serving_final_gate(data: dict[str, object], expected_route: str | None = None) -> ValidationDict:
-    """Validate a strict vLLM/SGLang serving final-gate report."""
+def validate_serving_final_gate(
+    data: dict[str, object],
+    expected_route: str | None = None,
+    platform_policy: PlatformPolicy | None = None,
+) -> ValidationDict:
+    """Validate a strict vLLM/SGLang serving final-gate report.
+
+    When ``platform_policy`` is provided, serving evidence field names and
+    runtime checks are derived from the policy instead of hardcoded per-backend
+    strings.  Pass ``None`` for legacy backwards-compatible behaviour.
+    """
     errors: list[str] = []
 
     route = data.get("migration_route")
@@ -335,8 +344,8 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
             errors.append(f"{field} must be a non-empty list of project validation evidence")
 
     required_checks = set(_string_values(data.get("required_checks")))
-    backend_execution_check = "npu_execution_evidence" if serving_backend == "ascend" else "accelerator_execution_evidence"
-    backend_fallback_check = "no_cuda_fallback" if serving_backend == "ascend" else "no_forbidden_runtime_fallback"
+    backend_execution_check = _serving_execution_evidence_field(serving_backend, platform_policy)
+    backend_fallback_check = _serving_fallback_check_field(serving_backend, platform_policy)
     for check in (
         "project_demo_or_test_execution",
         "serving_api_request_validation",
@@ -354,7 +363,7 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
         errors.append("readiness_probe must prove the serving endpoint became ready")
     if not _truthy_evidence(data.get("request_validation")):
         errors.append("request_validation must prove actual project API/demo requests succeeded")
-    execution_evidence_field = "npu_execution_evidence" if serving_backend == "ascend" else "accelerator_execution_evidence"
+    execution_evidence_field = _serving_execution_evidence_field(serving_backend, platform_policy)
     if not _truthy_evidence(data.get(execution_evidence_field)):
         errors.append(f"{execution_evidence_field} must prove real accelerator execution")
 
@@ -362,13 +371,10 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
         errors.append("project_demo_or_test_executed must be true")
     if data.get("serving_api_validated") is not True:
         errors.append("serving_api_validated must be true")
-    execution_observed_field = "npu_execution_observed" if serving_backend == "ascend" else "accelerator_execution_observed"
+    execution_observed_field = _serving_execution_observed_field(serving_backend, platform_policy)
     if data.get(execution_observed_field) is not True:
         errors.append(f"{execution_observed_field} must be true")
-    if serving_backend == "ascend":
-        _validate_ascend_serving_runtime_evidence(data, errors)
-    else:
-        _validate_generic_serving_runtime_evidence(data, errors)
+    _resolve_serving_runtime_validation(serving_backend, platform_policy, data, errors)
 
     for field in ("cuda_fallback_detected", "cpu_fallback_detected", "import_only", "smoke_only"):
         if data.get(field) is not False:
@@ -377,14 +383,58 @@ def validate_serving_final_gate(data: dict[str, object], expected_route: str | N
     return {"passed": not errors, "errors": errors, "warnings": []}
 
 
-def _validate_ascend_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
-    evidence_value = data.get("ascend_runtime_evidence")
+def _serving_execution_evidence_field(
+    serving_backend: str,
+    platform_policy: PlatformPolicy | None,
+) -> str:
+    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
+        return platform_policy.serving_runtime.execution_evidence_field
+    return "npu_execution_evidence" if serving_backend == "ascend" else "accelerator_execution_evidence"
+
+
+def _serving_fallback_check_field(
+    serving_backend: str,
+    platform_policy: PlatformPolicy | None,
+) -> str:
+    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
+        return "no_forbidden_runtime_fallback" if platform_policy.serving_runtime.backend != "ascend" else "no_cuda_fallback"
+    return "no_cuda_fallback" if serving_backend == "ascend" else "no_forbidden_runtime_fallback"
+
+
+def _serving_execution_observed_field(
+    serving_backend: str,
+    platform_policy: PlatformPolicy | None,
+) -> str:
+    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
+        return platform_policy.serving_runtime.execution_observed_field
+    return "npu_execution_observed" if serving_backend == "ascend" else "accelerator_execution_observed"
+
+
+def _resolve_serving_runtime_validation(
+    serving_backend: str,
+    platform_policy: PlatformPolicy | None,
+    data: dict[str, object],
+    errors: list[str],
+) -> None:
+    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
+        if platform_policy.serving_runtime.backend == "ascend":
+            _validate_npu_serving_runtime_evidence(data, errors)
+        else:
+            _validate_generic_serving_runtime_evidence(data, errors)
+    elif serving_backend == "ascend":
+        _validate_npu_serving_runtime_evidence(data, errors)
+    else:
+        _validate_generic_serving_runtime_evidence(data, errors)
+
+
+def _validate_npu_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
+    evidence_value = data.get("npu_runtime_evidence")
     if not isinstance(evidence_value, Mapping):
-        errors.append("ascend_runtime_evidence must be present for serving FULL_PASS validation")
+        errors.append("npu_runtime_evidence must be present for serving FULL_PASS validation")
         return
     evidence = cast(Mapping[object, object], evidence_value)
     if evidence.get("serving_backend") != "ascend":
-        errors.append("ascend_runtime_evidence.serving_backend must be ascend")
+        errors.append("npu_runtime_evidence.serving_backend must be ascend")
     for field in (
         "cann_env_loaded",
         "torch_npu_imported",
@@ -393,10 +443,10 @@ def _validate_ascend_serving_runtime_evidence(data: dict[str, object], errors: l
         "forbidden_runtime_markers_absent",
     ):
         if evidence.get(field) is not True:
-            errors.append(f"ascend_runtime_evidence.{field} must be true")
+            errors.append(f"npu_runtime_evidence.{field} must be true")
     framework = data.get("serving_framework")
     if isinstance(framework, str) and evidence.get(f"{framework}_imported") is not True:
-        errors.append(f"ascend_runtime_evidence.{framework}_imported must be true")
+        errors.append(f"npu_runtime_evidence.{framework}_imported must be true")
 
 
 def _validate_generic_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
