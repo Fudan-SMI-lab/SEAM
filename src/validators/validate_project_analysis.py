@@ -505,9 +505,13 @@ def _validate_string_list(
     if value is None and not require_non_empty:
         return
     if not isinstance(value, list):
-        errors.append(f"custom_op_surface.{field_name} must be a list")
-        return
-    items = cast(list[object], value)
+        # Normalize: auto-wrap a non-empty string in a list
+        if isinstance(value, str) and value.strip():
+            surface[field_name] = [value]
+        else:
+            errors.append(f"custom_op_surface.{field_name} must be a list")
+            return
+    items = cast(list[object], surface.get(field_name, []))
     if not all(isinstance(item, str) and str(item).strip() for item in items):
         errors.append(f"custom_op_surface.{field_name} must contain only non-empty strings")
     if require_non_empty and not items:

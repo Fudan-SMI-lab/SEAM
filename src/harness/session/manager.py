@@ -24,7 +24,7 @@ COMPACTION_TOKENS = {"compaction", "summary"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
 FALLBACK_AGENT_NAME = "Sisyphus"
 _DEFAULT_HTTP_TIMEOUT = object()
-DEFAULT_SESSION_WAIT_TIMEOUT: float | None = None
+DEFAULT_SESSION_WAIT_TIMEOUT: float | None = 7200.0
 DEFAULT_HARD_ERROR_WAIT_TIMEOUT = 300.0
 NESTED_TASK_GUARD_POLL_SECONDS = 1.0
 _NON_BLOCKING_QUESTION_GUARD_PHRASES = (
@@ -291,7 +291,13 @@ class MigrationSessionManager:
                 break
             except TimeoutError as exc:
                 last_error = exc
-                break
+                if attempt >= retries:
+                    break
+                logger.warning(
+                    "send_command timed out for %s (attempt %d/%d): %s",
+                    session_id, attempt + 1, retries + 1, exc,
+                )
+                time.sleep(2 ** attempt)
             except (SessionTransportError, SessionCompacted, urllib.error.URLError, RuntimeError, ValueError) as exc:
                 last_error = exc
                 if "blocking user question" in str(exc):
