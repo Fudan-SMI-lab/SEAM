@@ -41,6 +41,7 @@ from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
 from core.custom_op_opp_preflight import format_custom_op_opp_preflight_failure, has_custom_op_contract, validate_custom_op_opp_preflight
 from core.custom_op_variants import (
+    EXPANDED_VARIANT_CONTRACT_FIELDS,
     apply_expanded_variant_contract,
     ensure_strict_expanded_variant_validation_script,
     ensure_strict_non_variant_custom_op_validation_script,
@@ -2267,6 +2268,10 @@ class WorkflowExecutor:
             self._normalize_project_analysis_variant_count(normalized)
             normalize_serving_phase1_surface(normalized, platform_policy=self.platform_policy)
 
+        # phase_2_venv_create: fill venv_path / python_path from filesystem when LLM omits them.
+        if "venv" in phase_id or phase_id == "phase_2":
+            self._normalize_phase2_venv_output(normalized)
+
         # phase_3_entry_script: inject entry_script_path and route-specific contracts.
         if "entry_script" in phase_id or phase_id == "phase_3":
             ph1 = state.get("phase_1_project_analysis") or state.get("phase_1")
@@ -2304,6 +2309,8 @@ class WorkflowExecutor:
                         project_dir=str(self.project_dir),
                     )
                 else:
+                    for field in EXPANDED_VARIANT_CONTRACT_FIELDS:
+                        normalized.pop(field, None)
                     ensure_strict_non_variant_custom_op_validation_script(
                         normalized,
                         project_dir=str(self.project_dir),
@@ -2339,6 +2346,23 @@ class WorkflowExecutor:
 
     def _normalize_project_analysis_variant_count(self, output: dict[str, Any]) -> None:
         normalize_phase1_project_analysis(cast(dict[str, object], output), project_dir=self.project_dir)
+
+    def _normalize_phase2_venv_output(self, output: dict[str, Any]) -> None:
+        project_dir = self.project_dir
+        venv_dir = os.path.join(project_dir, ".venv")
+        if not os.path.isdir(venv_dir):
+            return
+        if not isinstance(output.get("venv_path"), str) or not output.get("venv_path", "").strip():
+            output["venv_path"] = venv_dir
+        if not isinstance(output.get("python_path"), str) or not output.get("python_path", "").strip():
+            for candidate in ("python3", "python"):
+                candidate_path = os.path.join(venv_dir, "bin", candidate)
+                if os.path.isfile(candidate_path):
+                    output["python_path"] = candidate_path
+                    break
+        installed = output.get("installed_packages")
+        if not isinstance(installed, list):
+            output["installed_packages"] = []
 
     @staticmethod
     def _custom_op_route_disabled(workflow_globals: Mapping[str, object]) -> bool:

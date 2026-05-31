@@ -1374,6 +1374,8 @@ class PhaseRunner:
         if phase.prompt_id == "phase_1_project_analysis":
             normalize_phase1_project_analysis(normalized, project_dir=prompt_context["project_dir"])
             normalize_serving_phase1_surface(normalized, platform_policy=self.platform_policy)
+        if phase.prompt_id == "phase_2_venv_create":
+            self._normalize_phase2_venv_output(normalized, project_dir=prompt_context["project_dir"])
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
             previous_output_map = cast(dict[str, object], previous_outputs) if isinstance(previous_outputs, dict) else {}
@@ -1502,6 +1504,34 @@ class PhaseRunner:
             )
 
         return normalized
+
+    @staticmethod
+    def _normalize_phase2_venv_output(
+        output: JsonObject,
+        *,
+        project_dir: str,
+    ) -> None:
+        """Fallback-fill venv_path, python_path from the filesystem when the
+        LLM returns empty values but the .venv already exists on disk."""
+        venv_dir = os.path.join(project_dir, ".venv")
+        if not os.path.isdir(venv_dir):
+            return
+
+        venv_path = output.get("venv_path")
+        if not isinstance(venv_path, str) or not venv_path.strip():
+            output["venv_path"] = venv_dir
+
+        python_path = output.get("python_path")
+        if not isinstance(python_path, str) or not python_path.strip():
+            for candidate in ("python3", "python"):
+                candidate_path = os.path.join(venv_dir, "bin", candidate)
+                if os.path.isfile(candidate_path):
+                    output["python_path"] = candidate_path
+                    break
+
+        installed = output.get("installed_packages")
+        if not isinstance(installed, list):
+            output["installed_packages"] = []
 
     @classmethod
     def _custom_op_required_signal(cls, *values: object) -> bool:

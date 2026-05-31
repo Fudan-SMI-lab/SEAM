@@ -148,7 +148,7 @@ def _operator_custom_op_progress_block(phase3_contract: dict[str, object] | None
         return f"Current strict custom-op final-gate progress\nreport_dir_error={exc}"
     gate_path = reports_dir / "custom_op_final_gate.json"
     gate_data: object = {}
-    if gate_path.exists() and gate_path.stat().st_size <= _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
+    if gate_path.exists():
         try:
             loaded_gate = cast(object, json.loads(gate_path.read_text(encoding="utf-8")))
             gate_data = loaded_gate
@@ -1648,14 +1648,6 @@ class RepairLoopEngine:
         }
         if not gate_path.exists():
             result["errors"] = [f"custom-op final gate report missing: {gate_path}"]
-            return result
-        try:
-            gate_size = gate_path.stat().st_size
-        except OSError as exc:
-            result["errors"] = [f"custom-op final gate report could not be stat'ed: {exc}"]
-            return result
-        if gate_size > _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
-            result["errors"] = [f"custom-op final gate report too large: {gate_path}"]
             return result
         try:
             with gate_path.open("r", encoding="utf-8") as handle:
