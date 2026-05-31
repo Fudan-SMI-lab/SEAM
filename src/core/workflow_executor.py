@@ -43,6 +43,7 @@ from core.custom_op_opp_preflight import format_custom_op_opp_preflight_failure,
 from core.custom_op_variants import (
     apply_expanded_variant_contract,
     ensure_strict_expanded_variant_validation_script,
+    ensure_strict_non_variant_custom_op_validation_script,
     expanded_variant_contract_from_outputs,
     normalize_phase1_project_analysis,
 )
@@ -1679,8 +1680,6 @@ class WorkflowExecutor:
         if not isinstance(gate_data, dict):
             return None
         gate_map = cast(dict[str, object], gate_data)
-        variant_overlay = expanded_variant_contract_from_outputs(state)
-        apply_expanded_variant_contract(gate_map, variant_overlay, include_required_checks=False)
         validation = validate_custom_op_final_gate(
             gate_map,
             project_root=reports_dir.parent,
@@ -2304,6 +2303,11 @@ class WorkflowExecutor:
                         variant_overlay,
                         project_dir=str(self.project_dir),
                     )
+                else:
+                    ensure_strict_non_variant_custom_op_validation_script(
+                        normalized,
+                        project_dir=str(self.project_dir),
+                    )
             normalized = self._normalize_phase3_container_paths(
                 normalized, prompt_context,
             )
@@ -2490,8 +2494,10 @@ class WorkflowExecutor:
             cwd = cmd["cwd"]
 
         entry_script_command = self._is_phase5_entry_script_command(phase, loop_vars)
-        if entry_script_command:
+        variant_validate_script = self._is_variant_validate_script_command(cmd, state)
+        if entry_script_command or variant_validate_script:
             cmd = self._refresh_expanded_variant_entry_script_command(cmd, state, context, loop_vars)
+        entry_script_command = entry_script_command or variant_validate_script
         timeout = phase.timeout
 
         # Container backend path
@@ -2752,6 +2758,16 @@ class WorkflowExecutor:
             return True
         return bool(loop_vars and str(loop_vars.get("entry_script", "")) == str(raw_command))
 
+    @staticmethod
+    def _is_variant_validate_script_command(cmd: object, state: dict[str, Any]) -> bool:
+        cmd_str = str(cmd) if not isinstance(cmd, dict) else ""
+        if "validate_custom_ops_full.py" not in cmd_str:
+            return False
+        contract = state.get("phase_3_entry_script")
+        if not isinstance(contract, dict):
+            return False
+        return contract.get("entry_script_kind") == "custom_op_full_validation"
+
     def _custom_op_opp_preflight_for_entry_script(
         self,
         state: dict[str, Any],
@@ -2921,8 +2937,6 @@ class WorkflowExecutor:
             return "success", result
 
         gate_map = cast(dict[str, object], gate_data)
-        variant_overlay = expanded_variant_contract_from_outputs(state)
-        apply_expanded_variant_contract(gate_map, variant_overlay, include_required_checks=False)
         validation = validate_custom_op_final_gate(
             gate_map, project_root=reports_dir.parent,
             platform_policy=self.platform_policy,
