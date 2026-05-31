@@ -13,11 +13,11 @@ from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
 
 
-def test_run_e2e_script_reports_failed_python_exit() -> None:
-    script = PROJECT_ROOT / "scripts" / "run_e2e.sh"
+def test_run_seam_script_reports_failed_python_exit() -> None:
+    script = PROJECT_ROOT / "scripts" / "run_seam.sh"
     source = script.read_text(encoding="utf-8")
 
-    assert "if python src/tests/e2e/e2e_test.py" in source
+    assert "-m tests.e2e.e2e_test_v3" in source
     assert "EXIT_CODE=$?" in source
     assert "E2E TEST FAILED" in source
 

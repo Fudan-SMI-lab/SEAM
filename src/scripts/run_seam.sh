@@ -7,13 +7,14 @@
 #   ./run_e2e_v3.sh 01_Hallo
 #   ./run_e2e_v3.sh SEAM_PPU_SMOKE --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml --dry-run
 #   ./run_e2e_v3.sh 07_IndexTTS --max-iter 10
+#   ./run_e2e_v3.sh 04_Deepwave --server-port 5001 --max-iter 30
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
-OUTPUT_PROJECTS_DIR="${MIGRATION_OUTPUT_PROJECTS_ROOT:-$(dirname "$REPO_ROOT")/output_projects}"
+OUTPUT_PROJECTS_DIR="${MIGRATION_OUTPUT_PROJECTS_ROOT:-$REPO_ROOT/output_projects}"
 PROJECT_SEARCH_DIRS=(
     "$REPO_ROOT/original_projects"
     "$REPO_ROOT/cuda_projects"
@@ -24,6 +25,7 @@ PROJECT_SEARCH_DIRS=(
 
 # ── Defaults (mirroring the V1 successful run pattern) ──
 SERVER_URL="http://127.0.0.1:4098"
+SERVER_PORT=""
 MAX_ITER=8
 KEEP_TEMP=true
 REVIEW_GATE=true
@@ -59,12 +61,14 @@ Flat cuda_projects are also accepted; Phase 3 will discover an entry script.
 
 Options:
   --server-url URL       OpenCode server URL (default: http://127.0.0.1:4098)
+  --server-port PORT     Auto-start server on this port (overrides --server-url)
   --max-iter N           Max Phase 5 repair iterations (default: 8)
   --review               Enable Review Gate (default: enabled)
   --no-review            Disable Review Gate
   --no-keep-temp         Don't keep output project directory (default: keep)
   --agent NAME           Override auto-detected agent name
   --workflow PATH        Path to workflow YAML file (overrides default NPU workflow)
+  --output-dir PATH      Override output projects directory
   --server-no-auto-start Disable auto-start of OpenCode server
   --dry-run              Validate setup without running the test
   --extra 'ARGS...'      Pass extra arguments to e2e_test_v3.py
@@ -78,6 +82,7 @@ Examples:
   ./run_e2e_v3.sh SEAM_PPU_SMOKE --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml
   ./run_e2e_v3.sh 05_InsectID --dry-run
   ./run_e2e_v3.sh 08_SpeechGPT-2.0-preview --review --verbose
+  ./run_e2e_v3.sh 04_Deepwave --server-port 5001 --max-iter 30 --output-dir output_projects
 EOF
     exit 0
 }
@@ -89,12 +94,14 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)              usage ;;
         --server-url)           SERVER_URL="$2"; shift 2 ;;
+        --server-port)          SERVER_PORT="$2"; shift 2 ;;
         --max-iter)             MAX_ITER="$2"; shift 2 ;;
         --review)               REVIEW_GATE=true; shift ;;
         --no-review)            REVIEW_GATE=false; shift ;;
         --no-keep-temp)         KEEP_TEMP=false; shift ;;
         --agent)                EXTRA_ARGS="$EXTRA_ARGS --agent $2"; shift 2 ;;
         --workflow)             WORKFLOW_PATH="$2"; shift 2 ;;
+        --output-dir)           OUTPUT_PROJECTS_DIR="$2"; shift 2 ;;
         --server-no-auto-start)  SERVER_NO_AUTO_START=true; shift ;;
         --dry-run)              DRY_RUN=true; shift ;;
         --verbose)              EXTRA_ARGS="$EXTRA_ARGS --verbose"; shift ;;
@@ -113,6 +120,14 @@ done
 if [[ -z "$PROJECT_NAME" ]]; then
     echo -e "${RED}Error: PROJECT_NAME is required.${NC}" >&2
     usage
+fi
+
+# When server-port is given, switch to auto-start mode
+if [[ -n "$SERVER_PORT" ]]; then
+    USE_AUTO_START=true
+    SERVER_NO_AUTO_START=false
+else
+    USE_AUTO_START=false
 fi
 
 resolve_project_dir() {
@@ -144,7 +159,11 @@ echo ""
 
 echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
 echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
-echo -e "${GREEN}Server:${NC}    $SERVER_URL"
+if [[ -n "$SERVER_PORT" ]]; then
+    echo -e "${GREEN}Server:${NC}    auto-start on port $SERVER_PORT"
+else
+    echo -e "${GREEN}Server:${NC}    $SERVER_URL"
+fi
 echo -e "${GREEN}Max iter:${NC}  $MAX_ITER"
 echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
@@ -199,10 +218,13 @@ else
     echo -e "${YELLOW}⚠  original_src/ not found (will use project root directly)${NC}"
 fi
 
-# Check OpenCode server
+# Check OpenCode server (skip if auto-starting with a specific port)
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
     echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
+elif [[ "$USE_AUTO_START" == true ]]; then
+    echo ""
+    echo -e "${CYAN}Server will auto-start on port $SERVER_PORT (skipping connectivity check)${NC}"
 else
     echo ""
     echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
@@ -224,6 +246,11 @@ if [[ "$SERVER_NO_AUTO_START" == true ]]; then
     NO_AUTO_FLAG="--server-no-auto-start"
 fi
 
+SERVER_PORT_FLAG=""
+if [[ -n "$SERVER_PORT" ]]; then
+    SERVER_PORT_FLAG="--server-port $SERVER_PORT"
+fi
+
 # ── Dry-run mode ──
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
@@ -231,7 +258,11 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "Would execute:"
     echo "  cd $REPO_ROOT && \\"
     echo "  ${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \\"
-    echo "    --server-url $SERVER_URL \\"
+    if [[ -n "$SERVER_PORT_FLAG" ]]; then
+        echo "    $SERVER_PORT_FLAG \\"
+    else
+        echo "    --server-url $SERVER_URL \\"
+    fi
     echo "    --project-dir $PROJECT_DIR \\"
     echo "    --output-dir $OUTPUT_PROJECTS_DIR \\"
     echo "    --max-phase5-iter $MAX_ITER \\"
@@ -277,17 +308,31 @@ fi
 
 cd "$REPO_ROOT"
 
-${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \
-    --server-url "$SERVER_URL" \
-    --project-dir "$PROJECT_DIR" \
-    --output-dir "$OUTPUT_PROJECTS_DIR" \
-    --max-phase5-iter "$MAX_ITER" \
-    $KEEP_FLAG \
-    $REVIEW_FLAG \
-    $CONSTRAINTS_FLAG \
-    $NO_AUTO_FLAG \
-    $WORKFLOW_FLAG \
-    $EXTRA_ARGS
+if [[ -n "$SERVER_PORT_FLAG" ]]; then
+    ${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \
+        $SERVER_PORT_FLAG \
+        --project-dir "$PROJECT_DIR" \
+        --output-dir "$OUTPUT_PROJECTS_DIR" \
+        --max-phase5-iter "$MAX_ITER" \
+        $KEEP_FLAG \
+        $REVIEW_FLAG \
+        $CONSTRAINTS_FLAG \
+        $NO_AUTO_FLAG \
+        $WORKFLOW_FLAG \
+        $EXTRA_ARGS
+else
+    ${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \
+        --server-url "$SERVER_URL" \
+        --project-dir "$PROJECT_DIR" \
+        --output-dir "$OUTPUT_PROJECTS_DIR" \
+        --max-phase5-iter "$MAX_ITER" \
+        $KEEP_FLAG \
+        $REVIEW_FLAG \
+        $CONSTRAINTS_FLAG \
+        $NO_AUTO_FLAG \
+        $WORKFLOW_FLAG \
+        $EXTRA_ARGS
+fi
 
 EXIT_CODE=$?
 
