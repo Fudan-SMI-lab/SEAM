@@ -3453,6 +3453,10 @@ class WorkflowExecutor:
             # Merge step_outputs for next iterations
             loop_state.update(iter_result.get("step_outputs", {}))
             step_outputs.update(iter_result.get("step_outputs", {}))
+            # Persist operator_fixer routing across iterations so the elevated
+            # stagnation threshold survives condition-skips in later iterations.
+            if step_outputs.get("error_analysis", {}).get("repair_role") == "operator_fixer":
+                loop_state["_custom_op_operator_repair_ever_active"] = True
             self._absorb_passed_final_gate_success(loop_state, step_outputs)
             self._stamp_pending_experience_verifications(loop_state, iteration)
             verification_signal = self._record_pending_experience_verification(
@@ -3492,9 +3496,29 @@ class WorkflowExecutor:
                 stop_conds, loop_state, self.workflow.globals or {}
             )
             if stop_status:
-                final_status = stop_status
-                logger.info("Stop condition matched: '%s'", stop_status)
-                break
+                # When the effective stagnation threshold is elevated
+                # (e.g. operator_fixer routing), suppress the YAML
+                # hardcoded stop condition so the elevated threshold has
+                # a chance to take effect.
+                if stop_status == "stagnation":
+                    effective = self._effective_stagnation_threshold(
+                        base_threshold=stagnation_threshold,
+                        phase_id=phase.id,
+                        state=state,
+                        step_outputs=step_outputs,
+                        loop_state=loop_state,
+                    )
+                    current_count = loop_state.get("stagnation_count", 0)
+                    if current_count < effective:
+                        logger.info(
+                            "Stop condition 'stagnation' overridden: count=%d < effective_threshold=%d",
+                            current_count, effective,
+                        )
+                        stop_status = None
+                if stop_status:
+                    final_status = stop_status
+                    logger.info("Stop condition matched: '%s'", stop_status)
+                    break
 
             if step_outputs.get("entry_script_revision_applied"):
                 loop_state["stagnation_count"] = 0
@@ -3509,6 +3533,7 @@ class WorkflowExecutor:
                 phase_id=phase.id,
                 state=state,
                 step_outputs=step_outputs,
+                loop_state=loop_state,
             )
             if self._check_stagnation(error_sig, loop_state, effective_stagnation_threshold):
                 final_status = "stagnation"
@@ -4768,8 +4793,9 @@ class WorkflowExecutor:
         phase_id: str,
         state: dict[str, Any],
         step_outputs: dict[str, Any],
+        loop_state: dict[str, Any] | None = None,
     ) -> int:
-        if not self._active_custom_op_operator_repair(phase_id, state, step_outputs):
+        if not self._active_custom_op_operator_repair(phase_id, state, step_outputs, loop_state):
             return base_threshold
         raw_value = self.framework_config.get("custom_op_operator_stagnation_threshold")
         try:
@@ -4788,6 +4814,7 @@ class WorkflowExecutor:
         phase_id: str,
         state: dict[str, Any],
         step_outputs: dict[str, Any],
+        loop_state: dict[str, Any] | None = None,
     ) -> bool:
         if phase_id != "phase_5_validation":
             return False
@@ -4800,6 +4827,8 @@ class WorkflowExecutor:
         for value in step_outputs.values():
             if isinstance(value, dict) and value.get("repair_role") == "operator_fixer":
                 return True
+        if loop_state and loop_state.get("_custom_op_operator_repair_ever_active"):
+            return True
         return False
 
     def _check_stagnation(
