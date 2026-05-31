@@ -44,6 +44,18 @@ _NON_BLOCKING_QUESTION_GUARD_PHRASES = (
     "request clarification when",
 )
 _FORBIDDEN_GUARDED_TOOLS = {"question"}
+_FATAL_SESSION_ERROR_SUBSTRINGS = (
+    "agent not found",
+    "agent not found:",
+    "session not found",
+    "unknown error: agent",
+    "unknown error: session",
+)
+
+
+def _is_fatal_session_error(error_text: str) -> bool:
+    lowered = error_text.lower()
+    return any(pat in lowered for pat in _FATAL_SESSION_ERROR_SUBSTRINGS)
 
 
 class SessionManagerError(RuntimeError):
@@ -268,7 +280,12 @@ class MigrationSessionManager:
         for attempt in range(retries + 1):
             try:
                 return self._send_message_raw(session_id, command, agent=selected_agent, timeout=timeout)
-            except (SessionAuthError, SessionServerError) as exc:
+            except SessionAuthError as exc:
+                last_error = exc
+                self._evict_corrupted_session(session_id)
+                self._wait_after_hard_error(session_id, timeout=timeout)
+                break
+            except SessionServerError as exc:
                 last_error = exc
                 self._wait_after_hard_error(session_id, timeout=timeout)
                 break
@@ -279,7 +296,11 @@ class MigrationSessionManager:
                 last_error = exc
                 if "blocking user question" in str(exc):
                     break
+                if _is_fatal_session_error(str(exc)):
+                    self._evict_corrupted_session(session_id)
+                    break
                 if attempt >= retries:
+                    self._evict_corrupted_session(session_id)
                     break
                 time.sleep(2 ** attempt)
 
@@ -1013,6 +1034,14 @@ class MigrationSessionManager:
             if not saw_observation:
                 return
             time.sleep(interval_s)
+
+    def _evict_corrupted_session(self, session_id: str) -> None:
+        if session_id in self._sessions:
+            logger.warning(
+                "Evicting corrupted session %s (open sessions: %d)",
+                session_id, len(self._sessions) - 1,
+            )
+            del self._sessions[session_id]
 
     def _last_message_text_tolerant(self, session_id: str) -> str:
         resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 1})
