@@ -39,7 +39,7 @@ from core.session_registry import SessionRegistry
 from core.accelerator_context import extract_accelerator_context
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
-from core.custom_op_opp_preflight import format_custom_op_opp_preflight_failure, has_custom_op_contract, validate_custom_op_opp_preflight
+from core.custom_op_opp_preflight import ensure_opp_source_evidence, format_custom_op_opp_preflight_failure, has_custom_op_contract, validate_custom_op_opp_preflight
 from core.custom_op_variants import (
     EXPANDED_VARIANT_CONTRACT_FIELDS,
     apply_expanded_variant_contract,
@@ -2830,6 +2830,9 @@ class WorkflowExecutor:
             project_dir = str(loop_vars["project_dir"])
         elif isinstance(context.get("PROJECT_DIR"), str):
             project_dir = str(context["PROJECT_DIR"])
+        project_path = Path(project_dir)
+        if project_path.is_dir():
+            ensure_opp_source_evidence(project_path)
         return validate_custom_op_opp_preflight(contract_map, project_dir)
 
     def _requires_custom_op_opp_preflight(self, contract: dict[str, object]) -> bool:

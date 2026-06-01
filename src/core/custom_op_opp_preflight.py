@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -441,6 +442,44 @@ def _relative_path(project_root: Path, path: Path) -> str:
 def _should_skip(rel_path: str) -> bool:
     parts = rel_path.replace("\\", "/").split("/")
     return any(part in _SKIP_DIR_NAMES for part in parts)
+
+
+_OPP_TEMPLATE_REL_PATH = "cuda-custom-op-to-npu-custom-op/templates/ascend_custom_op"
+
+
+def ensure_opp_source_evidence(project_root: Path) -> bool:
+    """Scaffold OPP source evidence into project_root from .skills/ templates if missing."""
+    existing = _scan_opp_evidence(project_root)
+    has_host = bool(existing["op_host_sources"])
+    has_kernel = bool(existing["op_kernel_sources"])
+    has_build = bool(existing["opp_build_scripts"])
+    if has_host and has_kernel and has_build:
+        return True
+
+    skills_dir: Path | None = None
+    for parent in project_root.parents:
+        candidate = parent / ".skills" / _OPP_TEMPLATE_REL_PATH
+        if candidate.is_dir():
+            skills_dir = candidate
+            break
+
+    if skills_dir is None:
+        return False
+
+    for item_name in ("op_host", "op_kernel", "build.sh", "CMakeLists.txt", "CMakePresets.json"):
+        src = skills_dir / item_name
+        dst = project_root / item_name
+        if src.exists() and not dst.exists():
+            try:
+                if src.is_dir():
+                    _ = shutil.copytree(src, dst)
+                else:
+                    _ = shutil.copy2(src, dst)
+            except OSError:
+                pass
+
+    final = _scan_opp_evidence(project_root)
+    return bool(final["op_host_sources"]) and bool(final["op_kernel_sources"]) and bool(final["opp_build_scripts"])
 
 
 def _append_evidence(evidence: dict[str, list[str]], key: str, value: str) -> None:

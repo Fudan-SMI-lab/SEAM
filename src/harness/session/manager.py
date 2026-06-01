@@ -937,7 +937,7 @@ class MigrationSessionManager:
         started = time.time()
         effective_timeout = self._effective_wait_timeout(timeout_s)
         while effective_timeout is None or time.time() - started < effective_timeout:
-            status = self._http("GET", "/session/status")
+            status = self._http("GET", "/session/status", timeout=5)
             if not status.get("ok"):
                 error_status = status.get("status")
                 if error_status in {401, 403}:
@@ -997,7 +997,7 @@ class MigrationSessionManager:
         stable_message_count = 0
 
         while time.time() < deadline:
-            status = self._http("GET", "/session/status")
+            status = self._http("GET", "/session/status", timeout=5)
             if status.get("ok"):
                 saw_observation = True
                 token = self._extract_status_token(status.get("data"), session_id)
@@ -1180,7 +1180,7 @@ class MigrationSessionManager:
         request = urllib.request.Request(url=url, headers=headers, data=payload, method=method.upper())
         try:
             if timeout is _DEFAULT_HTTP_TIMEOUT:
-                request_timeout: float | None = self._timeout
+                request_timeout: float | None = self._timeout if self._timeout is not None else 60.0
             elif isinstance(timeout, (int, float)) or timeout is None:
                 request_timeout = timeout
             else:
