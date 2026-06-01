@@ -814,7 +814,7 @@ def discover_variant_units():
     rewritten = script_path.read_text(encoding="utf-8")
     assert rewritten != stale_text
     assert "discover_variant_units" not in rewritten
-    assert "EXPANDED_VARIANT_CONTRACT = json.loads" in rewritten
+    assert "_load_variant_contract" in rewritten
     _write_complete_generic_custom_op_reports(project_dir, units)
     result = subprocess.run(
         [sys.executable, str(script_path)],
@@ -866,6 +866,11 @@ def _expanded_variant_overlay(unit_identities: list[str]) -> dict[str, object]:
 def _write_complete_generic_custom_op_reports(project_dir: Path, units: list[str]) -> None:
     reports_dir = project_dir / "migration_reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(reports_dir / "expanded_variant_inventory.json", {
+        "variant_axes_detected": True,
+        "unit_identities": units,
+        "expanded_operator_instances_count": len(units),
+    })
     _write_json(reports_dir / "migration_manifest.json", {"required_units": units})
     _write_json(reports_dir / "operator_inventory.json", {"entries": [_source_inventory_entry(project_dir, unit) for unit in units]})
     _write_json(reports_dir / "build.json", {"entries": [_build_entry(project_dir, unit) for unit in units]})

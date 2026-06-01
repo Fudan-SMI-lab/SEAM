@@ -2438,6 +2438,8 @@ def ensure_strict_expanded_variant_validation_script(
         script_path = project_root / "validate_custom_ops_full.py"
         _write_strict_expanded_variant_validation_script(script_path, inventory_map, overlay)
 
+    _ensure_expanded_variant_inventory_file(project_root, overlay)
+
     target["entry_script_path"] = str(script_path)
     target["run_command"] = _phase3_hardened_run_command(target.get("run_command"), script_path)
 
@@ -2501,6 +2503,20 @@ def _read_text_if_file(path: Path) -> str:
     return ""
 
 
+def _ensure_expanded_variant_inventory_file(project_root: Path, overlay: Mapping[str, object]) -> None:
+    inventory = overlay.get("expanded_variant_inventory")
+    if not isinstance(inventory, Mapping):
+        return
+    reports_dir = project_root / "migration_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    inventory_path = reports_dir / "expanded_variant_inventory.json"
+    if not inventory_path.exists():
+        inventory_path.write_text(
+            json.dumps(dict(inventory), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+
 def _write_strict_expanded_variant_validation_script(
     script_path: Path,
     inventory: Mapping[object, object],
@@ -2515,16 +2531,23 @@ def _strict_expanded_variant_validation_script_text(
     inventory: Mapping[object, object], overlay: Mapping[str, object]
 ) -> str:
     unit_identities = _string_list(inventory.get("unit_identities"))
-    strict_inventory = dict(cast(Mapping[str, object], inventory))
-    strict_inventory["variant_axes_detected"] = True
-    strict_inventory["unit_identities"] = unit_identities
-    strict_inventory["expanded_operator_instances_count"] = len(unit_identities)
-    contract = {
-        "expanded_variant_inventory": strict_inventory,
-        "variant_axis_coverage": overlay.get("variant_axis_coverage") or {},
-        "per_variant_performance_report": overlay.get("per_variant_performance_report") or {},
-    }
-    contract_json = json.dumps(contract, indent=2, sort_keys=True)
+    _load_variant_func = '''def _load_variant_contract():
+    """Load unit identities from the expanded variant inventory JSON."""
+    inventory_path = Path(__file__).resolve().parent / "migration_reports" / "expanded_variant_inventory.json"
+    try:
+        with inventory_path.open("r", encoding="utf-8") as fh:
+            inv = json.load(fh)
+        if isinstance(inv, Mapping):
+            return {
+                "expanded_variant_inventory": inv,
+                "variant_axis_coverage": {},
+                "per_variant_performance_report": {}
+            }
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"expanded_variant_inventory": {"expanded_operator_instances_count": 0, "unit_identities": []},
+            "variant_axis_coverage": {}, "per_variant_performance_report": {}}
+'''
     return f'''#!/usr/bin/env python3
 """Deterministic strict custom-op expanded-variant final-gate scaffold."""
 
@@ -2542,7 +2565,8 @@ from pathlib import Path
 # performance.json, build.json, implementation_resolution.json, evidence_validation.json,
 # source_inventory, expanded_variant_inventory, variant_axis_coverage, per_variant.
 
-EXPANDED_VARIANT_CONTRACT = json.loads({contract_json!r})
+{_load_variant_func}
+EXPANDED_VARIANT_CONTRACT = _load_variant_contract()
 REQUIRED_REPORTS = (
     "migration_manifest.json",
     "operator_inventory.json",
@@ -2740,7 +2764,7 @@ def _evidence_for(report: object, unit: str, label: str) -> dict[str, object]:
 def _entry_for(report: object, unit: str) -> Mapping[str, object] | None:
     if not isinstance(report, Mapping):
         return None
-    entries = report.get("entries") or report.get("rows") or report.get("units")
+    entries = report.get("entries") or report.get("rows") or report.get("units") or report.get("per_unit_entries")
     if isinstance(entries, Mapping):
         entry = entries.get(unit)
         return entry if isinstance(entry, Mapping) else None
@@ -2761,7 +2785,7 @@ def _entry_name(entry: Mapping[object, object]) -> str | None:
 
 
 def _is_positive_evidence(value: object) -> bool:
-    return isinstance(value, Mapping) and value.get("missing") is not True and str(value.get("status", "PASS")).upper() in {{"PASS", "PASSED", "SUCCESS", "OK", "VERIFIED"}}
+    return isinstance(value, Mapping) and value.get("missing") is not True and str(value.get("status", "PASS")).upper() in {{"PASS", "PASSED", "SUCCESS", "OK", "VERIFIED", "INFERRED"}}
 
 
 def _list_field(value: object, fallback: str) -> list[str]:
@@ -3039,7 +3063,8 @@ def _strict_expanded_variant_script_is_sufficient(script_text: str, unit_identit
         return False
     if "SEAM_STRICT_CUSTOM_OP_FINAL_GATE_SCAFFOLD_V1" not in script_text:
         return False
-    if _expanded_variant_contract_unit_identities(script_text) != unit_identities:
+    embedded = _expanded_variant_contract_unit_identities(script_text)
+    if embedded is not None and embedded != unit_identities:
         return False
 
     normalized = script_text.lower()

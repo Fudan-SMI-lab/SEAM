@@ -3078,6 +3078,10 @@ class WorkflowExecutor:
 
     @staticmethod
     def _has_custom_op_contract(contract: dict[str, Any]) -> bool:
+        # Serving routes (vllm_serving, sglang_serving) are handled by
+        # serving_final_gate, not custom_op_final_gate.
+        if serving_route_from_contract(contract) is not None:
+            return False
         return any(
             field in contract
             for field in (
@@ -3450,6 +3454,7 @@ class WorkflowExecutor:
             else self.framework_config.get("review", {}).get("max_review_iterations", 3)
         )
 
+        loop_state["review_gate_enabled"] = review_gate_enabled
         max_entry_script_revisions = self._max_entry_script_revisions()
         loop_state["max_entry_script_revisions"] = max_entry_script_revisions
         loop_state["entry_script_revision_count"] = 0
