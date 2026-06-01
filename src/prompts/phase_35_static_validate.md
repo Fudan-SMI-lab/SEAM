@@ -38,7 +38,7 @@ When Phase 3 contains an `expanded_variant_inventory` with more than 50 operator
 1. Select the **first 20 operator variants** from the inventory (sorted by name for determinism).
 2. Perform full static validation on only these 20 variants — check for interactive input, infinite loops, GUI calls, breakpoints, blocking waits on their execution paths.
 3. For the remaining variants beyond the first 20, assume they follow the same pattern. Set `validation_passed: true` and include `"batch_validation_note": "Batched — validated first 20 of {total_count} variants. Remaining {remaining_count} variants require subsequent batch validation."` in the output.
-4. This applies to projects like Deepwave (240+ operator variants) whose expanded inventory exceeds single-LLM-call capacity.
+4. This avoids single-LLM-call timeouts on projects with large expanded variant inventories that exceed the context-processing capacity of a single validation pass.
 
 **Important**: Batch validation only applies when the total variant count exceeds 50. For smaller inventories (≤50 variants), validate all variants individually.
 
