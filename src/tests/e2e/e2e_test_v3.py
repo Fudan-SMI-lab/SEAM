@@ -334,6 +334,7 @@ def run_e2e_v3(
     user_constraints: str = "",
     server_auto_start: bool = True,
     server_port: int = 0,
+    server_type: str = "",
     review_gate: bool = False,
     framework_config_path: str | None = None,
     workflow_path: Path | None = None,
@@ -381,7 +382,29 @@ def run_e2e_v3(
     telemetry_bridge: TelemetryBridge | None = None
 
     try:
-        if server_auto_start and base_url is None:
+        if server_type:
+            from harness.server.lifecycle import (find_available_port, probe_server,
+                                                  start_server, stop_server, wait_for_server)
+            if not base_url:
+                port = server_port if server_port > 0 else find_available_port()
+                base_url = f"http://127.0.0.1:{port}"
+            probe = probe_server(base_url, server_type)
+            if probe.state == "conflict":
+                raise RuntimeError(
+                    f"Port {probe.base_url} is occupied by a non-{server_type} service: {probe.detail}"
+                )
+            elif probe.state == "free":
+                server_proc = start_server(work_dir=str(REPO_ROOT), server_url=base_url,
+                                           server_type=server_type)
+                if not wait_for_server(base_url, timeout=30):
+                    _ = stop_server(server_proc)
+                    server_proc = None
+                    raise RuntimeError(f"Failed to start {server_type} server on {base_url}")
+                log(f"{server_type} server started at {base_url}")
+            else:
+                log(f"{server_type} server already running at {base_url}, reusing")
+            check_server_running(base_url)
+        elif server_auto_start and base_url is None:
             from harness.server.lifecycle import find_available_port, start_server, stop_server, wait_for_server
             port = server_port if server_port > 0 else find_available_port()
             base_url = f"http://127.0.0.1:{port}"
@@ -602,6 +625,8 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument("--server-auto-start", action="store_true", default=True)
     _ = parser.add_argument("--server-no-auto-start", action="store_true")
     _ = parser.add_argument("--server-port", type=int, default=0)
+    _ = parser.add_argument("--server-type", type=str, default="",
+                            help="Server type for --server-url auto-start/liveness probe (e.g. 'opencode')")
     _ = parser.add_argument("--verbose", action="store_true")
     _ = parser.add_argument("--workflow-path", type=Path, default=None,
                             help="Absolute or relative path to a workflow YAML file (overrides default).")
@@ -642,6 +667,7 @@ def main() -> int:
         user_constraints=user_constraints_text,
         server_auto_start=server_auto_start,
         server_port=args.server_port,
+        server_type=args.server_type,
         review_gate=args.review_gate,
         framework_config_path=args.framework_config,
         workflow_path=args.workflow_path,

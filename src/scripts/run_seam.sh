@@ -31,6 +31,7 @@ KEEP_TEMP=true
 REVIEW_GATE=true
 DRY_RUN=false
 SERVER_NO_AUTO_START=false
+SERVER_TYPE=""
 WORKFLOW_PATH=""
 EXTRA_ARGS=""
 
@@ -62,6 +63,8 @@ Flat cuda_projects are also accepted; Phase 3 will discover an entry script.
 Options:
   --server-url URL       OpenCode server URL (default: http://127.0.0.1:4098)
   --server-port PORT     Auto-start server on this port (overrides --server-url)
+  --server-type TYPE     Server type for --server-url smart probe: 'opencode'
+                           Port free → auto-start; matching server → reuse; conflict → error
   --max-iter N           Max Phase 5 repair iterations (default: 8)
   --review               Enable Review Gate (default: enabled)
   --no-review            Disable Review Gate
@@ -95,6 +98,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)              usage ;;
         --server-url)           SERVER_URL="$2"; shift 2 ;;
         --server-port)          SERVER_PORT="$2"; shift 2 ;;
+        --server-type)          SERVER_TYPE="$2"; shift 2 ;;
         --max-iter)             MAX_ITER="$2"; shift 2 ;;
         --review)               REVIEW_GATE=true; shift ;;
         --no-review)            REVIEW_GATE=false; shift ;;
@@ -161,6 +165,8 @@ echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
 echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
 if [[ -n "$SERVER_PORT" ]]; then
     echo -e "${GREEN}Server:${NC}    auto-start on port $SERVER_PORT"
+elif [[ -n "$SERVER_TYPE" ]]; then
+    echo -e "${GREEN}Server:${NC}    $SERVER_URL ($SERVER_TYPE — smart probe)"
 else
     echo -e "${GREEN}Server:${NC}    $SERVER_URL"
 fi
@@ -225,6 +231,9 @@ if [[ "$DRY_RUN" == true ]]; then
 elif [[ "$USE_AUTO_START" == true ]]; then
     echo ""
     echo -e "${CYAN}Server will auto-start on port $SERVER_PORT (skipping connectivity check)${NC}"
+elif [[ -n "$SERVER_TYPE" ]]; then
+    echo ""
+    echo -e "${CYAN}Server type '$SERVER_TYPE' probe mode — Python will handle start/reuse/error${NC}"
 else
     echo ""
     echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
@@ -251,6 +260,11 @@ if [[ -n "$SERVER_PORT" ]]; then
     SERVER_PORT_FLAG="--server-port $SERVER_PORT"
 fi
 
+SERVER_TYPE_FLAG=""
+if [[ -n "$SERVER_TYPE" ]]; then
+    SERVER_TYPE_FLAG="--server-type $SERVER_TYPE"
+fi
+
 # ── Dry-run mode ──
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
@@ -262,6 +276,9 @@ if [[ "$DRY_RUN" == true ]]; then
         echo "    $SERVER_PORT_FLAG \\"
     else
         echo "    --server-url $SERVER_URL \\"
+    fi
+    if [[ -n "$SERVER_TYPE_FLAG" ]]; then
+        echo "    $SERVER_TYPE_FLAG \\"
     fi
     echo "    --project-dir $PROJECT_DIR \\"
     echo "    --output-dir $OUTPUT_PROJECTS_DIR \\"
@@ -311,6 +328,7 @@ cd "$REPO_ROOT"
 if [[ -n "$SERVER_PORT_FLAG" ]]; then
     ${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \
         $SERVER_PORT_FLAG \
+        $SERVER_TYPE_FLAG \
         --project-dir "$PROJECT_DIR" \
         --output-dir "$OUTPUT_PROJECTS_DIR" \
         --max-phase5-iter "$MAX_ITER" \
@@ -323,6 +341,7 @@ if [[ -n "$SERVER_PORT_FLAG" ]]; then
 else
     ${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \
         --server-url "$SERVER_URL" \
+        $SERVER_TYPE_FLAG \
         --project-dir "$PROJECT_DIR" \
         --output-dir "$OUTPUT_PROJECTS_DIR" \
         --max-phase5-iter "$MAX_ITER" \
