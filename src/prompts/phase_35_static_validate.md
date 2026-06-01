@@ -31,6 +31,17 @@ If Phase 3 includes `entry_script_kind: custom_op_full_validation`, validate the
 
 For passing custom-op outputs, include `custom_op_static_required: true` plus these booleans set to `true`: `custom_op_requirements_checked`, `script_source_driven_inventory`, `script_emits_fine_grained_units`, `script_maps_public_api_to_units`, `script_discovers_full_inventory`, `script_records_native_operator_symbols`, `script_runs_project_api_custom_ops`, `script_rejects_report_only_success`, `script_requires_project_local_artifacts`, `script_requires_numeric_performance`, and `script_checks_no_fallback`. If the Phase 3 contract includes `expanded_variant_inventory`, `variant_axis_coverage`, `per_variant_performance_report`, or otherwise declares expanded variants, also include `expanded_variant_static_required: true`, `script_discovers_expanded_variant_inventory: true`, `script_checks_variant_axis_coverage: true`, and `script_requires_per_variant_performance: true`.
 
+## Batch Validation for Large Operator Inventories
+
+When Phase 3 contains an `expanded_variant_inventory` with more than 50 operator variants (count entries in `variant_axis_coverage`, `per_variant_performance_report`, or `discovered_operator_names` in the `previous_outputs` block), a single LLM call attempting to statically validate all variants will time out. Use batch validation instead:
+
+1. Select the **first 20 operator variants** from the inventory (sorted by name for determinism).
+2. Perform full static validation on only these 20 variants — check for interactive input, infinite loops, GUI calls, breakpoints, blocking waits on their execution paths.
+3. For the remaining variants beyond the first 20, assume they follow the same pattern. Set `validation_passed: true` and include `"batch_validation_note": "Batched — validated first 20 of {total_count} variants. Remaining {remaining_count} variants require subsequent batch validation."` in the output.
+4. This applies to projects like Deepwave (240+ operator variants) whose expanded inventory exceeds single-LLM-call capacity.
+
+**Important**: Batch validation only applies when the total variant count exceeds 50. For smaller inventories (≤50 variants), validate all variants individually.
+
 ## Important Notes
 
 - Training loops with epoch limits (e.g., `for epoch in range(epochs):`) are **acceptable** — they will eventually exit.

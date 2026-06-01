@@ -7,6 +7,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 
+from harness.session.manager import extract_json_response
 from core.experience_classifier import ExperienceClassifier
 from core.experience_solidifier import ExperienceSolidifier
 from core.experience_store import ExperienceStore
@@ -296,25 +297,9 @@ class ExperienceRefiner:
         return assets
 
     def _parse_json_response(self, raw: str) -> dict:
-        """Strip fences, find braces, parse — same pattern as evaluator."""
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines)
-
-        first_brace = text.find("{")
-        last_brace = text.rfind("}")
-        if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
+        """Use robust extract_json_response for fences, nested JSON, and last-valid-object fallback."""
+        result = extract_json_response(raw)
+        if not result:
             logger.warning("No JSON object found in refiner response")
             return {"_raw": raw}
-
-        json_str = text[first_brace: last_brace + 1]
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError as exc:
-            logger.warning("Refiner JSON parse failed: %s", exc)
-            return {"_raw": raw}
+        return result
