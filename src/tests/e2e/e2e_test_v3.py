@@ -32,7 +32,7 @@ EXCLUDED_SNAPSHOT_DIRS = {".git", ".sm-artifacts", ".venv", "__pycache__"}
 
 REPO_ROOT = execution_root()
 TEMPLATE_DIR = PACKAGE_ROOT / "test_project_template"
-_default_workflow_path = PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"
+_default_workflow_path = PACKAGE_ROOT / "workflows" / "seam_auto_default.yaml"
 OUTPUT_ROOT = REPO_ROOT / "e2e-reports" / "src"
 
 
@@ -126,6 +126,17 @@ def check_server_running(base_url: str) -> None:
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or f"curl exit code {completed.returncode}"
         raise RuntimeError(f"OpenCode server is not reachable at {endpoint}: {detail}")
+
+    # Also verify session capability: /agent may respond but POST /session
+    # can fail with HTTP 500, leaving the server partially broken.
+    from harness.server.lifecycle import _session_probe_details
+    session_ok, session_status, session_body = _session_probe_details(base_url)
+    if not session_ok:
+        raise RuntimeError(
+            f"OpenCode server at {base_url} is reachable on /agent "
+            f"but POST /session failed with HTTP {session_status}. "
+            f"Response: {session_body[:500]}"
+        )
 
 
 def copy_project_light(src: Path, dst: Path) -> int:
@@ -473,10 +484,11 @@ def run_e2e_v3(
                 project_ctx = _build_project_context(temp_dir)
                 materialized = resolve_workflow_from_selector(
                     str(effective_workflow_path),
-                    session_mgr,
+                    observer,  # observer.send_command logs command + response automatically
                     prompt_loader,
                     project_context=project_ctx,
                     output_dir=output_dir / "artifacts",
+                    telemetry=observer,  # selector-specific events via record_event
                 )
                 effective_workflow_path = materialized
                 selector_resolved_path = str(materialized)
