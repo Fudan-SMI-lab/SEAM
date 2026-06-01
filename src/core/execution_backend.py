@@ -218,7 +218,12 @@ class ContainerBackend:
 
     def _ensure_container(self) -> str:
         if self._container_id:
-            return self._container_id
+            if self._revalidate_container():
+                return self._container_id
+            # For source=image, _revalidate_container() cleared _container_id
+            # and _initialized; fall through to recreate.
+            # For source=existing_container, _revalidate_container() raised
+            # ContainerNotFoundError or ContainerNotRunningError.
         if self.config.source == "existing_container":
             self._check_existing_container()
             assert self._container_id is not None
@@ -226,6 +231,48 @@ class ContainerBackend:
         self._create_container_from_image()
         assert self._container_id is not None
         return self._container_id
+
+    def _revalidate_container(self) -> bool:
+        """Inspect the cached container before reuse.
+
+        Returns True if the container is running and can be reused.
+
+        For ``source=image``: if the container is missing or not running,
+        clears ``_container_id`` and ``_initialized``, then returns False
+        so ``_ensure_container()`` recreates it.
+
+        For ``source=existing_container``: raises ``ContainerNotFoundError``
+        or ``ContainerNotRunningError``.  Never attempts to recreate a
+        user-owned container.
+        """
+        cid = self._container_id
+        assert cid is not None  # guarded by caller
+        result = subprocess.run(
+            [self._runtime_cmd, "inspect", "--format", "{{.State.Status}}", cid],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            if self.config.source == "existing_container":
+                raise ContainerNotFoundError(
+                    f"Cached container '{cid}' no longer exists. {result.stderr.strip()}"
+                )
+            logger.warning("Cached container '%s' not found — will recreate", cid)
+            self._container_id = None
+            self._initialized = False
+            return False
+
+        status = result.stdout.strip()
+        if status != "running":
+            if self.config.source == "existing_container":
+                raise ContainerNotRunningError(
+                    f"Cached container '{cid}' status is '{status}', expected 'running'"
+                )
+            logger.warning("Cached container '%s' status is '%s' — will recreate", cid, status)
+            self._container_id = None
+            self._initialized = False
+            return False
+
+        return True
 
     def _create_selected_container(self, image_name: str) -> None:
         """Create a container from a specific image chosen by auto-selection.
