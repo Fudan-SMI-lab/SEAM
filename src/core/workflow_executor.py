@@ -1778,6 +1778,8 @@ class WorkflowExecutor:
         input_ctx.setdefault("user_constraints", self.user_constraints)
         constraint_summary = self._resolve_constraint_summary(state)
         input_ctx.setdefault("constraint_summary", constraint_summary)
+        migration_route = str(state.get("phase_1_project_analysis", {}).get("migration_route", ""))
+        input_ctx.setdefault("migration_route", migration_route)
         input_ctx.setdefault("platform", self.platform_policy.id)
         input_ctx.setdefault("platform_display_name", self.platform_policy.display_name)
         input_ctx.setdefault("platform_guidance", (
