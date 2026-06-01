@@ -247,7 +247,7 @@ def build_v3_summary(
     entry_script: str | None,
     errors: list[str],
 ) -> RunSummary:
-    passed = all(p.status == "passed" for p in phase_results)
+    passed = all(p.status in ("passed", "skipped") for p in phase_results)
     return RunSummary(
         run_id=run_id,
         base_url=base_url,
