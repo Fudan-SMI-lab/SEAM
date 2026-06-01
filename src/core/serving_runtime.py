@@ -405,6 +405,8 @@ def main() -> int:
     env.update(command_env_updates)
     if FRAMEWORK == "sglang":
         env.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
+        if command and command[0] == "sglang":
+            command = [sys.executable, "-m", "sglang.cli.main"] + command[1:]
     if FRAMEWORK == "vllm":
         env.setdefault("VLLM_TARGET_DEVICE", "npu")
 
@@ -724,6 +726,10 @@ def build_npu_env(env: dict[str, str]) -> tuple[dict[str, str], dict[str, object
             selected_root / "opp" / "built-in" / "op_impl" / "ai_core" / "tbe" / "op_tiling" / "lib",
         ]))
         prepend_path(env, "PATH", existing_paths([selected_root / "bin", selected_root / "compiler" / "ccec_compiler" / "bin"]))
+    project_root = Path(__file__).resolve().parent
+    venv_bin = project_root / ".venv" / "bin"
+    if venv_bin.is_dir():
+        prepend_path(env, "PATH", [str(venv_bin)])
     prepend_path(env, "PYTHONPATH", python_paths)
     prepend_path(env, "LD_LIBRARY_PATH", library_paths)
     return env, {
@@ -733,6 +739,7 @@ def build_npu_env(env: dict[str, str]) -> tuple[dict[str, str], dict[str, object
         "python_paths_added": python_paths,
         "library_paths_added": library_paths,
         "cuda_nccl_env_stripped": True,
+        "venv_bin_prepended": venv_bin.is_dir(),
     }
 
 

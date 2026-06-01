@@ -374,10 +374,14 @@ class PhaseRunner:
         session_id = active_session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
 
         outputs: dict[str, JsonObject] = dict(prior_outputs)
+        migration_route = ""
+        if isinstance(outputs.get("phase_1_project_analysis"), dict):
+            migration_route = str(outputs["phase_1_project_analysis"].get("migration_route", "") or "")
         phase_2_context: JsonObject = {
             "project_dir": project_dir,
             "previous_outputs": outputs,
             "constraint_summary": constraint_summary,
+            "migration_route": migration_route,
         }
         phase_2_result = self._run_single_phase(
             session=session_id,
