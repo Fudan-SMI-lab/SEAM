@@ -1,6 +1,7 @@
 """OpenCode server lifecycle management - auto start/stop for E2E tests."""
 
 import http.client
+import json
 import os
 import shutil
 import socket
@@ -80,6 +81,12 @@ def resolve_server_url(
         if not wait_for_server(resolved, timeout=30):
             _ = stop_server(server_proc)
             raise RuntimeError(f"Server failed to start on {resolved}")
+        if not check_session_capable(resolved):
+            _ = stop_server(server_proc)
+            raise RuntimeError(
+                f"Server started on {resolved} but POST /session failed: "
+                f"server is not session-capable"
+            )
         return resolved, server_proc
 
     if auto_start and base_url is not None:
@@ -91,6 +98,12 @@ def resolve_server_url(
                 if not wait_for_server(base_url, timeout=30):
                     _ = stop_server(server_proc)
                     raise RuntimeError(f"Server failed to start on {base_url}")
+                if not check_session_capable(base_url):
+                    _ = stop_server(server_proc)
+                    raise RuntimeError(
+                        f"Server started on {base_url} but POST /session failed: "
+                        f"server is not session-capable"
+                    )
                 return base_url, server_proc
             else:
                 raise RuntimeError(
@@ -99,7 +112,23 @@ def resolve_server_url(
                     f"(127.0.0.1 / localhost / ::1).  Ensure the remote "
                     f"server is running, or disable auto-start."
                 )
-        # Server is already reachable — nothing to do.
+        # Server /agent is reachable — verify session capability.
+        if not check_session_capable(base_url):
+            if is_local_url(base_url):
+                raise RuntimeError(
+                    f"OpenCode server at {base_url} responds to /agent "
+                    f"but POST /session failed.  A process is already "
+                    f"listening on this port — restarting it blindly is "
+                    f"unsafe.  Please restart the server manually, then "
+                    f"re-run the tests."
+                )
+            else:
+                raise RuntimeError(
+                    f"OpenCode server at {base_url} is reachable on /agent "
+                    f"but POST /session failed. Session creation is required "
+                    f"for E2E tests. Ensure the remote server is fully "
+                    f"operational, or disable auto-start."
+                )
         return base_url, None
 
     # auto_start is False — caller must provide a reachable URL.
@@ -179,3 +208,149 @@ def health_check(url: str) -> bool:
             connection.close()
     except (urllib.error.URLError, OSError, ValueError):
         return False
+
+
+def check_session_capable(base_url: str, timeout: int = 5) -> bool:
+    """Verify the server can create sessions via POST /session.
+
+    Performs a minimal POST /session probe and cleans up the created
+    session on success.  Returns ``True`` when the server responds with
+    2xx and returns a usable ``session_id``.
+
+    This catches the case where ``GET /agent`` succeeds but the session
+    endpoint is broken (e.g. returning HTTP 500).
+    """
+    parsed = urllib.parse.urlsplit(base_url.rstrip("/"))
+    if not parsed.scheme or not parsed.hostname:
+        return False
+
+    connection_cls = (
+        http.client.HTTPSConnection if parsed.scheme == "https"
+        else http.client.HTTPConnection
+    )
+
+    try:
+        conn = connection_cls(parsed.hostname, parsed.port, timeout=timeout)
+        try:
+            payload = json.dumps({"title": "health-check"})
+            headers = {"Content-Type": "application/json"}
+            conn.request("POST", "/session", body=payload, headers=headers)
+            resp = conn.getresponse()
+            if resp.status < 200 or resp.status >= 300:
+                return False
+
+            body_bytes = resp.read()
+            body_text = body_bytes.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(body_text)
+            except json.JSONDecodeError:
+                return False
+
+            session_id: str | None = None
+            if isinstance(data.get("data"), dict):
+                session_id = data["data"].get("id")  # type: ignore[assignment]
+            else:
+                session_id = data.get("id")  # type: ignore[assignment]
+
+            usable = isinstance(session_id, str) and bool(session_id)
+            if not usable:
+                return False
+
+            # Clean up the health-check session.
+            try:
+                cleanup_conn = connection_cls(
+                    parsed.hostname, parsed.port, timeout=timeout,
+                )
+                try:
+                    cleanup_conn.request("DELETE", f"/session/{session_id}")
+                    cleanup_conn.getresponse().read()
+                finally:
+                    cleanup_conn.close()
+            except Exception:
+                pass
+
+            return True
+        finally:
+            conn.close()
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
+        return False
+
+
+def _session_probe_details(
+    base_url: str, timeout: int = 5,
+) -> tuple[bool, int, str]:
+    """Low-level POST /session probe that returns status and body.
+
+    Returns ``(ok, http_status, body_text)`` where *ok* is ``True`` only
+    when the probe succeeds.  Callers that need the exact status code or
+    response body for error messages should use this instead of
+    :func:`check_session_capable`.
+    """
+    parsed = urllib.parse.urlsplit(base_url.rstrip("/"))
+    if not parsed.scheme or not parsed.hostname:
+        return False, 0, "invalid base URL"
+
+    connection_cls = (
+        http.client.HTTPSConnection if parsed.scheme == "https"
+        else http.client.HTTPConnection
+    )
+
+    try:
+        conn = connection_cls(parsed.hostname, parsed.port, timeout=timeout)
+        try:
+            payload = json.dumps({"title": "health-check"})
+            headers = {"Content-Type": "application/json"}
+            conn.request("POST", "/session", body=payload, headers=headers)
+            resp = conn.getresponse()
+            status = resp.status
+            body_text = resp.read().decode("utf-8", errors="replace")
+            ok = 200 <= status < 300
+
+            if ok:
+                _cleanup_probe_session(
+                    body_text, parsed.hostname, parsed.port,
+                    connection_cls, timeout,
+                )
+
+            return ok, status, body_text
+        finally:
+            conn.close()
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
+        return False, 0, str(exc)
+
+
+def _cleanup_probe_session(
+    body_text: str,
+    hostname: str,
+    port: int,
+    connection_cls: type,
+    timeout: int,
+) -> None:
+    """Parse session_id from *body_text* and DELETE it.
+
+    Best-effort — failures are silently ignored so cleanup never affects
+    the probe result.
+    """
+    try:
+        data = json.loads(body_text)
+    except json.JSONDecodeError:
+        return
+
+    session_id: str | None = None
+    if isinstance(data.get("data"), dict):
+        session_id = data["data"].get("id")  # type: ignore[assignment]
+    else:
+        session_id = data.get("id")  # type: ignore[assignment]
+
+    if not isinstance(session_id, str) or not session_id:
+        return
+
+    try:
+        cleanup_conn = connection_cls(hostname, port, timeout=timeout)
+        try:
+            cleanup_conn.request("DELETE", f"/session/{session_id}")
+            cleanup_conn.getresponse().read()
+        finally:
+            cleanup_conn.close()
+    except Exception:
+        pass
