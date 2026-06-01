@@ -26,7 +26,7 @@ PROJECT_SEARCH_DIRS=(
 # ── Defaults (mirroring the V1 successful run pattern) ──
 SERVER_URL="http://127.0.0.1:4098"
 SERVER_PORT=""
-MAX_ITER=8
+MAX_ITER=20
 KEEP_TEMP=true
 REVIEW_GATE=true
 DRY_RUN=false
@@ -65,7 +65,7 @@ Options:
   --server-port PORT     Auto-start server on this port (overrides --server-url)
   --server-type TYPE     Server type for --server-url smart probe: 'opencode'
                            Port free → auto-start; matching server → reuse; conflict → error
-  --max-iter N           Max Phase 5 repair iterations (default: 8)
+  --max-iter N           Max Phase 5 repair iterations (default: 20)
   --review               Enable Review Gate (default: enabled)
   --no-review            Disable Review Gate
   --no-keep-temp         Don't keep output project directory (default: keep)
