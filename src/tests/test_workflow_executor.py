@@ -1225,12 +1225,12 @@ def test_fix_operator_without_explicit_timeout_uses_four_hour_default_and_logs(t
         },
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 14400
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 43200
     log_text = caplog.text
     assert "phase_id=fix_operator" in log_text
     assert "agent_id=operator_fixer" in log_text
     assert "session_id=session:operator_fixer" in log_text
-    assert "timeout=14400" in log_text
+    assert "timeout=43200" in log_text
     assert "prompt_length=" in log_text
     assert "raw_response_length=" in log_text
 
@@ -1267,7 +1267,7 @@ def test_invalid_repair_timeout_config_uses_default_and_logs_warning(
         framework_config={"session_timeout_repair": "not-an-int"},
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 14400
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 43200
     assert "Invalid session_timeout_repair" in caplog.text
 
 
@@ -1331,7 +1331,7 @@ def test_analyze_error_without_explicit_timeout_uses_four_hour_default(tmp_path:
         },
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 14400
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 43200
 
 
 def test_repair_default_timeout_applies_to_each_subphase_call(tmp_path: Path):
@@ -1395,7 +1395,7 @@ def test_repair_default_timeout_applies_to_each_subphase_call(tmp_path: Path):
         loop_state={},
     )
 
-    assert [call.kwargs["timeout"] for call in session_mgr.send_command.call_args_list] == [14400, 14400]
+    assert [call.kwargs["timeout"] for call in session_mgr.send_command.call_args_list] == [43200, 43200]
 
 
 def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(tmp_path: Path):
