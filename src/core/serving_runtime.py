@@ -418,7 +418,8 @@ def main() -> int:
     forbidden_hits = [marker for marker in FORBIDDEN_MARKERS if marker and marker.lower() in combined.lower()]
     command_result["forbidden_runtime_marker_hits"] = forbidden_hits
     command_result["actual_launch_command"] = shlex.join(command)
-    returncode = int(command_result.get("returncode") or 1)
+    returncode_raw = command_result.get("returncode")
+    returncode = int(returncode_raw) if returncode_raw is not None else 1
     command_timed_out = command_result.get("timed_out") is True or command_result.get("idle_timed_out") is True
     status = "FULL_PASS" if returncode == 0 and not forbidden_hits and not command_timed_out else "FAILED"
     if status == "FULL_PASS":
