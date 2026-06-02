@@ -5,8 +5,8 @@
 
 在您要用的中国产GPU服务器、容器环境里，下载和使用SEAM：
 ```bash
-git clone https://github.com/seam-project/seam.git
-cd seam
+git clone https://github.com/Fudan-SMI-lab/SEAM.git
+cd SEAM
 bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
   --server_type opencode \
   --server_url http://127.0.0.1:5000
@@ -36,5 +36,7 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 ## 使用示例
 
 请查阅[使用案例](Use_Cases.md)
+
+[迁移工具接口指引](migration_utils_platform_adaptation_guide.md)
 
 更多细节更新中。
