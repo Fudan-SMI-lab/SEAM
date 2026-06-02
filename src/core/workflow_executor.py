@@ -3468,6 +3468,9 @@ class WorkflowExecutor:
             if isinstance(sub_wf_def.max_review_iterations, (int, float))
             else self.framework_config.get("review", {}).get("max_review_iterations", 3)
         )
+        if self.workflow.globals and isinstance(self.workflow.globals.get("review_gate_enabled"), bool):
+            review_gate_enabled = self.workflow.globals["review_gate_enabled"]
+            logger.info("review_gate_enabled overridden by CLI --review-gate flag: %s", review_gate_enabled)
 
         loop_state["review_gate_enabled"] = review_gate_enabled
         max_entry_script_revisions = self._max_entry_script_revisions()

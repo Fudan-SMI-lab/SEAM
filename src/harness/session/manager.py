@@ -781,7 +781,7 @@ class MigrationSessionManager:
         return payload in (None, "") or payload == {} or payload == []
 
     def _http_assistant_completion_state(self, session_id: str, limit: int = 20) -> bool | None:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": limit})
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": limit}, timeout=self._timeout)
         if not resp.get("ok"):
             status = resp.get("status")
             if status in {401, 403}:
@@ -944,7 +944,13 @@ class MigrationSessionManager:
                     raise SessionAuthError(f"GET /session/status unauthorized: {status.get('details') or status.get('error') or error_status}")
                 if isinstance(error_status, int) and error_status in HARD_HTTP_STATUSES:
                     raise SessionServerError(f"GET /session/status failed: {status.get('details') or status.get('error') or error_status}")
-                return False
+                if isinstance(error_status, int):
+                    # Known HTTP error status that is not hard/hard-auth → fatal
+                    return False
+                # Transient failure (timeout, connection reset) → retry
+                logger.warning("wait_for_idle: transient status check failure for %s: %s (will retry)", session_id, status.get("error") or status)
+                time.sleep(interval_s)
+                continue
 
             data = status.get("data")
             self._raise_if_forbidden_nested_tool_used(session_id, True)
@@ -955,6 +961,11 @@ class MigrationSessionManager:
 
             if not token and self._status_payload_is_empty(data):
                 assistant_state = self._http_assistant_completion_state(session_id)
+                if assistant_state is None:
+                    # Transient failure (timeout, connection error) → retry
+                    logger.warning("wait_for_idle: transient assistant completion check failure for %s (will retry)", session_id)
+                    time.sleep(interval_s)
+                    continue
                 if assistant_state is True:
                     time.sleep(interval_s)
                     continue
