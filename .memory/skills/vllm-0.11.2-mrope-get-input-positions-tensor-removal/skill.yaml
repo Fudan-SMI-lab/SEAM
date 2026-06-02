@@ -1,0 +1,8 @@
+name: vllm-0.11.2-mrope-get-input-positions-tensor-removal
+title: vLLM 0.11.2 MRotaryEmbedding.get_input_positions_tensor API removal on Ascend NPU — replace with model.get_mrope_input_positions()
+description: vLLM 0.11.2 MRotaryEmbedding.get_input_positions_tensor API removal on Ascend NPU — replace with model.get_mrope_input_positions()
+category: operator_incompat
+subtype: vllm_mrope_api_migration_0_11_2
+target_roles: ["code_adapter", "fix_code", "fix_operator"]
+target_phases: ["analyze_error", "fix_code", "serving_validation"]
+trigger_fingerprint: vLLM serving OOM on Ascend NPU with KV cache allocation failure, torch_npu.npu.memory_stats reporting significantly less allocated memory than torch_npu.npu.mem_get_info total minus free, non_torch_allocations exceeding 30% of total NPU memory, or gpu_memory_utilization setting silently violated due to invisible CANN driver allocations.

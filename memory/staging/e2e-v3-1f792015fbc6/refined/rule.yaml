@@ -1,7 +1,0 @@
-title: Pin numpy to 1.26.x for CANN 8.x compatibility
-pattern: (numpy\s*[><=!]+\s*2\.\d[^\s,"']*)|(numpy\s*==\s*2\.\d[^\s,"']*)
-replacement: numpy>=1.26.0,<2.0
-file_patterns: ["requirements*.txt", "setup.py", "setup.cfg", "pyproject.toml", "*.cfg", "*.toml"]
-target_roles: ["code_adapter"]
-target_phases: ["fix_code"]
-trigger_fingerprint: numpy>=2\.|numpy==2\.|CANN.*numpy|numpy.*torch_npu.*(?:ImportError|RuntimeError|segfault)

@@ -12,7 +12,7 @@ CATALOG_SCHEMA_VERSION = 1
 class ExperienceRegistry:
     def __init__(self, repo_root: str) -> None:
         self.repo_root = repo_root
-        self.memory_dir = os.path.join(repo_root, "memory")
+        self.memory_dir = os.path.join(repo_root, ".memory")
         self.index_dir = os.path.join(self.memory_dir, "index")
         self.staging_dir = os.path.join(self.memory_dir, "staging")
         self.cases_dir = os.path.join(self.memory_dir, "cases")
@@ -107,7 +107,7 @@ class ExperienceRegistry:
                 "skills": self._relpath(self.skills_dir),
                 "local_skills": self._relpath(self.local_skills_dir),
                 "catalog": self._relpath(self.catalog_path),
-                "legacy_index": os.path.join("memory", "index", "cases.jsonl"),
+                "legacy_index": os.path.join(".memory", "index", "cases.jsonl"),
                 "archive": self._relpath(self.archive_dir),
                 "quarantine": self._relpath(self.quarantine_dir),
             },

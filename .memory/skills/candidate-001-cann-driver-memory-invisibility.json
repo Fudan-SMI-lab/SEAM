@@ -1,0 +1,73 @@
+{
+  "type": "skill",
+  "skill_name": "cann-driver-memory-invisibility-kv-cache-oom-fix",
+  "title": "CANN Driver Memory Invisibility Causes vLLM KV Cache OOM on Ascend NPU",
+  "category": "code_adaptation",
+  "subtype": "cann_driver_memory_invisible_kv_cache_oom",
+  "tags": [
+    "torch-npu",
+    "vllm",
+    "memory-management",
+    "kv-cache",
+    "oom-prevention",
+    "cann-driver",
+    "ascend",
+    "profiling-peak",
+    "fallback-strategy"
+  ],
+  "symptom": "vLLM serving on Ascend NPU fails with out-of-memory errors during model initialization or first inference, especially for large multimodal models (e.g., MinerU2.5-Pro). The error occurs because vLLM's KV cache budget formula `total_memory * gpu_memory_utilization - peak_memory` underestimates actual memory pressure — the CANN driver allocates 20-43 GB of memory that is invisible to PyTorch's `memory_stats()` API. The formula believes more memory is available than actually exists, leading to KV cache overallocation and OOM.",
+  "root_cause": "CANN driver allocations are invisible to PyTorch's `torch.npu.memory_stats()` API but are tracked by the lower-level `torch.npu.mem_get_info()` API. When vLLM's `determine_available_memory()` computes the KV cache budget as `total_npu_memory * gpu_memory_utilization - peak_memory` using the torch-tracked `peak_memory`, it fails to account for driver-internal allocations (command queues, graph memory, NCCL/nccl buffers). This is a fundamental architectural characteristic of the CANN runtime — not a bug — and affects every Ascend NPU deployment of vLLM. The fix must detect the discrepancy between the two memory APIs and fall back to a profiling-based measurement that captures the full memory picture.",
+  "fix_steps": [
+    "1. In `worker_v1.py::determine_available_memory()`, after `profile_run()`, retrieve both the torch-tracked memory stats (`torch.npu.memory_stats()['allocated_bytes.all.peak']`) and the OS-level memory info (`torch.npu.mem_get_info()`).",
+    "2. Compute `non_torch_allocations = total_allocated_bytes - torch_allocated_bytes` where `total_allocated_bytes` comes from `mem_get_info()` (total - free) and `torch_allocated_bytes` is the current torch allocation.",
+    "3. Detect the CANN memory invisibility: if `peak_memory == 0` (torch_npu bug on some platforms) OR `non_torch_allocations > total_npu_memory * 0.3`, fall back to `profiling_peak = init_npu_memory - free_npu_memory` and set `non_torch_allocations = 0`. The 30% threshold is empirical — it captures the 20-43 GB driver allocations typical for large models (e.g., on a 64 GB NPU, >19 GB of invisible allocations).",
+    "4. If the non_torch allocations are within the 30% threshold, include them in peak_memory: `peak_memory += non_torch_allocations`.",
+    "5. Compute the budget-based available memory: `available_kv_cache_memory = total_npu_memory * gpu_memory_utilization - peak_memory`. This respects vLLM's `gpu_memory_utilization` contract.",
+    "6. Apply a free-based safety cap: `free_based = int(current_free * 0.9)`, then `available_kv_cache_memory = min(available_kv_cache_memory, free_based)`. This prevents the formula budget from overallocating when driver memory is not fully reflected in peak_memory.",
+    "7. Clamp to >= 0: `available_kv_cache_memory = int(max(available_kv_cache_memory, 0))`.",
+    "8. Add debug logging for all intermediate values (peak_memory, profiling_peak, non_torch_allocations, budget, current_free) to enable post-mortem analysis of memory allocation decisions."
+  ],
+  "affected_patterns": [
+    "vLLM KV cache budget calculation in `worker_v1.py::determine_available_memory()` — the torch-tracked peak_memory underestimates actual memory pressure",
+    "CANN driver-internal allocations (graph memory, NCCL buffers, queue memory) invisible to `torch.npu.memory_stats()`",
+    "Large multimodal models (>10B params) that consume 20+ GB of driver memory, exceeding the 30% discrepancy threshold",
+    "Any Ascend NPU deployment where `torch.npu.memory_stats()['allocated_bytes.all.peak']` returns 0 (known torch_npu bug on some platforms)"
+  ],
+  "code_changes": [
+    {
+      "file": ".venv/lib/python3.10/site-packages/vllm_ascend/worker/worker_v1.py",
+      "line_range": [258, 267],
+      "description": "CANN driver memory fallback: compute profiling_peak from init/free delta and fall back when non_torch_allocations exceed 30% of total NPU memory or peak_memory is zero"
+    },
+    {
+      "file": ".venv/lib/python3.10/site-packages/vllm_ascend/worker/worker_v1.py",
+      "line_range": [289, 291],
+      "description": "Free-based safety cap: use 90% of current_free to prevent overallocation from budget formula"
+    }
+  ],
+  "references": [
+    "vllm_ascend/worker/worker_v1.py:208 — init_npu_memory captured via mem_get_info() before model initialization",
+    "vllm_ascend/worker/worker_v1.py:227-228 — total_npu_memory = mem_get_info()[1] before profile_run()",
+    "vllm_ascend/worker/worker_v1.py:232 — free_npu_memory = mem_get_info()[0] after profile_run()",
+    "vllm_ascend/worker/worker_v1.py:242 — peak_memory from torch.npu.memory_stats()['allocated_bytes.all.peak']",
+    "vllm_ascend/worker/worker_v1.py:252-253 — total_allocated_bytes from mem_get_info() delta",
+    "vllm_ascend/worker/worker_v1.py:258 — profiling_peak = init_npu_memory - free_npu_memory",
+    "vllm_ascend/worker/worker_v1.py:264-265 — fallback trigger: non_torch > 30% OR peak_memory == 0",
+    "vllm_ascend/worker/worker_v1.py:290 — free_based cap: current_free * 0.9"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT rely solely on torch.npu.memory_stats() for peak memory estimation — it does not reflect CANN driver allocations (command queues, graph memory, NCCL buffers) that can consume 20-43 GB.",
+    "Do NOT skip the free-based safety cap (step 6) — even with profiling_peak fallback, the formula budget can overestimate available memory when some driver allocations persist outside model footprint.",
+    "Do NOT set the non_torch threshold below 20% — smaller models may have legitimate non_torch allocations under 20% that should be added to peak_memory, not trigger fallback.",
+    "Do NOT apply this fix without debug logging — subsequent OOM issues will need the logged metrics to diagnose whether the fallback or the cap was the binding constraint.",
+    "Do NOT remove the fallback after CANN toolkit updates — the driver memory invisibility is an architectural characteristic of CANN, not a transient bug."
+  ],
+  "meta": {
+    "source_run_id": "MinerU_20260601_213527",
+    "iterations_to_fix_in_source": 2,
+    "total_phase5_duration_s": 3075,
+    "refiner_reasoning": "The fix is fully verified in worker_v1.py:220-299. All three mechanisms (profiling_peak fallback, non_torch_allocation detection at 30% threshold, free-based safety cap at 90%) are implemented with debug logging. The candidate's involved_code_files incorrectly listed model_runner_v1.py — the actual fix is in worker_v1.py which is the correct location for memory budget calculation (determine_available_memory). The candidate's recommended_type 'skill' is correct — this is a reusable fix applicable to every vLLM Ascend NPU deployment. The candidate's reasoning block is not contaminated (unique to this candidate). Confidence kept at 0.90 because the fix is validated by FULL_PASS serving gate and generalizes independently of model architecture."
+  },
+  "confidence": 0.90
+}

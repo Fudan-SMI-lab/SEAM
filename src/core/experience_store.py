@@ -24,10 +24,10 @@ class ExperienceStore:
 
     def __init__(self, repo_root: str) -> None:
         self.repo_root = repo_root
-        self.staging_dir = os.path.join(repo_root, "memory", "staging")
-        self.cases_dir = os.path.join(repo_root, "memory", "cases")
-        self.promotions_dir = os.path.join(repo_root, "memory", "promotions")
-        self.index_path = os.path.join(repo_root, "memory", "index", "cases.jsonl")
+        self.staging_dir = os.path.join(repo_root, ".memory", "staging")
+        self.cases_dir = os.path.join(repo_root, ".memory", "cases")
+        self.promotions_dir = os.path.join(repo_root, ".memory", "promotions")
+        self.index_path = os.path.join(repo_root, ".memory", "index", "cases.jsonl")
         self.skills_dir = os.path.join(repo_root, ".memory", "skills")
         self.registry = ExperienceRegistry(repo_root)
         self.local_skills_dir = self.registry.local_skills_dir

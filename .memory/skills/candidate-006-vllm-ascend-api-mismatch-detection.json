@@ -1,0 +1,60 @@
+{
+  "type": "skill",
+  "skill_name": "vllm-ascend-plugin-api-mismatch-detection",
+  "title": "vLLM Ascend Plugin API Version Mismatch Detection via GPU Model Runner Comparison",
+  "category": "code_adaptation",
+  "subtype": "vllm_ascend_plugin_api_version_mismatch_diagnostic",
+  "tags": [
+    "torch-npu",
+    "vllm",
+    "ascend",
+    "api-mismatch",
+    "model-runner",
+    "version-upgrade",
+    "diagnostic-methodology",
+    "comparative-analysis"
+  ],
+  "symptom": "After a vLLM version upgrade (e.g., to 0.11.2), vllm_ascend deployment on Ascend NPU fails with multiple heterogeneous runtime errors: AttributeError on deprecated method calls, import errors for removed classes, `object has no attribute` on framework objects, and serialization failures in inter-process communication. These errors appear as distinct failures but share a single root cause — the vllm_ascend plugin's model_runner_v1.py was adapted from an older version of gpu_model_runner.py and was not updated for the current vLLM's API surface.",
+  "root_cause": "The vllm_ascend plugin's `vllm_ascend/worker/model_runner_v1.py` is derived from vLLM's `vllm/v1/worker/gpu_model_runner.py` but is maintained as a separate fork. When vLLM releases a new version that changes its internal API (method renames, signature changes, attribute additions/removals, serialization format changes), the Ascend model runner is not automatically updated. The result is that method calls, attribute accesses, import statements, and data serialization patterns that were valid in an older vLLM version become broken in the new version. These API incompatibilities manifest as multiple distinct-looking errors that are actually all symptoms of the same version skew between the plugin and the framework.",
+  "fix_steps": [
+    "1. When vLLM + vllm_ascend deployment fails with runtime errors during Phase 5 validation, immediately perform a comparative analysis between the two core files: `vllm_ascend/worker/model_runner_v1.py` (Ascend adaptation) and `vllm/v1/worker/gpu_model_runner.py` (upstream reference).",
+    "2. Compare method signatures: search for any method in model_runner_v1.py that calls deprecated/removed APIs. Key checkpoints: `get_input_embeddings` vs `embed_input_ids` (multimodal embedding API), `MRotaryEmbedding.get_input_positions_tensor` vs `model.get_mrope_input_positions` (M-RoPE API). For each mismatch, apply the upstream's current method signature and call pattern.",
+    "3. Compare attribute access patterns: search for direct attribute access on framework objects (especially `SchedulerOutput`) that may differ between CUDA and Ascend builds. Key checkpoints: `scheduler_output.grammar_bitmask` (may not exist on Ascend). Add `hasattr`/`getattr` defensive guards for any attribute that exists in the upstream but might be absent on Ascend.",
+    "4. Compare data serialization patterns: search for NPU tensor-to-host conversions used in inter-process communication. Key checkpoints: `.tolist()` on tensors destined for dict-based broadcast (replace with `[row for row in tensor.cpu().numpy()]`), `.clear()` on serialized lists (replace with ` = np.array([])` reassignment).",
+    "5. Compare import statements: verify that every imported class, function, and module in model_runner_v1.py exists in the current vLLM version. Key checkpoints: `supports_mrope` (must be imported from `vllm.model_executor.models.interfaces`), `CompilationLevel` (from vllm_ascend._vllm_compat). Add missing imports.",
+    "6. After applying all fixes, run `lsp_diagnostics` on model_runner_v1.py to verify no new syntax or type errors.",
+    "7. Re-launch vLLM serving validation and verify the fixes resolve the original errors. On success, the methodology has produced a version-compatible model_runner_v1.py."
+  ],
+  "affected_patterns": [
+    "Mismatched method signatures: Ascend model runner calls deprecated/removed static methods on framework classes",
+    "Missing framework attributes: Ascend SchedulerOutput lacks attributes present in CUDA SchedulerOutput",
+    "NPU tensor serialization: .tolist() on NPU tensors produces non-dict-serializable output for broadcast_tensor_dict",
+    "Import resolution failures: modules/classes imported in model_runner_v1.py don't exist in target vLLM version",
+    "Any runtime error whose traceback originates in vllm_ascend/worker/model_runner_v1.py and whose upstream counterpart in vllm/v1/worker/gpu_model_runner.py uses a different API pattern"
+  ],
+  "code_changes": [],
+  "references": [
+    "vllm/v1/worker/gpu_model_runner.py:955-964 → _init_mrope_positions uses model.get_mrope_input_positions() (instance method, not MRotaryEmbedding static method)",
+    "vllm/v1/worker/gpu_model_runner.py:2338-2342 → multimodal embedding uses model.embed_input_ids() with multimodal_embeddings and is_multimodal kwargs",
+    "vllm/v1/worker/gpu_model_runner.py:137 → uses apply_grammar_bitmask utility from vllm.v1.structured_output.utils (not scheduler_output.grammar_bitmask directly)",
+    "vllm/v1/worker/gpu_model_runner.py:3090 → .tolist() used only for simple count data, never for sampled_token_ids serialization",
+    "vllm_ascend/worker/model_runner_v1.py:776-785 → _init_mrope_positions now matches upstream pattern (verified post-fix)",
+    "vllm_ascend/worker/model_runner_v1.py:1382-1392 → embed_input_ids now matches upstream pattern (verified post-fix)"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT fix errors one-by-one without comparing against gpu_model_runner.py — individual fixes may miss the systematic version skew.",
+    "Do NOT assume vllm_ascend automatically tracks upstream API changes — the plugin is community-maintained and may lag by multiple versions.",
+    "Do NOT apply untargeted grepping across the entire codebase — the model_runner_v1.py ↔ gpu_model_runner.py comparison is the primary diagnostic tool; other files are secondary.",
+    "Do NOT delete or comment out failing code without understanding the upstream replacement — always apply the gpu_model_runner.py pattern.",
+    "Do NOT skip the import comparison step — missing imports (e.g., supports_mrope) are one of the most common and easiest-to-miss API skew issues."
+  ],
+  "meta": {
+    "source_run_id": "MinerU_20260601_213527",
+    "iterations_to_fix_in_source": 2,
+    "total_phase5_duration_s": 3075,
+    "issues_discovered_by_methodology": 4,
+    "refiner_reasoning": "This meta-skill codifies the systematic diagnostic methodology that discovered 4 distinct vLLM 0.11.2 API incompatibilities in a single migration run: (1) MRotaryEmbedding.get_input_positions_tensor removal → candidate-002, (2) get_input_embeddings → embed_input_ids → candidate-003, (3) scheduler_output.grammar_bitmask missing attribute → candidate-004, (4) NPU tensor serialization .tolist()/.clear() issues → candidate-005. The methodology's effectiveness is proven by the artifact evidence: all 4 issues were fixed in 2 repair iterations, and serving validation achieved FULL_PASS. The candidate's classification as 'skill' is correct — it prescribes an actionable, repeatable comparative analysis procedure. The category was corrected from 'operator_incompat' (candidate metadata error) to 'code_adaptation' because the issues are API version mismatches, not operator-level incompatibilities. Confidence kept at 0.85 due to strong evidence of methodology effectiveness."
+  },
+  "confidence": 0.85
+}

@@ -1,7 +1,0 @@
-title: numpy>=2.0 breaks CANN 8.1.RC1 TBE compiler — pin to numpy<2.0
-pattern: 
-replacement: 
-file_patterns: ["*.py"]
-target_roles: ["dependency_installer"]
-target_phases: ["phase_2_venv_create"]
-trigger_fingerprint: numpy_version_gte_2_0_detected_after_torch_npu_install_in_NPU_environment

@@ -1,0 +1,114 @@
+{
+  "type": "skill",
+  "skill_name": "vllm-0.11.2-mrope-get-input-positions-tensor-removal",
+  "title": "vLLM 0.11.2 MRotaryEmbedding.get_input_positions_tensor API removal on Ascend NPU \u2014 replace with model.get_mrope_input_positions()",
+  "category": "operator_incompat",
+  "subtype": "vllm_mrope_api_migration_0_11_2",
+  "tags": [
+    "torch-npu",
+    "vllm",
+    "ascend",
+    "mrope",
+    "rotary-embedding",
+    "vllm-0.11.2",
+    "multimodal-vlm"
+  ],
+  "symptom": "AttributeError: type object 'MRotaryEmbedding' has no attribute 'get_input_positions_tensor' \u2014 vLLM 0.11.2 removed this static method. The vllm_ascend NPUModelRunner._init_mrope_positions() still calls the deprecated API, causing runtime errors when serving multimodal Vision-Language Models (VLLMs) like Qwen2-VL, Qwen2.5-VL, or MinerU2.5-Pro on Ascend NPU.",
+  "root_cause": "vLLM 0.11.2 restructured M-RoPE position initialization: the static method MRotaryEmbedding.get_input_positions_tensor(prompt_token_ids, hf_config=..., image_grid_thw=..., video_grid_thw=..., second_per_grid_ts=..., audio_feature_lengths=..., use_audio_in_video=...) was removed and replaced by the instance method model.get_mrope_input_positions(prompt_token_ids, mm_features) that consumes multimodal features directly. The vllm_ascend plugin (model_runner_v1.py) retained the old static-method call with manual mm_feature field extraction, making it incompatible with vLLM \u22650.11.2. The upstream reference implementation is at vllm/v1/worker/gpu_model_runner.py lines 955-964.",
+  "fix_steps": [
+    "1. Detect the error signature: AttributeError on MRotaryEmbedding.get_input_positions_tensor in vllm_ascend/worker/model_runner_v1.py:_init_mrope_positions during multimodal VLM serving on Ascend NPU.",
+    "2. Open the upstream reference: vllm/v1/worker/gpu_model_runner.py lines 955-964 \u2014 observe the concise 8-line pattern using model.get_mrope_input_positions() directly on req_state fields.",
+    "3. Add supports_mrope to the import from vllm.model_executor.models.interfaces in model_runner_v1.py (used in the assert guard).",
+    "4. Replace the _init_mrope_positions method (remove the obsolete mm_feature field extraction loop that manually unpacks image_grid_thw, video_grid_thw, second_per_grid_ts, audio_feature_lengths, use_audio_in_video from mm_features, and remove the static MRotaryEmbedding.get_input_positions_tensor() call with its long keyword-argument list). Replace the entire method with: get the model via self.get_model(), assert supports_mrope(model), then call model.get_mrope_input_positions(req_state.prompt_token_ids, req_state.mm_features) and unpack the returned tuple into req_state.mrope_positions and req_state.mrope_position_delta.",
+    "5. Retain the MRotaryEmbedding import \u2014 do NOT remove it \u2014 because get_next_input_positions_tensor() is still used elsewhere in the file (line ~944) for on-the-fly completion mrope position computation.",
+    "6. Verify by running the vLLM serving entry script with a multimodal VLM model \u2014 confirm no AttributeError on M-RoPE position initialization and verify serving health-check passes."
+  ],
+  "affected_patterns": [
+    "MRotaryEmbedding.get_input_positions_tensor(prompt_token_ids, hf_config=..., image_grid_thw=..., video_grid_thw=..., second_per_grid_ts=..., audio_feature_lengths=..., use_audio_in_video=...)",
+    "def _init_mrope_positions(self, req_state: CachedRequestState): ... # with mm_feature extraction loop and static method call"
+  ],
+  "code_changes": [
+    {
+      "file": ".venv/lib/python3.10/site-packages/vllm_ascend/worker/model_runner_v1.py",
+      "before": "from vllm.model_executor.models.interfaces import (\n    supports_transcription,\n)",
+      "after": "from vllm.model_executor.models.interfaces import (\n    supports_mrope,\n    supports_transcription,\n)"
+    },
+    {
+      "file": ".venv/lib/python3.10/site-packages/vllm_ascend/worker/model_runner_v1.py",
+      "before": "    def _init_mrope_positions(self, req_state: CachedRequestState):\n        # Extract mm_feature fields for the static method call\n        hf_config = self.vllm_config.model_config.hf_config\n        mm_features = req_state.mm_features\n        image_grid_thw = []\n        video_grid_thw = []\n        second_per_grid_ts = []\n        audio_feature_lengths = []\n        use_audio_in_video = []\n        for feature in mm_features:\n            if isinstance(feature, dict):\n                image_grid_thw.extend(feature.get('image_grid_thw', []))\n                video_grid_thw.extend(feature.get('video_grid_thw', []))\n                second_per_grid_ts.extend(feature.get('second_per_grid_ts', []))\n                audio_feature_lengths.extend(feature.get('audio_feature_lengths', []))\n                use_audio_in_video.extend(feature.get('use_audio_in_video', []))\n        req_state.mrope_positions, req_state.mrope_position_delta = \\\n            MRotaryEmbedding.get_input_positions_tensor(\n                req_state.prompt_token_ids,\n                hf_config=hf_config,\n                image_grid_thw=image_grid_thw,\n                video_grid_thw=video_grid_thw,\n                second_per_grid_ts=second_per_grid_ts,\n                audio_feature_lengths=audio_feature_lengths,\n                use_audio_in_video=use_audio_in_video,\n            )",
+      "after": "    def _init_mrope_positions(self, req_state: CachedRequestState):\n        model = self.get_model()\n        assert supports_mrope(model), \"M-RoPE support is not implemented.\"\n\n        req_state.mrope_positions, req_state.mrope_position_delta = (\n            model.get_mrope_input_positions(\n                req_state.prompt_token_ids,\n                req_state.mm_features,\n            )\n        )"
+    }
+  ],
+  "references": [
+    "Upstream reference: vllm/v1/worker/gpu_model_runner.py lines 955-964 \u2014 GPUModelRunner._init_mrope_positions() using model.get_mrope_input_positions()",
+    "vllm_ascend/worker/model_runner_v1.py line 944 \u2014 MRotaryEmbedding.get_next_input_positions_tensor() still used for completion on-the-fly mrope computation; do NOT remove this import"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT blindly remove the MRotaryEmbedding import from model_runner_v1.py \u2014 get_next_input_positions_tensor() is still actively used at line ~944 for completion mrope position computation.",
+    "Do NOT attempt to downgrade vLLM to restore the old API \u2014 vLLM 0.11.2 is the target version and API migration is the correct path.",
+    "Do NOT manually unpack mm_features into image_grid_thw/video_grid_thw/etc. \u2014 the new get_mrope_input_positions() consumes mm_features directly and handles all modalities internally."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-547d820bb11b",
+    "iterations_to_fix_in_source": 2,
+    "verified_on_cann_version": "8.0.RC",
+    "verified_on_vllm_version": "0.11.2",
+    "validated_with_model": "MinerU2.5-Pro-2604-1.2B",
+    "refiner_reasoning": "This is a deterministic vLLM 0.11.2 API migration fix with a precise upstream reference pattern (gpu_model_runner.py:955-964). The fix was validated in 2 iterations: iteration 1 applied the code change, iteration 2 confirmed no mrope/rotary errors remained (the remaining UnboundLocalError in EngineCore tracer is a separate NPU engine-level issue). The 8-line replacement eliminates both the deprecated static method call and the obsolete mm_feature field extraction loop. Confidence reflects the version-specific scope \u2014 the fix applies precisely to vLLM 0.11.2\u2192vllm_ascend compatibility but generalizes to any multimodal VLM serving on Ascend NPU when this error signature appears.",
+    "created_at": "2026-06-02T02:24:05.811135+00:00"
+  },
+  "confidence": 0.9,
+  "target_roles": [
+    "code_adapter",
+    "fix_code",
+    "fix_operator"
+  ],
+  "target_phases": [
+    "analyze_error",
+    "fix_code",
+    "serving_validation"
+  ],
+  "trigger_fingerprint": "vLLM serving OOM on Ascend NPU with KV cache allocation failure, torch_npu.npu.memory_stats reporting significantly less allocated memory than torch_npu.npu.mem_get_info total minus free, non_torch_allocations exceeding 30% of total NPU memory, or gpu_memory_utilization setting silently violated due to invisible CANN driver allocations.",
+  "solidifier": "skill_solidifier",
+  "classifier": {
+    "type": "skill",
+    "target_roles": [
+      "code_adapter",
+      "fix_code",
+      "fix_operator"
+    ],
+    "target_phases": [
+      "analyze_error",
+      "fix_code",
+      "serving_validation"
+    ],
+    "solidifier": "skill_solidifier",
+    "reasoning": "The CANN driver memory invisibility is a fundamental architectural characteristic of the Ascend NPU runtime, not specific to any model or workload. The fix strategy (discrepancy detection between torch_npu.npu.memory_stats and torch_npu.npu.mem_get_info, profiling fallback when non-torch allocations exceed 30% threshold, and free-based safety cap at current_free * 0.9) constitutes an actionable, repeatable diagnostic-and-repair procedure. This warrants classification as a skill because it prescribes a concrete sequence of detection and mitigation steps that a fix_code or code_adapter agent can follow, rather than being a static knowledge narrative (document), a mechanical AST-level transformation (rule), or a prompt-tuning suggestion (prompt). The high priority and 0.9 confidence reflect the universal applicability to any vLLM deployment on Ascend NPU.",
+    "confidence": 0.9,
+    "trigger_fingerprint": "vLLM serving OOM on Ascend NPU with KV cache allocation failure, torch_npu.npu.memory_stats reporting significantly less allocated memory than torch_npu.npu.mem_get_info total minus free, non_torch_allocations exceeding 30% of total NPU memory, or gpu_memory_utilization setting silently violated due to invisible CANN driver allocations."
+  },
+  "candidate_id": "candidate-004",
+  "problem_description": "On Ascend NPU builds of vLLM, the SchedulerOutput object may not expose the grammar_bitmask attribute that exists on CUDA builds. Direct attribute access (scheduler_output.grammar_bitmask) raises AttributeError and crashes the serving engine. This affects lines 2018 and 1709 in vllm_ascend's model_runner_v1.py.",
+  "rough_fix_approach": "1) Wrap all accesses to scheduler_output.grammar_bitmask with hasattr/getattr guards: `getattr(scheduler_output, 'grammar_bitmask', None)`. 2) When grammar_bitmask is None, skip or provide default behavior for grammar-constrained decoding. 3) This defensive pattern should be applied to any attribute that may differ between CUDA and Ascend SchedulerOutput implementations.",
+  "recommended_type": "prompt",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/MinerU_20260601_213527",
+  "name": "vllm-0.11.2-mrope-get-input-positions-tensor-removal",
+  "asset_names": [
+    "SKILL.md",
+    "references/sources.md",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ],
+  "id": "e2e-v3-547d820bb11b-exp-vllm-0.11.2-mrope-get-input-positions-tensor-removal",
+  "run_id": "e2e-v3-547d820bb11b",
+  "created_at": "2026-06-02T02:35:02.525704+00:00",
+  "status": "staging",
+  "merged_from_runs": [
+    "e2e-v3-547d820bb11b",
+    "e2e-v3-547d820bb11b-exp-vllm-0.11.2-mrope-get-input-positions-tensor-removal"
+  ],
+  "promoted_at": "2026-06-02T02:35:02.541804+00:00",
+  "promotion_type": "skill"
+}

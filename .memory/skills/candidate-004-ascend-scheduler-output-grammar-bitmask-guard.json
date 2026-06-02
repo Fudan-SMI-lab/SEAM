@@ -1,0 +1,64 @@
+{
+  "type": "skill",
+  "skill_name": "ascend-scheduler-output-missing-attribute-guard",
+  "title": "Ascend NPU SchedulerOutput Missing grammar_bitmask Attribute Guard Pattern",
+  "category": "code_adaptation",
+  "subtype": "ascend_scheduler_output_missing_attribute",
+  "tags": [
+    "torch-npu",
+    "vllm",
+    "ascend",
+    "scheduler-output",
+    "grammar-bitmask",
+    "defensive-coding",
+    "attribute-guard"
+  ],
+  "symptom": "AttributeError: 'SchedulerOutput' object has no attribute 'grammar_bitmask' during vLLM serving on Ascend NPU. The serving engine crashes at model_runner_v1.py lines 1709 and 2018 when accessing scheduler_output.grammar_bitmask directly on Ascend builds where the SchedulerOutput implementation differs from CUDA.",
+  "root_cause": "On Ascend NPU builds of vLLM, the SchedulerOutput object may not expose the grammar_bitmask attribute that exists on CUDA builds. The Ascend scheduler implementation may omit grammar-constrained decoding data or use a different internal structure. Direct attribute access without defensive guards raises AttributeError and crashes the serving engine. The upstream gpu_model_runner.py avoids this by using a utility function (apply_grammar_bitmask from vllm.v1.structured_output.utils) with a separate grammar_output tracking variable, rather than accessing scheduler_output.grammar_bitmask directly.",
+  "fix_steps": [
+    "1. Locate all direct attribute accesses to scheduler_output.grammar_bitmask in vllm_ascend/worker/model_runner_v1.py via grep: `scheduler_output\\.grammar_bitmask`.",
+    "2. At the attribute retrieval site (inside apply_grammar_bitmask method), replace direct access `scheduler_output.grammar_bitmask` with defensive retrieval: `getattr(scheduler_output, 'grammar_bitmask', None)`.",
+    "3. When the result is None, the method should handle gracefully — the downstream XGrammar apply_token_bitmask_inplace call must be skipped.",
+    "4. At the call site (the conditional check before apply_grammar_bitmask), replace direct conditional `scheduler_output.grammar_bitmask is not None` with double guard: `hasattr(scheduler_output, 'grammar_bitmask') and scheduler_output.grammar_bitmask is not None`.",
+    "5. When the attribute is missing or None, skip grammar-constrained decoding entirely — logits pass through unchanged.",
+    "6. Apply the same two-layer defensive pattern to any other SchedulerOutput attribute that may differ between CUDA and Ascend builds (e.g., scheduled_spec_decode_tokens, structured_output_request_ids).",
+    "7. Run lsp_diagnostics on the modified file and verify no new errors introduced.",
+    "8. Test with a serving launch that does NOT use grammar-constrained decoding to confirm the guard prevents crash when attribute is absent."
+  ],
+  "affected_patterns": [
+    "scheduler_output.grammar_bitmask (direct attribute access — crashes on Ascend)",
+    "if scheduler_output.grammar_bitmask is not None: (direct conditional check — crashes on Ascend)",
+    "AttributeError: 'SchedulerOutput' object has no attribute 'grammar_bitmask'"
+  ],
+  "code_changes": [
+    {
+      "file": "vllm_ascend/worker/model_runner_v1.py",
+      "location": "line 1709, inside apply_grammar_bitmask() method",
+      "before": "grammar_bitmask = scheduler_output.grammar_bitmask",
+      "after": "grammar_bitmask = getattr(scheduler_output, 'grammar_bitmask', None)"
+    },
+    {
+      "file": "vllm_ascend/worker/model_runner_v1.py",
+      "location": "line 2018, call site before apply_grammar_bitmask()",
+      "before": "if scheduler_output.grammar_bitmask is not None:\n    logits = self.apply_grammar_bitmask(scheduler_output, logits)",
+      "after": "if hasattr(scheduler_output, 'grammar_bitmask') and scheduler_output.grammar_bitmask is not None:\n    logits = self.apply_grammar_bitmask(scheduler_output, logits)"
+    }
+  ],
+  "references": [
+    "https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu_model_runner.py#L137 — upstream uses apply_grammar_bitmask utility import",
+    "https://github.com/vllm-project/vllm/blob/main/vllm/v1/worker/gpu_model_runner.py#L2914-L2917 — upstream pattern: if grammar_output is not None rather than scheduler_output.grammar_bitmask"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT assume SchedulerOutput exposes the same attributes as CUDA builds — always use defensive accessors on Ascend.",
+    "Do NOT access scheduler_output.grammar_bitmask without hasattr/getattr guard — this crashes the serving engine.",
+    "Do NOT crash or raise when grammar_bitmask is unavailable — skip grammar-constrained decoding gracefully and allow normal token sampling to proceed.",
+    "Do NOT only add the getattr guard without also adding the hasattr guard at the call site — the method body downstream code (np.zeros_like, enumerate over structured_output_request_ids) will also crash."
+  ],
+  "meta": {
+    "source_run_id": "MinerU_20260601_213527",
+    "iterations_to_fix_in_source": 2,
+    "refiner_reasoning": "Candidate classified this as 'prompt' type, but the fix is a concrete, verifiable code change (defensive getattr/hasattr guards at two call sites in model_runner_v1.py) that is already applied and can be followed blindly by another code_adapter agent. This qualifies as a skill — it prescribes a repeatable two-layer defensive coding pattern for any SchedulerOutput attribute that may differ between CUDA and Ascend NPU builds. The upstream gpu_model_runner.py avoids this issue entirely by using a separate grammar_output variable rather than accessing scheduler_output.grammar_bitmask, confirming that the attribute is indeed CUDA-specific. Confidence raised from 0.75 to 0.85 because the fix is verified in place with zero residual direct accesses and both guard layers are present."
+  },
+  "confidence": 0.85
+}
