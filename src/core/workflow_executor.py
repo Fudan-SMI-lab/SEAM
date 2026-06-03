@@ -111,7 +111,7 @@ SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT: int | None = SUB_WORKFLOW_REPAIR_TIMEOUT_D
 # when the OpenCode server's SSE response stream stalls (see _guarded POST timeout).
 # This deadline is enforced at the concurrent.futures level, independent of the
 # phase-configured timeout which controls the POST guard timeout inside send_command.
-SUB_WORKFLOW_LLM_HARD_DEADLINE_SECONDS: int = 3600
+SUB_WORKFLOW_LLM_HARD_DEADLINE_SECONDS: int = 43200
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",

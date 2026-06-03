@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-PHASE6_DEFAULT_TIMEOUT = 600
+PHASE6_DEFAULT_TIMEOUT = 3600
 PHASE6_TIMEOUT_CONFIG_KEYS = (
     "session_timeout_phase6",
     "session_timeout_phase_6",
