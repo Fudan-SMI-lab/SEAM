@@ -1,0 +1,8 @@
+name: pybind-absolute-path-loading
+title: "Pybind .so Loading via Absolute Path: Avoid sys.path.insert() Accumulation to Prevent Wrong Module Resolution"
+description: "Pybind .so Loading via Absolute Path: Avoid sys.path.insert() Accumulation to Prevent Wrong Module Resolution"
+category: code_adaptation
+subtype: pybind_syspath_accumulation_wrong_so
+target_roles: ["code_adapter"]
+target_phases: ["phase_5_validation"]
+trigger_fingerprint: code_adaptation|pybind_syspath_accumulation|ascend-npu|pybind|custom_ops_lib|sys.path|importlib|4a0f8e6d3c97

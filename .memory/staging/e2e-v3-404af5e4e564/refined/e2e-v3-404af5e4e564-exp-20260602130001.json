@@ -1,0 +1,56 @@
+{
+  "type": "skill",
+  "skill_name": "off-by-one-string-slice-prefix-length-fix",
+  "title": "Off-by-one string slicing after device-prefix length change (CUDA:→NPU:)",
+  "category": "code_adaptation",
+  "subtype": "prefix_length_slice_off_by_one",
+  "tags": ["torch-npu", "device-parsing", "string-slicing", "off-by-one", "rule-blind-spot", "prefix-length"],
+  "symptom": "After Phase 4 rule migration replaces startswith('cuda:') with startswith('npu:'), adjacent code using v[5:] to extract device indices fails silently — extracting ':1' instead of '1' from 'npu:1', causing validation to reject valid NPU device identifiers with no import errors or tracebacks.",
+  "root_cause": "Phase 4 rules handle string patterns but NOT integer literals in adjacent slice operations. When 'cuda:' (5 chars) → 'npu:' (4 chars), the integer 5 in v[5:] encoding the old prefix length is not updated because integer literals are not string patterns. The relationship is operational, not lexical.",
+  "fix_steps": [
+    "1. After Phase 4 rule migration, grep for startswith('npu:') patterns in all migrated files.",
+    "2. Within 5 lines of each match, look for string slicing of form VAR[N:] where N is a literal integer.",
+    "3. Check if N equals the old CUDA prefix length: 'cuda:' → 5, 'cuda' → 4 — if yes, the index needs updating.",
+    "4. Update N to the new NPU prefix length: 'npu:' → 4, 'npu' → 3.",
+    "5. Re-run device validation tests with NPU identifiers ('npu:0', 'npu:1', 'npu:10') to confirm correctness."
+  ],
+  "affected_patterns": [
+    "v.startswith('npu:') with adjacent v[N:] where N >= 4",
+    "_validate_device-style validators extracting index by prefix slicing",
+    "Code using if cond: + index = value[N:] on device identifier strings"
+  ],
+  "code_changes": [
+    {
+      "file": "glmocr/config.py",
+      "line_range": [241, 242],
+      "description": "v[5:] → v[4:] in _validate_device — 'npu:' is 4 chars, not 5 like 'cuda:'",
+      "before": "if v.startswith(\"npu:\"):\n            index_part = v[5:]",
+      "after": "if v.startswith(\"npu:\"):\n            index_part = v[4:]"
+    }
+  ],
+  "references": [
+    "phase_4_rule_migration.json: 25 device_string and 20 device_index replacements — neither handles adjacent slice indices",
+    "phase_5_validation_final.json: iteration_count=1, error category=code_adapter, v[5:]→v[4:] confirmed",
+    "glmocr/config.py:242 — corrected index_part = v[4:]"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT blindly search-and-replace all v[5:] → v[4:] — only fix slices near device prefix checks.",
+    "Do NOT skip re-running tests after the fix — this bug produces silent validation failures.",
+    "Do NOT assume Phase 4 rules catch all CUDA→NPU issues — integer literals encoding prefix lengths are invisible to pattern matching."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-404af5e4e564",
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "8.1.RC1",
+    "refiner_reasoning": "Single candidate from this run. The off-by-one pattern is a systematic blind spot in Phase 4 rule-based migration. Grounded in config.py:242 fix (v[5:]→v[4:]), confirmed by 135/157 unit tests passing. Confidence 0.85: high generalizability to any CUDA→NPU project using string-slicing device extraction, reduced slightly because not all projects use this idiom.",
+    "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260602_125959"
+  },
+  "confidence": 0.85,
+  "target_roles": ["code_adapter"],
+  "target_phases": ["phase_4_rule_migration", "phase_5_validation"],
+  "trigger_fingerprint": "code_adaptation|prefix_length_slice_off_by_one|device-parsing|off-by-one|prefix-length|rule-blind-spot|string-slicing|torch-npu|cb0e4f5a12ab",
+  "id": "e2e-v3-404af5e4e564-exp-20260602130001",
+  "run_id": "e2e-v3-404af5e4e564",
+  "created_at": "2026-06-02T13:00:01Z"
+}

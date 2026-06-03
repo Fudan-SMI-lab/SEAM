@@ -1,0 +1,38 @@
+{
+  "candidate_id": "candidate-001",
+  "title": "CANN 8.x requires NumPy <2.0 due to removed np.float_ alias",
+  "problem_description": "CANN 8.1.RC1 tbe/te packages reference np.float_ which was deprecated in NumPy 1.x and removed entirely in NumPy 2.0+. When NumPy >=2.0 is installed in the venv (the default on Python 3.10+ via pip), importing tbe or te fails with AttributeError: 'numpy' has no attribute 'float_'. This blocks the entire NPU import preflight, causing the migration validation to fail before the server even launches.",
+  "rough_fix_approach": "Pin numpy<2.0.0 in the project venv during Phase 2 (venv creation) BEFORE installing torch-npu or any CANN-dependent packages. The fix command is: pip install 'numpy<2.0.0'. This restores the np.float_ alias that CANN 8.1.RC1 expects. No code changes needed in the migrated project.",
+  "artifact_evidence": [
+    "raw/phase_analyze_error_attempt0.json:lines 1-13",
+    "raw/phase_5_validation_attempt0.json:lines 164-207 (analyze_error, error_analysis)",
+    "validated/phase_5_validation_canonical.json:lines 170-206 (error_analysis with root_cause and suggested_fix)",
+    "raw/phase_fix_dependency_attempt0.json:lines 1-14 (dependency fix result: FULL_PASS after numpy downgrade)",
+    "validated/phase_2_venv_create_canonical.json (installed_packages list, no numpy pinning on initial install)"
+  ],
+  "involved_code_files": [
+    {
+      "path": ".venv/lib/python3.10/site-packages (CANN tbe/te packages)",
+      "role": "CANN toolkit system packages \u2014 tbe and te modules reference np.float_",
+      "line_range": [
+        1,
+        1
+      ]
+    }
+  ],
+  "recommended_type": "rule",
+  "confidence": 0.95,
+  "priority": "high",
+  "reasoning": "This is a hard dependency constraint that affects EVERY project migrated to CANN 8.x. NumPy 2.x is now the default on pip for Python 3.10+ environments, so any migration that doesn't pin numpy will fail at the import preflight stage. This is fully deterministic \u2014 either numpy is <2.0.0 and tbe/te imports work, or it's >=2.0.0 and they fail. It can be enforced as a pre-install dependency version constraint in Phase 2 (venv_create). The confidence is 0.95 because the error traceback and root cause are unambiguous, the fix is trivially verifiable, and the pattern generalizes to all CANN 8.x environments (not just 8.1.RC1).",
+  "tags": [
+    "torch-npu",
+    "cann-8.x",
+    "numpy-compatibility",
+    "tbe-te-import",
+    "dependency-version-pinning"
+  ],
+  "category": "dependency_issue",
+  "subtype": "numpy2_incompatible_with_cann8",
+  "source_run_id": "e2e-v3-404af5e4e564",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260602_125959"
+}

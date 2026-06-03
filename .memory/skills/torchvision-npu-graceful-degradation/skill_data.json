@@ -1,0 +1,70 @@
+{
+  "type": "skill",
+  "skill_name": "torchvision-npu-graceful-degradation",
+  "title": "Torchvision Operator NPU Availability: Gracefully Degrade Metrics Instead of Crashing on Missing NPU Kernels",
+  "category": "operator_incompat",
+  "subtype": "torchvision_nms_no_npu_kernel",
+  "tags": [
+    "ascend-npu",
+    "torchvision",
+    "nms",
+    "lpips",
+    "metrics",
+    "graceful-degradation",
+    "operator-compatibility"
+  ],
+  "symptom": "RuntimeError: 'torchvision::nms' not implemented for 'npu' when computing perceptual metrics (LPIPS) or running torchvision-based image processing on Ascend NPU. Deepwave FWI or other scientific computing workloads crash during metric computation or validation stages because torchvision lacks NPU kernel backends.",
+  "root_cause": "torchvision is primarily developed for CUDA and CPU backends. The torchvision::nms operator and related ops have no registered NPU kernel implementation in the torch_npu or CANN ecosystem. When code attempts to call these operators on an NPU tensor, PyTorch's dispatcher raises a RuntimeError. Unlike standard PyTorch ops that torch_npu can intercept and remap, torchvision's custom C++ ops are dispatched at a level where the NPU fallback is unavailable.",
+  "fix_steps": [
+    "1. Identify the torchvision operator call site \u2014 typically in metric computation code (e.g., LPIPS using NMS internally, or custom validation scripts like validate_custom_ops_full.py).",
+    "2. Wrap the torchvision operator call in a try/except RuntimeError block that checks for the \"'torchvision::<op>' not implemented for 'npu'\" error message pattern.",
+    "3. When the RuntimeError is caught, emit an informative skip message so the user knows which metric was degraded.",
+    "4. Fallback to scikit-image (skimage) for PSNR and SSIM computation, which run on CPU and do not depend on NPU kernel availability.",
+    "5. Ensure the overall validation pipeline does not crash \u2014 continue with remaining metrics and report degraded status in the final output."
+  ],
+  "affected_patterns": [
+    "torchvision.ops.nms() called on NPU tensors without RuntimeError handling",
+    "LPIPS metric computation that internally triggers torchvision::nms on NPU",
+    "validate_custom_ops_full.py or similar validation scripts with torchvision operator calls on NPU",
+    "RuntimeError traceback containing 'torchvision::nms' and 'not implemented for npu'"
+  ],
+  "code_changes": [
+    {
+      "file": "validate_custom_ops_full.py or test scripts calling torchvision operators",
+      "before": "    import torchvision.ops as ops\n    nms_result = ops.nms(boxes, scores, iou_threshold)",
+      "after": "    import torchvision.ops as ops\n    try:\n        nms_result = ops.nms(boxes, scores, iou_threshold)\n        lpips_score = compute_lpips(pred, target)\n    except RuntimeError as e:\n        if \"torchvision::nms\" in str(e) and \"npu\" in str(e):\n            Logger.warning(\"torchvision::nms not available on NPU, skipping LPIPS; falling back to skimage metrics.\")\n            from skimage.metrics import peak_signal_noise_ratio, structural_similarity\n            psnr = peak_signal_noise_ratio(target.cpu().numpy(), pred.cpu().numpy(), data_range=1.0)\n            ssim = structural_similarity(target.cpu().numpy(), pred.cpu().numpy(), data_range=1.0, multichannel=True)\n            lpips_score = None  # gracefully skipped\n        else:\n            raise"
+    }
+  ],
+  "references": [
+    "https://pytorch.org/vision/stable/ops.html \u2014 torchvision operator documentation",
+    "https://scikit-image.org/docs/stable/api/skimage.metrics.html \u2014 skimage metrics documentation",
+    "https://www.hiascend.com/document/detail/en/CANNCommunityEdition/80RC1alpha003/apiref/appdevgapi/ascend_ops_list_0001.html \u2014 CANN operator support list"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT attempt to force torchvision operators onto the NPU via device transfer hacks \u2014 the kernels simply do not exist.",
+    "Do NOT silently skip metrics without logging \u2014 the user must know which metrics were degraded for trustworthiness.",
+    "Do NOT import skimage unconditionally as a hard dependency \u2014 only import it within the RuntimeError catch block so CUDA-capable environments are unaffected.",
+    "Do NOT let the RuntimeError propagate and crash the entire validation pipeline \u2014 graceful degradation is the goal."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-8c8bf406dc7e",
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "8.0.RC (ascend-toolkit/latest, 910B2C)",
+    "verified_on_workload": "Deepwave FWI metrics validation (LPIPS/PSNR/SSIM)",
+    "refiner_reasoning": "This is an inherent operator incompatibility: torchvision custom ops (C++ kernels) have no registered NPU backend. NPU cannot run these ops natively. The correct engineering response is graceful degradation \u2014 catch the RuntimeError, inform the user, and fallback to CPU-based metrics (skimage PSNR/SSIM) that provide comparable signal quality assessment. Confidence is 0.80 (not higher because LPIPS is genuinely skipped, not replaced; some users may need LPIPS specifically).",
+    "project_source_root": "output_projects/deepwave_fwi",
+    "created_at": "2026-06-02T02:30:00.000000+00:00"
+  },
+  "confidence": 0.80,
+  "target_roles": [
+    "code_adapter",
+    "error_analyzer"
+  ],
+  "target_phases": [
+    "phase_5_validation"
+  ],
+  "trigger_fingerprint": "operator_incompat|torchvision_nms_no_npu_kernel|ascend-npu|torchvision|nms|graceful-degradation|3f9e7d5c2b86",
+  "solidifier": "rule_solidifier",
+  "candidate_id": "candidate-004"
+}

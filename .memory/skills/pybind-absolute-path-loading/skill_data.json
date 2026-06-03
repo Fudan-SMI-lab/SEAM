@@ -1,0 +1,103 @@
+{
+  "type": "skill",
+  "skill_name": "pybind-absolute-path-loading",
+  "title": "Pybind .so Loading via Absolute Path: Avoid sys.path.insert() Accumulation to Prevent Wrong Module Resolution",
+  "category": "code_adaptation",
+  "subtype": "pybind_syspath_accumulation_wrong_so",
+  "tags": [
+    "ascend-npu",
+    "pybind",
+    "custom-ops",
+    "importlib",
+    "sys-path",
+    "module-loading",
+    "multi-module"
+  ],
+  "symptom": "Multi-module pybind projects producing identically-named custom_ops_lib.so files across different directories load the wrong .so file at runtime. As more modules are imported, sys.path accumulates stale entries, and Python resolves import custom_ops_lib to the first match in sys.path rather than the intended module. This causes incorrect operator registrations, segmentation faults, or silent correctness errors.",
+  "root_cause": "sys.path.insert(0, dir) accumulates paths over multiple module loads without removing previous entries. Since all modules produce identically-named custom_ops_lib.so files, Python's import system resolves import custom_ops_lib to whichever .so appears first in sys.path — which may be a module loaded earlier rather than the intended one. The (0, ...) insert at position 0 pushes older entries down but never removes them, creating an expanding search list where stale paths shadow new ones.",
+  "fix_steps": [
+    "1. Locate all sys.path.insert(0, ...) calls followed by import custom_ops_lib in the project (typically in benchmark_custom_ops.py or similar entry scripts).",
+    "2. Replace each sys.path.insert() + import pair with importlib.util.spec_from_file_location() using the absolute path to the correct .so file.",
+    "3. Use a unique module name per operator (e.g., custom_ops_lib_depthwise instead of the generic custom_ops_lib) to avoid name collisions in sys.modules.",
+    "4. Call spec.loader.exec_module(module) to execute the module after creating it with importlib.util.module_from_spec(spec).",
+    "5. Remove all sys.path.insert(0, ...) calls for .so directories — they are no longer needed and would still pollute sys.path."
+  ],
+  "affected_patterns": [
+    "sys.path.insert(0, op_dir) followed by import custom_ops_lib",
+    "Multiple directories containing identically-named custom_ops_lib.so files",
+    "Wrong custom_ops_lib loaded causing operator mismatch or segfault",
+    "sys.modules containing a stale custom_ops_lib from a previously loaded directory"
+  ],
+  "code_changes": [
+    {
+      "file": "benchmark_custom_ops.py",
+      "before": "        sys.path.insert(0, op_dir)\n        import custom_ops_lib",
+      "after": "        import importlib.util\n        spec = importlib.util.spec_from_file_location(\n            f\"custom_ops_lib_{op_name}\",\n            os.path.join(op_dir, \"custom_ops_lib.so\")\n        )\n        custom_ops_lib = importlib.util.module_from_spec(spec)\n        spec.loader.exec_module(custom_ops_lib)"
+    }
+  ],
+  "references": [
+    "https://docs.python.org/3/library/importlib.html#importlib.util.spec_from_file_location — Python importlib documentation",
+    "https://pybind11.readthedocs.io/en/stable/ — pybind11 documentation",
+    "https://docs.python.org/3/library/sys.html#sys.path — Python sys.path documentation"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT use sys.path.insert(0, ...) for loading pybind .so files in multi-module projects — the accumulation causes wrong .so resolution.",
+    "Do NOT import pybind modules with the same name (custom_ops_lib) from different directories — sys.modules caching will return the first loaded module.",
+    "Do NOT rely on sys.path.remove() or sys.path.pop() to clean up between imports — this is fragile and error-prone across concurrent or nested imports.",
+    "Do NOT use relative imports or importlib.import_module() with a shared module name — always use spec_from_file_location() with a unique name per operator."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-8c8bf406dc7e",
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "8.0.RC (ascend-toolkit/latest, 910B2C)",
+    "refiner_reasoning": "This is a fundamental flaw in how multi-module pybind projects load custom operators: sys.path.insert() accumulates entries that shadow each other. The fix replaces the global sys.path manipulation with targeted importlib.util.spec_from_file_location() using absolute paths and unique module names, which is the Python-standard way to load dynamic modules without polluting the global import namespace. Single-iteration fix confirms the approach is deterministic and complete. Confidence is 0.75 because the fix pattern is correct but edge cases (C extension dependencies, namespace packages) may require additional handling.",
+    "project_source_root": "output_projects/Deepwave_20260602_000000",
+    "created_at": "2026-06-02T03:00:00.000000+00:00"
+  },
+  "confidence": 0.75,
+  "target_roles": [
+    "code_adapter"
+  ],
+  "target_phases": [
+    "phase_5_validation"
+  ],
+  "trigger_fingerprint": "code_adaptation|pybind_syspath_accumulation|ascend-npu|pybind|custom_ops_lib|sys.path|importlib|4a0f8e6d3c97",
+  "solidifier": "skill_solidifier",
+  "classifier": {
+    "type": "skill",
+    "target_roles": [
+      "code_adapter"
+    ],
+    "target_phases": [
+      "phase_5_validation"
+    ],
+    "solidifier": "skill_solidifier",
+    "reasoning": "This candidate describes a systematic bug in multi-module pybind projects: sys.path.insert() accumulation causes identically-named .so files to shadow each other, loading the wrong custom operator. The fix replaces sys.path manipulation with importlib.util.spec_from_file_location() using absolute paths and unique module names. This is a classic skill — an actionable procedure that a code_adapter agent can execute when encountering wrong .so resolution or operator mismatch errors in multi-module pybind projects. The 0.75 confidence reflects that the fix pattern is deterministic for most cases but may require additional handling for C extension dependencies or namespace packages.",
+    "confidence": 0.75,
+    "trigger_fingerprint": "code_adaptation|pybind_syspath_accumulation|ascend-npu|pybind|custom_ops_lib|sys.path|importlib|4a0f8e6d3c97"
+  },
+  "candidate_id": "candidate-005",
+  "problem_description": "Multi-module pybind projects (like Deepwave benchmark_custom_ops.py) use sys.path.insert(0, dir) + import custom_ops_lib to load compiled .so files. Because each module produces identically-named custom_ops_lib.so files, Python's import system resolves to the first match in the accumulated sys.path, loading the wrong operator. This causes incorrect custom operator registrations, segmentation faults, or silently wrong results — and the bug gets worse as more modules are loaded because older sys.path entries shadow newer ones.",
+  "rough_fix_approach": "1) Replace sys.path.insert(0, op_dir) + import custom_ops_lib with importlib.util.spec_from_file_location() using the absolute path to the .so file. 2) Use a unique module name per operator (e.g., custom_ops_lib_depthwise) to prevent sys.modules collisions. 3) Create the module with importlib.util.module_from_spec(spec) and execute with spec.loader.exec_module(module). 4) Remove all sys.path.insert(0, ...) calls for .so directories.",
+  "recommended_type": "skill",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/Deepwave_20260602_000000",
+  "name": "pybind-absolute-path-loading",
+  "asset_names": [
+    "SKILL.md",
+    "references/sources.md",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ],
+  "id": "e2e-v3-8c8bf406dc7e-exp-pybind-absolute-path-loading",
+  "run_id": "e2e-v3-8c8bf406dc7e",
+  "created_at": "2026-06-02T03:00:00.000000+00:00",
+  "status": "staging",
+  "merged_from_runs": [
+    "e2e-v3-8c8bf406dc7e",
+    "e2e-v3-8c8bf406dc7e-exp-pybind-absolute-path-loading"
+  ],
+  "promoted_at": "2026-06-02T03:00:00.000000+00:00",
+  "promotion_type": "skill"
+}

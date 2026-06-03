@@ -1,0 +1,46 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "MISSING_COMPILED_BACKEND guard: return None in get_backend_function() when compiled C/CUDA extensions are absent on NPU",
+  "problem_description": "Projects with compiled C/CUDA backend extensions (e.g., libdeepwave_C.so) fail on NPU because the .so file is compiled for CUDA and cannot be loaded at runtime. When MISSING_COMPILED_BACKEND=True, calling get_backend_function() with a compiled kernel name crashes with SystemError or ImportError because the shared library is missing or incompatible. Without a guard, the entire operation fails even though a pure-Python or torch.npu fallback exists.",
+  "rough_fix_approach": "Add an early-return guard at the top of get_backend_function() in the project's backend_utils.py: `if MISSING_COMPILED_BACKEND: return None`. This signals callers that the compiled backend kernel is unavailable, allowing them to fall back to the Python implementation or torch.npu-based computation. The guard is a single conditional check that doesn't require modifying any calling code \u2014 callers already handle None returns from get_backend_function().",
+  "artifact_evidence": [
+    "validated/phase_5_validation_canonical.json:line 24 (backend_utils_patched: true)",
+    "output_projects/04_Deepwave_20260602_213331/deepwave/backend_utils.py (get_backend_function with MISSING_COMPILED_BACKEND guard)",
+    "output_projects/04_Deepwave_20260602_213331/deepwave/scalar.py (caller checks return value of get_backend_function before using compiled kernel)"
+  ],
+  "involved_code_files": [
+    {
+      "path": "deepwave/backend_utils.py",
+      "role": "Backend function dispatcher \u2014 resolves compiled extension kernels",
+      "line_range": [
+        1,
+        80
+      ]
+    },
+    {
+      "path": "deepwave/scalar.py",
+      "role": "Wave propagation core \u2014 uses get_backend_function() for compiled kernels, falls back to Python",
+      "line_range": [
+        1,
+        50
+      ]
+    }
+  ],
+  "recommended_type": "rule",
+  "confidence": 0.9,
+  "priority": "high",
+  "reasoning": "This is a universal pattern for any project migrating from CUDA that has compiled C/CUDA backend extensions. The compiled .so files are inherently platform-specific and won't exist on NPU. The fix is deterministic \u2014 either the flag is set and get_backend_function returns None (safe fallback), or it's not set and the call crashes. The pattern is highly generalizable because it doesn't depend on specific operator semantics, just on the existence of a compiled-vs-interpreted dispatch mechanism. Confidence is 0.90 because the approach is proven to work on this project and is a standard software engineering pattern.",
+  "tags": [
+    "torch-npu",
+    "compiled-backend",
+    "cuda-extension",
+    "fallback-pattern",
+    "custom-op",
+    "ascend-npu"
+  ],
+  "category": "code_adaptation",
+  "subtype": "missing_compiled_backend_guard",
+  "source_run_id": "e2e-v3-8c8bf406dc7e",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/04_Deepwave_20260602_213331",
+  "id": "e2e-v3-8c8bf406dc7e-exp-compiled-backend-guard"
+}

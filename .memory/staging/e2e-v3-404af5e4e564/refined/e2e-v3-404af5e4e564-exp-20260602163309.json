@@ -1,0 +1,69 @@
+{
+  "type": "rule",
+  "title": "Pin NumPy <2.0.0 before torch-npu installation for CANN 8.x compatibility",
+  "pattern": "numpy[\\s><=!~]*2[\\d.]*",
+  "replacement": "numpy<2.0.0",
+  "file_patterns": [
+    "requirements*.txt",
+    "*.txt",
+    "setup.cfg",
+    "pyproject.toml"
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-404af5e4e564",
+    "confidence": 0.95,
+    "cann_version": "8.1.RC1",
+    "refiner_reasoning": "CANN 8.1.RC1 tbe/te packages reference np.float_ which was removed in NumPy 2.0+. Pinning numpy<2.0.0 before torch-npu installation prevents the import preflight AttributeError. Validated in GLM-OCR migration: 5 Phase 5 iterations, fix resolved on iteration 1 with FULL_PASS verification. No project code changes needed \u2014 purely a dependency version constraint.",
+    "created_at": "2026-06-02T16:33:09.226457+00:00"
+  },
+  "target_roles": [
+    "code_adapter"
+  ],
+  "target_phases": [
+    "phase_4_rule_migration"
+  ],
+  "trigger_fingerprint": "config_error|sglang_npu_launch_flags_missing|ascend-npu|cuda-graph-disable|launch-flags|server-warmup-skip|sglang-serving|ea1aa51548b1",
+  "solidifier": "rule_solidifier",
+  "classifier": {
+    "type": "rule",
+    "target_roles": [
+      "code_adapter"
+    ],
+    "target_phases": [
+      "phase_4_rule_migration"
+    ],
+    "solidifier": "rule_solidifier",
+    "reasoning": "candidate provided recommended_type/type",
+    "confidence": 0.9,
+    "trigger_fingerprint": "config_error|sglang_npu_launch_flags_missing|ascend-npu|cuda-graph-disable|launch-flags|server-warmup-skip|sglang-serving|ea1aa51548b1"
+  },
+  "candidate_id": "candidate-003",
+  "problem_description": "SGLang's default launch behavior attempts CUDA graph capture and server warmup, both of which fail on Ascend NPU: (1) CUDA graph capture is a CUDA-specific feature not available on NPU, causing the server to crash during startup; (2) server warmup exercises operator patterns that may not have NPU implementations, causing spurious failures. Without these flags, the SGLang server fails to start or returns errors during initial requests.",
+  "rough_fix_approach": "When launching SGLang on NPU (backend=ascend), always append --disable-cuda-graph and --skip-server-warmup to the sglang serve command. Additionally, --trust-remote-code should be added when the model uses custom HuggingFace model code (common for OCR/VLM models). These flags can be auto-injected by the serving validation script during Phase 3/Phase 5.",
+  "recommended_type": "rule",
+  "tags": [
+    "sglang-serving",
+    "ascend-npu",
+    "cuda-graph-disable",
+    "server-warmup-skip",
+    "launch-flags"
+  ],
+  "category": "config_error",
+  "subtype": "sglang_npu_launch_flags_missing",
+  "confidence": 0.9,
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260602_125959",
+  "_asset_contents": {
+    "rule.yaml": "title: Pin NumPy <2.0.0 before torch-npu installation for CANN 8.x compatibility\npattern: numpy[\\s><=!~]*2[\\d.]*\nreplacement: numpy<2.0.0\nfile_patterns: [\"requirements*.txt\", \"*.txt\", \"setup.cfg\", \"pyproject.toml\"]\ntarget_roles: [\"code_adapter\"]\ntarget_phases: [\"phase_4_rule_migration\"]\ntrigger_fingerprint: config_error|sglang_npu_launch_flags_missing|ascend-npu|cuda-graph-disable|launch-flags|server-warmup-skip|sglang-serving|ea1aa51548b1\n",
+    "metadata.json": {
+      "type": "rule",
+      "run_id": "e2e-v3-404af5e4e564"
+    }
+  },
+  "asset_names": [
+    "metadata.json",
+    "rule.yaml"
+  ],
+  "id": "e2e-v3-404af5e4e564-exp-20260602163309",
+  "run_id": "e2e-v3-404af5e4e564",
+  "created_at": "2026-06-02T16:33:09.226613+00:00"
+}

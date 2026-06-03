@@ -1,0 +1,8 @@
+name: torchvision-npu-graceful-degradation
+title: Torchvision Operator NPU Availability Graceful Degradation
+description: "Torchvision Operator NPU Availability: Gracefully Degrade Metrics Instead of Crashing on Missing NPU Kernels"
+category: operator_incompat
+subtype: torchvision_nms_no_npu_kernel
+target_roles: ["code_adapter", "error_analyzer"]
+target_phases: ["phase_5_validation"]
+trigger_fingerprint: operator_incompat|torchvision_nms_no_npu_kernel|ascend-npu|torchvision|nms|graceful-degradation|3f9e7d5c2b86

@@ -1,0 +1,136 @@
+{
+  "id": "e2e-v3-8c8bf406dc7e-exp-compiled-backend-guard",
+  "run_id": "e2e-v3-8c8bf406dc7e",
+  "type": "rule",
+  "skill_name": "compiled-backend-guard",
+  "name": "compiled-backend-guard",
+  "title": "MISSING_COMPILED_BACKEND guard: return None in get_backend_function() when compiled C/CUDA extensions are absent on NPU",
+  "category": "code_adaptation",
+  "subtype": "missing_compiled_backend_early_return",
+  "confidence": 0.9,
+  "target_roles": [
+    "code_adapter"
+  ],
+  "target_phases": [
+    "phase_4_rule_migration",
+    "phase_5_validation"
+  ],
+  "trigger_fingerprint": "code_adaptation|missing_compiled_backend_guard|ascend-npu|backend-utils|compiled-extension|1b5d9273ae42",
+  "solidifier": "rule_solidifier",
+  "candidate_id": "candidate-002",
+  "source_run_id": "e2e-v3-8c8bf406dc7e",
+  "created_at": "2026-06-02T23:07:40.371321+00:00",
+  "promoted_at": "2026-06-02T23:07:40.371333+00:00",
+  "promotion_type": "rule",
+  "status": "promoted",
+  "meta": {
+    "source_run_id": "e2e-v3-8c8bf406dc7e",
+    "created_at": "2026-06-02T23:07:40.371335+00:00"
+  },
+  "_asset_contents": {
+    "skill_data.json": {
+      "type": "rule",
+      "skill_name": "compiled-backend-guard",
+      "title": "MISSING_COMPILED_BACKEND Guard: Return None When Compiled Extensions Absent",
+      "category": "code_adaptation",
+      "subtype": "missing_compiled_backend_early_return",
+      "tags": [
+        "ascend-npu",
+        "compiled-extension",
+        "backend-utils",
+        "npu-migration",
+        "cuda-to-npu",
+        "fallback"
+      ],
+      "symptom": "get_backend_function() crashes with SystemError or ImportError when a compiled C/CUDA .so is missing on NPU. The project has a Python fallback but the dispatch function crashes before reaching it.",
+      "root_cause": "Multi-backend dispatch functions unconditionally load compiled .so without checking platform availability. On NPU where compiled C/CUDA extensions are absent, this causes SystemError/ImportError that bypasses try/except.",
+      "fix_steps": [
+        "1. Set flag MISSING_COMPILED_BACKEND = True when compiled .so is absent.",
+        "2. Add early return at top of get_backend_function(): if MISSING_COMPILED_BACKEND: return None.",
+        "3. Callers already handle None returns by falling back to Python/NPU implementation."
+      ],
+      "affected_patterns": [
+        "get_backend_function() or kernel_dispatch() that unconditionally import compiled .so",
+        "SystemError: <built-in function ...> returned NULL without setting an error",
+        "Multi-backend dispatch functions in backend_utils.py, backends.py, kernel_dispatch.py"
+      ],
+      "code_changes": [
+        {
+          "file": "output_projects/04_Deepwave_20260602_213331/deepwave/backend_utils.py",
+          "before": "    if dtype == torch.float32:\n        dtype_str = \"float\"\n    elif dtype == torch.float64:\n        dtype_str = \"double\"\n    else:\n        raise TypeError(f\"Unsupported dtype {dtype}\")\n\n    device_str = device.type\n    func_name = f\"{propagator}_iso_{ndim}d_{accuracy}_{dtype_str}_{pass_name}{extra}_{device_str}\"\n    try:\n        return getattr(dll, func_name)\n    except AttributeError as e:\n        raise AttributeError(f\"Backend function {func_name} not found.\") from e",
+          "after": "    if dtype == torch.float32:\n        dtype_str = \"float\"\n    elif dtype == torch.float64:\n        dtype_str = \"double\"\n    else:\n        raise TypeError(f\"Unsupported dtype {dtype}\")\n\n    if MISSING_COMPILED_BACKEND:\n        return None\n\n    device_str = device.type\n    func_name = f\"{propagator}_iso_{ndim}d_{accuracy}_{dtype_str}_{pass_name}{extra}_{device_str}\"\n    try:\n        return getattr(dll, func_name)\n    except AttributeError as e:\n        raise AttributeError(f\"Backend function {func_name} not found.\") from e"
+        }
+      ],
+      "references": [
+        "Deepwave backend_utils.py: output_projects/04_Deepwave_20260602_213331/deepwave/backend_utils.py"
+      ],
+      "tools_needed": [],
+      "antipatterns": [
+        "Do NOT rely solely on try/except ImportError \u2014 some extensions fail with SystemError after loading.",
+        "Do NOT remove the compiled backend import code \u2014 only guard it."
+      ],
+      "meta": {
+        "source_run_id": "e2e-v3-8c8bf406dc7e",
+        "iterations_to_fix_in_source": 1,
+        "verified_on_cann_version": "8.5.0",
+        "verified_on_model": "Deepwave FWI",
+        "refiner_reasoning": "Deterministic mechanical fix: flag set \u2192 safe None return; flag absent \u2192 crash. One-line change, universal pattern for any project with compiled extensions on NPU.",
+        "project_source_root": "output_projects/04_Deepwave_20260602_213331",
+        "created_at": "2026-06-02T22:00:00+00:00"
+      },
+      "confidence": 0.9,
+      "target_roles": [
+        "code_adapter"
+      ],
+      "target_phases": [
+        "phase_4_rule_migration",
+        "phase_5_validation"
+      ],
+      "trigger_fingerprint": "code_adaptation|missing_compiled_backend_guard|ascend-npu|backend-utils|compiled-extension|1b5d9273ae42",
+      "solidifier": "rule_solidifier",
+      "classifier": {
+        "type": "rule",
+        "target_roles": [
+          "code_adapter"
+        ],
+        "target_phases": [
+          "phase_4_rule_migration"
+        ],
+        "solidifier": "rule_solidifier",
+        "reasoning": "Deterministic pattern: flag set \u2192 safe None return; flag absent \u2192 crash. Applies universally to compiled-extension projects on NPU",
+        "confidence": 0.9,
+        "trigger_fingerprint": "code_adaptation|missing_compiled_backend_guard|ascend-npu|backend-utils|compiled-extension|1b5d9273ae42"
+      },
+      "candidate_id": "candidate-002",
+      "problem_description": "Projects with compiled C/CUDA backend .so files crash on NPU because the shared library is missing or incompatible. get_backend_function() calls fail with SystemError/ImportError even though pure-Python or torch.npu fallback exists.",
+      "rough_fix_approach": "Add early-return guard at top of get_backend_function(): if MISSING_COMPILED_BACKEND: return None. Callers already handle None returns by falling back to Python implementation.",
+      "recommended_type": "rule",
+      "project_source_root": "output_projects/04_Deepwave_20260602_213331",
+      "name": "compiled-backend-guard",
+      "asset_names": [
+        "SKILL.md",
+        "references/sources.md",
+        "skill.yaml",
+        "skill_data.json",
+        "verification.md"
+      ],
+      "id": "e2e-v3-8c8bf406dc7e-exp-compiled-backend-guard",
+      "run_id": "e2e-v3-8c8bf406dc7e",
+      "created_at": "2026-06-02T22:00:00+00:00",
+      "status": "promoted",
+      "promoted_at": "2026-06-02T22:00:00+00:00",
+      "promotion_type": "skill"
+    },
+    "SKILL.md": "---\nname: compiled-backend-guard\ndescription: MISSING_COMPILED_BACKEND Guard: Return None When Compiled C/CUDA Extensions Absent on NPU\ntags: [\"ascend-npu\", \"compiled-extension\", \"backend-utils\", \"npu-migration\", \"cuda-to-npu\"]\ncategory: code_adaptation\nsubtype: missing_compiled_backend_early_return\nconfidence: 0.90\noccurrence_count: 1\n---\n\n# MISSING_COMPILED_BACKEND Guard: Return None When Compiled Extensions Absent\n\n## When to Use\n- `get_backend_function()` or similar dispatch functions crash with `SystemError` or `ImportError` when a compiled C/CUDA shared library (.so) is missing or incompatible on NPU.\n- The project has both a compiled backend (CUDA .so) and a pure-Python or torch.npu fallback, but the dispatch function crashes before reaching the fallback.\n- Error: `SystemError: <built-in function ...> returned NULL without setting an error` or `ImportError: cannot import name '...' from 'custom_ext'`.\n\n## Root Cause\nProjects that dispatch between compiled C/CUDA extensions and interpreted backends crash when the compiled .so is absent on NPU. The `get_backend_function()` attempts to load the .so unconditionally, without checking whether it's available on the current platform.\n\n## How to Use\n1. Set a flag `MISSING_COMPILED_BACKEND = True` when the compiled .so is absent.\n2. At the top of `get_backend_function()`, add: `if MISSING_COMPILED_BACKEND: return None`.\n3. All callers already handle `None` returns by falling back to the Python/NPU implementation.\n4. One-line change, no caller modification needed.\n\n## Code Examples\n[\n  {\n    \"file\": \"output_projects/04_Deepwave_20260602_213331/deepwave/backend_utils.py\",\n    \"before\": \"    if dtype == torch.float32:\\n        dtype_str = \\\"float\\\"\\n    elif dtype == torch.float64:\\n        dtype_str = \\\"double\\\"\\n    else:\\n        raise TypeError(f\\\"Unsupported dtype {dtype}\\\")\\n\\n    device_str = device.type\\n    func_name = f\\\"{propagator}_iso_{ndim}d_{accuracy}_{dtype_str}_{pass_name}{extra}_{device_str}\\\"\\n    try:\\n        return getattr(dll, func_name)\\n    except AttributeError as e:\\n        raise AttributeError(f\\\"Backend function {func_name} not found.\\\") from e\",\n    \"after\": \"    if dtype == torch.float32:\\n        dtype_str = \\\"float\\\"\\n    elif dtype == torch.float64:\\n        dtype_str = \\\"double\\\"\\n    else:\\n        raise TypeError(f\\\"Unsupported dtype {dtype}\\\")\\n\\n    if MISSING_COMPILED_BACKEND:\\n        return None\\n\\n    device_str = device.type\\n    func_name = f\\\"{propagator}_iso_{ndim}d_{accuracy}_{dtype_str}_{pass_name}{extra}_{device_str}\\\"\\n    try:\\n        return getattr(dll, func_name)\\n    except AttributeError as e:\\n        raise AttributeError(f\\\"Backend function {func_name} not found.\\\") from e\"\n  }\n]\n\n## Do Not\n- Do NOT remove the compiled backend import \u2014 only guard it.\n- Do NOT assume `try/except ImportError` is sufficient \u2014 some extensions fail with SystemError after loading.\n- Do NOT suppress the error silently without a fallback path.\n\n## References\n- Deepwave backend_utils.py: `output_projects/04_Deepwave_20260602_213331/deepwave/backend_utils.py`\n- Standard pattern for multi-backend dispatch in PyTorch ecosystem\n\n## Evidence\n- Source run: e2e-v3-8c8bf406dc7e\n- backend_utils patched for MISSING_COMPILED_BACKEND guard\n- Pure-Python fallback correctly engaged after guard return None\n",
+    "skill.yaml": "name: compiled-backend-guard\ntitle: MISSING_COMPILED_BACKEND Guard - Return None When Compiled Extensions Absent\ndescription: Early return None in get_backend_function() when compiled C/CUDA extensions are absent on NPU, allowing Python fallback dispatch\ncategory: code_adaptation\nsubtype: missing_compiled_backend_early_return\ntarget_roles: [\"code_adapter\"]\ntarget_phases: [\"phase_4_rule_migration\", \"phase_5_validation\"]\ntrigger_fingerprint: code_adaptation|missing_compiled_backend_guard|ascend-npu|backend-utils|compiled-extension|1b5d9273ae42\n",
+    "verification.md": "# Verification for MISSING_COMPILED_BACKEND Guard: Return None When Compiled C/CUDA Extensions Absent on NPU\n\n- Source run: e2e-v3-8c8bf406dc7e\n- Verify by applying the fix steps to a matching migration failure.\n",
+    "references/sources.md": "# References\n\n- Deepwave backend_utils.py: `output_projects/04_Deepwave_20260602_213331/deepwave/backend_utils.py`\n- PyTorch C++ extension documentation: https://pytorch.org/tutorials/advanced/cpp_extension.html\n- Standard multi-backend dispatch pattern in PyTorch ecosystem\n"
+  },
+  "asset_names": [
+    "SKILL.md",
+    "references/sources.md",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ]
+}

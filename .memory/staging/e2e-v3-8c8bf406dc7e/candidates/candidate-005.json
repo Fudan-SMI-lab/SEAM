@@ -1,0 +1,47 @@
+{
+  "candidate_id": "candidate-005",
+  "title": "Pybind .so loading via absolute path: use importlib.util.spec_from_file_location() to avoid sys.path.insert() accumulation that loads wrong custom_ops_lib.so in multi-module projects",
+  "problem_description": "Custom-op projects with multiple pybind modules (e.g., scalar_fwd_2d_pybind, add_sources_2d_pybind, record_receivers_2d_pybind) each produce a `custom_ops_lib.so` in their own subdirectory. Benchmark scripts and test harnesses that use `sys.path.insert(0, path)` to add each subdirectory accumulate paths. When Python encounters `import custom_ops_lib`, it resolves to the *first* matching .so in sys.path, which may be a different operator's .so file, causing AttributeError because the wrong module's exported functions don't match the expected interface. This is a deterministic but subtle bug: sys.path is order-dependent, and insert(0, ...) means the last-inserted path is NOT the one Python resolves to (it resolves the first match).",
+  "rough_fix_approach": "Replace all `sys.path.insert(0, op_dir)` + `import custom_ops_lib` patterns with `spec = importlib.util.spec_from_file_location(f'{op_name}', os.path.join(op_dir, 'custom_ops_lib.so')); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)`. This loads each .so by absolute path, bypassing sys.path entirely. Each op gets a unique module name (e.g., 'scalar_fwd_2d', 'add_sources_2d') so they don't collide in sys.modules. The fix is a 5-line replacement per op and guarantees the correct .so is always loaded.",
+  "artifact_evidence": [
+    "validated/phase_5_validation_canonical.json:lines 31-41 (benchmark_custom_ops section: failure_reason mentions sys.path accumulation)",
+    "output_projects/04_Deepwave_20260602_213331/test_data_and_scripts/benchmark_custom_ops.py (sys.path.insert calls that cause wrong .so loading)",
+    "validated/phase_5_validation_canonical.json:line 36 (custom_ops_lib.so found at correct paths)"
+  ],
+  "involved_code_files": [
+    {
+      "path": "test_data_and_scripts/benchmark_custom_ops.py",
+      "role": "Benchmark harness \u2014 loads custom ops via sys.path.insert for performance comparison",
+      "line_range": [
+        1,
+        100
+      ]
+    },
+    {
+      "path": "(custom op build directories)",
+      "role": "Pybind .so files \u2014 scalar_fwd_2d_pybind/custom_ops_lib.so, add_sources_2d_pybind/custom_ops_lib.so, etc.",
+      "line_range": [
+        1,
+        1
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.75,
+  "priority": "medium",
+  "reasoning": "This pattern is specific to multi-module custom-op projects where pybind builds all produce identically-named custom_ops_lib.so. The sys.path insert pattern is a common anti-pattern in CUDA projects that use pybind for custom operators. The fix is robust and generalizable \u2014 importlib.util.spec_from_file_location is the Python-standard way to load .so by absolute path. Confidence is 0.75 because while the fix is correct and general, the trigger condition (multiple .so files with the same name) is less common than the other candidates. It's still valuable for custom-op migration tooling because multi-op projects are the norm in scientific computing.",
+  "tags": [
+    "pybind",
+    "custom_ops_lib",
+    "sys.path",
+    "importlib",
+    "so-loading",
+    "ascend-npu",
+    "custom-op"
+  ],
+  "category": "code_adaptation",
+  "subtype": "pybind_syspath_accumulation",
+  "source_run_id": "e2e-v3-8c8bf406dc7e",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/04_Deepwave_20260602_213331",
+  "id": "e2e-v3-8c8bf406dc7e-exp-pybind-absolute-path-loading"
+}

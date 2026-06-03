@@ -1,0 +1,27 @@
+{
+  "counts": {
+    "by_status": {
+      "local": 1,
+      "promoted": 11
+    },
+    "by_type": {
+      "skill": 11,
+      "skill-pack": 1
+    },
+    "total": 12
+  },
+  "schema_version": 1,
+  "storage_roots": {
+    "archive": ".memory/archive",
+    "cases": ".memory/cases",
+    "catalog": ".memory/index/experiences.jsonl",
+    "legacy_index": ".memory/index/cases.jsonl",
+    "local_skills": ".skills",
+    "memory": ".memory",
+    "promotions": ".memory/promotions",
+    "quarantine": ".memory/quarantine",
+    "skills": ".memory/skills",
+    "staging": ".memory/staging"
+  },
+  "updated_at": "2026-06-03T01:49:57.207603+00:00"
+}

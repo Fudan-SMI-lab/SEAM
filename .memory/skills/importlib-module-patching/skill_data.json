@@ -1,0 +1,102 @@
+{
+  "type": "skill",
+  "skill_name": "importlib-module-patching",
+  "title": "Python Import Shadowing Fix: Use importlib.import_module() for NPU Custom-Op Patching",
+  "category": "code_adaptation",
+  "subtype": "import_shadowing_init_py",
+  "tags": [
+    "python-import",
+    "importlib",
+    "ascend-npu",
+    "npu-patching",
+    "init-py",
+    "module-shadowing",
+    "code-adaptation"
+  ],
+  "symptom": "Monkey-patching a module's functions fails silently when __init__.py exports a function via `from .submodule import func`. The statement `import pkg.submodule as _mod` resolves `_mod` to the function instead of the module object, causing `_mod.func = replacement` to fail or produce unexpected behavior.",
+  "root_cause": "Python's __init__.py can export names from submodules into the package namespace, causing `import pkg.submodule` to resolve to the exported function rather than the module object. This prevents monkey-patching of module-level functions needed for NPU custom-op replacement.",
+  "fix_steps": [
+    "1. Identify the file where `import pkg.submodule as _mod` is used alongside an __init__.py that exports the name `submodule` (e.g., `from .submodule import func`).",
+    "2. Add `import importlib` at the top of the file if not already present.",
+    "3. Replace `import pkg.submodule as _mod` with `_mod = importlib.import_module('pkg.submodule')`.",
+    "4. Verify that subsequent patching code (e.g., `_mod.func = npu_func`) correctly modifies the module object."
+  ],
+  "affected_patterns": [
+    "`import pkg.submodule as _mod` when __init__.py contains `from .submodule import func`",
+    "Silent monkey-patching failure where `_mod.func = replacement` has no effect",
+    "NPU custom-op files that use import-then-patch pattern for module-level functions",
+    "ImportError or AttributeError when trying to access module attributes on a function object"
+  ],
+  "code_changes": [
+    {
+      "file": "output_projects/04_Deepwave_20260602_213331/deepwave/acoustic_npu.py",
+      "before": "import deepwave.acoustic as _mod",
+      "after": "_mod = importlib.import_module('deepwave.acoustic')"
+    }
+  ],
+  "references": [
+    "https://docs.python.org/3/library/importlib.html — Python importlib documentation",
+    "output_projects/04_Deepwave_20260602_213331/deepwave/acoustic_npu.py — Deepwave NPU custom-op patching",
+    "Python __init__.py module shadowing: when exports hide submodules"
+  ],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT use `import pkg.submodule` when __init__.py shadows the submodule name with an exported function — the import resolves to the function, not the module.",
+    "Do NOT try to patch the function directly as if it were a module — `_mod.func = replacement` will fail because `_mod` is already the function.",
+    "Do NOT rename the exported name in __init__.py without understanding downstream dependencies — other code may rely on the current import behavior."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-8c8bf406dc7e",
+    "iterations_to_fix_in_source": 1,
+    "verified_on_cann_version": "8.0.RC",
+    "verified_on_platform": "Ascend NPU",
+    "refiner_reasoning": "Python import shadowing is a subtle but deterministic bug pattern: when __init__.py exports `from .submodule import func`, the name `pkg.submodule` resolves to `func` (the function object) rather than the submodule. This is not an Ascend-NPU-specific issue but a general Python behavior that affects NPU custom-op patching. The fix (importlib.import_module()) is the standard Pythonic solution for obtaining a module object regardless of __init__.py exports, and the 1-iteration fix cycle confirms the pattern is straightforward once identified.",
+    "project_source_root": "output_projects/04_Deepwave_20260602_213331",
+    "created_at": "2026-06-02T22:00:00+00:00"
+  },
+  "confidence": 0.85,
+  "target_roles": [
+    "code_adapter"
+  ],
+  "target_phases": [
+    "phase_5_validation"
+  ],
+  "trigger_fingerprint": "code_adaptation|import_shadowing_init_py|ascend-npu|importlib|module-shadowing|acoustic_npu|0c3a847c2d91",
+  "solidifier": "skill_solidifier",
+  "classifier": {
+    "type": "skill",
+    "target_roles": [
+      "code_adapter"
+    ],
+    "target_phases": [
+      "phase_5_validation"
+    ],
+    "solidifier": "skill_solidifier",
+    "reasoning": "This candidate describes a deterministic Python import fix with a simple, repeatable procedure: (1) detect when monkey-patching fails because __init__.py exports shadow submodule names, (2) replace `import pkg.submodule as _mod` with `_mod = importlib.import_module('pkg.submodule')`. This is a classic skill — an actionable procedure that a code_adapter agent can execute when encountering import shadowing during NPU custom-op patching. The 0.85 confidence reflects the simplicity of the fix but allows for the possibility that some packages may have more complex __init__.py structures requiring additional adaptation.",
+    "confidence": 0.85,
+    "trigger_fingerprint": "code_adaptation|import_shadowing_init_py|ascend-npu|importlib|module-shadowing|acoustic_npu|0c3a847c2d91"
+  },
+  "candidate_id": "candidate-001",
+  "problem_description": "When a Python package's __init__.py exports a function via `from .submodule import func`, the standard Python import statement `import pkg.submodule as _mod` resolves to the exported function rather than the module object. This prevents NPU custom-op files from monkey-patching module-level functions (replacing CUDA ops with NPU ops) because the patch target `_mod` is already the function, not the module containing it.",
+  "rough_fix_approach": "1) Add `import importlib` to the patching file. 2) Replace `import pkg.submodule as _mod` with `_mod = importlib.import_module('pkg.submodule')`. 3) importlib.import_module() always returns the module object regardless of __init__.py exports. 4) All subsequent patching code (`_mod.func = npu_func`) remains unchanged.",
+  "recommended_type": "skill",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/04_Deepwave_20260602_213331",
+  "name": "importlib-module-patching",
+  "asset_names": [
+    "SKILL.md",
+    "references/sources.md",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ],
+  "id": "e2e-v3-8c8bf406dc7e-exp-importlib-module-patching",
+  "run_id": "e2e-v3-8c8bf406dc7e",
+  "created_at": "2026-06-02T22:00:00+00:00",
+  "status": "staging",
+  "merged_from_runs": [
+    "e2e-v3-8c8bf406dc7e",
+    "e2e-v3-8c8bf406dc7e-exp-importlib-module-patching"
+  ],
+  "promoted_at": "2026-06-02T22:00:00+00:00",
+  "promotion_type": "skill"
+}

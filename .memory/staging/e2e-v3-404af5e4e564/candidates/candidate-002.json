@@ -1,0 +1,45 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "Stale integer literal for prefix length after Phase 4 'cuda:' \u2192 'npu:' string replacement",
+  "problem_description": "Phase 4 rule migration mechanically replaces the string 'cuda:' with 'npu:' in code, but does NOT update integer literals that encode the OLD prefix length (5 characters for 'cuda:'). In config.py:242, a field validator used v[5:] to strip the device prefix before checking isdigit(). After migration, 'npu:1' was processed as v[5:] = ':1' (wrong \u2014 should be '1'), causing isdigit() to reject valid NPU device identifiers. This manifested as the layout_detector failing to recognize NPU device configurations.",
+  "rough_fix_approach": "After Phase 4 rule migration, scan for string-slice operations whose integer arguments correspond to the length of replaced device-prefix strings. In this case: v[5:] \u2192 v[4:] to match the 4-character 'npu:' prefix. The general detection rule: find integer literals == 5 near code that previously referenced 'cuda:' (both in string literals and function args like torch.device(), device=, .to()). Those 5s likely encode the cuda: prefix length and need to be reduced to 4 after migration.",
+  "artifact_evidence": [
+    "validated/phase_5_validation_canonical.json:lines 269-278 (review_verdict and review_gate explaining the v[5:]\u2192v[4:] fix in detail)",
+    "raw/phase_5_validation_attempt0.json:lines 269-278 (same review verdict in raw attempt)",
+    "validated/phase_35_static_validate_canonical.json (mentions off-by-one string slice fix at config.py:242 confirmed by 135/157 tests passing)",
+    "glmocr/config.py:line 242 (actual code: v[4:] \u2014 the post-fix state)"
+  ],
+  "involved_code_files": [
+    {
+      "path": "glmocr/config.py",
+      "role": "Device configuration class \u2014 _validate_device field_validator uses string slicing to extract device index from 'npu:N' identifier",
+      "line_range": [
+        225,
+        250
+      ]
+    },
+    {
+      "path": "glmocr/layout/layout_detector.py",
+      "role": "Layout detector \u2014 calls _validate_device and routes device selection (NPU vs CPU vs explicit config)",
+      "line_range": [
+        87,
+        95
+      ]
+    }
+  ],
+  "recommended_type": "rule",
+  "confidence": 0.85,
+  "priority": "high",
+  "reasoning": "This is a structural limitation of the Phase 4 rule migration approach: string replacement is purely text-based and does not understand string-length semantics. Any code that uses a length-dependent integer literal (like a slice index) tied to the 'cuda:' prefix will silently break. This pattern can occur in device validation, tensor shape calculations, memory offset computations, or any code that parsed CUDA device strings. A post-Phase-4 scan for integer literals equal to len('cuda:')=5 near device-related code could catch many instances. Confidence is 0.85 because while the pattern is generalizable, not every project will have such length-dependent code \u2014 it depends on whether the project does explicit string parsing of device identifiers.",
+  "tags": [
+    "phase4-artifact",
+    "string-slice-off-by-one",
+    "prefix-length-literal",
+    "device-validation",
+    "cuda-to-npu-replacement"
+  ],
+  "category": "code_adaptation",
+  "subtype": "stale_prefix_length_literal",
+  "source_run_id": "e2e-v3-404af5e4e564",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260602_125959"
+}

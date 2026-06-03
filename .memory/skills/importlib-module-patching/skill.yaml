@@ -1,0 +1,8 @@
+name: importlib-module-patching
+title: "Python Import Shadowing Fix: Use importlib.import_module() for NPU Custom-Op Patching"
+description: "Python Import Shadowing Fix: Use importlib.import_module() for NPU Custom-Op Patching"
+category: code_adaptation
+subtype: import_shadowing_init_py
+target_roles: ["code_adapter"]
+target_phases: ["phase_5_validation"]
+trigger_fingerprint: code_adaptation|import_shadowing_init_py|ascend-npu|importlib|module-shadowing|acoustic_npu|0c3a847c2d91
