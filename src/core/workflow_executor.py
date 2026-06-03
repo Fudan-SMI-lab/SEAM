@@ -4,6 +4,7 @@ variable passing, and stagnation detection."""
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import importlib
@@ -106,6 +107,11 @@ SUB_WORKFLOW_REPAIR_PHASE_ORDER = (
 )
 SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT: int | None = 12 * 60 * 60
 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT: int | None = SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT
+# Hard deadline for a single sub-workflow LLM call to prevent indefinite hangs
+# when the OpenCode server's SSE response stream stalls (see _guarded POST timeout).
+# This deadline is enforced at the concurrent.futures level, independent of the
+# phase-configured timeout which controls the POST guard timeout inside send_command.
+SUB_WORKFLOW_LLM_HARD_DEADLINE_SECONDS: int = 3600
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",
@@ -1550,26 +1556,58 @@ class WorkflowExecutor:
             timeout,
             len(prompt_text),
         )
-        raw_response = self.session_mgr.send_command(session_id, prompt_text, timeout=timeout)
-        retry_error = self._retryable_sub_workflow_session_error(raw_response)
-        if retry_error:
-            retry_session_id = self._create_sub_workflow_retry_session(agent_id, phase_id)
-            logger.warning(
-                "Retrying sub-phase LLM command in fresh session after session error: "
-                "phase_id=%s agent_id=%s old_session_id=%s retry_session_id=%s error=%s",
-                phase_id,
-                agent_id,
-                session_id,
-                retry_session_id,
-                retry_error,
-            )
-            raw_response = self.session_mgr.send_command(retry_session_id, prompt_text, timeout=timeout)
+        raw_response = self._send_command_with_deadline(
+            session_id, prompt_text, timeout=timeout,
+            phase_id=phase_id, agent_id=agent_id,
+        )
         logger.info(
             "Received sub-phase LLM response: phase_id=%s raw_response_length=%s",
             phase_id,
             len(raw_response or ""),
         )
         return raw_response
+
+    def _send_command_with_deadline(
+        self,
+        session_id: str,
+        prompt_text: str,
+        *,
+        timeout: int | None,
+        phase_id: str,
+        agent_id: str,
+    ) -> str:
+        def _send_with_retry() -> str:
+            raw_response = self.session_mgr.send_command(session_id, prompt_text, timeout=timeout)
+            retry_error = self._retryable_sub_workflow_session_error(raw_response)
+            if retry_error:
+                retry_session_id = self._create_sub_workflow_retry_session(agent_id, phase_id)
+                logger.warning(
+                    "Retrying sub-phase LLM command in fresh session after session error: "
+                    "phase_id=%s agent_id=%s old_session_id=%s retry_session_id=%s error=%s",
+                    phase_id,
+                    agent_id,
+                    session_id,
+                    retry_session_id,
+                    retry_error,
+                )
+                raw_response = self.session_mgr.send_command(retry_session_id, prompt_text, timeout=timeout)
+            return raw_response
+
+        deadline = SUB_WORKFLOW_LLM_HARD_DEADLINE_SECONDS
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_send_with_retry)
+            try:
+                return future.result(timeout=deadline)
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "Sub-phase LLM command hard deadline exceeded (%ds): "
+                    "phase_id=%s session_id=%s prompt_length=%s",
+                    deadline,
+                    phase_id,
+                    session_id,
+                    len(prompt_text),
+                )
+                return json.dumps({"ok": False, "error": "sub_workflow_llm_command_deadline"})
 
     def _retryable_sub_workflow_session_error(self, raw_response: str) -> str:
         output = extract_json_response(raw_response)

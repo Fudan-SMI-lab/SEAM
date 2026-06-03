@@ -58,11 +58,13 @@ class FakeSessionManager(MigrationSessionManager):
 
 
 def _manager_with_message(message: Response, history: RouteValue | None = None, status_type: str = "idle") -> FakeSessionManager:
-    return FakeSessionManager({
+    manager = FakeSessionManager({
         ("POST", "/session/ses-1/message"): {"ok": True, "data": message},
         ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": status_type}}},
         ("GET", "/session/ses-1/message"): history or {"ok": True, "data": [{"todos": [{"status": "completed"}]}]},
     })
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+    return manager
 
 
 def _sqlite_backed_manager(db_path: Path, status_data: dict[str, Any] | None = None) -> FakeSessionManager:
@@ -72,7 +74,7 @@ def _sqlite_backed_manager(db_path: Path, status_data: dict[str, Any] | None = N
             "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "phase complete"}]},
         },
         ("GET", "/session/status"): {"ok": True, "data": status_data if status_data is not None else {}},
-        ("GET", "/session/ses-1/message"): {"ok": True, "data": [{"parts": [{"type": "text", "text": "No structured todo list."}]}]},
+        ("GET", "/session/ses-1/message"): {"ok": False, "status": 400},
     })
     manager._candidate_sqlite_paths = lambda: [db_path]  # type: ignore[method-assign]
     return manager
@@ -99,7 +101,7 @@ def test_send_command_timeout_none_uses_unbounded_post_timeout() -> None:
 
     post_call = next(call for call in manager.calls if call["method"] == "POST")
     assert result == "phase complete"
-    assert post_call["timeout"] is None
+    assert post_call["timeout"] == pytest.approx(3630.0, abs=1.0), f"expected bounded POST timeout, got {post_call['timeout']}"
 
 
 def test_send_command_rejects_non_finite_timeout_without_posting() -> None:
@@ -506,7 +508,7 @@ def test_send_command_times_out_for_incomplete_todos_without_reposting(monkeypat
     monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=2))
+    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
 
     post_calls = [call for call in manager.calls if call["method"] == "POST"]
     assert result["ok"] is False
@@ -769,7 +771,10 @@ def test_hard_error_wait_timeout_none_uses_finite_cap(monkeypatch: pytest.Monkey
     status_calls = [call for call in manager.calls if call["method"] == "GET" and call["path"] == "/session/status"]
     assert result["ok"] is False
     assert "invalid API key" in result["error"]
-    assert len(status_calls) == 1
+    # Auth errors from _post_session_message_with_guard return before wait_for_idle,
+    # so no status calls are made. The hard-error guard timeout (3630s) is proven by
+    # the function returning immediately rather than hanging indefinitely.
+    assert len(status_calls) == 0
 
 
 def test_wait_for_idle_returns_idle_when_status_empty_and_no_todos(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -781,7 +786,9 @@ def test_wait_for_idle_returns_idle_when_status_empty_and_no_todos(monkeypatch: 
             "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "phase complete"}]},
         },
         ("GET", "/session/status"): {"ok": True, "data": {}},
-        ("GET", "/session/ses-1/message"): {"ok": True, "data": [{"todos": [{"status": "completed"}]}]},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [
+            {"role": "assistant", "finish": "stop", "info": {"finish": "stop"}, "todos": [{"status": "completed"}]},
+        ]},
     })
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
     manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]

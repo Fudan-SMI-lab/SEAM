@@ -906,6 +906,16 @@ class MigrationSessionManager:
 
         thread = threading.Thread(target=post_message, name=f"session-post-{session_id}", daemon=True)
         thread.start()
+
+        # Hard wall-clock timeout so the caller never hangs indefinitely,
+        # even when the SSE POST response never arrives (e.g. agent stuck).
+        _started = time.time()
+        if http_timeout is not None:
+            _guard_timeout: float = http_timeout
+        else:
+            # DEFAULT_SESSION_WAIT_TIMEOUT is typed as float|None but always 3600.0
+            _guard_timeout: float = 3630.0
+
         while True:
             try:
                 kind, value = result_queue.get(timeout=NESTED_TASK_GUARD_POLL_SECONDS)
@@ -919,6 +929,18 @@ class MigrationSessionManager:
                 )
                 if recovered is not None:
                     return {"ok": True, "data": recovered}
+                if time.time() - _started > _guard_timeout:
+                    # One last recovery attempt before giving up.
+                    recovered = self._completed_latest_response_payload(
+                        session_id,
+                        previous_text=previous_text,
+                        command_text=command_text,
+                    )
+                    if recovered is not None:
+                        return {"ok": True, "data": recovered}
+                    raise TimeoutError(
+                        f"Session {session_id} did not return a response within {_guard_timeout:.0f}s"
+                    )
                 continue
             if kind == "error" and isinstance(value, Exception):
                 recovered = self._completed_latest_response_payload(
