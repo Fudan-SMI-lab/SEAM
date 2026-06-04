@@ -25,14 +25,14 @@ You are executing `{phase_name}` for `{project_dir}`.
 - **DO NOT** create migration scripts, test scripts, custom operator validation scripts, or serving wrapper scripts.
 - **DO NOT** modify any existing project files.
 - Your ONLY mission: create the virtual environment, install all required dependencies, and report the result.
-- Script creation belongs to later phases (Phase 3, Phase 5).  You are Phase 2 — venv only.
+- Script creation belongs to later target-runtime phases. You are Phase 2 — venv only.
 
 ## Hard Rules
 - Use domestic mirrors first for all installs, including sources such as 阿里云镜像, 清华镜像, or other reachable domestic mirrors.
 - Do not use foreign package indexes unless domestic mirrors are unavailable; if a fallback is unavoidable, keep it explicit in intermediate notes.
 - Do not install packages into the global Python environment.
 - The virtual environment MUST be strictly isolated from system site-packages. When creating the venv, always use `--without-pip` (or the platform default) and verify that `include-system-site-packages = false` in `pyvenv.cfg`. Never pass `--system-site-packages` to `python -m venv`. If the tool reports `include-system-site-packages = true`, recreate the venv with isolation enforced.
-- If the migration route is `vllm_serving`, install `vllm` into the project venv. If the migration route is `sglang_serving`, install `sglang` into the project venv. These serving frameworks are NOT optional for serving routes — without them the Phase 5 serving gate will fail because the generated validation script runs inside this venv. The current migration route for this project is `{migration_route}`.
+- If the migration route is `vllm_serving`, install `vllm` into the project venv. If the migration route is `sglang_serving`, install `sglang` into the project venv. These serving frameworks are NOT optional for serving routes — without them the target-runtime serving gate will fail because the generated validation script runs inside this venv. The current migration route for this project is `{migration_route}`.
 - Prefer reproducible commands and pinned versions when the project already specifies them.
 - If compatibility blocks `torch_npu` installation, stop and report the blocker rather than fabricating success.
 - You may reason freely in your response, but end it with a single JSON object containing exactly the required keys for this phase. No other JSON objects should appear.

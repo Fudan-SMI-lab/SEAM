@@ -269,11 +269,8 @@ class TestValidatorCompatibility:
     def test_cuda_schema_still_passes(self, validator):
         result = validator({
             "platform": "cuda",
-            "npu_detected": False,
+            "cuda_detected": True,
             "python_version": "3.10.12",
-            "cann_version": "n/a",
-            "ascendc_available": False,
-            "driver_version": "not_applicable",
         })
         assert result["passed"] is True
 
@@ -334,7 +331,7 @@ class TestPPURuleBasedMigrator:
         code = "import torch\nx = torch.cuda.is_available()"
         result, report = migrator.migrate(code)
         assert "import torch_npu" not in result
-        assert report["rules"]["inject_torch_npu"] == 0
+        assert "inject_torch_npu" not in report["rules"]
 
     def test_no_invented_commands(self, migrator):
         code = 'subprocess.run(["nvidia-smi"])'
@@ -354,7 +351,7 @@ class TestPPURuleBasedMigrator:
         result, report = migrator.migrate(code)
         assert "rules" in report
         assert "total_replacements" in report
-        assert "inject_torch_npu" in report["rules"]
+        assert "nvidia_smi_references" in report["rules"]
 
     def test_directory_migration_does_not_modify_files(self, migrator, tmp_path):
         f1 = tmp_path / "original.py"

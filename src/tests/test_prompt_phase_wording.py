@@ -68,7 +68,7 @@ def test_no_opencode_wording_in_early_prompts(prompt_file: Path) -> None:
 
 
 EXPERIENCE_PHASE1 = PROMPTS_DIR / "experience_query_phase1.md"
-CONSTRAINT_SUMMARY = PROMPTS_DIR / "phase_1_5_constraint_summary.md"
+CONSTRAINT_SUMMARY = PROMPTS_DIR / "phase_1_5_constraint_summary_npu.md"
 CONSTRAINT_SUMMARY_PPU = PROMPTS_DIR / "phase_1_5_constraint_summary_ppu.md"
 
 

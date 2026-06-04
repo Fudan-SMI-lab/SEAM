@@ -1,10 +1,3 @@
-"""Rule-based CUDA-to-PPU code migrator.
-
-Conservative and auditable: does NOT convert torch.cuda to torch.npu,
-does NOT inject import torch.npu, does NOT emit invented commands.
-Only scans for NVIDIA-specific patterns and reports them.
-"""
-
 from __future__ import annotations
 
 import os
@@ -14,13 +7,6 @@ from typing import Any  # noqa: F401
 
 
 class PPURuleBasedMigrator:
-    """Conservative CUDA-to-PPU code migrator.
-
-    Unlike the NPU RuleBasedMigrator which converts torch.cuda to torch.npu,
-    this migrator preserves torch.cuda (the correct API for PPU) and only
-    reports NVIDIA-specific patterns without modifying source code.
-    """
-
     def __init__(self):
         self._patterns = self._build_patterns()
 
@@ -51,10 +37,6 @@ class PPURuleBasedMigrator:
             "rules": {},
             "total_replacements": 0,
         }
-
-        report["rules"]["inject_torch_npu"] = 0
-        report["rules"]["torch_cuda_to_npu"] = 0
-        report["rules"]["cuda_method_to_npu"] = 0
 
         for name, pattern in self._patterns:
             count = len(re.findall(pattern, source_code))

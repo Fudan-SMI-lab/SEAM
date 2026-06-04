@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from core.prompt_loader import PromptLoader
 from core.routes import (
     CUSTOM_OP,
     CUSTOM_OP_WITH_VARIANTS,
+    ORDINARY_CUDA,
     SERVING_ROUTES,
     normalize_serving_phase1_surface,
     normalize_serving_phase3_contract,
@@ -1383,6 +1385,8 @@ class PhaseRunner:
         if phase.prompt_id == "phase_3_entry_script":
             previous_outputs = context.get("previous_outputs", {})
             previous_output_map = cast(dict[str, object], previous_outputs) if isinstance(previous_outputs, dict) else {}
+            raw_phase1_output = previous_output_map.get("phase_1_project_analysis")
+            phase1_output = cast(JsonObject, raw_phase1_output) if isinstance(raw_phase1_output, dict) else None
             phase1_route = self._lookup_previous_output(previous_output_map, "phase_1_project_analysis", "migration_route")
             if "entry_script_path" not in normalized:
                 entry_script = self._lookup_previous_output(previous_output_map, "phase_1_project_analysis", "entry_script")
@@ -1393,9 +1397,14 @@ class PhaseRunner:
             if self._custom_op_route_disabled(workflow_globals):
                 normalized = self._strip_custom_op_contract_fields(normalized)
             else:
+                custom_op_contract_required = (
+                    isinstance(phase1_route, str)
+                    and phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
+                ) or (
+                    phase1_route is None
+                    and self._custom_op_required_signal(previous_output_map, context)
+                )
                 if isinstance(phase1_route, str) and phase1_route in SERVING_ROUTES:
-                    raw_phase1_output = previous_output_map.get("phase_1_project_analysis")
-                    phase1_output = cast(JsonObject, raw_phase1_output) if isinstance(raw_phase1_output, dict) else None
                     normalize_serving_phase3_contract(
                         normalized,
                         route=phase1_route,
@@ -1403,27 +1412,34 @@ class PhaseRunner:
                         phase1_output=phase1_output,
                         platform_policy=self.platform_policy,
                     )
-                elif (
-                    isinstance(phase1_route, str)
-                    and phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
-                ) or self._custom_op_required_signal(previous_output_map, context):
+                elif custom_op_contract_required:
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
                     normalized["project_dir"] = str(prompt_context["project_dir"])
                     if isinstance(phase1_route, str) and phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}:
                         normalized["migration_route"] = phase1_route
-                variant_overlay = expanded_variant_contract_from_outputs(previous_output_map)
-                if variant_overlay:
-                    apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
-                    ensure_strict_expanded_variant_validation_script(
-                        normalized,
-                        variant_overlay,
-                        project_dir=str(prompt_context["project_dir"]),
-                    )
+                    variant_overlay = expanded_variant_contract_from_outputs(previous_output_map)
+                    if variant_overlay:
+                        apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
+                        ensure_strict_expanded_variant_validation_script(
+                            normalized,
+                            variant_overlay,
+                            project_dir=str(prompt_context["project_dir"]),
+                        )
+                    else:
+                        ensure_strict_non_variant_custom_op_validation_script(
+                            normalized,
+                            project_dir=str(prompt_context["project_dir"]),
+                        )
                 else:
-                    ensure_strict_non_variant_custom_op_validation_script(
-                        normalized,
-                        project_dir=str(prompt_context["project_dir"]),
-                    )
+                    normalized = self._strip_custom_op_contract_fields(normalized)
+                    if phase1_route == ORDINARY_CUDA:
+                        phase2_output = previous_output_map.get("phase_2_venv_create") or previous_output_map.get("phase_2")
+                        normalized = self._restore_ordinary_phase3_entry_script(
+                            normalized,
+                            phase1_output,
+                            phase2_output,
+                            prompt_context["project_dir"],
+                        )
             normalized = self._normalize_phase3_container_paths(
                 normalized, prompt_context,
             )
@@ -1463,6 +1479,34 @@ class PhaseRunner:
         for field in CUSTOM_OP_CONTRACT_KEYS:
             _ = stripped.pop(field, None)
         return stripped
+
+    @staticmethod
+    def _restore_ordinary_phase3_entry_script(
+        output: JsonObject,
+        phase1_output: JsonObject | None,
+        phase2_output: object,
+        project_dir: str,
+    ) -> JsonObject:
+        if not isinstance(phase1_output, dict):
+            return output
+        entry_script = phase1_output.get("entry_script")
+        if not isinstance(entry_script, str) or not entry_script.strip():
+            return output
+        entry_path = Path(entry_script.strip())
+        if not entry_path.is_absolute():
+            entry_path = Path(project_dir) / entry_path
+        restored = dict(output)
+        restored["entry_script_path"] = str(entry_path)
+        python_path = ""
+        if isinstance(phase2_output, dict):
+            phase2_map = cast(dict[str, object], phase2_output)
+            candidate = phase2_map.get("python_path")
+            if isinstance(candidate, str) and candidate.strip():
+                python_path = candidate.strip()
+        if not python_path:
+            python_path = str(Path(project_dir) / ".venv" / "bin" / "python")
+        restored["run_command"] = f"{shlex.quote(python_path)} {shlex.quote(str(entry_path))}"
+        return restored
 
     @staticmethod
     def _normalize_phase3_container_paths(

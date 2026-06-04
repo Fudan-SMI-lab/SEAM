@@ -7,8 +7,9 @@ from pathlib import Path
 import json
 from typing import cast
 
+from core.platform_policy import PlatformPolicy, ServingRuntimePolicy
 
-BACKEND_NPU = "ascend"
+
 BACKEND_GENERIC = "generic"
 VLLM_SERVING = "vllm_serving"
 SGLANG_SERVING = "sglang_serving"
@@ -18,39 +19,10 @@ ROUTE_TO_FRAMEWORK = {
     SGLANG_SERVING: "sglang",
 }
 
-COMMON_NPU_RUNTIME_ENV = (
-    "Ascend NPU runtime",
-    "CANN toolkit set_env.sh or equivalent env export",
-    "ASCEND_HOME_PATH",
-    "ASCEND_OPP_PATH",
-    "PYTHONPATH includes CANN python/site-packages for tbe and te",
-    "LD_LIBRARY_PATH includes CANN runtime libraries",
-    "torch_npu",
-    "tbe",
-    "te",
-)
-
-COMMON_NPU_IMPORT_PROBES = ("torch", "torch_npu", "tbe", "te")
-COMMON_GENERIC_IMPORT_PROBES = ("torch",)
 ROUTE_IMPORT_PROBES = {
     VLLM_SERVING: ("vllm",),
     SGLANG_SERVING: ("sglang",),
 }
-
-COMMON_NPU_FORBIDDEN_RUNTIME_MARKERS = (
-    "CUDA_VISIBLE_DEVICES",
-    "NVIDIA_VISIBLE_DEVICES",
-    "nvidia-smi",
-    "NCCL_",
-    "pynccl_allocator",
-    "torch.cuda.memory",
-    "cuda fallback",
-    "cpu fallback",
-)
-COMMON_GENERIC_FORBIDDEN_RUNTIME_MARKERS = (
-    "cpu fallback",
-    "fallback to cpu",
-)
 
 ROUTE_FORBIDDEN_RUNTIME_MARKERS = {
     VLLM_SERVING: ("vllm cuda executor", "gpu_memory_utilization without NPU backend"),
@@ -78,143 +50,77 @@ GENERIC_VALIDATION_OBLIGATIONS = (
 )
 
 
-def serving_runtime_contract_fields(route: str, backend: str) -> dict[str, object]:
-    if backend == BACKEND_NPU:
-        return npu_serving_contract_fields(route)
+def serving_runtime_contract_fields(
+    route: str,
+    backend: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> dict[str, object]:
+    runtime_policy = _serving_policy_for_backend(backend, platform_policy)
     framework = ROUTE_TO_FRAMEWORK.get(route, "")
-    import_probes = [*COMMON_GENERIC_IMPORT_PROBES, *ROUTE_IMPORT_PROBES.get(route, ())]
-    forbidden = _forbidden_runtime_markers(route, backend)
+    import_probes = [*runtime_policy.common_import_probes, *ROUTE_IMPORT_PROBES.get(route, ())]
+    forbidden = _forbidden_runtime_markers(route, runtime_policy)
+    runtime_checks = [
+        framework_check.replace("serving_framework", framework) if framework else framework_check
+        for framework_check in runtime_policy.runtime_checks
+    ]
     return {
         "serving_backend": backend,
-        "runtime_env_setup": {
-            "device_env": ["framework-provided accelerator device selection"],
-            "backend": backend,
-        },
+        "runtime_env_setup": dict(runtime_policy.runtime_env_setup),
         "required_import_probes": import_probes,
         "forbidden_runtime_markers": forbidden,
-        "serving_runtime_checks": [
-            f"{framework}_imported" if framework else "serving_framework_imported",
-            "accelerator_execution_observed",
-            "forbidden_runtime_markers_absent",
-            "no_cpu_fallback",
-        ],
+        runtime_policy.runtime_checks_field: runtime_checks,
     }
 
 
-def npu_serving_contract_fields(route: str) -> dict[str, object]:
-    framework = ROUTE_TO_FRAMEWORK.get(route, "")
-    import_probes = [*COMMON_NPU_IMPORT_PROBES, *ROUTE_IMPORT_PROBES.get(route, ())]
-    forbidden = _forbidden_runtime_markers(route, BACKEND_NPU)
-    return {
-        "serving_backend": BACKEND_NPU,
-        "runtime_env_setup": {
-            "source_candidates": [
-                "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh",
-                "/usr/local/Ascend/latest/set_env.sh",
-            ],
-            "pythonpath_requirements": ["tbe", "te", "torch_npu"],
-            "library_requirements": ["CANN runtime", "Ascend runtime libraries"],
-            "device_env": ["ASCEND_VISIBLE_DEVICES or framework-provided NPU device selection"],
-        },
-        "required_import_probes": import_probes,
-        "forbidden_runtime_markers": forbidden,
-        "npu_runtime_checks": [
-            "cann_env_loaded",
-            "torch_npu_imported",
-            "tbe_imported",
-            "te_imported",
-            f"{framework}_imported" if framework else "serving_framework_imported",
-            "cuda_nccl_markers_absent",
-            "no_cpu_fallback",
-        ],
-    }
-
-
-def _forbidden_runtime_markers(route: str, backend: str) -> list[str]:
-    if backend == BACKEND_NPU:
-        return [*COMMON_NPU_FORBIDDEN_RUNTIME_MARKERS, *ROUTE_FORBIDDEN_RUNTIME_MARKERS.get(route, ())]
-    return [*COMMON_GENERIC_FORBIDDEN_RUNTIME_MARKERS]
-
-
-def merge_npu_serving_contract(contract: dict[str, object], route: str) -> None:
-    fields = npu_serving_contract_fields(route)
-    for key, value in fields.items():
-        if key in {"required_import_probes", "forbidden_runtime_markers", "npu_runtime_checks"}:
-            contract[key] = _merge_string_lists(contract.get(key), value)
-        elif key == "runtime_env_setup" and isinstance(contract.get(key), Mapping):
-            default_setup = fields.get(key)
-            current_setup = contract.get(key)
-            merged = dict(cast(Mapping[str, object], default_setup)) if isinstance(default_setup, Mapping) else {}
-            if isinstance(current_setup, Mapping):
-                merged.update(dict(cast(Mapping[str, object], current_setup)))
-            contract[key] = merged
-        else:
-            contract[key] = value
-    contract["required_runtime_env"] = _merge_string_lists(
-        contract.get("required_runtime_env"),
-        COMMON_NPU_RUNTIME_ENV,
+def _serving_policy_for_backend(
+    backend: str,
+    platform_policy: PlatformPolicy | None,
+) -> ServingRuntimePolicy:
+    if platform_policy is not None and backend == platform_policy.serving_runtime.backend:
+        return platform_policy.serving_runtime
+    policy = ServingRuntimePolicy(backend=backend)
+    return ServingRuntimePolicy(
+        backend=backend,
+        runtime_env_setup={**policy.runtime_env_setup, "backend": backend},
+        required_runtime_env=(
+            f"{backend} serving runtime",
+            "serving framework installed",
+            "target accelerator runtime available",
+        ),
     )
 
 
-def merge_serving_runtime_contract(contract: dict[str, object], route: str, backend: str) -> None:
-    if backend == BACKEND_NPU:
-        merge_npu_serving_contract(contract, route)
-        return
-    fields = serving_runtime_contract_fields(route, backend)
-    for key, value in fields.items():
-        if key in {"required_import_probes", "forbidden_runtime_markers", "serving_runtime_checks"}:
-            contract[key] = _merge_string_lists(contract.get(key), value)
-        elif key == "runtime_env_setup" and isinstance(contract.get(key), Mapping):
-            default_setup = fields.get(key)
-            current_setup = contract.get(key)
-            merged = dict(cast(Mapping[str, object], default_setup)) if isinstance(default_setup, Mapping) else {}
-            if isinstance(current_setup, Mapping):
-                merged.update(dict(cast(Mapping[str, object], current_setup)))
-            contract[key] = merged
-        else:
-            contract[key] = value
-    contract["required_runtime_env"] = _merge_string_lists(
-        contract.get("required_runtime_env"),
-        (f"{backend} serving runtime", "serving framework installed", "target accelerator runtime available"),
-    )
+def _forbidden_runtime_markers(route: str, runtime_policy: ServingRuntimePolicy) -> list[str]:
+    return [
+        *runtime_policy.common_forbidden_runtime_markers,
+        *ROUTE_FORBIDDEN_RUNTIME_MARKERS.get(route, ()),
+    ]
 
 
-def write_npu_serving_validation_wrapper(
-    *,
-    project_dir: str | Path,
+def merge_serving_runtime_contract(
+    contract: dict[str, object],
     route: str,
-    launch_command: object,
-    readiness_probe: object,
-    request_validation: object,
-    project_test_files: object,
-    expected_outputs: object,
-    required_checks: object,
-) -> Path:
-    project_path = Path(project_dir)
-    framework = ROUTE_TO_FRAMEWORK[route]
-    wrapper_path = project_path / f"validate_{framework}_serving.py"
-    reports_dir = project_path / "migration_reports" / "serving"
-    readiness_probe_mapping: Mapping[object, object] = cast(Mapping[object, object], readiness_probe) if isinstance(readiness_probe, Mapping) else {}
-    request_validation_mapping: Mapping[object, object] = cast(Mapping[object, object], request_validation) if isinstance(request_validation, Mapping) else {}
-    body = _WRAPPER_TEMPLATE
-    replacements = {
-        "__ROUTE_JSON__": json.dumps(route),
-        "__FRAMEWORK_JSON__": json.dumps(framework),
-        "__BACKEND_JSON__": json.dumps(BACKEND_NPU),
-        "__LAUNCH_COMMAND_JSON__": json.dumps(str(launch_command or "")),
-        "__READINESS_PROBE_JSON__": _python_json_loads_literal(readiness_probe_mapping),
-        "__REQUEST_VALIDATION_JSON__": _python_json_loads_literal(request_validation_mapping),
-        "__PROJECT_TEST_FILES_JSON__": _python_json_loads_literal(_string_list(project_test_files)),
-        "__EXPECTED_OUTPUTS_JSON__": _python_json_loads_literal(_string_list(expected_outputs)),
-        "__REQUIRED_CHECKS_JSON__": _python_json_loads_literal(_string_list(required_checks)),
-        "__IMPORT_PROBES_JSON__": _python_json_loads_literal(npu_serving_contract_fields(route)["required_import_probes"]),
-        "__FORBIDDEN_MARKERS_JSON__": _python_json_loads_literal(npu_serving_contract_fields(route)["forbidden_runtime_markers"]),
-        "__REPORTS_DIR_JSON__": json.dumps(str(reports_dir)),
-    }
-    for marker, value in replacements.items():
-        body = body.replace(marker, value)
-    _ = wrapper_path.write_text(body, encoding="utf-8")
-    return wrapper_path
+    backend: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> None:
+    runtime_policy = _serving_policy_for_backend(backend, platform_policy)
+    fields = serving_runtime_contract_fields(route, backend, platform_policy)
+    for key, value in fields.items():
+        if key in {"required_import_probes", "forbidden_runtime_markers", runtime_policy.runtime_checks_field}:
+            contract[key] = _merge_string_lists(contract.get(key), value)
+        elif key == "runtime_env_setup" and isinstance(contract.get(key), Mapping):
+            default_setup = fields.get(key)
+            current_setup = contract.get(key)
+            merged = dict(cast(Mapping[str, object], default_setup)) if isinstance(default_setup, Mapping) else {}
+            if isinstance(current_setup, Mapping):
+                merged.update(dict(cast(Mapping[str, object], current_setup)))
+            contract[key] = merged
+        else:
+            contract[key] = value
+    contract["required_runtime_env"] = _merge_string_lists(
+        contract.get("required_runtime_env"),
+        runtime_policy.required_runtime_env,
+    )
 
 
 def write_serving_validation_wrapper(
@@ -228,26 +134,18 @@ def write_serving_validation_wrapper(
     project_test_files: object,
     expected_outputs: object,
     required_checks: object,
+    platform_policy: PlatformPolicy | None = None,
 ) -> Path:
-    if backend == BACKEND_NPU:
-        return write_npu_serving_validation_wrapper(
-            project_dir=project_dir,
-            route=route,
-            launch_command=launch_command,
-            readiness_probe=readiness_probe,
-            request_validation=request_validation,
-            project_test_files=project_test_files,
-            expected_outputs=expected_outputs,
-            required_checks=required_checks,
-        )
     project_path = Path(project_dir)
     framework = ROUTE_TO_FRAMEWORK[route]
     wrapper_path = project_path / f"validate_{framework}_serving.py"
     reports_dir = project_path / "migration_reports" / "serving"
     readiness_probe_mapping: Mapping[object, object] = cast(Mapping[object, object], readiness_probe) if isinstance(readiness_probe, Mapping) else {}
     request_validation_mapping: Mapping[object, object] = cast(Mapping[object, object], request_validation) if isinstance(request_validation, Mapping) else {}
-    body = _serving_wrapper_template(backend)
-    contract_fields = serving_runtime_contract_fields(route, backend)
+    body = _WRAPPER_TEMPLATE
+    runtime_policy = _serving_policy_for_backend(backend, platform_policy)
+    contract_fields = serving_runtime_contract_fields(route, backend, platform_policy)
+    runtime_config = _wrapper_runtime_config(route, runtime_policy)
     replacements = {
         "__ROUTE_JSON__": json.dumps(route),
         "__FRAMEWORK_JSON__": json.dumps(framework),
@@ -261,6 +159,7 @@ def write_serving_validation_wrapper(
         "__IMPORT_PROBES_JSON__": _python_json_loads_literal(contract_fields["required_import_probes"]),
         "__FORBIDDEN_MARKERS_JSON__": _python_json_loads_literal(contract_fields["forbidden_runtime_markers"]),
         "__REPORTS_DIR_JSON__": json.dumps(str(reports_dir)),
+        "__RUNTIME_CONFIG_JSON__": _python_json_loads_literal(runtime_config),
     }
     for marker, value in replacements.items():
         body = body.replace(marker, value)
@@ -272,44 +171,21 @@ def _python_json_loads_literal(value: object) -> str:
     return f"json.loads({json.dumps(json.dumps(value))})"
 
 
-_GENERIC_ENV_TEMPLATE = '''def build_serving_env(env: dict[str, str], backend: str) -> tuple[dict[str, str], dict[str, object]]:
-    return env, {
-        "serving_backend": backend,
-        "runtime_env_configured": "framework_default",
+def _wrapper_runtime_config(route: str, runtime_policy: ServingRuntimePolicy) -> dict[str, object]:
+    return {
+        "strip_env_prefixes": list(runtime_policy.strip_env_prefixes),
+        "root_env_vars": list(runtime_policy.root_env_vars),
+        "root_candidates": list(runtime_policy.root_candidates),
+        "env_vars_from_root": dict(runtime_policy.env_vars_from_root),
+        "pythonpath_from_root": list(runtime_policy.pythonpath_from_root),
+        "library_path_from_root": list(runtime_policy.library_path_from_root),
+        "path_from_root": list(runtime_policy.path_from_root),
+        "route_env_defaults": dict(runtime_policy.route_env_defaults.get(route, {})),
+        "runtime_evidence_fields": dict(runtime_policy.runtime_evidence_fields),
+        "execution_evidence_field": runtime_policy.execution_evidence_field,
+        "execution_observed_field": runtime_policy.execution_observed_field,
+        "runtime_evidence_field": runtime_policy.runtime_evidence_field,
     }
-
-
-'''
-
-
-def _serving_wrapper_template(backend: str) -> str:
-    if backend == BACKEND_NPU:
-        return _WRAPPER_TEMPLATE
-    body = _WRAPPER_TEMPLATE.replace(
-        '    if FRAMEWORK == "vllm":\n        env.setdefault("VLLM_TARGET_DEVICE", "npu")\n',
-        "",
-    )
-    body = _replace_template_block(
-        body,
-        "def build_serving_env",
-        "def existing_paths",
-        _GENERIC_ENV_TEMPLATE,
-    )
-    body = _replace_template_block(
-        body,
-        '    if BACKEND == "ascend":\n',
-        '    (REPORTS_DIR / "serving_final_gate.json")',
-        "",
-    )
-    return body
-
-
-def _replace_template_block(body: str, start_marker: str, end_marker: str, replacement: str) -> str:
-    start = body.index(start_marker)
-    end = body.index(end_marker, start)
-    return body[:start] + replacement + body[end:]
-
-
 def _merge_string_lists(existing: object, required: object) -> list[str]:
     result: list[str] = []
     for source in (existing, required):
@@ -346,6 +222,7 @@ import urllib.request
 ROUTE = __ROUTE_JSON__
 FRAMEWORK = __FRAMEWORK_JSON__
 BACKEND = __BACKEND_JSON__
+RUNTIME_CONFIG = __RUNTIME_CONFIG_JSON__
 LAUNCH_COMMAND = __LAUNCH_COMMAND_JSON__
 READINESS_PROBE = __READINESS_PROBE_JSON__
 REQUEST_VALIDATION = __REQUEST_VALIDATION_JSON__
@@ -407,8 +284,8 @@ def main() -> int:
         env.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
         if command and command[0] == "sglang":
             command = [sys.executable, "-m", "sglang.cli.main"] + command[1:]
-    if FRAMEWORK == "vllm":
-        env.setdefault("VLLM_TARGET_DEVICE", "npu")
+    for key, value in cast(dict[str, str], RUNTIME_CONFIG.get("route_env_defaults", {})).items():
+        env.setdefault(key, value)
 
     command_result = run_serving_validation(command, cwd=project_root, env=env)
     combined = "\n".join([
@@ -696,37 +573,23 @@ def openai_validation_payload(api_url: str, model_id: str) -> dict[str, object]:
 
 
 def build_serving_env(env: dict[str, str], backend: str) -> tuple[dict[str, str], dict[str, object]]:
-    if backend == "ascend":
-        return build_npu_env(env)
-    return env, {
-        "serving_backend": backend,
-        "runtime_env_configured": "framework_default",
-    }
-
-
-def build_npu_env(env: dict[str, str]) -> tuple[dict[str, str], dict[str, object]]:
+    stripped = False
     for key in list(env):
         upper = key.upper()
-        if upper.startswith("CUDA") or upper.startswith("NVIDIA") or upper.startswith("NCCL"):
+        prefixes = tuple(str(item).upper() for item in RUNTIME_CONFIG.get("strip_env_prefixes", []))
+        if prefixes and upper.startswith(prefixes):
             env.pop(key, None)
-    roots = npu_roots(env)
+            stripped = True
+    roots = runtime_roots(env)
     selected_root = next((root for root in roots if root.exists()), None)
     python_paths: list[str] = []
     library_paths: list[str] = []
     if selected_root is not None:
-        env.setdefault("ASCEND_HOME_PATH", str(selected_root))
-        env.setdefault("ASCEND_OPP_PATH", str(selected_root / "opp"))
-        python_paths.extend(existing_paths([
-            selected_root / "python" / "site-packages",
-            selected_root / "opp" / "built-in" / "op_impl" / "ai_core" / "tbe",
-        ]))
-        library_paths.extend(existing_paths([
-            selected_root / "lib64",
-            selected_root / "runtime" / "lib64",
-            selected_root / "compiler" / "lib64",
-            selected_root / "opp" / "built-in" / "op_impl" / "ai_core" / "tbe" / "op_tiling" / "lib",
-        ]))
-        prepend_path(env, "PATH", existing_paths([selected_root / "bin", selected_root / "compiler" / "ccec_compiler" / "bin"]))
+        for key, rel_path in cast(dict[str, str], RUNTIME_CONFIG.get("env_vars_from_root", {})).items():
+            env.setdefault(key, str(selected_root / rel_path) if rel_path != "." else str(selected_root))
+        python_paths.extend(existing_paths([selected_root / rel_path for rel_path in cast(list[str], RUNTIME_CONFIG.get("pythonpath_from_root", []))]))
+        library_paths.extend(existing_paths([selected_root / rel_path for rel_path in cast(list[str], RUNTIME_CONFIG.get("library_path_from_root", []))]))
+        prepend_path(env, "PATH", existing_paths([selected_root / rel_path for rel_path in cast(list[str], RUNTIME_CONFIG.get("path_from_root", []))]))
     project_root = Path(__file__).resolve().parent
     venv_bin = project_root / ".venv" / "bin"
     if venv_bin.is_dir():
@@ -735,21 +598,19 @@ def build_npu_env(env: dict[str, str]) -> tuple[dict[str, str], dict[str, object
     prepend_path(env, "LD_LIBRARY_PATH", library_paths)
     return env, {
         "serving_backend": BACKEND,
-        "selected_npu_root": str(selected_root) if selected_root is not None else "",
-        "cann_env_loaded": selected_root is not None,
+        "selected_runtime_root": str(selected_root) if selected_root is not None else "",
+        "runtime_env_configured": "policy_root" if selected_root is not None else "framework_default",
+        "runtime_root_loaded": selected_root is not None,
         "python_paths_added": python_paths,
         "library_paths_added": library_paths,
-        "cuda_nccl_env_stripped": True,
+        "configured_env_prefixes_stripped": stripped,
         "venv_bin_prepended": venv_bin.is_dir(),
     }
 
 
-def npu_roots(env: dict[str, str]) -> list[Path]:
-    candidates = [env.get("ASCEND_HOME_PATH"), env.get("ASCEND_TOOLKIT_HOME")]
-    candidates.extend([
-        "/usr/local/Ascend/ascend-toolkit/latest",
-        "/usr/local/Ascend/latest",
-    ])
+def runtime_roots(env: dict[str, str]) -> list[Path]:
+    candidates = [env.get(name) for name in cast(list[str], RUNTIME_CONFIG.get("root_env_vars", []))]
+    candidates.extend(cast(list[str], RUNTIME_CONFIG.get("root_candidates", [])))
     return [Path(value).expanduser() for value in candidates if value]
 
 
@@ -1106,6 +967,19 @@ def write_gate(
     ]
     cpu_fallback_detected = any("cpu" in marker for marker in forbidden_hits)
     cuda_fallback_detected = any("cuda" in marker or "nccl" in marker or "nvidia" in marker for marker in forbidden_hits)
+    accelerator_execution_evidence = {
+        "passed": passed,
+        "serving_runtime": env_evidence,
+        "import_preflight": import_evidence,
+        "command_result": command_result,
+    }
+    serving_runtime_evidence = {
+        **env_evidence,
+        f"{FRAMEWORK}_imported": module_imported(import_evidence, FRAMEWORK),
+        "forbidden_runtime_markers_absent": not forbidden_hits,
+    }
+    for evidence_field, module_name in cast(dict[str, str], RUNTIME_CONFIG.get("runtime_evidence_fields", {})).items():
+        serving_runtime_evidence[evidence_field] = module_imported(import_evidence, module_name)
     report = {
         "migration_route": ROUTE,
         "serving_framework": FRAMEWORK,
@@ -1116,17 +990,8 @@ def write_gate(
         "required_checks": REQUIRED_CHECKS,
         "readiness_probe": {"passed": passed, "config": READINESS_PROBE, "evidence": "project launch command completed"},
         "request_validation": {"passed": passed, "config": REQUEST_VALIDATION, "evidence": "project demo/API command completed"},
-        "accelerator_execution_evidence": {
-            "passed": passed,
-            "serving_runtime": env_evidence,
-            "import_preflight": import_evidence,
-            "command_result": command_result,
-        },
-        "serving_runtime_evidence": {
-            **env_evidence,
-            f"{FRAMEWORK}_imported": module_imported(import_evidence, FRAMEWORK),
-            "forbidden_runtime_markers_absent": not forbidden_hits,
-        },
+        "accelerator_execution_evidence": accelerator_execution_evidence,
+        "serving_runtime_evidence": serving_runtime_evidence,
         "project_demo_or_test_executed": passed,
         "serving_api_validated": passed,
         "accelerator_execution_observed": passed,
@@ -1139,15 +1004,12 @@ def write_gate(
         "started_at": started_at,
         "ended_at": time.time(),
     }
-    if BACKEND == "ascend":
-        report["npu_execution_evidence"] = report["accelerator_execution_evidence"]
-        report["npu_runtime_evidence"] = {
-            **cast(dict[str, object], report["serving_runtime_evidence"]),
-            "torch_npu_imported": module_imported(import_evidence, "torch_npu"),
-            "tbe_imported": module_imported(import_evidence, "tbe"),
-            "te_imported": module_imported(import_evidence, "te"),
-        }
-        report["npu_execution_observed"] = passed
+    execution_evidence_field = str(RUNTIME_CONFIG.get("execution_evidence_field") or "accelerator_execution_evidence")
+    execution_observed_field = str(RUNTIME_CONFIG.get("execution_observed_field") or "accelerator_execution_observed")
+    runtime_evidence_field = str(RUNTIME_CONFIG.get("runtime_evidence_field") or "serving_runtime_evidence")
+    report[execution_evidence_field] = accelerator_execution_evidence
+    report[execution_observed_field] = passed
+    report[runtime_evidence_field] = serving_runtime_evidence
     (REPORTS_DIR / "serving_final_gate.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 

@@ -1,10 +1,4 @@
-"""Accelerator package context extraction for env context building.
-
-Provides a platform-neutral helper that extracts accelerator-related
-information from ``installed_packages``, preserving the legacy
-``torch_npu_version`` field while adding generic ``accelerator_packages``
-and ``accelerator_package_versions`` fields.
-"""
+"""Accelerator package context extraction for env context building."""
 
 from __future__ import annotations
 
@@ -82,8 +76,6 @@ def extract_accelerator_context(
     dict
         Keys:
 
-        * ``torch_npu_version`` — legacy field; ``"2.1.0"`` when torch-npu/torch_npu
-          has a version, otherwise ``None``.
         * ``accelerator_packages`` — ``list[str]`` of normalized accelerator
           package names (lowercase, underscores), e.g.
           ``["torch_npu", "ppukernel", "vllm"]``.
@@ -93,11 +85,10 @@ def extract_accelerator_context(
     Examples
     --------
     >>> extract_accelerator_context(["torch-npu==2.1.0", "torch==2.0.1", "ppukernel==1.0.0"])
-    {'torch_npu_version': '2.1.0',
-     'accelerator_packages': ['torch_npu', 'torch', 'ppukernel'],
+    {'accelerator_packages': ['torch_npu', 'torch', 'ppukernel'],
      'accelerator_package_versions': {'torch_npu': '2.1.0', 'torch': '2.0.1', 'ppukernel': '1.0.0'}}
     """
-    result: dict[str, object] = {"torch_npu_version": None}
+    result: dict[str, object] = {}
     accelerator_packages: list[str] = []
     accelerator_package_versions: dict[str, str] = {}
 
@@ -113,10 +104,6 @@ def extract_accelerator_context(
         name, version = _parse_package_spec(pkg)
         normed = _normalize_name(name)
 
-        # Legacy torch_npu_version extraction — keep first-match semantics
-        # (`break` after first `torch-npu==` in original code)
-        if normed == "torch_npu" and version and result["torch_npu_version"] is None:
-            result["torch_npu_version"] = version
 
         # Check against recognized accelerator prefixes
         for prefix in _ACCELERATOR_PREFIXES:

@@ -103,6 +103,10 @@ class TestInferPolicyByName:
         p = _infer_policy_by_name("ppu_migration_v2_container")
         assert p.id == "ppu_cuda_compatible"
 
+    def test_musa_muxi_migration_infers_musa_muxi(self):
+        p = _infer_policy_by_name("musa_muxi_migration_v2_container_baseaware_entryfix")
+        assert p.id == "musa_muxi"
+
     def test_unknown_name_infers_generic(self):
         p = _infer_policy_by_name("custom_workflow_v1")
         assert p.id == "generic_accelerator"
@@ -189,10 +193,14 @@ class TestParseTargetPlatform:
 
 
 class TestTokenHelpers:
-    """Policy-aware token helpers with None fallback."""
-
     def test_get_target_device_values_none_fallback(self):
         vals = get_target_device_values(None)
+        assert "accelerator" in vals
+        assert "npu" not in vals
+        assert "ascend" not in vals
+
+    def test_get_target_device_values_explicit_npu_policy(self):
+        vals = get_target_device_values(BUILTIN_PRESETS["npu_ascend"])
         assert "npu" in vals
         assert "ascend" in vals
 
@@ -202,6 +210,11 @@ class TestTokenHelpers:
 
     def test_get_positive_boolean_fields_none_fallback(self):
         fields = get_positive_boolean_fields(None)
+        assert "custom_op_invoked" in fields
+        assert "npu_custom" not in fields
+
+    def test_get_positive_boolean_fields_explicit_npu_policy(self):
+        fields = get_positive_boolean_fields(BUILTIN_PRESETS["npu_ascend"])
         assert "npu_custom" in fields
 
     def test_get_positive_boolean_fields_policy(self):
@@ -210,19 +223,28 @@ class TestTokenHelpers:
 
     def test_get_artifact_path_tokens_fallback(self):
         tokens = get_artifact_path_tokens(None)
+        assert "custom_op" in tokens
+        assert "ascend" not in tokens
+        assert "cann" not in tokens
+
+    def test_get_artifact_path_tokens_generic_returns_own_tokens(self):
+        tokens = get_artifact_path_tokens(BUILTIN_PRESETS["generic_accelerator"])
+        assert "compiled" in tokens or "custom_op" in tokens
+        assert "ascend" not in tokens
+        assert "cann" not in tokens
+
+    def test_get_artifact_path_tokens_explicit_npu_policy(self):
+        tokens = get_artifact_path_tokens(BUILTIN_PRESETS["npu_ascend"])
         assert "ascend" in tokens
         assert "cann" in tokens
 
-    def test_get_artifact_path_tokens_generic_returns_own_tokens(self):
-        """Explicit generic_accelerator returns its own tokens, NOT NPU fallback."""
-        tokens = get_artifact_path_tokens(BUILTIN_PRESETS["generic_accelerator"])
-        # Should contain generic tokens, NOT ascend/cann NPU tokens
-        assert "compiled" in tokens or "custom_op" in tokens
-        assert "ascend" not in tokens  # must NOT fall back to NPU
-        assert "cann" not in tokens
-
     def test_get_build_log_tokens_fallback(self):
         tokens = get_native_build_log_tokens(None)
+        assert "compile" in tokens
+        assert "aclrt" not in tokens
+
+    def test_get_build_log_tokens_explicit_npu_policy(self):
+        tokens = get_native_build_log_tokens(BUILTIN_PRESETS["npu_ascend"])
         assert "aclrt" in tokens
 
 

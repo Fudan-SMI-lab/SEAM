@@ -26,7 +26,7 @@ from core.platform_policy import (
 PASS_STATES = {"PASS", "FULL_PASS", "DONE", "CLOSED_PASS"}
 EVIDENCE_PASS_STATES = PASS_STATES | {"PASSED", "SUCCESS", "OK", "VERIFIED"}
 
-__all__ = ["validate_custom_op_final_gate", "_path_has_ascend_artifact_signal"]
+__all__ = ["validate_custom_op_final_gate", "_path_has_platform_artifact_signal"]
 
 BLOCKING_STATUSES = {
     "MVP_ONLY",
@@ -73,19 +73,6 @@ PYTHON_SHIM_FLAGS = (
     "delegates_to_python_binding",
 )
 
-ASCEND_NATIVE_ARTIFACT_FIELDS = (
-    "ascend_custom_op_artifact",
-    "ascend_custom_op_built",
-    "native_custom_op_artifact",
-    "opp_custom_op_built",
-    "op_plugin_built",
-    "cann_build_log_present",
-    "ascendc_kernel_built",
-    "tiling_kernel_built",
-    "acl_op_registered",
-    "aclnn_op_registered",
-    "torch_npu_custom_op_loaded",
-)
 
 DIAGNOSTIC_BASELINE_VALUES = {
     "diagnostic_only",
@@ -178,9 +165,6 @@ COARSE_GRANULARITY_VALUES = {
 
 FINE_GRAINED_GRANULARITY_VALUES = {"FINE_GRAINED", "FINE_GRAINED_UNIT", "UNIT", "UNIT_LEVEL"}
 _PYTORCH_EXTENSION_ONLY_TOKENS = (
-    "torch_npu.utils.cpp_extension",
-    "torch_npu.utils.cpp_extension.npuextension",
-    "npuextension",
     "torch.utils.cpp_extension",
     "torch.utils.cpp_extension.cppextension",
     "cppextension",
@@ -192,7 +176,6 @@ _PYTORCH_EXTENSION_ONLY_TOKENS = (
     " at::",
     "torch::tensor",
     "pybind11_module",
-    "-ltorch_npu",
     "-ltorch_cpu",
     "-ltorch_python",
     "libtorch",
@@ -200,6 +183,27 @@ _PYTORCH_EXTENSION_ONLY_TOKENS = (
     "setup.py build_ext",
     "build_ext --inplace",
 )
+
+
+def _extension_only_tokens(platform_policy: PlatformPolicy | None = None) -> tuple[str, ...]:
+    tokens: list[str] = list(_PYTORCH_EXTENSION_ONLY_TOKENS)
+    if platform_policy is not None:
+        for target in platform_policy.custom_op_evidence.target_device_values:
+            normalized = _normalize_token(target)
+            if not normalized:
+                continue
+            tokens.extend((
+                f"{normalized}extension",
+                f"{normalized}_extension",
+                f"-ltorch_{normalized}",
+            ))
+            if not normalized.startswith("torch_"):
+                tokens.extend((
+                    f"torch_{normalized}.utils.cpp_extension",
+                    f"torch_{normalized}.utils.cpp_extension.{normalized}extension",
+                    f"-ltorch_{normalized}",
+                ))
+    return tuple(dict.fromkeys(tokens))
 
 _OP_HOST_SOURCE_FIELDS = (
     "op_host",
@@ -389,7 +393,8 @@ def _serving_execution_evidence_field(
 ) -> str:
     if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
         return platform_policy.serving_runtime.execution_evidence_field
-    return "npu_execution_evidence" if serving_backend == "ascend" else "accelerator_execution_evidence"
+    _ = serving_backend
+    return "accelerator_execution_evidence"
 
 
 def _serving_fallback_check_field(
@@ -397,8 +402,11 @@ def _serving_fallback_check_field(
     platform_policy: PlatformPolicy | None,
 ) -> str:
     if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
-        return "no_forbidden_runtime_fallback" if platform_policy.serving_runtime.backend != "ascend" else "no_cuda_fallback"
-    return "no_cuda_fallback" if serving_backend == "ascend" else "no_forbidden_runtime_fallback"
+        checks = platform_policy.serving_runtime.required_checks
+        if "no_cuda_fallback" in checks:
+            return "no_cuda_fallback"
+    _ = serving_backend
+    return "no_forbidden_runtime_fallback"
 
 
 def _serving_execution_observed_field(
@@ -407,7 +415,8 @@ def _serving_execution_observed_field(
 ) -> str:
     if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
         return platform_policy.serving_runtime.execution_observed_field
-    return "npu_execution_observed" if serving_backend == "ascend" else "accelerator_execution_observed"
+    _ = serving_backend
+    return "accelerator_execution_observed"
 
 
 def _resolve_serving_runtime_validation(
@@ -417,36 +426,32 @@ def _resolve_serving_runtime_validation(
     errors: list[str],
 ) -> None:
     if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
-        if platform_policy.serving_runtime.backend == "ascend":
-            _validate_npu_serving_runtime_evidence(data, errors)
-        else:
-            _validate_generic_serving_runtime_evidence(data, errors)
-    elif serving_backend == "ascend":
-        _validate_npu_serving_runtime_evidence(data, errors)
-    else:
-        _validate_generic_serving_runtime_evidence(data, errors)
+        _validate_policy_serving_runtime_evidence(data, platform_policy, errors)
+        return
+    _validate_generic_serving_runtime_evidence(data, errors)
 
 
-def _validate_npu_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
-    evidence_value = data.get("npu_runtime_evidence")
+def _validate_policy_serving_runtime_evidence(
+    data: dict[str, object],
+    platform_policy: PlatformPolicy,
+    errors: list[str],
+) -> None:
+    field_name = platform_policy.serving_runtime.runtime_evidence_field
+    evidence_value = data.get(field_name)
     if not isinstance(evidence_value, Mapping):
-        errors.append("npu_runtime_evidence must be present for serving FULL_PASS validation")
+        errors.append(f"{field_name} must be present for serving FULL_PASS validation")
         return
     evidence = cast(Mapping[object, object], evidence_value)
-    if evidence.get("serving_backend") != "ascend":
-        errors.append("npu_runtime_evidence.serving_backend must be ascend")
-    for field in (
-        "cann_env_loaded",
-        "torch_npu_imported",
-        "tbe_imported",
-        "te_imported",
-        "forbidden_runtime_markers_absent",
-    ):
-        if evidence.get(field) is not True:
-            errors.append(f"npu_runtime_evidence.{field} must be true")
+    if evidence.get("serving_backend") != data.get("serving_backend"):
+        errors.append(f"{field_name}.serving_backend must match serving_backend")
+    if evidence.get("forbidden_runtime_markers_absent") is not True:
+        errors.append(f"{field_name}.forbidden_runtime_markers_absent must be true")
     framework = data.get("serving_framework")
     if isinstance(framework, str) and evidence.get(f"{framework}_imported") is not True:
-        errors.append(f"npu_runtime_evidence.{framework}_imported must be true")
+        errors.append(f"{field_name}.{framework}_imported must be true")
+    for evidence_field in platform_policy.serving_runtime.runtime_evidence_fields:
+        if evidence.get(evidence_field) is not True:
+            errors.append(f"{field_name}.{evidence_field} must be true")
 
 
 def _validate_generic_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
@@ -470,14 +475,6 @@ def validate_custom_op_final_gate(
     project_root: str | Path | None = None,
     platform_policy: PlatformPolicy | None = None,
 ) -> ValidationDict:
-    """Validate the machine-checkable custom-op final evidence gate report.
-
-    Args:
-        data: The custom-op final gate report as a dict.
-        project_root: Path to the project root for file validation.
-        platform_policy: Optional platform policy; when None, defaults to
-            legacy NPU/Ascend behaviour for backward compatibility.
-    """
     errors: list[str] = []
     resolved_project_root = _resolve_existing_project_root(project_root, errors)
 
@@ -518,7 +515,7 @@ def validate_custom_op_final_gate(
 
     data_mapping = cast(Mapping[object, object], data)
     expanded_variant_units = _extract_expanded_variant_units(data_mapping, errors)
-    require_strict_ascend_opp_producer = _requires_strict_ascend_opp_producer_closure(
+    require_strict_native_producer = _requires_strict_native_producer_closure(
         data_mapping,
         platform_policy,
         expanded_variant_units,
@@ -542,7 +539,7 @@ def validate_custom_op_final_gate(
                 errors,
                 resolved_project_root,
                 platform_policy,
-                require_strict_ascend_opp_producer,
+                require_strict_native_producer,
             )
         _validate_source_inventory_completeness(data_mapping, row_items, errors)
         perf_mode = get_performance_validation_mode(platform_policy)
@@ -553,7 +550,7 @@ def validate_custom_op_final_gate(
                 manifest_entries,
                 errors,
                 platform_policy,
-                require_strict_ascend_opp_producer,
+                require_strict_native_producer,
             )
         _validate_required_manifest_units(
             row_items,
@@ -563,7 +560,7 @@ def validate_custom_op_final_gate(
             resolved_project_root,
             errors,
         )
-        if require_strict_ascend_opp_producer:
+        if require_strict_native_producer:
             _validate_generated_opp_inventory_closure(
                 row_items,
                 inventory_count,
@@ -745,32 +742,36 @@ def _extract_expanded_variant_units(data: Mapping[object, object], errors: list[
     return unit_set
 
 
-def _requires_strict_ascend_opp_producer_closure(
+def _requires_strict_native_producer_closure(
     data: Mapping[object, object],
     platform_policy: PlatformPolicy | None,
     expanded_variant_units: set[str],
 ) -> bool:
-    if platform_policy is not None and platform_policy.id != "npu_ascend":
+    if platform_policy is None:
+        return False
+    if not platform_policy.custom_op_evidence.strict_producer_closure_required:
         return False
     policy_value = data.get("custom_op_evidence_policy")
     policy_text = policy_value.strip().lower() if isinstance(policy_value, str) else ""
-    if "require_real_ascend_cann_acl_opp_native_artifacts" in policy_text:
+    expected_policy = platform_policy.custom_op_evidence.custom_op_evidence_policy.strip().lower()
+    if expected_policy and policy_text == expected_policy:
         return True
     if bool(expanded_variant_units) or _has_strict_expanded_variant_metadata(data):
         return True
-    return _gate_declares_ascend_custom_op_target(data)
+    return _gate_declares_policy_custom_op_target(data, platform_policy)
 
 
-def _gate_declares_ascend_custom_op_target(data: Mapping[object, object]) -> bool:
+def _gate_declares_policy_custom_op_target(
+    data: Mapping[object, object],
+    platform_policy: PlatformPolicy,
+) -> bool:
     device = data.get("device") or data.get("target_device") or data.get("serving_backend")
-    if isinstance(device, str) and _is_npu_like_device(_normalize_token(device)):
+    if isinstance(device, str) and _is_policy_target_device(_normalize_token(device), platform_policy):
         return True
     for field_name in ("custom_device", "custom_backend", "target_backend", "route", "migration_route"):
         value = data.get(field_name)
-        if isinstance(value, str):
-            normalized = _normalize_token(value)
-            if _is_npu_like_device(normalized) or "ascend_opp" in normalized:
-                return True
+        if isinstance(value, str) and _is_policy_target_device(_normalize_token(value), platform_policy):
+            return True
     return False
 
 
@@ -971,7 +972,7 @@ def _validate_gate_row(
     errors: list[str],
     project_root: Path | None,
     platform_policy: PlatformPolicy | None = None,
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     status = row.get("status")
     _reject_blocking_status(status, f"rows[{index}].status", errors)
@@ -994,16 +995,16 @@ def _validate_gate_row(
         errors,
         project_root,
         platform_policy,
-        require_strict_ascend_opp_producer,
+        require_strict_native_producer,
     )
     _validate_adapter_evidence(row.get("adapter_evidence"), index, errors)
-    _validate_parity_evidence(row.get("parity_evidence"), index, errors, require_strict_ascend_opp_producer)
+    _validate_parity_evidence(row.get("parity_evidence"), index, errors, require_strict_native_producer)
     _validate_integration_route(row.get("integration_e2e_evidence"), index, errors)
-    if require_strict_ascend_opp_producer:
+    if require_strict_native_producer:
         _validate_per_row_route_evidence(row, index, errors)
     _validate_runtime_coverage(row.get("same_run_runtime_coverage"), index, errors)
     if perf_mode != "disabled":
-        _validate_performance(row.get("performance_evidence"), index, errors, platform_policy, require_strict_ascend_opp_producer)
+        _validate_performance(row.get("performance_evidence"), index, errors, platform_policy, require_strict_native_producer)
     _validate_no_fallback_evidence(row.get("no_fallback_no_zero_call_no_builtin_contamination"), index, errors)
 
     custom_call_count = _extract_custom_call_count(row)
@@ -1157,7 +1158,7 @@ def _validate_parity_evidence(
     value: object,
     index: int,
     errors: list[str],
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     if not isinstance(value, Mapping):
         errors.append(f"rows[{index}].parity_evidence must be an object with direct/reference parity proof")
@@ -1172,7 +1173,7 @@ def _validate_parity_evidence(
         return
     max_abs_error = evidence.get("max_abs_error")
     tolerance = evidence.get("tolerance") or evidence.get("atol") or evidence.get("max_abs_error_tolerance")
-    if _non_negative_number(max_abs_error) and not require_strict_ascend_opp_producer:
+    if _non_negative_number(max_abs_error) and not require_strict_native_producer:
         return
     if _non_negative_number(max_abs_error) and _non_negative_number(tolerance) and cast(float, max_abs_error) <= cast(float, tolerance):
         return
@@ -1626,7 +1627,7 @@ def _validate_project_local_artifact(
     errors: list[str],
     project_root: Path | None,
     platform_policy: PlatformPolicy | None = None,
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     if not isinstance(value, Mapping):
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must be an object with project-local proof")
@@ -1642,11 +1643,8 @@ def _validate_project_local_artifact(
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must not be a Python shim or Python binding surface")
     native_paths = _native_compiled_artifact_paths(evidence, platform_policy)
     if not native_paths:
-        if platform_policy is not None and platform_policy.id != "npu_ascend":
-            native_label = platform_policy.guidance_native_label
-            errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove a native compiled {native_label} custom-op artifact")
-        else:
-            errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove a native compiled Ascend custom-op artifact")
+        native_label = platform_policy.guidance_native_label if platform_policy is not None else "target-platform"
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove a native compiled {native_label} custom-op artifact")
     elif not _runtime_loaded_native_artifact_matches(evidence, native_paths, project_root):
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must prove the same-run runtime loaded the native compiled artifact, not a Python shim")
 
@@ -1657,8 +1655,8 @@ def _validate_project_local_artifact(
             errors.append(f"rows[{index}].opp_custom_op_artifact_evidence native artifact path must exist under the project root and be a non-empty compiled binary")
 
     build_log_path = _validate_build_provenance(evidence, index, errors, project_root)
-    if require_strict_ascend_opp_producer:
-        _validate_strict_opp_producer_evidence(evidence, row, index, errors, project_root, build_log_path)
+    if require_strict_native_producer:
+        _validate_strict_native_producer_evidence(evidence, row, index, errors, project_root, build_log_path, platform_policy)
     if project_root is not None and existing_paths:
         _validate_native_platform_evidence(
             evidence, row, index, errors, project_root,
@@ -1839,7 +1837,7 @@ def _validate_performance(
     index: int,
     errors: list[str],
     platform_policy: PlatformPolicy | None = None,
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     if not isinstance(value, Mapping):
         errors.append(f"rows[{index}].performance_evidence must be an object with numeric timings")
@@ -1865,7 +1863,7 @@ def _validate_performance(
         f"rows[{index}].performance_evidence",
         errors,
         platform_policy,
-        require_strict_ascend_opp_producer,
+        require_strict_native_producer,
     )
 
 
@@ -1875,7 +1873,7 @@ def _validate_performance_report_completeness(
     manifest_entries: int | None,
     errors: list[str],
     platform_policy: PlatformPolicy | None = None,
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     report = data.get("performance_report")
     if report is None:
@@ -1898,10 +1896,10 @@ def _validate_performance_report_completeness(
         "performance_report",
         errors,
         platform_policy,
-        require_strict_ascend_opp_producer,
+        require_strict_native_producer,
     )
     _validate_overall_performance_report(
-        report_map, errors, platform_policy, require_strict_ascend_opp_producer
+        report_map, errors, platform_policy, require_strict_native_producer
     )
 
     row_names = _extract_row_names(row_items)
@@ -1927,14 +1925,14 @@ def _validate_performance_report_completeness(
                 details.append("performance entries without manifest rows: " + ", ".join(extra))
             errors.append("performance_report must match manifest rows (" + "; ".join(details) + ")")
         for unit_name, entry in report_entries.items():
-            _validate_performance_report_entry(entry, unit_name, errors, platform_policy, require_strict_ascend_opp_producer)
+            _validate_performance_report_entry(entry, unit_name, errors, platform_policy, require_strict_native_producer)
 
 
 def _validate_overall_performance_report(
     report: Mapping[object, object],
     errors: list[str],
     platform_policy: PlatformPolicy | None = None,
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     perf_mode = get_performance_validation_mode(platform_policy)
     if perf_mode == "full":
@@ -1975,7 +1973,7 @@ def _validate_overall_performance_report(
     if not all_units_replaced_proven:
         errors.append("performance_report must prove overall timing was measured after all source-discovered custom-op units were replaced")
     _validate_independent_performance_measurement(
-        report, "performance_report", errors, require_strict_ascend_opp_producer
+        report, "performance_report", errors, require_strict_native_producer
     )
 
 
@@ -2025,7 +2023,7 @@ def _validate_performance_report_entry(
     unit_name: str,
     errors: list[str],
     platform_policy: PlatformPolicy | None = None,
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     perf_mode = get_performance_validation_mode(platform_policy)
     if perf_mode in ("full", "presence_only"):
@@ -2043,7 +2041,7 @@ def _validate_performance_report_entry(
         f"performance_report.entries[{unit_name}]",
         errors,
         platform_policy,
-        require_strict_ascend_opp_producer,
+        require_strict_native_producer,
     )
 
 
@@ -2138,50 +2136,6 @@ _RUNTIME_LOADED_PATH_FIELDS = (
     "__file__",
 )
 
-_NATIVE_BUILD_LOG_TOKENS = (
-    "aclrt",
-    "aclnn",
-    "acl_op",
-    "-lascendcl",
-    "libascendcl",
-    "libacl",
-    "kernel_operator.h",
-    "op_host",
-    "op_kernel",
-    "op_proto",
-    "msopgen",
-    "tikcpp",
-    "aicore",
-    "aicpu",
-)
-
-_NATIVE_SOURCE_TOKENS = (
-    "kernel_operator.h",
-    "aclrt",
-    "aclnn",
-    "acl_op",
-    "op_host",
-    "op_kernel",
-    "op_proto",
-    "tilingdata",
-    "getblockidx",
-    "aicore",
-    "aicpu",
-)
-
-_NATIVE_BINARY_TOKENS = (
-    b"aclrt",
-    b"aclnn",
-    b"acl_op",
-    b"kernel_operator",
-    b"libascendcl",
-    b"libacl",
-    b"op_host",
-    b"op_kernel",
-    b"op_proto",
-    b"aicore",
-    b"aicpu",
-)
 
 _EVIDENCE_ONLY_PATH_TOKENS = (
     "evidence",
@@ -2203,20 +2157,22 @@ _EVIDENCE_ONLY_SOURCE_TOKENS = (
 )
 
 
-def _validate_strict_opp_producer_evidence(
+def _validate_strict_native_producer_evidence(
     evidence: Mapping[object, object],
     row: Mapping[object, object],
     index: int,
     errors: list[str],
     project_root: Path | None,
     build_log_path: Path | None,
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     _ = row
     producer_text = _flatten_evidence_text(evidence)
     build_log_text = _read_text_limited(build_log_path)
-    if _text_has_any_token(f"{producer_text}\n{build_log_text}", _PYTORCH_EXTENSION_ONLY_TOKENS):
+    extension_only_tokens = _extension_only_tokens(platform_policy)
+    if _text_has_any_token(f"{producer_text}\n{build_log_text}", extension_only_tokens):
         errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence must be strict Ascend C/CANN OPP producer evidence, not NpuExtension/CppExtension/ATen/libtorch-only native-extension evidence"
+            f"rows[{index}].opp_custom_op_artifact_evidence must be strict native producer evidence, not NpuExtension/CppExtension/ATen/libtorch-only native-extension evidence"
         )
 
     op_host_paths = [path for path in _path_candidates_from_fields(evidence, _OP_HOST_SOURCE_FIELDS) if _is_op_host_source_path(path)]
@@ -2258,7 +2214,7 @@ def _validate_strict_opp_producer_evidence(
         _read_text_limited(_resolve_path_under_project_root(project_root, path))
         for path in [*op_host_paths, *op_kernel_paths]
     )
-    if _text_has_any_token(source_text, _PYTORCH_EXTENSION_ONLY_TOKENS):
+    if _text_has_any_token(source_text, extension_only_tokens):
         errors.append(
             f"rows[{index}].opp_custom_op_artifact_evidence op_host/op_kernel sources must not be ATen/torch extension sources"
         )
@@ -2489,11 +2445,6 @@ def _native_compiled_artifact_paths(
     ]
     if platform_signaled:
         return platform_signaled
-    # When platform_policy is None (legacy NPU), the platform check above already ran
-    # the NPU token check.  Generic ".so" files that fail the NPU token check are NOT
-    # acceptable native artifacts — they must carry Ascend/CANN/opp signals.
-    if platform_policy is None:
-        return []
     return [value for value in candidates if _is_compiled_project_artifact_path(value)]
 
 
@@ -2695,7 +2646,7 @@ def _validate_native_platform_evidence(
 ) -> None:
     """Validate native platform evidence using policy-aware tokens.
 
-    When ``platform_policy`` is None, falls back to legacy NPU/CANN behaviour.
+    When ``platform_policy`` is None, generic native evidence tokens are used.
     """
     build_log_tokens = get_native_build_log_tokens(platform_policy)
     source_tokens = get_native_source_tokens(platform_policy)
@@ -2715,8 +2666,8 @@ def _validate_native_platform_evidence(
         build_log_error = platform_policy.custom_op_evidence.build_log_error_message
         binary_source_error = platform_policy.custom_op_evidence.binary_source_error_message
     else:
-        build_log_error = "must contain CANN/ACL/AscendC/OPP build or link evidence, not a torch-only extension build"
-        binary_source_error = "must include independent CANN/ACL/AscendC binary or source evidence; an ELF under an Ascend-looking path is not sufficient"
+        build_log_error = "must contain build or link evidence, not a stub-only or no-build claim"
+        binary_source_error = "must include independent binary or source evidence; a path alone is not sufficient"
 
     if not build_log_has_native_evidence:
         errors.append(
@@ -2882,36 +2833,32 @@ def _path_has_platform_artifact_signal(
     return any(token in padded for token in tokens)
 
 
-def _path_has_ascend_artifact_signal(normalized_path: str) -> bool:
-    return _path_has_platform_artifact_signal(normalized_path, None)
-
-
 def _validate_baseline_and_custom_device_proof(
     evidence: Mapping[object, object],
     label: str,
     errors: list[str],
     platform_policy: PlatformPolicy | None = None,
-    require_strict_ascend_opp_producer: bool = False,
+    require_strict_native_producer: bool = False,
 ) -> None:
     if _has_diagnostic_baseline(evidence):
         errors.append(f"{label} must not use diagnostic-only or metadata-only baseline timings")
     perf_mode = get_performance_validation_mode(platform_policy)
     if perf_mode == "disabled":
         return
-    effective_policy = None if (platform_policy is not None and platform_policy.id == "npu_ascend" and not require_strict_ascend_opp_producer) else platform_policy
+    effective_policy = platform_policy
     if not _has_baseline_proof(evidence, effective_policy):
-        if effective_policy is None or effective_policy.id == "npu_ascend":
+        if effective_policy is None:
             errors.append(f"{label} must prove timings include a real CPU baseline path")
         else:
             baseline_devices = get_performance_baseline_device_values(effective_policy)
             errors.append(f"{label} must prove timings include a baseline path ({', '.join(sorted(baseline_devices))})")
     if not _has_target_device_custom_proof(evidence, effective_policy):
         errors.append(f"{label} must prove timings include a target-device custom-op path")
-    if require_strict_ascend_opp_producer:
-        if _has_self_or_same_route_baseline(evidence):
-            errors.append(f"{label} must not use self-baseline, same-route, or same-NPU placeholder timings; compare CPU baseline runtime against Ascend OPP/custom-op runtime")
+    if require_strict_native_producer:
+        if _has_self_or_same_route_baseline(evidence, platform_policy):
+            errors.append(f"{label} must not use self-baseline, same-route, or same-NPU placeholder timings; compare baseline runtime against target native custom-op runtime")
         _validate_independent_performance_measurement(
-            evidence, label, errors, require_strict_ascend_opp_producer
+            evidence, label, errors, require_strict_native_producer
         )
         _validate_speedup_formula(evidence, label, errors)
 
@@ -2920,9 +2867,9 @@ def _validate_independent_performance_measurement(
     evidence: Mapping[object, object],
     label: str,
     errors: list[str],
-    require_strict_ascend_opp_producer: bool,
+    require_strict_native_producer: bool,
 ) -> None:
-    if not require_strict_ascend_opp_producer:
+    if not require_strict_native_producer:
         return
     if not _has_positive_measurement_iterations(evidence):
         errors.append(f"{label} must include positive measured iteration counts for real performance evidence")
@@ -2932,7 +2879,7 @@ def _validate_independent_performance_measurement(
     custom = evidence.get("custom_seconds") or evidence.get("overall_custom_seconds")
     if _positive_number(baseline) and _positive_number(custom):
         if abs(cast(float, baseline) - cast(float, custom)) <= 1e-12:
-            errors.append(f"{label} must not copy identical baseline_seconds and custom_seconds; measure CPU baseline and Ascend custom-op runtime independently")
+            errors.append(f"{label} must not copy identical baseline_seconds and custom_seconds; measure baseline and target custom-op runtime independently")
 
 
 def _has_positive_measurement_iterations(evidence: Mapping[object, object]) -> bool:
@@ -2971,38 +2918,7 @@ def _normalize_token(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(" ", "_").replace(".", "_")
 
 
-def _has_cpu_baseline_proof(evidence: Mapping[object, object]) -> bool:
-    if _has_positive_boolean(evidence, ("cpu_baseline", "baseline_cpu", "cpu_baseline_invoked", "baseline_cpu_invoked")):
-        return True
-    return _has_device_value(
-        evidence,
-        ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device", "baseline_route"),
-        {"cpu", "torch_cpu", "python_cpu", "cpu_reference"},
-    )
-
-
-def _has_ascend_opp_custom_proof(evidence: Mapping[object, object]) -> bool:
-    if _has_positive_boolean(evidence, (
-        "npu_custom",
-        "custom_npu",
-        "npu_custom_invoked",
-        "ascend_custom_invoked",
-        "ascend_opp_custom_op_invoked",
-        "opp_custom_op_invoked",
-        "custom_op_route_executed",
-        "opp_kernel_executed",
-    )):
-        return True
-    if _has_device_value(
-        evidence,
-        ("custom_device", "custom_backend", "target_device", "overall_custom_device", "custom_route"),
-        {"npu", "ascend", "torch_npu", "ascend_opp", "opp_custom_op", "ascend_opp_custom_op"},
-    ):
-        return True
-    return _text_field_has_token(evidence, ("custom_route", "target_route", "route", "custom_backend"), ("opp", "custom_op", "ascend"))
-
-
-def _has_self_or_same_route_baseline(evidence: Mapping[object, object]) -> bool:
+def _has_self_or_same_route_baseline(evidence: Mapping[object, object], platform_policy: PlatformPolicy | None = None) -> bool:
     if any(evidence.get(flag_name) is True for flag_name in (
         "self_baseline",
         "same_route_baseline",
@@ -3016,7 +2932,7 @@ def _has_self_or_same_route_baseline(evidence: Mapping[object, object]) -> bool:
     custom = _normalized_device_value(evidence, ("custom_device", "custom_backend", "target_device", "overall_custom_device", "custom_route"))
     if baseline and custom and baseline == custom:
         return True
-    if baseline and custom and _is_npu_like_device(baseline) and _is_npu_like_device(custom):
+    if baseline and custom and platform_policy is not None and _is_policy_target_device(baseline, platform_policy) and _is_policy_target_device(custom, platform_policy):
         return True
     baseline_route = _normalized_device_value(evidence, ("baseline_route", "comparison_route", "baseline_mode"))
     custom_route = _normalized_device_value(evidence, ("custom_route", "target_route", "route"))
@@ -3033,7 +2949,7 @@ def _validate_speedup_formula(evidence: Mapping[object, object], label: str, err
     actual = cast(float, speedup)
     tolerance = max(1e-6, abs(expected) * 0.02)
     if abs(actual - expected) > tolerance:
-        errors.append(f"{label} speedup_vs_baseline must approximately equal baseline_seconds / custom_seconds for CPU baseline versus Ascend OPP/custom-op runtime")
+        errors.append(f"{label} speedup_vs_baseline must approximately equal baseline_seconds / custom_seconds for baseline versus target native custom-op runtime")
 
 
 def _normalized_device_value(evidence: Mapping[object, object], fields: tuple[str, ...]) -> str:
@@ -3044,18 +2960,19 @@ def _normalized_device_value(evidence: Mapping[object, object], fields: tuple[st
     return ""
 
 
-def _is_npu_like_device(value: str) -> bool:
-    return value.startswith(("npu", "ascend", "torch_npu")) or "ascend" in value or "npu" in value
-
-
-def _text_field_has_token(evidence: Mapping[object, object], fields: tuple[str, ...], tokens: tuple[str, ...]) -> bool:
-    for field_name in fields:
-        value = evidence.get(field_name)
-        if isinstance(value, str):
-            normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
-            if all(token in normalized for token in tokens):
-                return True
+def _is_policy_target_device(value: str, platform_policy: PlatformPolicy) -> bool:
+    accepted = set(get_target_device_values(platform_policy))
+    if not accepted:
+        return False
+    normalized = _normalize_token(value)
+    for accepted_value in accepted:
+        accepted_normalized = _normalize_token(accepted_value)
+        if normalized == accepted_normalized:
+            return True
+        if normalized.startswith((f"{accepted_normalized}:", f"{accepted_normalized}_")):
+            return True
     return False
+
 
 def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
     if any(evidence.get(flag_name) is True for flag_name in ("diagnostic_only", "baseline_diagnostic_only", "baseline_missing", "cuda_baseline_missing")):
@@ -3070,10 +2987,6 @@ def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
 
 
 def _has_baseline_proof(evidence: Mapping[object, object], platform_policy: PlatformPolicy | None = None) -> bool:
-    if platform_policy is None:
-        return _has_cpu_baseline_proof(evidence)
-    if platform_policy.id == "npu_ascend":
-        return _has_cpu_baseline_proof(evidence)
     boolean_fields = get_performance_baseline_boolean_fields(platform_policy)
     if _has_positive_boolean(evidence, tuple(boolean_fields)):
         return True
@@ -3085,8 +2998,16 @@ def _has_target_device_custom_proof(
     evidence: Mapping[object, object],
     platform_policy: PlatformPolicy | None = None,
 ) -> bool:
-    if platform_policy is None or platform_policy.id == "npu_ascend":
-        return _has_ascend_opp_custom_proof(evidence)
+    if platform_policy is None:
+        target_device_values = set(get_target_device_values(None))
+        positive_boolean_fields = get_positive_boolean_fields(None)
+        if _has_positive_boolean(evidence, tuple(positive_boolean_fields)):
+            return True
+        return _has_device_value(
+            evidence,
+            ("custom_device", "custom_backend", "target_device", "overall_custom_device"),
+            target_device_values,
+        )
     target_device_values = set(get_target_device_values(platform_policy))
     positive_boolean_fields = get_positive_boolean_fields(platform_policy)
     if _has_positive_boolean(evidence, tuple(positive_boolean_fields)):

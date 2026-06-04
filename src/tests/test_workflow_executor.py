@@ -3617,7 +3617,7 @@ def test_entry_script_action_needed_string_normalization():
 
 
 def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_context(tmp_path: Path):
-    prompt_content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery.md").read_text(encoding="utf-8")
+    prompt_content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery_npu.md").read_text(encoding="utf-8")
     assert "entry_script_contract" in prompt_content
     assert "entry_script_action" in prompt_content
     assert '"needed": false' in prompt_content
@@ -5610,6 +5610,52 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
         "phase5_entry_script_revision_allowed",
     ):
         assert field not in normalized
+    assert validate_entry_script(normalized)["passed"] is True
+
+
+def test_ordinary_route_strips_custom_op_contract_and_restores_entry(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_3_entry_script",
+        name="Entry",
+        prompt_template="phase_3_entry_script",
+        output_schema={},
+        type="llm",
+        validator="entry_script",
+        agent="main_engineer",
+    )
+    executor = WorkflowExecutor(
+        WorkflowDefinition(name="ordinary-route", version="1.0", phases=[phase], terminals=["complete"]),
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=str(tmp_path), output_dir=str(tmp_path),
+    )
+
+    normalized = executor._normalize_llm_output(
+        phase,
+        {
+            "entry_script_path": "validate_custom_ops_full.py",
+            "run_command": "python validate_custom_ops_full.py",
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": str(tmp_path / "migration_reports"),
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            "required_checks": ["custom_op_final_gate"],
+        },
+        {"previous_outputs": "notes mention torch.ops but phase1 selected ordinary_cuda"},
+        {
+            "phase_1_project_analysis": {
+                "migration_route": "ordinary_cuda",
+                "entry_script": "train.py",
+                "notes": "mentions torch.ops in docs but route is ordinary_cuda",
+            },
+            "phase_2_venv_create": {"python_path": str(tmp_path / ".venv" / "bin" / "python")},
+        },
+    )
+
+    assert "entry_script_kind" not in normalized
+    assert "reports_dir" not in normalized
+    assert "required_report_paths" not in normalized
+    assert "required_checks" not in normalized
+    assert normalized["entry_script_path"] == str(tmp_path / "train.py")
+    assert normalized["run_command"] == f"{tmp_path / '.venv' / 'bin' / 'python'} {tmp_path / 'train.py'}"
     assert validate_entry_script(normalized)["passed"] is True
 
 

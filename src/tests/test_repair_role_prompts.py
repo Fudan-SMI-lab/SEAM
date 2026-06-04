@@ -1,7 +1,5 @@
 import sys
 from pathlib import Path
-from typing import cast
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -32,7 +30,7 @@ COMMON_CONTEXT = {
 
 
 def _load_role_prompt(loader: PromptLoader, role: str) -> str:
-    prompt_ids = cast(dict[str, str], getattr(repair_loop, "_REPAIR_PROMPT_IDS"))
+    prompt_ids = BUILTIN_PRESETS["npu_ascend"].repair_prompt_ids
     prompt_id = prompt_ids[role]
     context = {**COMMON_CONTEXT, "repair_role": role}
     return loader.load_prompt(prompt_id, context)
@@ -103,7 +101,7 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
             "7. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证。只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
         ),
     }
-    prompt = loader.load_prompt("repair_operator_fixer", context)
+    prompt = loader.load_prompt("repair_operator_fixer_npu", context)
     assert "bounded operator context" in prompt
     assert "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md" in prompt
     assert "inventory / manifest / final-gate" in prompt.lower()
@@ -198,7 +196,7 @@ def test_error_analyzer_prompt_contains_prior_outputs_hints_only() -> None:
         "artifact_base_path": "/tmp/artifacts",
         "raw_attempt_files": "(none)",
     }
-    prompt_id = "phase_error_recovery"
+    prompt_id = "phase_error_recovery_npu"
     prompt = loader.load_prompt(prompt_id, context)
     assert "hints only" in prompt
     assert "do NOT constitute verified facts" in prompt
@@ -250,7 +248,7 @@ def test_operator_fixer_prompt_omits_empty_constraint_summary_clause() -> None:
         "repair_role": "operator_fixer",
         "constraint_summary": "",
     }
-    prompt = loader.load_prompt("repair_operator_fixer", context)
+    prompt = loader.load_prompt("repair_operator_fixer_npu", context)
     assert "{constraint_summary}" not in prompt
     assert "Rule 1: No CPU fallback" not in prompt
     assert ", ," not in prompt
@@ -333,7 +331,7 @@ def test_custom_op_variant_service_prompt_keeps_strict_variant_scope_clauses() -
     assert "inventory_count`, `manifest_entries`, and `closed_pass_entries` must be equal" in prompt
 
 
-def test_variant_repair_strategy_is_npu_only_in_dynamic_guidance() -> None:
+def test_variant_repair_strategy_is_strict_policy_only_in_dynamic_guidance() -> None:
     npu_text = repair_loop._operator_custom_op_guidance(
         "/tmp/ctx.json",
         project_dir="/tmp/test",
@@ -354,9 +352,10 @@ def test_variant_repair_strategy_is_npu_only_in_dynamic_guidance() -> None:
     )
 
     assert "HARDWARE_LIMITATION_ACCEPTED" in npu_text
-    assert "alternate observed/allowlisted CANN/toolkit" in npu_text
-    assert "you must attempt a real Ascend target-platform kernel" in npu_text
-    assert "/usr/local/Ascend" in npu_text
+    assert "Strict producer-closure repair strategy" in npu_text
+    assert "alternate observed/allowlisted toolchain/runtime root" in npu_text
+    assert "Ascend NPU target-platform" in npu_text
+    assert "/usr/local/Ascend" not in npu_text
     for text in (ppu_text, muxi_text):
         assert "HARDWARE_LIMITATION_ACCEPTED" not in text
         assert "alternate observed/allowlisted CANN" not in text

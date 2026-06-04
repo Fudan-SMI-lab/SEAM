@@ -526,3 +526,37 @@ def test_v2_workflow_has_experience_default():
     wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
     assert wf.experience.enabled is True
     assert wf.experience.phase7_enabled is True
+
+
+def test_npu_workflows_are_explicitly_yaml_strategy_driven():
+    for workflow_name in ("npu_migration_v2.yaml", "npu_migration_v2_container.yaml"):
+        wf = load_workflow(str(PACKAGE_ROOT / "workflows" / workflow_name))
+        assert wf.target_platform is not None
+        assert wf.target_platform.preset == "npu_ascend"
+        assert wf.rule_migration == {"strategy_file": "rule_strategies/cuda_to_npu.yaml"}
+        phase_4 = next(p for p in wf.phases if p.id == "phase_4_rule_migration")
+        assert phase_4.params["operation"] == "rule_based_migration"
+        assert "backend" not in phase_4.params
+
+
+def test_npu_workflows_reference_npu_prompt_templates():
+    expected_main_prompts = {
+        "phase_0_env_detect_npu",
+        "phase_1_project_analysis_npu",
+        "phase_1_5_constraint_summary_npu",
+        "phase_2_venv_create_npu",
+        "phase_3_entry_script_npu",
+        "phase_35_static_validate_npu",
+        "phase_6_report_npu",
+    }
+    for workflow_name in ("npu_migration_v2.yaml", "npu_migration_v2_container.yaml"):
+        wf = load_workflow(str(PACKAGE_ROOT / "workflows" / workflow_name))
+        prompt_templates = {p.prompt_template for p in wf.phases if p.prompt_template}
+        assert expected_main_prompts.issubset(prompt_templates)
+
+
+def test_npu_container_workflow_has_no_placeholder_image():
+    wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2_container.yaml"))
+    assert wf.execution_backend is not None
+    assert wf.execution_backend.image != "YOUR_IMAGE_HERE"
+    assert wf.execution_backend.image

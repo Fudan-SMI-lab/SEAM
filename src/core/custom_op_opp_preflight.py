@@ -1,4 +1,4 @@
-"""Pre-run checks for custom-op migrations that must produce Ascend OPP artifacts."""
+"""Pre-run checks for custom-op migrations that must produce native artifacts."""
 
 from __future__ import annotations
 
@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-CUSTOM_OP_OPP_EVIDENCE_POLICY = "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only"
+from core.platform_policy import (
+    PlatformPolicy,
+    get_artifact_path_tokens,
+    get_native_build_log_tokens,
+    get_native_source_tokens,
+)
 
 _CUSTOM_OP_STRUCTURAL_CONTRACT_FIELDS = frozenset({
     "operator_discovery_sources",
@@ -225,8 +230,9 @@ def _value_contains_token(value: object, tokens: frozenset[str]) -> bool:
 def validate_custom_op_opp_preflight(
     contract: Mapping[str, object],
     project_dir: str | Path,
+    platform_policy: PlatformPolicy,
 ) -> dict[str, object] | None:
-    """Fail closed when a custom-op contract has no concrete Ascend OPP producer evidence."""
+    """Fail closed when a custom-op contract has no concrete native producer evidence."""
     if not has_custom_op_contract(contract):
         return None
 
@@ -236,7 +242,9 @@ def validate_custom_op_opp_preflight(
         "skipped": False,
         "passed": False,
         "project_root": str(project_root),
-        "policy": CUSTOM_OP_OPP_EVIDENCE_POLICY,
+        "policy": platform_policy.custom_op_evidence.custom_op_evidence_policy,
+        "platform": platform_policy.id,
+        "platform_display_name": platform_policy.display_name,
         "errors": [],
         "evidence": {},
         "stale_route_signals": [],
@@ -246,30 +254,32 @@ def validate_custom_op_opp_preflight(
         result["errors"] = [f"project root does not exist: {project_root}"]
         return result
 
-    evidence = _scan_opp_evidence(project_root)
+    evidence = _scan_opp_evidence(project_root, platform_policy)
     stale_route_signals = evidence.pop("stale_route_signals")
     result["evidence"] = evidence
     result["stale_route_signals"] = stale_route_signals
 
     missing: list[str] = []
-    if not evidence["op_host_sources"]:
-        missing.append("op_host source path")
-    if not evidence["op_kernel_sources"]:
-        missing.append("op_kernel/AscendC source path")
-    if not (evidence["generated_opp_artifacts"] or evidence["build_install_evidence"]):
-        missing.append("generated OPP artifacts or CANN/OPP build-install evidence")
+    if not evidence["native_sources"]:
+        missing.append("native source evidence")
+    if not (
+        evidence["native_build_scripts"]
+        or evidence["generated_native_artifacts"]
+        or evidence["build_install_evidence"]
+    ):
+        missing.append("native build, generated artifact, or install evidence")
 
     errors: list[str] = []
     if missing:
         errors.append(
             "missing "
             + ", ".join(missing)
-            + "; Ascend C/CANN OPP is the only accepted custom-op target"
+            + f"; {platform_policy.guidance_native_label} is the configured custom-op target"
         )
     if missing and stale_route_signals:
         sample = ", ".join(stale_route_signals[:5])
         errors.append(
-            f"NpuExtension/CppExtension/ATen-only custom-op route detected without separate strict Ascend C/CANN OPP producer evidence: {sample}"
+            f"extension-only custom-op route detected without separate strict {platform_policy.guidance_native_label} producer evidence: {sample}"
         )
 
     result["errors"] = errors
@@ -285,15 +295,19 @@ def format_custom_op_opp_preflight_failure(result: Mapping[str, object]) -> str:
     return "Custom-op OPP preflight failed"
 
 
-def _scan_opp_evidence(project_root: Path) -> dict[str, list[str]]:
+def _scan_opp_evidence(project_root: Path, platform_policy: PlatformPolicy) -> dict[str, list[str]]:
     evidence: dict[str, list[str]] = {
+        "native_sources": [],
+        "native_build_scripts": [],
+        "generated_native_artifacts": [],
+        "build_install_evidence": [],
+        "runtime_native_artifacts": [],
+        "stale_route_signals": [],
+        # Compatibility aliases for existing report consumers.
         "op_host_sources": [],
         "op_kernel_sources": [],
         "opp_build_scripts": [],
         "generated_opp_artifacts": [],
-        "build_install_evidence": [],
-        "runtime_native_artifacts": [],
-        "stale_route_signals": [],
     }
 
     scanned = 0
@@ -309,7 +323,7 @@ def _scan_opp_evidence(project_root: Path) -> dict[str, list[str]]:
         if safe_path is None:
             continue
         scanned += 1
-        _collect_path_evidence(safe_path, rel_path, evidence)
+        _collect_path_evidence(safe_path, rel_path, evidence, platform_policy)
     return evidence
 
 
@@ -317,6 +331,7 @@ def _collect_path_evidence(
     path: Path,
     rel_path: str,
     evidence: dict[str, list[str]],
+    platform_policy: PlatformPolicy,
 ) -> None:
     rel_lower = rel_path.replace("\\", "/").lower()
     name_lower = path.name.lower()
@@ -324,22 +339,27 @@ def _collect_path_evidence(
     text = _read_small_text(path)
     scan_text = f"{rel_lower}\n{text.lower()}"
 
-    if "op_host" in rel_lower and suffix in _SOURCE_SUFFIXES:
-        _append_evidence(evidence, "op_host_sources", rel_path)
-    if ("op_kernel" in rel_lower or "ascendc" in rel_lower) and suffix in _SOURCE_SUFFIXES:
-        _append_evidence(evidence, "op_kernel_sources", rel_path)
-    if "kernel_operator.h" in scan_text or "#include <kernel_operator" in scan_text:
-        _append_evidence(evidence, "op_kernel_sources", rel_path)
-    if name_lower in {"build.sh", "cmakelists.txt"} and _has_opp_build_terms(scan_text):
+    source_tokens = tuple(token.lower() for token in get_native_source_tokens(platform_policy))
+    build_tokens = tuple(token.lower() for token in get_native_build_log_tokens(platform_policy))
+    artifact_tokens = tuple(token.lower() for token in get_artifact_path_tokens(platform_policy))
+
+    if suffix in _SOURCE_SUFFIXES and _has_any_token(scan_text, source_tokens):
+        _append_evidence(evidence, "native_sources", rel_path)
+        if "op_host" in rel_lower:
+            _append_evidence(evidence, "op_host_sources", rel_path)
+        if "op_kernel" in rel_lower:
+            _append_evidence(evidence, "op_kernel_sources", rel_path)
+    if name_lower in {"build.sh", "cmakelists.txt"} and _has_any_token(scan_text, build_tokens):
+        _append_evidence(evidence, "native_build_scripts", rel_path)
         _append_evidence(evidence, "opp_build_scripts", rel_path)
-    if _has_generated_opp_path(rel_lower):
+    if _has_any_token(rel_lower, artifact_tokens):
+        _append_evidence(evidence, "generated_native_artifacts", rel_path)
         _append_evidence(evidence, "generated_opp_artifacts", rel_path)
-    if suffix in {".so", ".o", ".run"} and _has_native_artifact_path(rel_lower):
+    if suffix in {".so", ".o", ".run"} and _has_any_token(rel_lower, artifact_tokens):
         _append_evidence(evidence, "runtime_native_artifacts", rel_path)
-        _append_evidence(evidence, "generated_opp_artifacts", rel_path)
-    if _has_build_install_log_signal(name_lower, scan_text):
+    if _has_policy_build_install_signal(name_lower, scan_text, build_tokens, artifact_tokens):
         _append_evidence(evidence, "build_install_evidence", rel_path)
-    for signal in _stale_route_signals(scan_text):
+    for signal in _stale_route_signals(scan_text, platform_policy):
         _append_evidence(evidence, "stale_route_signals", f"{rel_path}:{signal}")
 
 
@@ -369,63 +389,41 @@ def _safe_regular_project_file(project_root: Path, path: Path) -> Path | None:
         return None
 
 
-def _has_opp_build_terms(scan_text: str) -> bool:
-    return any(term in scan_text for term in ("opp", "cann", "ascendc", "msopgen", "kernel_operator", "op_host", "op_kernel"))
+def _has_any_token(value: str, tokens: tuple[str, ...]) -> bool:
+    return any(token and token in value for token in tokens)
 
 
-def _has_generated_opp_path(rel_lower: str) -> bool:
-    return any(
-        term in rel_lower
-        for term in (
-            "op_info",
-            "kernel_meta",
-            "vendors/customize",
-            "vendor/customize",
-            "build_out/autogen",
-            "opp_install",
-            "op_impl/ai_core",
-        )
-    )
-
-
-def _has_native_artifact_path(rel_lower: str) -> bool:
-    return any(term in rel_lower for term in ("opp", "op_impl", "kernel_meta", "customize", "ascend_custom_op"))
-
-
-def _has_build_install_log_signal(name_lower: str, scan_text: str) -> bool:
-    if not any(token in name_lower for token in ("build", "install", "opp")):
+def _has_policy_build_install_signal(
+    name_lower: str,
+    scan_text: str,
+    build_tokens: tuple[str, ...],
+    artifact_tokens: tuple[str, ...],
+) -> bool:
+    if not any(token in name_lower for token in ("build", "install", "package", "deploy")):
         return False
-    return any(
-        term in scan_text
-        for term in (
-            "ascend_opp_path",
-            "opp package",
-            "cann opp",
-            "op_host",
-            "op_kernel",
-            "kernel_operator",
-            "libascendcl",
-            "lascendcl",
-            "msopgen",
-        )
-    )
+    return _has_any_token(scan_text, build_tokens) or _has_any_token(scan_text, artifact_tokens)
 
 
-def _stale_route_signals(scan_text: str) -> list[str]:
+def _stale_route_signals(scan_text: str, platform_policy: PlatformPolicy) -> list[str]:
     signals: list[str] = []
     signal_terms = {
-        "NpuExtension": "npuextension",
-        "npu_extension": "npu_extension",
         "CppExtension": "cppextension",
         "cpp_extension": "cpp_extension",
         "torch.utils.cpp_extension": "torch.utils.cpp_extension",
-        "torch_npu.utils.cpp_extension": "torch_npu.utils.cpp_extension",
         "ATen": "aten",
         "torch/extension.h": "torch/extension.h",
-        "npu_ops.cpp": "npu_ops.cpp",
         "libtorch": "libtorch",
         "torch_cpu": "torch_cpu",
     }
+    for target in platform_policy.custom_op_evidence.target_device_values:
+        normalized = target.strip().lower().replace("-", "_").replace(".", "_")
+        if not normalized:
+            continue
+        signal_terms[f"{normalized}_extension"] = f"{normalized}_extension"
+        signal_terms[f"{normalized}Extension"] = f"{normalized}extension"
+        signal_terms[f"{normalized}_ops.cpp"] = f"{normalized}_ops.cpp"
+        if not normalized.startswith("torch_"):
+            signal_terms[f"torch_{normalized}.utils.cpp_extension"] = f"torch_{normalized}.utils.cpp_extension"
     for label, token in signal_terms.items():
         if token in scan_text:
             signals.append(label)
@@ -449,7 +447,10 @@ _OPP_TEMPLATE_REL_PATH = "cuda-custom-op-to-npu-custom-op/templates/ascend_custo
 
 def ensure_opp_source_evidence(project_root: Path) -> bool:
     """Scaffold OPP source evidence into project_root from .skills/ templates if missing."""
-    existing = _scan_opp_evidence(project_root)
+    from core.platform_policy import BUILTIN_PRESETS
+
+    platform_policy = BUILTIN_PRESETS["npu_ascend"]
+    existing = _scan_opp_evidence(project_root, platform_policy)
     has_host = bool(existing["op_host_sources"])
     has_kernel = bool(existing["op_kernel_sources"])
     has_build = bool(existing["opp_build_scripts"])
@@ -478,7 +479,7 @@ def ensure_opp_source_evidence(project_root: Path) -> bool:
             except OSError:
                 pass
 
-    final = _scan_opp_evidence(project_root)
+    final = _scan_opp_evidence(project_root, platform_policy)
     return bool(final["op_host_sources"]) and bool(final["op_kernel_sources"]) and bool(final["opp_build_scripts"])
 
 

@@ -71,39 +71,29 @@ def serving_entry_kind_for_route(route: object) -> str | None:
     return None
 
 
-SERVING_REQUIRED_CHECKS = (
+GENERIC_SERVING_REQUIRED_CHECKS = (
     "project_demo_or_test_execution",
     "serving_api_request_validation",
     "readiness_probe_passed",
-    "npu_execution_evidence",
-    "no_cuda_fallback",
+    "accelerator_execution_evidence",
+    "no_forbidden_runtime_fallback",
     "no_cpu_fallback",
     "fresh_serving_report",
     "route_framework_match",
 )
 
-GENERIC_SERVING_REQUIRED_CHECKS = tuple(
-    "accelerator_execution_evidence" if check == "npu_execution_evidence"
-    else "no_forbidden_runtime_fallback" if check == "no_cuda_fallback"
-    else check
-    for check in SERVING_REQUIRED_CHECKS
-)
+SERVING_REQUIRED_CHECKS = GENERIC_SERVING_REQUIRED_CHECKS
 
-SERVING_VALIDATION_OBLIGATIONS = (
+GENERIC_SERVING_VALIDATION_OBLIGATIONS = (
     "actual_project_demo_test_or_api_validation",
-    "npu_execution_evidence",
+    "accelerator_execution_evidence",
     "reject_import_only_or_smoke_only",
-    "reject_cuda_or_cpu_fallback",
+    "reject_forbidden_runtime_or_cpu_fallback",
     "fresh_report_paths",
     "route_framework_match",
 )
 
-GENERIC_SERVING_VALIDATION_OBLIGATIONS = tuple(
-    "accelerator_execution_evidence" if obligation == "npu_execution_evidence"
-    else "reject_forbidden_runtime_or_cpu_fallback" if obligation == "reject_cuda_or_cpu_fallback"
-    else obligation
-    for obligation in SERVING_VALIDATION_OBLIGATIONS
-)
+SERVING_VALIDATION_OBLIGATIONS = GENERIC_SERVING_VALIDATION_OBLIGATIONS
 
 CUSTOM_OP_PHASE3_ONLY_FIELDS = (
     "reports_dir",
@@ -147,8 +137,6 @@ def serving_required_checks_for_backend(
         and platform_policy.serving_runtime.required_checks
     ):
         return platform_policy.serving_runtime.required_checks
-    if backend == "ascend":
-        return SERVING_REQUIRED_CHECKS
     return GENERIC_SERVING_REQUIRED_CHECKS
 
 
@@ -162,8 +150,6 @@ def serving_validation_obligations_for_backend(
         and platform_policy.serving_runtime.validation_obligations
     ):
         return platform_policy.serving_runtime.validation_obligations
-    if backend == "ascend":
-        return SERVING_VALIDATION_OBLIGATIONS
     return GENERIC_SERVING_VALIDATION_OBLIGATIONS
 
 
@@ -188,7 +174,7 @@ def normalize_serving_phase1_surface(
     surface["serving_backend"] = backend
     if "detection_complete" not in surface:
         surface["detection_complete"] = True
-    merge_serving_runtime_contract(surface, route_value, backend)
+    merge_serving_runtime_contract(surface, route_value, backend, platform_policy)
     output["serving_runtime_surface"] = surface
 
 def normalize_serving_phase3_contract(
@@ -237,7 +223,7 @@ def normalize_serving_phase3_contract(
 
     explicit_backend = contract.get("serving_backend") or surface.get("serving_backend")
     backend = _resolve_serving_backend(explicit_backend, platform_policy)
-    merge_serving_runtime_contract(contract, route, backend)
+    merge_serving_runtime_contract(contract, route, backend, platform_policy)
     required_checks = list(serving_required_checks_for_backend(backend, platform_policy=platform_policy))
     contract["required_checks"] = required_checks
     contract["serving_reports_dir"] = str(project_path / "migration_reports" / "serving")
@@ -263,6 +249,7 @@ def normalize_serving_phase3_contract(
         project_test_files=contract.get("project_test_files"),
         expected_outputs=contract.get("expected_outputs"),
         required_checks=required_checks,
+        platform_policy=platform_policy,
     )
     contract["entry_script_path"] = str(script_path)
     venv_python = project_path / ".venv" / "bin" / "python"

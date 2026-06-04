@@ -1746,6 +1746,49 @@ def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
     assert validation.passed is True
 
 
+def test_phase_runner_ordinary_route_restores_normal_entry_contract() -> None:
+    runner = PhaseRunner(
+        NoopSessionManager(),
+        ArtifactStore("/tmp", "t"),
+        PromptLoader(),
+        ValidatorEngine(),
+        workflow=WorkflowDefinition(name="ordinary-route", version="1.0", phases=[], terminals=["complete"]),
+    )
+    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
+
+    normalized = runner._normalize_output(
+        spec,
+        {
+            "entry_script_path": "validate_custom_ops_full.py",
+            "run_command": "python validate_custom_ops_full.py",
+            "entry_script_kind": "custom_op_full_validation",
+            "reports_dir": "/tmp/project/migration_reports",
+            "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+            "required_checks": ["custom_op_final_gate"],
+        },
+        {"project_dir": "/tmp/project"},
+        {
+            "previous_outputs": {
+                "phase_1_project_analysis": {
+                    "migration_route": "ordinary_cuda",
+                    "entry_script": "train.py",
+                    "notes": "mentions torch.ops in docs but route is ordinary_cuda",
+                },
+                "phase_2_venv_create": {"python_path": "/tmp/project/.venv/bin/python"},
+            }
+        },
+    )
+
+    assert "entry_script_kind" not in normalized
+    assert "reports_dir" not in normalized
+    assert "required_report_paths" not in normalized
+    assert "required_checks" not in normalized
+    assert normalized["entry_script_path"] == "/tmp/project/train.py"
+    assert normalized["run_command"] == "/tmp/project/.venv/bin/python /tmp/project/train.py"
+    validation = runner.validator.validate("entry_script", normalized)
+    assert validation.passed is True
+
+
 def test_phase_runner_without_flag_injects_as_before() -> None:
     """Without any workflow globals (backward-compatible path), custom-op signals
     still trigger entry_script_kind: custom_op_full_validation injection."""

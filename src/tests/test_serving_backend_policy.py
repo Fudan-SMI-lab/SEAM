@@ -209,7 +209,10 @@ def test_npu_ascend_generated_serving_wrapper_keeps_npu_runtime_code(project_roo
     assert "torch_npu" in wrapper
     assert "npu_execution_evidence" in wrapper
     assert "ASCEND_HOME_PATH" in wrapper
-    assert 'env.setdefault("VLLM_TARGET_DEVICE", "npu")' in wrapper
+    namespace: dict[str, object] = {"__name__": "serving_wrapper_test"}
+    exec(wrapper, namespace)
+    runtime_config = _dict_value(namespace["RUNTIME_CONFIG"])
+    assert runtime_config["route_env_defaults"] == {"VLLM_TARGET_DEVICE": "npu"}
 
 
 def test_serving_phase3_contract_replaces_stale_same_name_wrapper(project_root: Path) -> None:
@@ -339,7 +342,10 @@ def test_all_vllm_wrappers_use_dynamic_openai_validation_without_project_hardcod
         assert "openai_validation_payload" in wrapper
         if policy_id == "npu_ascend":
             assert "torch_npu" in wrapper
-            assert 'env.setdefault("VLLM_TARGET_DEVICE", "npu")' in wrapper
+            namespace: dict[str, object] = {"__name__": "serving_wrapper_test"}
+            exec(wrapper, namespace)
+            runtime_config = _dict_value(namespace["RUNTIME_CONFIG"])
+            assert runtime_config["route_env_defaults"] == {"VLLM_TARGET_DEVICE": "npu"}
         else:
             assert "torch_npu" not in wrapper
             assert "VLLM_TARGET_DEVICE" not in wrapper
@@ -430,7 +436,10 @@ def _final_gate_payload(backend: str) -> dict[str, object]:
 
 def test_validation_final_gate_accepts_generic_and_ascend_evidence() -> None:
     assert validate_serving_final_gate(_final_gate_payload("generic"))["passed"] is True
-    assert validate_serving_final_gate(_final_gate_payload("ascend"))["passed"] is True
+    assert validate_serving_final_gate(
+        _final_gate_payload("ascend"),
+        platform_policy=BUILTIN_PRESETS["npu_ascend"],
+    )["passed"] is True
 
 
 def test_validation_final_gate_rejects_generic_npu_only_evidence() -> None:
@@ -450,6 +459,16 @@ def test_validation_final_gate_keeps_strict_ascend_evidence() -> None:
     _ = payload.pop("npu_runtime_evidence")
 
     result = validate_serving_final_gate(payload)
+
+    assert result["passed"] is False
+    assert any("accelerator_execution_evidence" in error for error in result["errors"])
+
+
+def test_validation_final_gate_policy_keeps_strict_ascend_evidence() -> None:
+    payload = _final_gate_payload("ascend")
+    _ = payload.pop("npu_runtime_evidence")
+
+    result = validate_serving_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("npu_runtime_evidence" in error for error in result["errors"])

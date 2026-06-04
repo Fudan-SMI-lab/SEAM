@@ -333,48 +333,46 @@ class TestContainerContextHasPython3Command:
 
 
 class TestAcceleratorContextExtraction:
-    """Tests for ``extract_accelerator_context`` — legacy NPU + platform-neutral PPU/XPU/CUDA."""
-
     # ── Legacy NPU ────────────────────────────────────────────────────
 
-    def test_torch_npu_version_with_equals(self):
-        """torch-npu==2.1.0 → torch_npu_version = '2.1.0'."""
+    def test_torch_npu_package_version_with_equals(self):
+        """torch-npu==2.1.0 → accelerator_package_versions["torch_npu"] = '2.1.0'."""
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu==2.1.0"])
-        assert result["torch_npu_version"] == "2.1.0"
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
         assert "torch_npu" in result["accelerator_packages"]
         assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
 
-    def test_torch_npu_version_with_underscore(self):
-        """torch_npu==2.1.0 → torch_npu_version = '2.1.0'."""
+    def test_torch_npu_package_version_with_underscore(self):
+        """torch_npu==2.1.0 → accelerator_package_versions["torch_npu"] = '2.1.0'."""
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch_npu==2.1.0"])
-        assert result["torch_npu_version"] == "2.1.0"
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
 
-    def test_torch_npu_version_ge(self):
-        """torch-npu>=2.1.0 → torch_npu_version = '2.1.0' (any comparator works)."""
+    def test_torch_npu_package_version_ge(self):
+        """torch-npu>=2.1.0 → accelerator_package_versions["torch_npu"] = '2.1.0' (any comparator works)."""
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu>=2.1.0"])
-        assert result["torch_npu_version"] == "2.1.0"
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
 
-    def test_no_torch_npu_returns_none(self):
-        """When no torch-npu/torch_npu package, torch_npu_version is None."""
+    def test_no_torch_npu_has_no_package_version(self):
+        """When no torch-npu/torch_npu package, torch_npu has no package version."""
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["numpy==1.24.0", "requests"])
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert "torch_npu" not in result["accelerator_packages"]
 
-    def test_torch_npu_bare_no_version_returns_none(self):
+    def test_torch_npu_bare_has_no_package_version(self):
         """Bare 'torch-npu' without version: accelerator_packages includes it,
-        but torch_npu_version is None because the legacy code required a version."""
+        but torch_npu has no package version because the legacy code required a version."""
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu"])
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert "torch_npu" in result["accelerator_packages"]
         assert "torch_npu" not in result["accelerator_package_versions"]
 
@@ -430,7 +428,7 @@ class TestAcceleratorContextExtraction:
         ]
         result = extract_accelerator_context(pkgs)
 
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert "vllm" in result["accelerator_packages"]
         assert "torch" in result["accelerator_packages"]
         assert "ppukernel" in result["accelerator_packages"]
@@ -455,7 +453,7 @@ class TestAcceleratorContextExtraction:
         ]
         result = extract_accelerator_context(pkgs)
 
-        assert result["torch_npu_version"] == "2.1.0"
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
         assert set(result["accelerator_packages"]) >= {
             "torch_npu", "torch_ppu", "ppukernel", "vllm", "torch",
         }
@@ -466,7 +464,7 @@ class TestAcceleratorContextExtraction:
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context([])
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert result["accelerator_packages"] == []
         assert result["accelerator_package_versions"] == {}
 
@@ -474,7 +472,7 @@ class TestAcceleratorContextExtraction:
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(None)
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert result["accelerator_packages"] == []
         assert result["accelerator_package_versions"] == {}
 
@@ -482,7 +480,7 @@ class TestAcceleratorContextExtraction:
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu==2.1.0", 42, None, ["ppukernel"]])
-        assert result["torch_npu_version"] == "2.1.0"
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
         assert "torch_npu" in result["accelerator_packages"]
         assert len(result["accelerator_packages"]) == 1
 
@@ -493,7 +491,7 @@ class TestAcceleratorContextExtraction:
         result = extract_accelerator_context(["torch-npu==2.1.0", "ppukernel==1.0.0"])
         serialized = json.dumps(result)
         assert isinstance(serialized, str)
-        assert "torch_npu_version" in serialized
+        assert "torch_npu_version" not in serialized
         assert "accelerator_packages" in serialized
         assert "accelerator_package_versions" in serialized
 
@@ -502,8 +500,8 @@ class TestAcceleratorContextExtraction:
         from core.accelerator_context import extract_accelerator_context
 
         result = extract_accelerator_context(["torch-npu==2.1.0", "torch_npu==2.2.0"])
-        assert result["torch_npu_version"] == "2.1.0"  # first wins
-        # Both normalize to "torch_npu", so only one entry in the list
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"  # first wins
+        # Both normalize to "torch_npu", so only one entry in the list and first version wins
         assert result["accelerator_packages"].count("torch_npu") == 1
 
     def test_triton_package(self):
@@ -527,14 +525,14 @@ class TestAcceleratorContextExtraction:
 
 
 class TestOrchestratorBuildEnvContext:
-    def test_includes_legacy_torch_npu_version(self):
+    def test_includes_generic_torch_npu_package_version(self):
         from core.orchestrator import Orchestrator
 
         result = Orchestrator._build_env_context(
             {"os": "Linux"},
             {"installed_packages": ["torch-npu==2.1.0"]},
         )
-        assert result["torch_npu_version"] == "2.1.0"
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
         assert result["os"] == "Linux"
 
     def test_includes_accelerator_packages(self):
@@ -544,7 +542,7 @@ class TestOrchestratorBuildEnvContext:
             {"os": "Linux"},
             {"installed_packages": ["ppukernel==1.0.0", "torch-ppu==0.1.0"]},
         )
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert "ppukernel" in result["accelerator_packages"]
         assert "torch_ppu" in result["accelerator_packages"]
 
@@ -564,7 +562,7 @@ class TestOrchestratorBuildEnvContext:
             {"os": "Linux"},
             {"installed_packages": ["numpy==1.24.0", "requests"]},
         )
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert result["accelerator_packages"] == []
         assert result["accelerator_package_versions"] == {}
 
@@ -582,7 +580,7 @@ class TestOrchestratorBuildEnvContext:
                 "cuda",
             ]},
         )
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert "vllm" in result["accelerator_packages"]
         assert "ppukernel" in result["accelerator_packages"]
         assert "ppuccl" in result["accelerator_packages"]
@@ -592,7 +590,7 @@ class TestOrchestratorBuildEnvContext:
 
 
 class TestWorkflowExecutorBuildEnvContext:
-    def test_includes_legacy_torch_npu_version(self):
+    def test_includes_generic_torch_npu_package_version(self):
         from core.workflow_executor import WorkflowExecutor
 
         wfe = WorkflowExecutor.__new__(WorkflowExecutor)
@@ -600,7 +598,7 @@ class TestWorkflowExecutorBuildEnvContext:
             "phase_0_env_detect": {"os": "Linux"},
             "phase_2_venv_create": {"installed_packages": ["torch-npu==2.1.0"]},
         })
-        assert result["torch_npu_version"] == "2.1.0"
+        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
         assert result["os"] == "Linux"
 
     def test_includes_accelerator_packages_and_versions(self):
@@ -617,7 +615,7 @@ class TestWorkflowExecutorBuildEnvContext:
                 ],
             },
         })
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert "torch_ppu" in result["accelerator_packages"]
         assert "ppukernel" in result["accelerator_packages"]
         assert result["accelerator_package_versions"]["torch_ppu"] == "0.1.0"
@@ -630,7 +628,7 @@ class TestWorkflowExecutorBuildEnvContext:
         result = wfe._build_env_context({
             "phase_0_env_detect": {"os": "Linux"},
         })
-        assert result["torch_npu_version"] is None
+        assert "torch_npu" not in result["accelerator_package_versions"]
         assert result["accelerator_packages"] == []
         assert result["accelerator_package_versions"] == {}
 
@@ -651,6 +649,6 @@ class TestWorkflowExecutorBuildEnvContext:
             "phase_2_venv_create": {"installed_packages": packages},
         })
 
-        assert orch_result["torch_npu_version"] == wf_result["torch_npu_version"]
+        assert orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]
         assert set(orch_result["accelerator_packages"]) == set(wf_result["accelerator_packages"])
         assert orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]

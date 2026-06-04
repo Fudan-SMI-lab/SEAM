@@ -11,7 +11,6 @@ from core.custom_op_source_discovery import (
     NativeUnit,
     discover_required_cuda_native_units_from_project,
 )
-from core.serving_runtime import npu_serving_contract_fields
 from core.routes import MIGRATION_ROUTES, is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 
@@ -426,10 +425,7 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
         non_empty_message="serving_runtime_surface.required_runtime_env must list required serving accelerator runtime environment evidence",
         require_non_empty=True,
     )
-    if serving_backend == "ascend":
-        _validate_ascend_serving_surface_contract(str(migration_route), surface, errors)
-    else:
-        _validate_generic_serving_surface_contract(surface, errors)
+    _validate_serving_surface_contract(surface, errors)
     for field_name in ("readiness_probe", "request_validation"):
         value = surface.get(field_name)
         if not isinstance(value, dict) or not value:
@@ -444,25 +440,7 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
             )
 
 
-def _validate_ascend_serving_surface_contract(route: str, surface: dict[str, object], errors: list[str]) -> None:
-    required = npu_serving_contract_fields(route)
-    runtime_setup = surface.get("runtime_env_setup")
-    if not isinstance(runtime_setup, dict) or not runtime_setup:
-        errors.append("serving_runtime_surface.runtime_env_setup must describe CANN/Ascend environment setup")
-    for field_name in ("required_import_probes", "forbidden_runtime_markers", "npu_runtime_checks"):
-        _validate_string_list(surface, field_name, errors, require_non_empty=True)
-    required_env = _normalized_set(_string_list_values(surface, "required_runtime_env"))
-    for token in ("cann", "torch_npu", "tbe", "te"):
-        if not any(token in value for value in required_env):
-            errors.append(f"serving_runtime_surface.required_runtime_env must include Ascend runtime token {token}")
-    for field_name in ("required_import_probes", "forbidden_runtime_markers"):
-        observed = _normalized_set(_string_list_values(surface, field_name))
-        for expected in _string_list_from_object(required.get(field_name)):
-            if expected.lower() not in observed:
-                errors.append(f"serving_runtime_surface.{field_name} missing Ascend requirement: {expected}")
-
-
-def _validate_generic_serving_surface_contract(surface: dict[str, object], errors: list[str]) -> None:
+def _validate_serving_surface_contract(surface: dict[str, object], errors: list[str]) -> None:
     runtime_setup = surface.get("runtime_env_setup")
     if not isinstance(runtime_setup, dict) or not runtime_setup:
         errors.append("serving_runtime_surface.runtime_env_setup must describe serving accelerator runtime setup")
@@ -474,23 +452,14 @@ def _validate_generic_serving_surface_contract(surface: dict[str, object], error
             non_empty_message=f"serving_runtime_surface.{field_name} must list serving runtime requirements",
             require_non_empty=True,
         )
+    runtime_checks_field = _serving_runtime_checks_field(surface)
     _validate_string_list(
         surface,
-        "serving_runtime_checks",
+        runtime_checks_field,
         errors,
-        non_empty_message="serving_runtime_surface.serving_runtime_checks must list generic serving runtime checks",
+        non_empty_message=f"serving_runtime_surface.{runtime_checks_field} must list serving runtime checks",
         require_non_empty=True,
     )
-
-
-def _normalized_set(values: list[str]) -> set[str]:
-    return {value.strip().lower() for value in values if value.strip()}
-
-
-def _string_list_from_object(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item.strip() for item in cast(list[object], value) if isinstance(item, str) and item.strip()]
 
 
 def _validate_string_list(
@@ -516,6 +485,15 @@ def _validate_string_list(
         errors.append(f"custom_op_surface.{field_name} must contain only non-empty strings")
     if require_non_empty and not items:
         errors.append(non_empty_message or f"custom_op_surface.{field_name} must contain at least one item when custom_op_detected is true")
+
+
+def _serving_runtime_checks_field(surface: dict[str, object]) -> str:
+    if surface.get("serving_runtime_checks") is not None:
+        return "serving_runtime_checks"
+    candidates = [key for key in surface if key.endswith("_runtime_checks")]
+    if len(candidates) == 1:
+        return candidates[0]
+    return "serving_runtime_checks"
 
 
 def _validate_required_sources(surface: dict[str, object], errors: list[str]) -> None:

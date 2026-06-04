@@ -85,21 +85,41 @@ class IterationRecord(TypedDict):
 _ANALYZER_ROLE = "error_analyzer"
 _PHASE_ID = "phase_5_validation"
 _REPAIR_ROLES = {"dependency_fixer", "code_adapter", "operator_fixer"}
-_REPAIR_PROMPT_IDS = {
-    "dependency_fixer": "repair_dependency_fixer",
-    "code_adapter": "repair_code_adapter",
-    "operator_fixer": "repair_operator_fixer",
-}
-_REPAIR_PROMPT_IDS_CONTAINER = {
-    "dependency_fixer": "repair_dependency_fixer_container",
-    "code_adapter": "repair_code_adapter_container",
-    "operator_fixer": "repair_operator_fixer_container",
-}
 _CUSTOM_OP_OPERATOR_REPAIR_AGENT_DEFAULT = "hephaestus"
 
 
 def _workspace_root() -> str:
     return str(workspace_root())
+
+
+def _require_explicit_repair_prompt(prompt_id: str | None, *, role: str) -> str:
+    if prompt_id:
+        return prompt_id
+    raise ValueError(
+        f"repair prompt for role {role!r} is not configured; "
+        "select a platform workflow/policy that provides prompt templates"
+    )
+
+
+def _default_repair_prompt_id(role: str, *, container: bool, platform_policy: PlatformPolicy | None) -> str | None:
+    if platform_policy is not None:
+        prompts = platform_policy.repair_prompt_ids_container if container else platform_policy.repair_prompt_ids
+        prompt_id = prompts.get(role)
+        if prompt_id:
+            return prompt_id
+        if not container:
+            prompt_id = platform_policy.repair_prompt_ids_container.get(role)
+            if prompt_id:
+                return prompt_id
+    return None
+
+
+def _default_error_analyzer_prompt_id(*, container: bool, platform_policy: PlatformPolicy | None) -> str | None:
+    if platform_policy is not None:
+        prompt_id = platform_policy.error_analyzer_prompt_id_container if container else platform_policy.error_analyzer_prompt_id
+        if prompt_id:
+            return prompt_id
+    return None
 
 
 def _operator_generic_guidance(
@@ -108,8 +128,8 @@ def _operator_generic_guidance(
     entry_script: str,
     platform_policy: PlatformPolicy | None = None,
 ) -> str:
-    native_label = platform_policy.guidance_native_label if platform_policy else "Ascend NPU"
-    native_framework = platform_policy.guidance_native_framework if platform_policy else "torch_npu/PyTorch primitives"
+    native_label = platform_policy.guidance_native_label if platform_policy else "target accelerator"
+    native_framework = platform_policy.guidance_native_framework if platform_policy else "target accelerator primitives"
     return (
         f"4. This is a generic operator-incompatibility repair. Focus on the unsupported or missing "
         f"{native_label} operator named by the runtime error, using {native_label}-native replacements, supported "
@@ -196,8 +216,8 @@ def _operator_custom_op_guidance(
                 "Performance validation is skipped. All other gates still apply."
             )
 
-    native_name = platform_policy.guidance_native_label if platform_policy else "Ascend"
-    native_framework = platform_policy.guidance_native_framework if platform_policy else "CANN/OPP/AscendC"
+    native_name = platform_policy.guidance_native_label if platform_policy else "target accelerator"
+    native_framework = platform_policy.guidance_native_framework if platform_policy else "target accelerator primitives"
     schema_checklist = "\n".join([
         "",
         "Final-gate evidence object schema (every in-scope row MUST satisfy):",
@@ -218,41 +238,32 @@ def _operator_custom_op_guidance(
         "full_migration_status == FULL_PASS\n"
         "Script exit code 0 alone is NOT sufficient; the final-gate schema MUST validate."
     )
-    npu_variant_repair_strategy = (
-        "\nNPU-only variant repair strategy: if any custom_op_with_variants row is blocked by the active "
-        "Ascend CANN/toolkit/hardware combination or appears as HARDWARE_LIMITATION_ACCEPTED, treat it as repair "
-        "backlog, not final success. For npu_ascend only, you may try an alternate observed/allowlisted CANN/toolkit "
-        "root or container image, recording exact version/root/image, driver/SoC, commands, return codes, logs, "
-        "generated artifacts, and install path. Treat observed system CANN roots as read-only; do not modify "
-        "/usr/local/Ascend, shared CANN installs, global OPP vendor directories, host compiler/toolchain installs, "
-        "or other global system paths. Use an isolated container, read-only toolkit root, or project-local temporary "
-        "install/cache. If observed/allowlisted CANN/toolkit candidates cannot close the row, you must attempt a "
-        "real Ascend target-platform kernel for the missing variant: concrete AscendC/ACL/CANN OPP host+kernel "
-        "sources when vendor primitives are missing. The row only closes after "
-        "project public API execution, parity, performance, and strict final-gate evidence pass for that exact variant."
-    )
-
-    if platform_policy is not None and platform_policy.id != "npu_ascend":
-        native_label = platform_policy.guidance_native_label
-        native_artifact_desc = f"real on-disk {native_label} compiled artifacts"
-        native_build_desc = f"project-local build provenance/logs with {native_label} build or link evidence"
-        native_path_desc = "runtime-loaded compiled artifact paths (not .py)"
-        return "".join([
-            f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n",
-            "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n",
-            f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
-            schema_checklist,
-            perf_mode_note,
-            "\n",
-            f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, ",
-            "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。",
-        ])
+    native_label = platform_policy.guidance_native_label if platform_policy else "target accelerator"
+    native_artifact_desc = f"real on-disk {native_label} compiled artifacts"
+    native_build_desc = f"project-local build provenance/logs with {native_label} build or link evidence"
+    native_path_desc = "runtime-loaded compiled artifact paths (not .py)"
+    strict_variant_repair_strategy = ""
+    if platform_policy is not None and platform_policy.custom_op_evidence.strict_producer_closure_required:
+        strict_variant_repair_strategy = (
+            "\nStrict producer-closure repair strategy: if any custom_op_with_variants row is blocked by "
+            f"the active {native_label} toolchain/runtime/hardware combination or appears as "
+            "HARDWARE_LIMITATION_ACCEPTED, treat it as repair backlog, not final success. You may try "
+            "an alternate observed/allowlisted toolchain/runtime root or container image, recording exact "
+            "version/root/image, device/driver metadata, commands, return codes, logs, generated artifacts, "
+            "and install path. Treat observed system toolchain/runtime roots as read-only; do not modify shared "
+            "vendor installs, global vendor artifact directories, host compiler/toolchain installs, or other global "
+            "system paths. Use an isolated container, read-only toolkit root, or project-local temporary install/cache. "
+            f"If observed/allowlisted candidates cannot close the row, attempt a real {native_label} target-platform "
+            "kernel/source implementation for the missing variant when vendor primitives are missing. The row only "
+            "closes after project public API execution, parity, performance, and strict final-gate evidence pass for "
+            "that exact variant."
+        )
     return "".join([
         f"4. Read bounded operator context: {operator_repair_context_artifact_path}; this context is the only inventory / manifest / final-gate closure source.\n",
         "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n",
-        "6. Every in-scope row must have real on-disk Ascend OPP/CANN compiled artifacts, concrete op_host and op_kernel/AscendC source paths, an OPP build script path, install/provenance evidence, project-local build provenance/logs with ACL/CANN/AscendC/OPP build or link evidence, runtime-loaded compiled artifact paths (not .py), adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. A normal PyTorch C++ extension that only links torch_cpu/ATen operators is not an Ascend custom op even if it is copied under an ascend_custom_op path. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
+        f"6. Every in-scope row must have {native_artifact_desc}, {native_build_desc}, {native_path_desc}, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Evidence-only marker shims, files or libraries named *_evidence*, stub/dummy/fake placeholder native libraries, and artifacts that only export marker functions or return synthetic success codes must be reported as FAILED/INCOMPLETE rather than final success. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.",
         schema_checklist,
-        npu_variant_repair_strategy,
+        strict_variant_repair_strategy,
         perf_mode_note,
         "\n",
         f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。只在最终回答里输出一个 JSON 代码块, ",
@@ -1370,7 +1381,13 @@ class RepairLoopEngine:
             getattr(self, "exec_backend", None), command=exec_cmd, cwd=script_cwd,
             env=env_vars,
         ))
-        analyzer_prompt_id = "phase_error_recovery_container" if isinstance(getattr(self, "exec_backend", None), ContainerBackend) else "phase_error_recovery"
+        analyzer_prompt_id = _require_explicit_repair_prompt(
+            _default_error_analyzer_prompt_id(
+                container=isinstance(getattr(self, "exec_backend", None), ContainerBackend),
+                platform_policy=self.platform_policy,
+            ),
+            role=_ANALYZER_ROLE,
+        )
         analyzer_prompt = self.prompt_loader.load_prompt(analyzer_prompt_id, prompt_context)
         analyzer_prompt += (
             "\n\n## Execution Discipline\n"
@@ -2038,10 +2055,14 @@ class RepairLoopEngine:
         env_vars: dict[str, str] | None = None,
     ) -> str:
         repair_role = classification["repair_role"]
-        if isinstance(getattr(self, "exec_backend", None), ContainerBackend):
-            prompt_id = _REPAIR_PROMPT_IDS_CONTAINER.get(repair_role, "repair_code_adapter_container")
-        else:
-            prompt_id = _REPAIR_PROMPT_IDS.get(repair_role, "repair_code_adapter")
+        prompt_id = _require_explicit_repair_prompt(
+            _default_repair_prompt_id(
+                repair_role,
+                container=isinstance(getattr(self, "exec_backend", None), ContainerBackend),
+                platform_policy=self.platform_policy,
+            ),
+            role=repair_role,
+        )
         if repair_role == "operator_fixer" and _operator_repair_has_custom_op_contract(phase3_contract):
             prompt_id = "repair_custom_op_variant_service"
         context: dict[str, str] = {

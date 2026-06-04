@@ -10,14 +10,14 @@ EXECUTION_ROOT = PROJECT_ROOT.parent
 from validators.validate_entry_static import CUSTOM_OP_BOOLEAN_FIELDS, EXPANDED_VARIANT_BOOLEAN_FIELDS
 
 PHASE_PROMPT_FILES = [
-    "phase_0_env_detect.md",
-    "phase_1_project_analysis.md",
-    "phase_2_venv_create.md",
-    "phase_3_entry_script.md",
-    "phase_35_static_validate.md",
+    "phase_0_env_detect_npu.md",
+    "phase_1_project_analysis_npu.md",
+    "phase_2_venv_create_npu.md",
+    "phase_3_entry_script_npu.md",
+    "phase_35_static_validate_npu.md",
     "phase_4_rule_migration.md",
     "phase_5_validation.md",
-    "phase_6_report.md",
+    "phase_6_report_npu.md",
 ]
 
 OLD_CONSTRAINT = "must be valid JSON only, with no markdown fence"
@@ -39,15 +39,15 @@ def test_all_prompts_contain_relaxed_constraint():
 
 
 def test_phase_35_prompt_mentions_custom_op_contract_static_gate():
-    content = (PROMPTS_DIR / "phase_35_static_validate.md").read_text()
+    content = (PROMPTS_DIR / "phase_35_static_validate_npu.md").read_text()
 
     assert "previous_outputs" in content
     assert "phase_3_entry_script" in content
     assert "migration_reports/" in content
     assert "required_report_paths" in content
     assert "required_checks" in content
-    assert "migration_manifest.json" in (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
-    assert "operator_manifest.json" not in (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
+    assert "migration_manifest.json" in (PROMPTS_DIR / "phase_3_entry_script_npu.md").read_text()
+    assert "operator_manifest.json" not in (PROMPTS_DIR / "phase_3_entry_script_npu.md").read_text()
     assert "smoke, MVP, partial" in content
     assert "script_records_native_operator_symbols" in content
     assert "native symbol/kernel inventory" in content
@@ -57,7 +57,7 @@ def test_phase_35_prompt_mentions_custom_op_contract_static_gate():
 
 
 def test_phase_35_custom_op_example_includes_validator_boolean_contract():
-    content = (PROMPTS_DIR / "phase_35_static_validate.md").read_text()
+    content = (PROMPTS_DIR / "phase_35_static_validate_npu.md").read_text()
 
     for field in CUSTOM_OP_BOOLEAN_FIELDS:
         assert f'"{field}": true' in content, f"phase 3.5 custom-op example missing {field}"
@@ -66,7 +66,7 @@ def test_phase_35_custom_op_example_includes_validator_boolean_contract():
 
 
 def test_phase3_forbids_hard_coded_and_report_only_custom_op_gates():
-    content = (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
+    content = (PROMPTS_DIR / "phase_3_entry_script_npu.md").read_text()
 
     assert "Hard-coded expected unit identity lists are forbidden" in content
     assert "Report-only scripts" in content
@@ -78,8 +78,8 @@ def test_phase3_forbids_hard_coded_and_report_only_custom_op_gates():
 
 
 def test_phase3_phase35_prompts_are_platform_generic_for_custom_op_contracts():
-    phase3 = (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
-    phase35 = (PROMPTS_DIR / "phase_35_static_validate.md").read_text()
+    phase3 = (PROMPTS_DIR / "phase_3_entry_script_npu.md").read_text()
+    phase35 = (PROMPTS_DIR / "phase_35_static_validate_npu.md").read_text()
 
     assert "Ascend NPU migration workflow" not in phase3
     assert "Ascend NPU migration workflow" not in phase35
@@ -90,14 +90,14 @@ def test_phase3_phase35_prompts_are_platform_generic_for_custom_op_contracts():
 
 
 def test_custom_op_phase_prompts_use_source_driven_contract_without_external_requirements():
-    for filename in ("phase_3_entry_script.md", "phase_35_static_validate.md", "phase_6_report.md"):
+    for filename in ("phase_3_entry_script_npu.md", "phase_35_static_validate_npu.md", "phase_6_report_npu.md"):
         content = (PROMPTS_DIR / filename).read_text()
         assert "cuda_custom_op_skill_test_prompt.md" not in content
         assert "requirements_doc_path" not in content
         assert "source" in content.lower()
         assert "inventory" in content.lower()
-    phase3 = (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
-    phase35 = (PROMPTS_DIR / "phase_35_static_validate.md").read_text()
+    phase3 = (PROMPTS_DIR / "phase_3_entry_script_npu.md").read_text()
+    phase35 = (PROMPTS_DIR / "phase_35_static_validate_npu.md").read_text()
     assert "one row per fine-grained source-discovered operator unit" in phase3
     assert "family-only rows are invalid" in phase3
     assert "kernel_launch_sites" in phase3
@@ -119,14 +119,14 @@ def test_production_custom_op_prompts_do_not_use_project_specific_examples():
         "3D",
     )
 
-    for filename in ("phase_1_project_analysis.md", "phase_1_5_constraint_summary.md"):
+    for filename in ("phase_1_project_analysis_npu.md", "phase_1_5_constraint_summary_npu.md"):
         content = (PROMPTS_DIR / filename).read_text()
         for term in forbidden_terms:
             assert term not in content, f"{filename} contains project-specific prompt example term {term!r}"
 
 
 def test_phase3_and_phase5_prompts_require_complete_performance_report_closure():
-    phase3 = (PROMPTS_DIR / "phase_3_entry_script.md").read_text()
+    phase3 = (PROMPTS_DIR / "phase_3_entry_script_npu.md").read_text()
     phase5 = (PROMPTS_DIR / "phase_5_validation.md").read_text()
 
     assert "enumerate every source-discovered inventory unit" in phase3
@@ -145,8 +145,8 @@ def test_phase3_and_phase5_prompts_require_complete_performance_report_closure()
 
 def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline_rules():
     expectations = {
-        "phase_error_recovery.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
-        "repair_dependency_fixer.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第5点要求"),
+        "phase_error_recovery_npu.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
+        "repair_dependency_fixer_npu.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第5点要求"),
     }
 
     for filename, required_phrases in expectations.items():
@@ -156,11 +156,11 @@ def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline
         assert "全部8个要求" not in content
         assert "/inspire/sj-ssd" not in content
 
-    operator_prompt = (PROMPTS_DIR / "repair_operator_fixer.md").read_text()
+    operator_prompt = (PROMPTS_DIR / "repair_operator_fixer_npu.md").read_text()
     assert "cuda_custom_op_skill_test_prompt.md" not in operator_prompt
     assert ".skills" not in operator_prompt
 
-    for filename in ("phase_0_env_detect.md", "phase_4_rule_migration.md"):
+    for filename in ("phase_0_env_detect_npu.md", "phase_4_rule_migration.md"):
         content = (PROMPTS_DIR / filename).read_text()
         assert "cuda_custom_op_skill_test_prompt.md" not in content
 
@@ -177,7 +177,7 @@ def test_root_custom_op_skill_prompt_is_owned_by_execution_root():
 
 def test_error_recovery_prompt_not_modified():
     """phase_error_recovery.md should NOT contain the relaxed JSON constraint."""
-    content = (PROMPTS_DIR / "phase_error_recovery.md").read_text()
+    content = (PROMPTS_DIR / "phase_error_recovery_npu.md").read_text()
     # This prompt is text-only (not JSON), so it should NOT have the new constraint
     assert NEW_CONSTRAINT not in content, (
         "phase_error_recovery.md should not contain JSON-related relaxations"

@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.validator_engine import ValidationDict, ValidationResult, ValidatorEngine
+from core.platform_policy import BUILTIN_PRESETS
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
@@ -35,6 +36,10 @@ VALID_CASES: list[ValidatorCase] = [
     (
         validate_env_detect,
         {"platform": "musa", "musa_detected": True, "python_version": "3.10", "torch_musa_available": True},
+    ),
+    (
+        validate_env_detect,
+        {"platform": "cuda", "cuda_detected": True, "python_version": "3.10"},
     ),
     (
         validate_project_analysis,
@@ -190,15 +195,15 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cpu",
-            "custom_device": "ascend_opp",
+            "baseline_device": "cuda",
+            "custom_device": "accelerator",
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cpu",
-            "overall_custom_device": "ascend_opp",
+            "overall_baseline_device": "cuda",
+            "overall_custom_device": "accelerator",
             "entries": [
                 {
                     "unit_identity": "ScalarFwd2D",
@@ -206,8 +211,8 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cpu",
-                    "custom_device": "ascend_opp",
+                    "baseline_device": "cuda",
+                    "custom_device": "accelerator",
                 }
             ],
         },
@@ -283,13 +288,34 @@ def _valid_custom_op_final_gate() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cpu",
-                    "custom_device": "ascend_opp",
+                    "baseline_device": "cuda",
+                    "custom_device": "accelerator",
                 },
                 "no_fallback_no_zero_call_no_builtin_contamination": _valid_no_fallback_evidence(),
             }
         ],
     }
+
+
+def _valid_npu_custom_op_final_gate() -> dict[str, object]:
+    payload = _valid_custom_op_final_gate()
+    performance_report = cast(dict[str, object], payload["performance_report"])
+    performance_report.update({
+        "baseline_device": "cpu",
+        "custom_device": "npu",
+        "overall_baseline_device": "cpu",
+        "overall_custom_device": "npu",
+        "cpu_baseline_invoked": True,
+        "npu_custom_invoked": True,
+    })
+    entries = cast(list[dict[str, object]], performance_report["entries"])
+    for entry in entries:
+        entry.update({"baseline_device": "cpu", "custom_device": "npu", "cpu_baseline_invoked": True, "npu_custom_invoked": True})
+    rows = cast(list[dict[str, object]], payload["rows"])
+    for row in rows:
+        performance_evidence = cast(dict[str, object], row["performance_evidence"])
+        performance_evidence.update({"baseline_device": "cpu", "custom_device": "npu", "cpu_baseline_invoked": True, "npu_custom_invoked": True})
+    return payload
 
 
 def _valid_no_fallback_evidence() -> dict[str, object]:
@@ -613,7 +639,7 @@ def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(tm
 
 
 def test_custom_op_final_gate_rejects_collapsed_rows_when_expanded_variant_inventory_requires_more_units() -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     payload["expanded_variant_inventory"] = {
         "variant_axes_detected": True,
         "expanded_operator_instances_count": 2,
@@ -651,7 +677,7 @@ def test_custom_op_final_gate_accepts_valid_full_pass_report() -> None:
 
 
 def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root(tmp_path: Path) -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
     artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
     artifact_path.parent.mkdir(parents=True)
@@ -660,13 +686,13 @@ def test_custom_op_final_gate_accepts_existing_native_artifact_with_project_root
     build_log.parent.mkdir(parents=True, exist_ok=True)
     _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
 
-    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
 def test_custom_op_final_gate_rejects_self_consistent_report_missing_manifest_required_unit(tmp_path: Path) -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path, ["ScalarFwd2D", "ScalarBwd2D"])
     artifact_path = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
     artifact_path.parent.mkdir(parents=True)
@@ -674,7 +700,7 @@ def test_custom_op_final_gate_rejects_self_consistent_report_missing_manifest_re
     build_log = tmp_path / "migration_reports" / "build.log"
     _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
 
-    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("migration_manifest.required_units" in error for error in result["errors"])
@@ -688,7 +714,7 @@ def test_custom_op_final_gate_rejects_missing_native_artifact_with_project_root(
     build_log.parent.mkdir(parents=True, exist_ok=True)
     _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
 
-    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("native artifact path must exist" in error for error in result["errors"])
@@ -704,7 +730,7 @@ def test_custom_op_final_gate_rejects_text_file_disguised_as_native_artifact(tmp
     build_log.parent.mkdir(parents=True, exist_ok=True)
     _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
 
-    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("non-empty compiled binary" in error for error in result["errors"])
@@ -740,7 +766,7 @@ def test_custom_op_final_gate_rejects_torch_cpu_extension_masquerading_as_ascend
         encoding="utf-8",
     )
 
-    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("CANN/ACL/AscendC/OPP build" in error for error in result["errors"])
@@ -760,14 +786,14 @@ def test_custom_op_final_gate_rejects_spoofed_cann_words_without_native_link_or_
         encoding="utf-8",
     )
 
-    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    result = validate_custom_op_final_gate(payload, project_root=tmp_path, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("CANN/ACL/AscendC/OPP build" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_rejects_evidence_only_native_marker_artifact(tmp_path: Path) -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     _write_custom_op_manifest(tmp_path)
     fake_path = "pointnet2_ops/ascend_custom_op/op_plugin/lib/libpointnet2_ascend_custom_op_evidence.so"
     host_source = "pointnet2_ops/ascend_custom_op/op_host/pointnet2_ascend_acl_evidence.cpp"
@@ -875,11 +901,11 @@ def test_custom_op_final_gate_rejects_python_shim_artifact() -> None:
 
     assert result["passed"] is False
     assert any("Python shim" in error for error in result["errors"])
-    assert any("native compiled Ascend custom-op artifact" in error for error in result["errors"])
+    assert any("native compiled" in error and "custom-op artifact" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_rejects_generic_shared_library_without_ascend_proof() -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
     rows[0]["opp_custom_op_artifact_evidence"] = {
         "path": "build/libgeneric_extension.so",
@@ -888,14 +914,15 @@ def test_custom_op_final_gate_rejects_generic_shared_library_without_ascend_proo
         "compiled_extension": True,
     }
 
-    result = validate_custom_op_final_gate(payload)
+    result = validate_custom_op_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
-    assert any("native compiled Ascend custom-op artifact" in error for error in result["errors"])
+    assert any("same-run runtime loaded the native compiled artifact" in error for error in result["errors"])
+    assert any("build_provenance" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_rejects_boolean_native_claim_without_compiled_artifact_path() -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
     rows[0]["opp_custom_op_artifact_evidence"] = {
         "project_relative_path": "pointnet2_ops/_ext-src/src/bindings.cpp",
@@ -911,26 +938,26 @@ def test_custom_op_final_gate_rejects_boolean_native_claim_without_compiled_arti
         },
     }
 
-    result = validate_custom_op_final_gate(payload)
+    result = validate_custom_op_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
-    assert any("native compiled Ascend custom-op artifact" in error for error in result["errors"])
+    assert any("native compiled" in error and "custom-op artifact" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_accepts_native_artifact_under_python_bindings_dir() -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     rows = cast(list[dict[str, object]], payload["rows"])
     artifact = cast(dict[str, object], rows[0]["opp_custom_op_artifact_evidence"])
     artifact["path"] = "opp/python_bindings/libscalar_fwd_2d.so"
     artifact["runtime_loaded_artifact_path"] = "opp/python_bindings/libscalar_fwd_2d.so"
 
-    result = validate_custom_op_final_gate(payload)
+    result = validate_custom_op_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
 def test_custom_op_final_gate_accepts_indexed_device_strings() -> None:
-    payload = _valid_custom_op_final_gate()
+    payload = _valid_npu_custom_op_final_gate()
     performance_report = cast(dict[str, object], payload["performance_report"])
     performance_report["baseline_device"] = "cpu"
     performance_report["custom_device"] = "npu:0"
@@ -944,12 +971,12 @@ def test_custom_op_final_gate_accepts_indexed_device_strings() -> None:
     performance_evidence["baseline_device"] = "torch.cpu"
     performance_evidence["custom_device"] = "npu:0"
 
-    result = validate_custom_op_final_gate(payload)
+    result = validate_custom_op_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
-def test_custom_op_final_gate_rejects_cuda_performance_baseline() -> None:
+def test_npu_custom_op_final_gate_rejects_cuda_performance_baseline() -> None:
     payload = _valid_custom_op_final_gate()
     performance_report = cast(dict[str, object], payload["performance_report"])
     performance_report["baseline_device"] = "cuda"
@@ -960,10 +987,10 @@ def test_custom_op_final_gate_rejects_cuda_performance_baseline() -> None:
     performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
     performance_evidence["baseline_device"] = "torch.cuda"
 
-    result = validate_custom_op_final_gate(payload)
+    result = validate_custom_op_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
-    assert any("real CPU baseline path" in error for error in result["errors"])
+    assert any("baseline path" in error and "cpu" in error for error in result["errors"])
 
 
 def test_custom_op_final_gate_rejects_diagnostic_only_baseline() -> None:
@@ -976,7 +1003,7 @@ def test_custom_op_final_gate_rejects_diagnostic_only_baseline() -> None:
     performance_evidence = cast(dict[str, object], rows[0]["performance_evidence"])
     performance_evidence["baseline_mode"] = "diagnostic_only"
 
-    result = validate_custom_op_final_gate(payload)
+    result = validate_custom_op_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("diagnostic-only" in error for error in result["errors"])
@@ -1004,7 +1031,7 @@ def test_custom_op_final_gate_rejects_copied_zero_iteration_speedup() -> None:
     performance_evidence["speedup_vs_baseline"] = 1.0
     performance_evidence["measure_iterations"] = 0
 
-    result = validate_custom_op_final_gate(payload)
+    result = validate_custom_op_final_gate(payload, platform_policy=BUILTIN_PRESETS["npu_ascend"])
 
     assert result["passed"] is False
     assert any("zero measurement iterations" in error for error in result["errors"])
@@ -1233,8 +1260,8 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
                 "custom_seconds": 0.01,
                 "speedup_vs_baseline": 2.0,
                 "project_api_invoked": True,
-                "baseline_device": "cpu",
-                "custom_device": "ascend_opp",
+                    "baseline_device": "cuda",
+                    "custom_device": "accelerator",
             }
         )
     source_inventory["entries"] = entries
@@ -1244,13 +1271,13 @@ def test_custom_op_final_gate_accepts_generic_multi_unit_fine_grained_inventory(
         "unit_count": 2,
         "path": "migration_reports/performance.json",
         "project_api_invoked": True,
-        "baseline_device": "cpu",
-        "custom_device": "ascend_opp",
+        "baseline_device": "cuda",
+        "custom_device": "accelerator",
         "overall_baseline_seconds": 0.05,
         "overall_custom_seconds": 0.04,
         "overall_speedup_vs_baseline": 1.25,
-        "overall_baseline_device": "cpu",
-        "overall_custom_device": "ascend_opp",
+        "overall_baseline_device": "cuda",
+        "overall_custom_device": "accelerator",
         "overall_evidence": {
             "project_api_invoked": True,
             "custom_op_route_executed": True,
@@ -1681,7 +1708,7 @@ def test_validator_engine_normalizes_dict_results() -> None:
 
     result = engine.validate(
         "env_detect",
-        {"platform": "cuda", "npu_detected": False, "python_version": "3.11", "cann_version": "8.0.RC", "ascendc_available": True, "driver_version": "driver-1"},
+        {"platform": "cuda", "cuda_detected": True, "python_version": "3.11"},
     )
 
     assert result == ValidationResult(passed=True, errors=[], warnings=[])

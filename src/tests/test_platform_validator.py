@@ -11,15 +11,13 @@ from validators.validate_validation_final import (
     validate_custom_op_final_gate,
     _has_target_device_custom_proof,
     _path_has_platform_artifact_signal,
-    _path_has_ascend_artifact_signal,
 )
 
 
 class TestValidateCustomOpFinalGate:
     """validate_custom_op_final_gate with and without platform_policy."""
 
-    def test_legacy_npu_behavior_when_no_policy(self):
-        """When platform_policy=None, NPU legacy behavior is preserved."""
+    def test_no_policy_uses_generic_validation(self):
         data: dict[str, object] = {
             "inventory_count": 1,
             "manifest_entries": 1,
@@ -35,7 +33,6 @@ class TestValidateCustomOpFinalGate:
         assert any("non-empty" in e for e in result.get("errors", []))
 
     def test_npu_policy_still_works(self):
-        """NPU policy preserves current behavior."""
         npu = BUILTIN_PRESETS["npu_ascend"]
         data: dict[str, object] = {
             "inventory_count": 1,
@@ -339,10 +336,6 @@ class TestValidateCustomOpFinalGate:
             assert result["passed"], f"Expected PASS for generic .so path with MUSA proof, got: {result.get('errors')}"
 
     def test_generic_accelerator_does_not_accept_npu_fallback(self):
-        """Explicit generic_accelerator must NOT pass merely from NPU legacy fallback.
-
-        Creates a gate payload that would pass for NPU but should not for generic.
-        """
         generic = BUILTIN_PRESETS["generic_accelerator"]
         data = {
             "inventory_count": 1,
@@ -356,7 +349,6 @@ class TestValidateCustomOpFinalGate:
         }
         result = validate_custom_op_final_gate(data, platform_policy=generic)
         assert result["passed"] is False
-        # Should fail because rows is empty, not because of NPU fallback issues
         assert any("non-empty" in e for e in result.get("errors", []))
 
 
@@ -399,22 +391,12 @@ class TestHasTargetDeviceCustomProof:
             {"custom_device": "unknown"}, BUILTIN_PRESETS["ppu_cuda_compatible"]
         )
 
-    def test_none_policy_falls_back_to_npu(self):
-        """When policy is None, NPU legacy device values are used."""
-        assert _has_target_device_custom_proof({"custom_device": "npu"}, None)
-        assert not _has_target_device_custom_proof({"custom_device": "ppu"}, None)
-
-    def test_none_policy_falls_back_to_npu_boolean(self):
-        assert _has_target_device_custom_proof({"npu_custom": True}, None)
-
     def test_generic_policy_rejects_npu_device(self):
-        """Explicit generic_accelerator must NOT accept npu via legacy fallback."""
         assert not _has_target_device_custom_proof(
             {"custom_device": "npu"}, BUILTIN_PRESETS["generic_accelerator"]
         )
 
     def test_generic_policy_accepts_generic_device(self):
-        """Explicit generic_accelerator should accept its own device values."""
         assert _has_target_device_custom_proof(
             {"custom_device": "cuda"}, BUILTIN_PRESETS["generic_accelerator"]
         )
@@ -422,17 +404,18 @@ class TestHasTargetDeviceCustomProof:
             {"custom_device": "accelerator"}, BUILTIN_PRESETS["generic_accelerator"]
         )
 
-    def test_none_policy_still_accepts_npu(self):
-        """platform_policy=None must still accept NPU for backward compat."""
-        assert _has_target_device_custom_proof({"custom_device": "npu"}, None)
-        assert _has_target_device_custom_proof({"npu_custom": True}, None)
+    def test_none_policy_uses_generic_accelerator_tokens(self):
+        assert _has_target_device_custom_proof({"custom_device": "accelerator"}, None)
+        assert _has_target_device_custom_proof({"custom_op_invoked": True}, None)
+        assert not _has_target_device_custom_proof({"custom_device": "npu"}, None)
+        assert not _has_target_device_custom_proof({"npu_custom": True}, None)
 
 
 class TestPathHasPlatformArtifactSignal:
     """Path-based artifact signal detection with platform tokens."""
 
     def test_ascend_signal_legacy(self):
-        assert _path_has_ascend_artifact_signal("opp/custom_op/build/libcustom.so")
+        assert _path_has_platform_artifact_signal("opp/custom_op/build/libcustom.so", BUILTIN_PRESETS["npu_ascend"])
 
     def test_platform_signal_npu(self):
         assert _path_has_platform_artifact_signal(
@@ -450,15 +433,10 @@ class TestPathHasPlatformArtifactSignal:
         )
 
     def test_platform_signal_none_fallback(self):
-        # None falls back to legacy NPU tokens
-        assert _path_has_platform_artifact_signal(
-            "opp/custom_op/build/libcustom.so", None
-        )
+        assert _path_has_platform_artifact_signal("custom_op/build/libcustom.so", None)
 
-    def test_platform_signal_none_fallback_rejects_ppu(self):
-        assert not _path_has_platform_artifact_signal(
-            "ppu_custom/build/libppu_op.so", None
-        )
+    def test_platform_signal_none_fallback_accepts_generic_custom_op_path(self):
+        assert _path_has_platform_artifact_signal("custom_op/build/libcustom.so", None)
 
 
 class TestRepairLoopGuidance:
@@ -486,14 +464,15 @@ class TestRepairLoopGuidance:
         assert "PPU" in text
         assert "Ascend NPU" not in text
 
-    def test_generic_guidance_none_defaults_to_npu(self):
+    def test_generic_guidance_none_defaults_to_generic(self):
         from core.repair_loop import _operator_generic_guidance
         text = _operator_generic_guidance(
             project_dir="/tmp/test",
             entry_script="run.py",
             platform_policy=None,
         )
-        assert "Ascend NPU" in text
+        assert "target accelerator" in text
+        assert "Ascend NPU" not in text
 
     def test_custom_op_guidance_npu_keep_ascend_tokens(self):
         from core.repair_loop import _operator_custom_op_guidance
@@ -504,8 +483,9 @@ class TestRepairLoopGuidance:
             entry_script="run.py",
             platform_policy=npu,
         )
-        assert "Ascend OPP/CANN" in text
-        assert "ACL/CANN/AscendC/OPP" in text
+        assert "Ascend NPU" in text
+        assert "Ascend OPP/CANN" not in text
+        assert "ACL/CANN/AscendC/OPP" not in text
 
     def test_custom_op_guidance_ppu_avoids_ascend_tokens(self):
         from core.repair_loop import _operator_custom_op_guidance
@@ -520,7 +500,7 @@ class TestRepairLoopGuidance:
         assert "ACL/CANN/AscendC/OPP" not in text
         assert "PPU" in text
 
-    def test_custom_op_guidance_none_defaults_to_npu(self):
+    def test_custom_op_guidance_none_defaults_to_generic(self):
         from core.repair_loop import _operator_custom_op_guidance
         text = _operator_custom_op_guidance(
             "/tmp/ctx.json",
@@ -528,7 +508,8 @@ class TestRepairLoopGuidance:
             entry_script="run.py",
             platform_policy=None,
         )
-        assert "Ascend OPP/CANN" in text
+        assert "target accelerator" in text
+        assert "Ascend OPP/CANN" not in text
 
 
 class TestCaseInsensitiveTokenMatching:
@@ -679,11 +660,11 @@ class TestRepairLoopEnginePlatformPolicy:
             entry_script="run.py",
             platform_policy=npu,
         )
-        assert "Ascend OPP/CANN" in text
-        assert "ACL/CANN/AscendC/OPP" in text
+        assert "Ascend NPU" in text
+        assert "Ascend OPP/CANN" not in text
+        assert "ACL/CANN/AscendC/OPP" not in text
 
-    def test_no_policy_defaults_to_npu_guidance(self):
-        """RepairLoopEngine without platform_policy defaults to NPU guidance."""
+    def test_no_policy_defaults_to_generic_guidance(self):
         from core.repair_loop import _operator_custom_op_guidance
         text = _operator_custom_op_guidance(
             "/tmp/ctx.json",
@@ -691,7 +672,8 @@ class TestRepairLoopEnginePlatformPolicy:
             entry_script="run.py",
             platform_policy=None,
         )
-        assert "Ascend OPP/CANN" in text
+        assert "target accelerator" in text
+        assert "Ascend OPP/CANN" not in text
 
     def test_validate_gate_passes_with_ppu_policy(self):
         """_validate_custom_op_final_gate_for_contract with PPU policy passes PPU evidence."""
@@ -849,7 +831,6 @@ class TestRepairLoopEnginePlatformPolicy:
             result = engine._validate_custom_op_final_gate_for_contract(contract, str(root))
             assert result is not None
             assert result["passed"] is False
-            # NPU legacy should reject empty rows (same behavior as before)
             assert any("non-empty" in e for e in result.get("errors", []))
 
 
@@ -1093,10 +1074,10 @@ class TestCPUBaselineConfig:
         assert _has_baseline_proof({"baseline_device": "cpu"}, policy) is True
         assert _has_baseline_proof({"cpu_baseline": True}, policy) is True
 
-    def test_cpu_baseline_accepted_by_default_npu_policy(self):
-        """Default/legacy NPU validation uses CPU as the performance baseline."""
+    def test_cpu_baseline_rejected_without_policy(self):
         from validators.validate_validation_final import _has_baseline_proof
-        assert _has_baseline_proof({"baseline_device": "cpu"}, None) is True
+        assert _has_baseline_proof({"baseline_device": "cpu"}, None) is False
+        assert _has_baseline_proof({"baseline_device": "cuda"}, None) is True
 
     def test_cpu_baseline_does_not_imply_cpu_fallback_for_custom(self):
         """CPU baseline device value is accepted for BASELINE proof but custom device
@@ -1282,7 +1263,7 @@ def test_npu_final_gate_accepts_semicolon_separated_opp_source_paths(tmp_path):
         "rows": [row],
     }
 
-    result = validate_custom_op_final_gate(gate, project_root=root)
+    result = validate_custom_op_final_gate(gate, project_root=root, platform_policy=BUILTIN_PRESETS["npu_ascend"])
     assert result["passed"] is True, result["errors"]
 
 

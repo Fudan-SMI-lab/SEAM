@@ -119,7 +119,7 @@ def test_empty_user_constraints_strip_phase_sections():
     loader = PromptLoader()
 
     phase_1_populated = loader.load_prompt(
-        "phase_1_project_analysis",
+        "phase_1_project_analysis_npu",
         context={
             "phase_name": "Phase 1",
             "project_dir": "/tmp/project",
@@ -130,7 +130,7 @@ def test_empty_user_constraints_strip_phase_sections():
     assert "Zero CPU fallback" in phase_1_populated
 
     phase_1_empty = loader.load_prompt(
-        "phase_1_project_analysis",
+        "phase_1_project_analysis_npu",
         context={
             "phase_name": "Phase 1",
             "project_dir": "/tmp/project",
@@ -142,7 +142,7 @@ def test_empty_user_constraints_strip_phase_sections():
     assert "{user_constraints}" not in phase_1_empty
 
     phase_1_5_populated = loader.load_prompt(
-        "phase_1_5_constraint_summary",
+        "phase_1_5_constraint_summary_npu",
         context={
             "project_dir": "/tmp/project",
             "phase_1_context": "analysis",
@@ -153,7 +153,7 @@ def test_empty_user_constraints_strip_phase_sections():
     assert "Zero CPU fallback" in phase_1_5_populated
 
     phase_1_5_empty = loader.load_prompt(
-        "phase_1_5_constraint_summary",
+        "phase_1_5_constraint_summary_npu",
         context={
             "project_dir": "/tmp/project",
             "phase_1_context": "analysis",
@@ -175,8 +175,8 @@ def test_default_prompts_dir():
 def test_list_prompts_includes_new_templates():
     loader = PromptLoader()
     prompts = loader.list_prompts()
-    assert "phase_1_5_constraint_summary.md" in prompts, "Missing phase_1_5_constraint_summary.md"
-    assert "phase_5_review.md" in prompts, "Missing phase_5_review.md"
+    assert "phase_1_5_constraint_summary_npu.md" in prompts, "Missing phase_1_5_constraint_summary.md"
+    assert "phase_5_review_npu.md" in prompts, "Missing phase_5_review.md"
 
 
 if __name__ == "__main__":

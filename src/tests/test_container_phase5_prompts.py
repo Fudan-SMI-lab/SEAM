@@ -21,22 +21,24 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS_DIR = ROOT / "workflows"
 PROMPTS_DIR = ROOT / "prompts"
 
-PHASE5_CONTAINER_PROMPTS = frozenset({
-    "phase_error_recovery_container",
-    "repair_dependency_fixer_container",
-    "repair_code_adapter_container",
-    "repair_operator_fixer_container",
-    "phase_5_review_container",
-    "phase_review_improvement_container",
+PHASE5_CONTAINER_PROMPTS = frozenset[str]()
+
+PHASE5_NPU_CONTAINER_PROMPTS = frozenset({
+    "phase_error_recovery_container_npu",
+    "repair_dependency_fixer_container_npu",
+    "repair_code_adapter_container_npu",
+    "repair_operator_fixer_container_npu",
+    "phase_5_review_container_npu",
+    "phase_review_improvement_container_npu",
 })
 
 PHASE5_ORIGINAL_PROMPTS = frozenset({
-    "phase_error_recovery",
-    "repair_dependency_fixer",
-    "repair_code_adapter",
-    "repair_operator_fixer",
-    "phase_5_review",
-    "phase_review_improvement",
+    "phase_error_recovery_npu",
+    "repair_dependency_fixer_npu",
+    "repair_code_adapter_npu",
+    "repair_operator_fixer_npu",
+    "phase_5_review_npu",
+    "phase_review_improvement_npu",
 })
 
 # ── Original prompt files unchanged ─────────────────────────────────────
@@ -65,11 +67,11 @@ class TestContainerPromptsExist:
     """Verify new container prompt files were created with required placeholders."""
 
     def test_container_prompt_files_exist(self):
-        for name in PHASE5_CONTAINER_PROMPTS:
+        for name in PHASE5_CONTAINER_PROMPTS | PHASE5_NPU_CONTAINER_PROMPTS:
             p = PROMPTS_DIR / f"{name}.md"
             assert p.exists(), f"Container prompt {p} must exist"
 
-    @pytest.mark.parametrize("name", sorted(PHASE5_CONTAINER_PROMPTS))
+    @pytest.mark.parametrize("name", sorted(PHASE5_CONTAINER_PROMPTS | PHASE5_NPU_CONTAINER_PROMPTS))
     def test_container_prompt_has_execution_context_section(self, name):
         content = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
         assert "execution_backend_mode" in content
@@ -80,21 +82,21 @@ class TestContainerPromptsExist:
         assert "container_project_dir" in content
 
     _ENTRY_SCRIPT_PROMPTS = frozenset({
-        "phase_error_recovery_container",
-        "repair_dependency_fixer_container",
-        "repair_code_adapter_container",
-        "repair_operator_fixer_container",
+        "phase_error_recovery_container_npu",
+        "repair_dependency_fixer_container_npu",
+        "repair_code_adapter_container_npu",
+        "repair_operator_fixer_container_npu",
     })
 
-    @pytest.mark.parametrize("name", sorted(PHASE5_CONTAINER_PROMPTS))
+    @pytest.mark.parametrize("name", sorted(PHASE5_CONTAINER_PROMPTS | PHASE5_NPU_CONTAINER_PROMPTS))
     def test_entry_script_placeholder_presence(self, name):
         content = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
-        if name in self._ENTRY_SCRIPT_PROMPTS:
+        if name in self._ENTRY_SCRIPT_PROMPTS or name.endswith(("dependency_fixer_container_npu", "code_adapter_container_npu", "operator_fixer_container_npu", "error_recovery_container_npu")):
             assert "{entry_script}" in content, f"{name} should have {{entry_script}} placeholder"
         # Review/improvement prompts don't need {entry_script} — context injected from review gate
 
     def test_container_prompts_instruct_container_validation(self):
-        for name in PHASE5_CONTAINER_PROMPTS:
+        for name in PHASE5_CONTAINER_PROMPTS | PHASE5_NPU_CONTAINER_PROMPTS:
             content = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
             assert "actual_execution_command" in content
             lower = content.lower()
@@ -131,11 +133,11 @@ class TestContainerYamlPrompts:
         assert repair_loop_def is not None
 
         phase_ids_to_check = {
-            "analyze_error": "phase_error_recovery_container",
-            "fix_dependency": "repair_dependency_fixer_container",
-            "fix_code": "repair_code_adapter_container",
-            "fix_operator": "repair_operator_fixer_container",
-            "review_gate": "phase_5_review_container",
+            "analyze_error": "phase_error_recovery_container_npu",
+            "fix_dependency": "repair_dependency_fixer_container_npu",
+            "fix_code": "repair_code_adapter_container_npu",
+            "fix_operator": "repair_operator_fixer_container_npu",
+            "review_gate": "phase_5_review_container_npu",
         }
 
         for pid, expected_template in phase_ids_to_check.items():
@@ -150,10 +152,10 @@ class TestContainerYamlPrompts:
         improvement = blocks.get("improvement_block")
         assert improvement is not None
         for pid, expected_template in {
-            "improvement_plan": "phase_review_improvement_container",
-            "imp_fix_dependency": "repair_dependency_fixer_container",
-            "imp_fix_code": "repair_code_adapter_container",
-            "imp_fix_operator": "repair_operator_fixer_container",
+            "improvement_plan": "phase_review_improvement_container_npu",
+            "imp_fix_dependency": "repair_dependency_fixer_container_npu",
+            "imp_fix_code": "repair_code_adapter_container_npu",
+            "imp_fix_operator": "repair_operator_fixer_container_npu",
         }.items():
             phase_def = self._find_block_phase(improvement, pid)
             assert phase_def is not None, f"Phase {pid} should exist in improvement_block"
@@ -179,11 +181,11 @@ class TestContainerYamlPrompts:
         assert repair_loop_def is not None
 
         for pid, expected_template in {
-            "analyze_error": "phase_error_recovery",
-            "fix_dependency": "repair_dependency_fixer",
-            "fix_code": "repair_code_adapter",
-            "fix_operator": "repair_operator_fixer",
-            "review_gate": "phase_5_review",
+            "analyze_error": "phase_error_recovery_npu",
+            "fix_dependency": "repair_dependency_fixer_npu",
+            "fix_code": "repair_code_adapter_npu",
+            "fix_operator": "repair_operator_fixer_npu",
+            "review_gate": "phase_5_review_npu",
         }.items():
             phase_def = self._find_phase(repair_loop_def, pid)
             assert phase_def is not None
@@ -195,10 +197,10 @@ class TestContainerYamlPrompts:
         improvement = blocks.get("improvement_block")
         assert improvement is not None
         for pid, expected_template in {
-            "improvement_plan": "phase_review_improvement",
-            "imp_fix_dependency": "repair_dependency_fixer",
-            "imp_fix_code": "repair_code_adapter",
-            "imp_fix_operator": "repair_operator_fixer",
+            "improvement_plan": "phase_review_improvement_npu",
+            "imp_fix_dependency": "repair_dependency_fixer_npu",
+            "imp_fix_code": "repair_code_adapter_npu",
+            "imp_fix_operator": "repair_operator_fixer_npu",
         }.items():
             phase_def = self._find_block_phase(improvement, pid)
             assert phase_def is not None
@@ -388,7 +390,7 @@ class TestContainerPromptRendering:
             "raw_attempt_files": "(none)",
             "workspace_root": str(ROOT.parent),
         }
-        rendered = loader.load_prompt("phase_error_recovery_container", ctx)
+        rendered = loader.load_prompt("phase_error_recovery_container_npu", ctx)
         assert "docker" in rendered
         assert "exec" in rendered
         assert "docker-ctx-99" in rendered
@@ -421,7 +423,7 @@ class TestContainerPromptRendering:
             "raw_attempt_files": "(none)",
             "workspace_root": str(ROOT.parent),
         }
-        rendered = loader.load_prompt("repair_dependency_fixer_container", ctx)
+        rendered = loader.load_prompt("repair_dependency_fixer_container_npu", ctx)
         assert entry in rendered
 
     def test_local_context_does_not_leak_into_container_prompts(self, tmp_path):
@@ -549,9 +551,8 @@ class TestCommandDescriptionAccuracy:
             "raw_attempt_files": "(none)",
             "workspace_root": str(ROOT.parent),
         }
-        rendered = loader.load_prompt("phase_error_recovery_container", ctx)
+        rendered = loader.load_prompt("phase_error_recovery_container_npu", ctx)
         assert "bash -c" not in rendered
         assert "exec -i" in rendered or "docker exec" in rendered
         assert ".venv/bin/python" in rendered
         assert "run_test.py" in rendered
-

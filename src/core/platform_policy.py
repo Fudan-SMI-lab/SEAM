@@ -18,9 +18,6 @@ from typing import Any, cast
 @dataclass(frozen=True)
 class CustomOpEvidenceConfig:
     """Per-platform custom-op evidence validation parameters.
-
-    When a field is left at its default (empty list / empty string) the
-    validator falls back to the legacy NPU / Ascend behaviour.
     """
 
     target_device_values: list[str] = field(default_factory=list)
@@ -52,6 +49,12 @@ class CustomOpEvidenceConfig:
 
     custom_op_evidence_policy: str = ""
     """String injected into ``custom_op_evidence_policy`` prompt context."""
+
+    strict_producer_closure_required: bool = False
+    """Whether final gate must run the strict producer-artifact closure."""
+
+    preflight_project_evidence_required: bool = False
+    """Whether entry-script execution should fail closed before running when project-local native evidence is absent."""
 
     # -- Performance validation configuration --------------------------------
     performance_validation: str = "full"
@@ -116,6 +119,36 @@ class ServingRuntimePolicy:
     """Per-platform serving runtime/backend contract policy."""
 
     backend: str = "generic"
+    runtime_env_setup: dict[str, object] = field(default_factory=lambda: {
+        "device_env": ["framework-provided accelerator device selection"],
+        "backend": "generic",
+    })
+    required_runtime_env: tuple[str, ...] = (
+        "generic serving runtime",
+        "serving framework installed",
+        "target accelerator runtime available",
+    )
+    common_import_probes: tuple[str, ...] = ("torch",)
+    common_forbidden_runtime_markers: tuple[str, ...] = (
+        "cpu fallback",
+        "fallback to cpu",
+    )
+    runtime_checks_field: str = "serving_runtime_checks"
+    runtime_checks: tuple[str, ...] = (
+        "serving_framework_imported",
+        "accelerator_execution_observed",
+        "forbidden_runtime_markers_absent",
+        "no_cpu_fallback",
+    )
+    strip_env_prefixes: tuple[str, ...] = ()
+    root_env_vars: tuple[str, ...] = ()
+    root_candidates: tuple[str, ...] = ()
+    env_vars_from_root: dict[str, str] = field(default_factory=dict)
+    pythonpath_from_root: tuple[str, ...] = ()
+    library_path_from_root: tuple[str, ...] = ()
+    path_from_root: tuple[str, ...] = ()
+    route_env_defaults: dict[str, dict[str, str]] = field(default_factory=dict)
+    runtime_evidence_fields: dict[str, str] = field(default_factory=dict)
     execution_evidence_field: str = "accelerator_execution_evidence"
     execution_observed_field: str = "accelerator_execution_observed"
     runtime_evidence_field: str = "serving_runtime_evidence"
@@ -156,11 +189,11 @@ class PlatformPolicy:
     guidance_native_label: str = ""
     guidance_native_framework: str = ""
     guidance_python_binary: str = "python"
+    repair_prompt_ids: dict[str, str] = field(default_factory=dict)
+    repair_prompt_ids_container: dict[str, str] = field(default_factory=dict)
+    error_analyzer_prompt_id: str = ""
+    error_analyzer_prompt_id_container: str = ""
 
-
-# ---------------------------------------------------------------------------
-# Legacy NPU defaults (kept for backward compatibility)
-# ---------------------------------------------------------------------------
 
 _NPU_ASCEND_EVIDENCE = CustomOpEvidenceConfig(
     target_device_values=["npu", "ascend", "torch_npu"],
@@ -236,6 +269,8 @@ _NPU_ASCEND_EVIDENCE = CustomOpEvidenceConfig(
     custom_op_evidence_policy=(
         "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only"
     ),
+    strict_producer_closure_required=True,
+    preflight_project_evidence_required=True,
 )
 
 
@@ -291,6 +326,71 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         custom_op_evidence=_NPU_ASCEND_EVIDENCE,
         serving_runtime=ServingRuntimePolicy(
             backend="ascend",
+            runtime_env_setup={
+                "source_candidates": [
+                    "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh",
+                    "/usr/local/Ascend/latest/set_env.sh",
+                ],
+                "pythonpath_requirements": ["tbe", "te", "torch_npu"],
+                "library_requirements": ["CANN runtime", "Ascend runtime libraries"],
+                "device_env": ["ASCEND_VISIBLE_DEVICES or framework-provided NPU device selection"],
+            },
+            required_runtime_env=(
+                "Ascend NPU runtime",
+                "CANN toolkit set_env.sh or equivalent env export",
+                "ASCEND_HOME_PATH",
+                "ASCEND_OPP_PATH",
+                "PYTHONPATH includes CANN python/site-packages for tbe and te",
+                "LD_LIBRARY_PATH includes CANN runtime libraries",
+                "torch_npu",
+                "tbe",
+                "te",
+            ),
+            common_import_probes=("torch", "torch_npu", "tbe", "te"),
+            common_forbidden_runtime_markers=(
+                "CUDA_VISIBLE_DEVICES",
+                "NVIDIA_VISIBLE_DEVICES",
+                "nvidia-smi",
+                "NCCL_",
+                "pynccl_allocator",
+                "torch.cuda.memory",
+                "cuda fallback",
+                "cpu fallback",
+            ),
+            runtime_checks_field="npu_runtime_checks",
+            runtime_checks=(
+                "cann_env_loaded",
+                "torch_npu_imported",
+                "tbe_imported",
+                "te_imported",
+                "serving_framework_imported",
+                "cuda_nccl_markers_absent",
+                "no_cpu_fallback",
+            ),
+            strip_env_prefixes=("CUDA", "NVIDIA", "NCCL"),
+            root_env_vars=("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"),
+            root_candidates=(
+                "/usr/local/Ascend/ascend-toolkit/latest",
+                "/usr/local/Ascend/latest",
+            ),
+            env_vars_from_root={"ASCEND_HOME_PATH": ".", "ASCEND_OPP_PATH": "opp"},
+            pythonpath_from_root=(
+                "python/site-packages",
+                "opp/built-in/op_impl/ai_core/tbe",
+            ),
+            library_path_from_root=(
+                "lib64",
+                "runtime/lib64",
+                "compiler/lib64",
+                "opp/built-in/op_impl/ai_core/tbe/op_tiling/lib",
+            ),
+            path_from_root=("bin", "compiler/ccec_compiler/bin"),
+            route_env_defaults={"vllm_serving": {"VLLM_TARGET_DEVICE": "npu"}},
+            runtime_evidence_fields={
+                "torch_npu_imported": "torch_npu",
+                "tbe_imported": "tbe",
+                "te_imported": "te",
+            },
             execution_evidence_field="npu_execution_evidence",
             execution_observed_field="npu_execution_observed",
             runtime_evidence_field="npu_runtime_evidence",
@@ -302,6 +402,18 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         guidance_native_label="Ascend NPU",
         guidance_native_framework="torch_npu / Ascend PyTorch primitives",
         guidance_python_binary="python",
+        repair_prompt_ids={
+            "dependency_fixer": "repair_dependency_fixer_npu",
+            "code_adapter": "repair_code_adapter_npu",
+            "operator_fixer": "repair_operator_fixer_npu",
+        },
+        repair_prompt_ids_container={
+            "dependency_fixer": "repair_dependency_fixer_container_npu",
+            "code_adapter": "repair_code_adapter_container_npu",
+            "operator_fixer": "repair_operator_fixer_container_npu",
+        },
+        error_analyzer_prompt_id="phase_error_recovery_npu",
+        error_analyzer_prompt_id_container="phase_error_recovery_container_npu",
     ),
     "ppu_cuda_compatible": PlatformPolicy(
         id="ppu_cuda_compatible",
@@ -377,6 +489,11 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         guidance_native_label="PPU GPU",
         guidance_native_framework="torch.cuda / PPU-compatible PyTorch primitives",
         guidance_python_binary="python",
+        repair_prompt_ids_container={
+            "dependency_fixer": "repair_dependency_fixer_container_ppu",
+            "code_adapter": "repair_code_adapter_container_ppu",
+            "operator_fixer": "repair_operator_fixer_container_ppu",
+        },
     ),
     "cuda_nvidia": PlatformPolicy(
         id="cuda_nvidia",
@@ -506,6 +623,11 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         guidance_native_label="MUXI GPU (MUSA)",
         guidance_native_framework="torch_musa / torch_maca / MUSA-MACA PyTorch primitives",
         guidance_python_binary="python",
+        repair_prompt_ids_container={
+            "dependency_fixer": "repair_dependency_fixer_container_musa",
+            "code_adapter": "repair_code_adapter_container_musa",
+            "operator_fixer": "repair_operator_fixer_container_musa",
+        },
     ),
     "rocm_amd": PlatformPolicy(
         id="rocm_amd",
@@ -626,32 +748,6 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Legacy / backward-compatible token tuples (module-level for existing code)
-# ---------------------------------------------------------------------------
-
-# These are the *default* NPU tokens.  When a PlatformPolicy is active and
-# its custom_op_evidence carries non-empty token tuples, the validator
-# should prefer those.  The module-level constants are kept here so that
-# existing importers of validate_validation_final continue to work.
-
-LEGACY_NPU_ARTIFACT_PATH_TOKENS = (
-    "/opp/",
-    "/op_plugin",
-    "ascend",
-    "cann",
-    "acl",
-    "aclnn",
-    "aicpu",
-    "ascendc",
-    "custom_op",
-    "torch_npu",
-)
-
-LEGACY_NPU_BUILD_LOG_TOKENS = _NPU_ASCEND_EVIDENCE.native_build_log_tokens
-LEGACY_NPU_SOURCE_TOKENS = _NPU_ASCEND_EVIDENCE.native_source_tokens
-LEGACY_NPU_BINARY_TOKENS = _NPU_ASCEND_EVIDENCE.native_binary_tokens
-LEGACY_NPU_ARTIFACT_FIELDS = _NPU_ASCEND_EVIDENCE.native_artifact_fields
 
 
 # ---------------------------------------------------------------------------
@@ -715,6 +811,7 @@ def _infer_policy_by_name(name: str) -> PlatformPolicy:
 
     * ``npu_migration*`` → ``npu_ascend``
     * ``ppu_migration*`` → ``ppu_cuda_compatible``
+    * ``musa_muxi_migration*`` → ``musa_muxi``
     * otherwise → ``generic_accelerator``
     """
     name_lower = name.strip().lower()
@@ -722,6 +819,8 @@ def _infer_policy_by_name(name: str) -> PlatformPolicy:
         return BUILTIN_PRESETS["npu_ascend"]
     if name_lower.startswith("ppu_migration"):
         return BUILTIN_PRESETS["ppu_cuda_compatible"]
+    if name_lower.startswith("musa_muxi_migration"):
+        return BUILTIN_PRESETS["musa_muxi"]
     return BUILTIN_PRESETS["generic_accelerator"]
 
 
@@ -768,6 +867,16 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, object]) -> Plat
             custom_op_evidence_policy=str(
                 ce_overrides.get("custom_op_evidence_policy", ce.custom_op_evidence_policy)
             ),
+            strict_producer_closure_required=_bool_override(
+                ce_overrides,
+                "strict_producer_closure_required",
+                ce.strict_producer_closure_required,
+            ),
+            preflight_project_evidence_required=_bool_override(
+                ce_overrides,
+                "preflight_project_evidence_required",
+                ce.preflight_project_evidence_required,
+            ),
             performance_validation=str(
                 ce_overrides.get("performance_validation", ce.performance_validation)
             ),
@@ -785,6 +894,21 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, object]) -> Plat
     if isinstance(serving_overrides, dict):
         serving_runtime = ServingRuntimePolicy(
             backend=_string_override(serving_overrides, "backend", serving_runtime.backend),
+            runtime_env_setup=dict(serving_overrides.get("runtime_env_setup", serving_runtime.runtime_env_setup)) if isinstance(serving_overrides.get("runtime_env_setup"), dict) else serving_runtime.runtime_env_setup,
+            required_runtime_env=tuple(_list_override(serving_overrides, "required_runtime_env", list(serving_runtime.required_runtime_env))),
+            common_import_probes=tuple(_list_override(serving_overrides, "common_import_probes", list(serving_runtime.common_import_probes))),
+            common_forbidden_runtime_markers=tuple(_list_override(serving_overrides, "common_forbidden_runtime_markers", list(serving_runtime.common_forbidden_runtime_markers))),
+            runtime_checks_field=_string_override(serving_overrides, "runtime_checks_field", serving_runtime.runtime_checks_field),
+            runtime_checks=tuple(_list_override(serving_overrides, "runtime_checks", list(serving_runtime.runtime_checks))),
+            strip_env_prefixes=tuple(_list_override(serving_overrides, "strip_env_prefixes", list(serving_runtime.strip_env_prefixes))),
+            root_env_vars=tuple(_list_override(serving_overrides, "root_env_vars", list(serving_runtime.root_env_vars))),
+            root_candidates=tuple(_list_override(serving_overrides, "root_candidates", list(serving_runtime.root_candidates))),
+            env_vars_from_root=dict(serving_overrides.get("env_vars_from_root", serving_runtime.env_vars_from_root)) if isinstance(serving_overrides.get("env_vars_from_root"), dict) else serving_runtime.env_vars_from_root,
+            pythonpath_from_root=tuple(_list_override(serving_overrides, "pythonpath_from_root", list(serving_runtime.pythonpath_from_root))),
+            library_path_from_root=tuple(_list_override(serving_overrides, "library_path_from_root", list(serving_runtime.library_path_from_root))),
+            path_from_root=tuple(_list_override(serving_overrides, "path_from_root", list(serving_runtime.path_from_root))),
+            route_env_defaults=dict(serving_overrides.get("route_env_defaults", serving_runtime.route_env_defaults)) if isinstance(serving_overrides.get("route_env_defaults"), dict) else serving_runtime.route_env_defaults,
+            runtime_evidence_fields=dict(serving_overrides.get("runtime_evidence_fields", serving_runtime.runtime_evidence_fields)) if isinstance(serving_overrides.get("runtime_evidence_fields"), dict) else serving_runtime.runtime_evidence_fields,
             execution_evidence_field=_string_override(
                 serving_overrides,
                 "execution_evidence_field",
@@ -816,6 +940,10 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, object]) -> Plat
         guidance_native_label=str(overrides.get("guidance_native_label", base.guidance_native_label)),
         guidance_native_framework=str(overrides.get("guidance_native_framework", base.guidance_native_framework)),
         guidance_python_binary=str(overrides.get("guidance_python_binary", base.guidance_python_binary)),
+        repair_prompt_ids=_dict_str_override(overrides, "repair_prompt_ids", base.repair_prompt_ids),
+        repair_prompt_ids_container=_dict_str_override(overrides, "repair_prompt_ids_container", base.repair_prompt_ids_container),
+        error_analyzer_prompt_id=_string_override(overrides, "error_analyzer_prompt_id", base.error_analyzer_prompt_id),
+        error_analyzer_prompt_id_container=_string_override(overrides, "error_analyzer_prompt_id_container", base.error_analyzer_prompt_id_container),
     )
 
 
@@ -824,6 +952,18 @@ def _string_override(overrides: dict[str, object], key: str, default: str) -> st
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+def _bool_override(overrides: dict[str, object], key: str, default: bool) -> bool:
+    value = overrides.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def _dict_str_override(overrides: dict[str, object], key: str, default: dict[str, str]) -> dict[str, str]:
+    value = overrides.get(key)
+    if isinstance(value, dict):
+        return {str(item_key): str(item_value) for item_key, item_value in value.items() if item_value is not None}
+    return dict(default)
 
 
 def _list_override(overrides: dict[str, object], key: str, default: list[str]) -> list[str]:
@@ -853,51 +993,44 @@ def _bytes_list_override(overrides: dict[str, object], key: str, default: list[b
 # ---------------------------------------------------------------------------
 
 def get_artifact_path_tokens(policy: PlatformPolicy | None) -> list[str]:
-    """Return artifact path tokens.  Only falls back to legacy NPU when *policy*
-    is ``None`` (old YAML with no ``target_platform``).  An explicit policy
-    always uses its own tokens, even when empty."""
+    """Return artifact path tokens for an explicit policy or generic fallback."""
     if policy is None:
-        return list(LEGACY_NPU_ARTIFACT_PATH_TOKENS)
+        return list(_GENERIC_EVIDENCE.artifact_path_tokens)
     return list(policy.custom_op_evidence.artifact_path_tokens)
 
 
 def get_native_build_log_tokens(policy: PlatformPolicy | None) -> tuple[str, ...]:
-    """Return native build log tokens.  Only falls back to legacy NPU when
-    *policy* is ``None``."""
+    """Return native build log tokens for an explicit policy or generic fallback."""
     if policy is None:
-        return LEGACY_NPU_BUILD_LOG_TOKENS
+        return _GENERIC_EVIDENCE.native_build_log_tokens
     return policy.custom_op_evidence.native_build_log_tokens
 
 
 def get_native_source_tokens(policy: PlatformPolicy | None) -> tuple[str, ...]:
-    """Return native source tokens.  Only falls back to legacy NPU when
-    *policy* is ``None``."""
+    """Return native source tokens for an explicit policy or generic fallback."""
     if policy is None:
-        return LEGACY_NPU_SOURCE_TOKENS
+        return _GENERIC_EVIDENCE.native_source_tokens
     return policy.custom_op_evidence.native_source_tokens
 
 
 def get_native_binary_tokens(policy: PlatformPolicy | None) -> tuple[bytes, ...]:
-    """Return native binary tokens.  Only falls back to legacy NPU when
-    *policy* is ``None``."""
+    """Return native binary tokens for an explicit policy or generic fallback."""
     if policy is None:
-        return LEGACY_NPU_BINARY_TOKENS
+        return _GENERIC_EVIDENCE.native_binary_tokens
     return policy.custom_op_evidence.native_binary_tokens
 
 
 def get_target_device_values(policy: PlatformPolicy | None) -> list[str]:
-    """Return accepted target device values.  Only falls back to legacy NPU
-    when *policy* is ``None``."""
+    """Return accepted target device values for an explicit policy or generic fallback."""
     if policy is None:
-        return ["npu", "ascend", "torch_npu"]
+        return list(_GENERIC_EVIDENCE.target_device_values)
     return list(policy.custom_op_evidence.target_device_values)
 
 
 def get_positive_boolean_fields(policy: PlatformPolicy | None) -> list[str]:
-    """Return positive boolean fields for custom-device proof.  Only falls
-    back to legacy NPU when *policy* is ``None``."""
+    """Return positive boolean fields for an explicit policy or generic fallback."""
     if policy is None:
-        return ["npu_custom", "custom_npu", "npu_custom_invoked", "ascend_custom_invoked"]
+        return list(_GENERIC_EVIDENCE.positive_boolean_fields)
     return list(policy.custom_op_evidence.positive_boolean_fields)
 
 

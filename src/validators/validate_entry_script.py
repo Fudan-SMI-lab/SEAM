@@ -7,7 +7,6 @@ import shlex
 from pathlib import Path
 from typing import cast
 
-from core.serving_runtime import npu_serving_contract_fields
 from core.routes import SERVING_ENTRY_KINDS, serving_framework_for_route, serving_route_from_contract
 from core.validator_engine import ValidationDict
 
@@ -40,23 +39,13 @@ SERVING_FIELDS = {
     "runtime_env_setup",
     "required_import_probes",
     "forbidden_runtime_markers",
-    "npu_runtime_checks",
+    "serving_runtime_checks",
     "required_checks",
     "serving_reports_dir",
     "required_report_paths",
     "serving_validation_obligations",
 }
 
-REQUIRED_SERVING_CHECKS = {
-    "project_demo_or_test_execution",
-    "serving_api_request_validation",
-    "readiness_probe_passed",
-    "npu_execution_evidence",
-    "no_cuda_fallback",
-    "no_cpu_fallback",
-    "fresh_serving_report",
-    "route_framework_match",
-}
 GENERIC_REQUIRED_SERVING_CHECKS = {
     "project_demo_or_test_execution",
     "serving_api_request_validation",
@@ -70,14 +59,6 @@ GENERIC_REQUIRED_SERVING_CHECKS = {
 
 REQUIRED_SERVING_REPORT_TOKENS = ("serving", "final", "gate")
 
-REQUIRED_SERVING_OBLIGATIONS = {
-    "actual_project_demo_test_or_api_validation",
-    "npu_execution_evidence",
-    "reject_import_only_or_smoke_only",
-    "reject_cuda_or_cpu_fallback",
-    "fresh_report_paths",
-    "route_framework_match",
-}
 GENERIC_REQUIRED_SERVING_OBLIGATIONS = {
     "actual_project_demo_test_or_api_validation",
     "accelerator_execution_evidence",
@@ -289,14 +270,12 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
         errors.append("required_report_paths must include a serving_final_gate report path")
 
     required_checks = set(_string_list(data.get("required_checks")) or [])
-    expected_checks = REQUIRED_SERVING_CHECKS if serving_backend == "ascend" else GENERIC_REQUIRED_SERVING_CHECKS
-    missing_checks = sorted(expected_checks - required_checks)
+    missing_checks = _missing_serving_checks(required_checks)
     if missing_checks:
         errors.append("required_checks missing serving checks: " + ", ".join(missing_checks))
 
     obligations = set(_string_list(data.get("serving_validation_obligations")) or [])
-    expected_obligations = REQUIRED_SERVING_OBLIGATIONS if serving_backend == "ascend" else GENERIC_REQUIRED_SERVING_OBLIGATIONS
-    missing_obligations = sorted(expected_obligations - obligations)
+    missing_obligations = _missing_serving_obligations(obligations)
     if missing_obligations:
         errors.append("serving_validation_obligations missing: " + ", ".join(missing_obligations))
 
@@ -304,10 +283,7 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
         values = _string_list(data.get(field))
         if values is None or not values:
             errors.append(f"{field} must be a non-empty list for serving contracts")
-    if serving_backend == "ascend":
-        _validate_npu_serving_contract_fields(data, route, errors)
-    else:
-        _validate_generic_serving_contract_fields(data, errors)
+    _validate_serving_contract_fields(data, errors)
 
     for field in ("readiness_probe", "request_validation"):
         value = data.get(field)
@@ -349,7 +325,35 @@ def _validate_serving_run_command(data: dict[str, object], errors: list[str]) ->
         errors.append("run_command for serving contracts must invoke python directly, not inline env prefixes or shell wrappers")
 
 
-def _validate_generic_serving_contract_fields(data: dict[str, object], errors: list[str]) -> None:
+def _missing_serving_checks(required_checks: set[str]) -> list[str]:
+    missing = sorted(
+        check
+        for check in GENERIC_REQUIRED_SERVING_CHECKS
+        if check not in {"accelerator_execution_evidence", "no_forbidden_runtime_fallback"}
+        and check not in required_checks
+    )
+    if not any(check == "accelerator_execution_evidence" or check.endswith("_execution_evidence") for check in required_checks):
+        missing.append("accelerator_execution_evidence")
+    if not any(check == "no_forbidden_runtime_fallback" or (check.startswith("no_") and check.endswith("_fallback") and check != "no_cpu_fallback") for check in required_checks):
+        missing.append("no_forbidden_runtime_fallback")
+    return sorted(missing)
+
+
+def _missing_serving_obligations(obligations: set[str]) -> list[str]:
+    missing = sorted(
+        obligation
+        for obligation in GENERIC_REQUIRED_SERVING_OBLIGATIONS
+        if obligation not in {"accelerator_execution_evidence", "reject_forbidden_runtime_or_cpu_fallback"}
+        and obligation not in obligations
+    )
+    if not any(obligation == "accelerator_execution_evidence" or obligation.endswith("_execution_evidence") for obligation in obligations):
+        missing.append("accelerator_execution_evidence")
+    if not any(obligation == "reject_forbidden_runtime_or_cpu_fallback" or (obligation.startswith("reject_") and obligation.endswith("_or_cpu_fallback")) for obligation in obligations):
+        missing.append("reject_forbidden_runtime_or_cpu_fallback")
+    return sorted(missing)
+
+
+def _validate_serving_contract_fields(data: dict[str, object], errors: list[str]) -> None:
     runtime_setup = data.get("runtime_env_setup")
     if not isinstance(runtime_setup, dict) or not runtime_setup:
         errors.append("runtime_env_setup must describe serving accelerator runtime setup")
@@ -357,29 +361,19 @@ def _validate_generic_serving_contract_fields(data: dict[str, object], errors: l
         values = _string_list(data.get(field_name))
         if values is None or not values:
             errors.append(f"{field_name} must list serving runtime requirements")
-    runtime_checks = _string_list(data.get("serving_runtime_checks"))
+    runtime_checks_field = _serving_runtime_checks_field(data)
+    runtime_checks = _string_list(data.get(runtime_checks_field))
     if runtime_checks is None or not runtime_checks:
-        errors.append("serving_runtime_checks must list generic serving runtime checks")
+        errors.append(f"{runtime_checks_field} must list serving runtime checks")
 
 
-def _validate_npu_serving_contract_fields(data: dict[str, object], route: str, errors: list[str]) -> None:
-    required = npu_serving_contract_fields(route)
-    runtime_setup = data.get("runtime_env_setup")
-    if not isinstance(runtime_setup, dict) or not runtime_setup:
-        errors.append("runtime_env_setup must describe CANN/Ascend environment setup")
-    for field in ("required_import_probes", "forbidden_runtime_markers", "npu_runtime_checks"):
-        values = _string_list(data.get(field))
-        if values is None or not values:
-            errors.append(f"{field} must be a non-empty list for Ascend serving contracts")
-            continue
-        observed = {value.lower() for value in values}
-        for expected in _string_list(required.get(field)) or []:
-            if expected.lower() not in observed:
-                errors.append(f"{field} missing Ascend serving requirement: {expected}")
-    runtime_env = {value.lower() for value in (_string_list(data.get("required_runtime_env")) or [])}
-    for token in ("cann", "torch_npu", "tbe", "te"):
-        if not any(token in value for value in runtime_env):
-            errors.append(f"required_runtime_env missing Ascend serving token: {token}")
+def _serving_runtime_checks_field(data: dict[str, object]) -> str:
+    if data.get("serving_runtime_checks") is not None:
+        return "serving_runtime_checks"
+    candidates = [key for key in data if key.endswith("_runtime_checks")]
+    if len(candidates) == 1:
+        return candidates[0]
+    return "serving_runtime_checks"
 
 
 def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> None:

@@ -35,7 +35,7 @@ phases:
     name: environment_detection
     type: llm
     agent: main_engineer
-    prompt_template: "phase_0_env_detect"
+    prompt_template: "phase_0_env_detect_npu"
     output_schema: {}
     validator: env_detect
     retrieve_experience: false
@@ -47,7 +47,7 @@ phases:
     name: project_analysis
     type: llm
     agent: main_engineer
-    prompt_template: "phase_1_project_analysis"
+    prompt_template: "phase_1_project_analysis_npu"
     output_schema: {}
     validator: project_analysis
     retrieve_experience: true
@@ -65,7 +65,7 @@ phases:
     name: venv_create
     type: llm
     agent: main_engineer
-    prompt_template: "phase_2_venv_create"
+    prompt_template: "phase_2_venv_create_npu"
     output_schema: {}
     validator: venv
     transitions:
@@ -76,7 +76,7 @@ phases:
     name: entry_script
     type: llm
     agent: main_engineer
-    prompt_template: "phase_3_entry_script"
+    prompt_template: "phase_3_entry_script_npu"
     output_schema: {}
     validator: entry_script
     transitions:
@@ -87,7 +87,7 @@ phases:
     name: static_validate
     type: llm
     agent: main_engineer
-    prompt_template: "phase_35_static_validate"
+    prompt_template: "phase_35_static_validate_npu"
     output_schema: {}
     validator: entry_static
     transitions:
@@ -117,7 +117,7 @@ phases:
     name: report
     type: llm
     agent: main_engineer
-    prompt_template: "phase_6_report"
+    prompt_template: "phase_6_report_npu"
     output_schema: {}
     validator: null
     transitions:
@@ -186,7 +186,7 @@ sub_workflows:
         type: llm
         agent: error_analyzer
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
-        prompt_template: "phase_error_recovery"
+        prompt_template: "phase_error_recovery_npu"
         validator: repair_classification
         output_as: "error_analysis"
         retrieve_experience: true
@@ -210,16 +210,16 @@ sub_workflows:
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: dependency_fixer
-        prompt_template: "repair_dependency_fixer"
+        prompt_template: "repair_dependency_fixer_npu"
 
       - id: fix_code
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: code_adapter
-        prompt_template: "repair_code_adapter"
+        prompt_template: "repair_code_adapter_npu"
 
       - id: fix_operator
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: operator_fixer
-        prompt_template: "repair_operator_fixer"
+        prompt_template: "repair_operator_fixer_npu"

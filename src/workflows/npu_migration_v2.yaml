@@ -5,6 +5,9 @@ description: "CUDA to Ascend NPU automated migration workflow (YAML-driven)"
 target_platform:
   preset: npu_ascend
 
+rule_migration:
+  strategy_file: rule_strategies/cuda_to_npu.yaml
+
 globals:
   max_repair_iterations: 5
   stagnation_threshold: 3
@@ -55,7 +58,7 @@ phases:
   - id: phase_0_env_detect
     type: llm
     agent: main_engineer
-    prompt_template: "phase_0_env_detect"
+    prompt_template: "phase_0_env_detect_npu"
     validator: env_detect
     transitions:
       on_success: phase_1_project_analysis
@@ -63,7 +66,7 @@ phases:
   - id: phase_1_project_analysis
     type: llm
     agent: main_engineer
-    prompt_template: "phase_1_project_analysis"
+    prompt_template: "phase_1_project_analysis_npu"
     validator: project_analysis
     input_mapping:
       project_dir: "${context.PROJECT_DIR}"
@@ -80,7 +83,7 @@ phases:
   - id: phase_1_5_constraint_summary
     type: llm
     agent: main_engineer
-    prompt_template: "phase_1_5_constraint_summary"
+    prompt_template: "phase_1_5_constraint_summary_npu"
     validator: null
     condition: "${context.USER_CONSTRAINTS} != ''"
     input_mapping:
@@ -93,7 +96,7 @@ phases:
   - id: phase_2_venv_create
     type: llm
     agent: main_engineer
-    prompt_template: "phase_2_venv_create"
+    prompt_template: "phase_2_venv_create_npu"
     validator: venv
     transitions:
       on_success: phase_3_entry_script
@@ -101,7 +104,7 @@ phases:
   - id: phase_3_entry_script
     type: llm
     agent: main_engineer
-    prompt_template: "phase_3_entry_script"
+    prompt_template: "phase_3_entry_script_npu"
     validator: entry_script
     transitions:
       on_success: phase_35_static_validate
@@ -110,7 +113,7 @@ phases:
   - id: phase_35_static_validate
     type: llm
     agent: main_engineer
-    prompt_template: "phase_35_static_validate"
+    prompt_template: "phase_35_static_validate_npu"
     validator: entry_static
     transitions:
       on_success: phase_4_rule_migration
@@ -138,7 +141,7 @@ phases:
   - id: phase_6_report
     type: llm
     agent: main_engineer
-    prompt_template: "phase_6_report"
+    prompt_template: "phase_6_report_npu"
     validator: null
     transitions:
       on_success: phase_7a_evaluate
@@ -212,7 +215,7 @@ sub_workflows:
         type: llm
         agent: error_analyzer
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
-        prompt_template: "phase_error_recovery"
+        prompt_template: "phase_error_recovery_npu"
         validator: repair_classification
         output_as: "error_analysis"
         retrieve_experience: true
@@ -236,19 +239,19 @@ sub_workflows:
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: dependency_fixer
-        prompt_template: "repair_dependency_fixer"
+        prompt_template: "repair_dependency_fixer_npu"
 
       - id: fix_code
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: code_adapter
-        prompt_template: "repair_code_adapter"
+        prompt_template: "repair_code_adapter_npu"
 
       - id: fix_operator
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
         type: llm
         agent: operator_fixer
-        prompt_template: "repair_operator_fixer"
+        prompt_template: "repair_operator_fixer_npu"
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
@@ -259,7 +262,7 @@ sub_workflows:
         type: review
         condition: "$.script_exit_code == 0 and $.review_gate_enabled == true"
         agent: main_engineer
-        prompt_template: "phase_5_review"
+        prompt_template: "phase_5_review_npu"
         retry_json_parse: 2
         verdicts:
           accept:
@@ -277,7 +280,7 @@ sub_workflows:
           - id: improvement_plan
             type: llm
             agent: error_analyzer
-            prompt_template: "phase_review_improvement"
+            prompt_template: "phase_review_improvement_npu"
             output_as: "improvement_plan"
 
           - id: improvement_dispatch
@@ -292,19 +295,19 @@ sub_workflows:
             condition: "$.review_verdict_status is defined or true"
             type: llm
             agent: dependency_fixer
-            prompt_template: "repair_dependency_fixer"
+            prompt_template: "repair_dependency_fixer_npu"
 
           - id: imp_fix_code
             condition: "$.review_verdict_status is defined or true"
             type: llm
             agent: code_adapter
-            prompt_template: "repair_code_adapter"
+            prompt_template: "repair_code_adapter_npu"
 
           - id: imp_fix_operator
             condition: "$.review_verdict_status is defined or true"
             type: llm
             agent: operator_fixer
-            prompt_template: "repair_operator_fixer"
+            prompt_template: "repair_operator_fixer_npu"
             runtime_skills:
               include:
                 - cuda-custom-op-to-npu-custom-op

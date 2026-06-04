@@ -12,7 +12,7 @@ globals:
 phases:
   - id: phase_0
     name: Environment Detection
-    prompt_template: "src/prompts/phase_0_env_detect.md"
+    prompt_template: "src/prompts/phase_0_env_detect_npu.md"
     output_schema:
       $ref: "src/schemas/phase_0_env_detect.json"
     validator: env_detect
@@ -22,7 +22,7 @@ phases:
 
   - id: phase_1
     name: Project Analysis
-    prompt_template: "src/prompts/phase_1_project_analysis.md"
+    prompt_template: "src/prompts/phase_1_project_analysis_npu.md"
     output_schema:
       $ref: "src/schemas/phase_1_project_analysis.json"
     validator: project_analysis
@@ -32,7 +32,7 @@ phases:
 
   - id: phase_2
     name: Virtual Environment Setup
-    prompt_template: "src/prompts/phase_2_venv_create.md"
+    prompt_template: "src/prompts/phase_2_venv_create_npu.md"
     output_schema:
       $ref: "src/schemas/phase_2_venv.json"
     validator: venv
@@ -42,7 +42,7 @@ phases:
 
   - id: phase_3
     name: Entry Script Analysis
-    prompt_template: "src/prompts/phase_3_entry_script.md"
+    prompt_template: "src/prompts/phase_3_entry_script_npu.md"
     output_schema:
       $ref: "src/schemas/phase_3_entry_script.json"
     validator: entry_script
@@ -52,7 +52,7 @@ phases:
 
   - id: phase_35
     name: Entry Script Static Compliance Check
-    prompt_template: "src/prompts/phase_35_static_validate.md"
+    prompt_template: "src/prompts/phase_35_static_validate_npu.md"
     output_schema:
       $ref: "src/schemas/phase_35_static_validate.json"
     validator: entry_static
@@ -82,7 +82,7 @@ phases:
 
   - id: phase_6
     name: Reports
-    prompt_template: "src/prompts/phase_6_report.md"
+    prompt_template: "src/prompts/phase_6_report_npu.md"
     output_schema:
       $ref: "src/schemas/phase_6_reports.json"
     validator: reports
@@ -92,7 +92,7 @@ phases:
 
   - id: error_recovery
     name: Error Recovery
-    prompt_template: "src/prompts/phase_error_recovery.md"
+    prompt_template: "src/prompts/phase_error_recovery_npu.md"
     output_schema: {}
     validator: null
     transitions:

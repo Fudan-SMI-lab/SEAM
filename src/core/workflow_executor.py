@@ -52,6 +52,7 @@ from core.custom_op_variants import (
 from core.routes import (
     CUSTOM_OP,
     CUSTOM_OP_WITH_VARIANTS,
+    ORDINARY_CUDA,
     SERVING_ROUTES,
     normalize_serving_phase1_surface,
     normalize_serving_phase3_contract,
@@ -2146,7 +2147,6 @@ class WorkflowExecutor:
         if isinstance(ph2, dict):
             installed = ph2.get("installed_packages", [])
         accel_ctx = extract_accelerator_context(installed)
-        env["torch_npu_version"] = accel_ctx["torch_npu_version"]
         env["accelerator_packages"] = accel_ctx["accelerator_packages"]
         env["accelerator_package_versions"] = accel_ctx["accelerator_package_versions"]
         return env
@@ -2346,6 +2346,7 @@ class WorkflowExecutor:
         # phase_3_entry_script: inject entry_script_path and route-specific contracts.
         if "entry_script" in phase_id or phase_id == "phase_3":
             ph1 = state.get("phase_1_project_analysis") or state.get("phase_1")
+            phase1_route = ph1.get("migration_route") if isinstance(ph1, dict) else None
             if "entry_script_path" not in normalized:
                 if isinstance(ph1, dict) and ph1.get("entry_script"):
                     normalized["entry_script_path"] = ph1["entry_script"]
@@ -2355,37 +2356,50 @@ class WorkflowExecutor:
             if self._custom_op_route_disabled(workflow_globals):
                 normalized = self._strip_custom_op_contract_fields(normalized)
             else:
-                if isinstance(ph1, dict) and ph1.get("migration_route") in SERVING_ROUTES:
+                custom_op_contract_required = (
+                    phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
+                    or (
+                        phase1_route is None
+                        and (
+                            normalized.get("entry_script_kind") == "custom_op_full_validation"
+                            or self._custom_op_required_signal(state, prompt_context)
+                        )
+                    )
+                )
+                if phase1_route in SERVING_ROUTES:
                     normalize_serving_phase3_contract(
                         normalized,
-                        route=str(ph1["migration_route"]),
+                        route=str(phase1_route),
                         project_dir=str(self.project_dir),
                         phase1_output=ph1,
                         platform_policy=self.platform_policy,
                     )
-                elif (
-                    isinstance(ph1, dict)
-                    and ph1.get("migration_route") in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
-                ) or normalized.get("entry_script_kind") == "custom_op_full_validation" or self._custom_op_required_signal(state, prompt_context):
+                elif custom_op_contract_required:
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
                     normalized["project_dir"] = str(self.project_dir)
-                    if isinstance(ph1, dict) and ph1.get("migration_route") in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}:
-                        normalized["migration_route"] = str(ph1["migration_route"])
-                variant_overlay = expanded_variant_contract_from_outputs(state)
-                if variant_overlay:
-                    apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
-                    ensure_strict_expanded_variant_validation_script(
-                        normalized,
-                        variant_overlay,
-                        project_dir=str(self.project_dir),
-                    )
+                    if phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}:
+                        normalized["migration_route"] = str(phase1_route)
+                    variant_overlay = expanded_variant_contract_from_outputs(state)
+                    if variant_overlay:
+                        apply_expanded_variant_contract(normalized, variant_overlay, include_required_checks=True)
+                        ensure_strict_expanded_variant_validation_script(
+                            normalized,
+                            variant_overlay,
+                            project_dir=str(self.project_dir),
+                        )
+                    else:
+                        for field in EXPANDED_VARIANT_CONTRACT_FIELDS:
+                            normalized.pop(field, None)
+                        ensure_strict_non_variant_custom_op_validation_script(
+                            normalized,
+                            project_dir=str(self.project_dir),
+                        )
                 else:
+                    normalized = self._strip_custom_op_contract_fields(normalized)
                     for field in EXPANDED_VARIANT_CONTRACT_FIELDS:
                         normalized.pop(field, None)
-                    ensure_strict_non_variant_custom_op_validation_script(
-                        normalized,
-                        project_dir=str(self.project_dir),
-                    )
+                    if phase1_route == ORDINARY_CUDA:
+                        normalized = self._restore_ordinary_phase3_entry_script(normalized, ph1, state)
             normalized = self._normalize_phase3_container_paths(
                 normalized, prompt_context,
             )
@@ -2447,6 +2461,34 @@ class WorkflowExecutor:
         for field in CUSTOM_OP_CONTRACT_KEYS:
             stripped.pop(field, None)
         return stripped
+
+    def _restore_ordinary_phase3_entry_script(
+        self,
+        output: dict[str, Any],
+        phase1_output: dict[str, Any] | None,
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(phase1_output, dict):
+            return output
+        entry_script = phase1_output.get("entry_script")
+        if not isinstance(entry_script, str) or not entry_script.strip():
+            return output
+        entry_path = Path(entry_script.strip())
+        if not entry_path.is_absolute():
+            entry_path = Path(str(self.project_dir)) / entry_path
+        restored = dict(output)
+        restored["entry_script_path"] = str(entry_path)
+        phase2_output = state.get("phase_2_venv_create") or state.get("phase_2")
+        python_path = ""
+        if isinstance(phase2_output, dict):
+            phase2_map = cast(dict[str, object], phase2_output)
+            candidate = phase2_map.get("python_path")
+            if isinstance(candidate, str) and candidate.strip():
+                python_path = candidate.strip()
+        if not python_path:
+            python_path = str(Path(str(self.project_dir)) / ".venv" / "bin" / "python")
+        restored["run_command"] = f"{shlex.quote(python_path)} {shlex.quote(str(entry_path))}"
+        return restored
 
     @classmethod
     def _custom_op_required_signal(cls, *values: object) -> bool:
@@ -2886,13 +2928,14 @@ class WorkflowExecutor:
         project_path = Path(project_dir)
         if project_path.is_dir():
             ensure_opp_source_evidence(project_path)
-        return validate_custom_op_opp_preflight(contract_map, project_dir)
+        return validate_custom_op_opp_preflight(contract_map, project_dir, self.platform_policy)
 
     def _requires_custom_op_opp_preflight(self, contract: dict[str, object]) -> bool:
-        if self.platform_policy.id != "npu_ascend":
+        if not self.platform_policy.custom_op_evidence.preflight_project_evidence_required:
             return False
         policy = contract.get("custom_op_evidence_policy")
-        if isinstance(policy, str) and "require_real_ascend_cann_acl_opp_native_artifacts" in policy.lower():
+        expected_policy = self.platform_policy.custom_op_evidence.custom_op_evidence_policy.lower()
+        if isinstance(policy, str) and policy.strip().lower() == expected_policy:
             return True
         variant_overlay = expanded_variant_contract_from_outputs({"phase_3_entry_script": contract})
         if variant_overlay:
