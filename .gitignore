@@ -9,7 +9,7 @@
 /.sm-artifacts/
 **/.sm-artifacts/
 /e2e-reports/
-/.memory/
+/.memory/memory/staging/
 /.omo/
 /.sisyphus/
 /fusion_result.json
