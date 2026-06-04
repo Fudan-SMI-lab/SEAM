@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=False,
         default=None,
         type=str,
-        help="Path to workflow YAML definition (default: workflows/npu_migration_v1.yaml relative to this script)",
+        help="Path to workflow YAML definition (default: workflows/npu_migration_v1.yaml relative to this script, overridable via SEAM_DEFAULT_WORKFLOW env var)",
     )
 
     parser.add_argument(
@@ -82,9 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def get_default_workflow() -> str:
-    """Return the default workflow YAML path relative to this script."""
+    """Return the default workflow YAML path relative to this script.
+
+    Can be overridden via the SEAM_DEFAULT_WORKFLOW environment variable.
+    """
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(script_dir, "..", "workflows", "npu_migration_v1.yaml")
+    return os.environ.get(
+        "SEAM_DEFAULT_WORKFLOW",
+        os.path.join(script_dir, "..", "workflows", "npu_migration_v1.yaml"),
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

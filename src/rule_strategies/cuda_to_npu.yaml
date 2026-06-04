@@ -20,6 +20,8 @@ rewrite:
   inject_imports:
     - import torch_npu
   inject_when_regex: "torch\\.cuda|\\.cuda\\(|[\"']cuda[\"']"
+report_injections:
+  inject_torch_npu: inject_imports
 rules:
   - id: torch_cuda_amp
     pattern: "torch\\.cuda\\.amp"

@@ -5,23 +5,39 @@ You are executing `{phase_name}` for the target project at `{project_dir}`.
 ## Goal
 - Detect whether the host environment is primarily Ascend NPU or CUDA-oriented.
 - If NPU is detected, probe the system-level CANN toolchain version, AscendC compiler availability, and driver/firmware version.
+- **Use runtime discovery, not hardcoded paths.** No assumption about installation directories.
 - Read the project README before making conclusions.
 - Report a minimal machine-readable result for downstream phases.
 
 ## Required Actions
 1. Inspect README files under `{project_dir}` first, especially `README*`, setup notes, and environment instructions.
-2. Detect Ascend or NPU signals from tools such as `npu-smi`, Ascend runtime packages, `torch_npu`, or device-related environment variables.
+2. Detect Ascend or NPU signals:
+   - Check for `npu-smi` command availability and output.
+   - Check for `torch_npu` Python package: `python3 -c "import torch_npu; print(torch_npu.__version__)"`.
+   - Check for Ascend-related device environment variables (`ASCEND_HOME_PATH`, `ASCEND_TOOLKIT_HOME`, `ASCEND_VISIBLE_DEVICES`).
+   - Check for NPU device nodes or Ascend driver presence.
 3. Detect CUDA signals from tools such as `nvidia-smi`, CUDA packages, or project instructions that clearly depend on CUDA.
 4. **CANN Toolchain Detection** (only if NPU is detected in step 2):
-   a. Check CANN version: `cat /usr/local/Ascend/ascend-toolkit/latest/.env` or `/usr/local/Ascend/ascend-toolkit/latest/ascend-toolkit/set_env.sh` version line.
-   b. Check AscendC compiler: run `which ccec` or check if `/usr/local/Ascend/ascend-toolkit/latest/compiler/ccec_compiler/` directory exists. Also check `/usr/local/Ascend/ascend-toolkit/latest/compiler/ascendc/` for SDK headers.
-   c. Check driver/firmware version: from `npu-smi info` output version line.
+   a. **Discover CANN toolkit root** first:
+      - Check environment variables `ASCEND_HOME_PATH` and `ASCEND_TOOLKIT_HOME`. If either is set and the directory exists, use it as the toolkit root.
+      - If neither is set, search for the toolkit root using `find ${ASCEND_SEARCH_ROOTS:-/usr/local /opt /home} -maxdepth 5 -name set_env.sh -path '*ascend*' 2>/dev/null | head -3`. For each candidate, run `dirname $(dirname $candidate)` to get the toolkit root.
+      - If still not found, try: `python3 -c "import torch_npu; print(torch_npu.__file__)"` and trace back to the toolkit installation.
+   b. **Check CANN version** from the discovered toolkit root:
+      - Look for a version file: `.env`, `version.cfg`, `version.info`, or `ascend_toolkit_install.info` in the toolkit root or its subdirectories.
+      - Alternatively, source the discovered `set_env.sh` and check the resulting environment variables (e.g. `ASCEND_VERSION`, `CANN_VERSION`).
+      - As a last resort, run `npu-smi info` and extract the CANN/driver version line.
+   c. **Check AscendC compiler**:
+      - Run `which ccec`. If found, AscendC is available.
+      - If not found, check the toolkit root's compiler subdirectory: look for `ccec` binary under `compiler/`, `compiler/ccec_compiler/`, or `compiler/bin/`.
+      - Also check for AscendC SDK headers: look for `ascendc/` or `include/ascendc/` under the toolkit root.
+   d. **Check driver/firmware version**: from `npu-smi info` output version line.
 5. Determine the active Python version from the system runtime.
 6. Prefer observable facts over assumptions. If evidence conflicts, explain the tie-break in brief working notes, but keep the final answer schema-only.
 
 ## Hard Rules
 - Stay inside `{project_dir}` and its direct environment context.
 - Read the README before returning a result.
+- **DO NOT hardcode or assume installation paths.** Use environment variables, `which`, `find`, `locate`, Python introspection, and standard system tools to discover everything at runtime.
 - Do not hallucinate hardware that you cannot verify.
 - If both NPU and CUDA signals exist, prefer `npu` only when Ascend/NPU evidence is directly observable on the host.
 - If CANN toolchain is NOT detected on an NPU host, set `cann_version` to `"not_found"` and `ascendc_available` to `false`.
@@ -52,6 +68,6 @@ Return exactly one JSON object with this shape:
 - `platform`: `npu` when Ascend/NPU is directly detected, otherwise `cuda`.
 - `npu_detected`: boolean based on direct environment evidence.
 - `python_version`: concrete interpreter version string.
-- `cann_version`: CANN toolkit version string (e.g. `"8.0.RC1"`). Set to `"not_found"` if NPU detected but CANN cannot be determined. Set to `"n/a"` if platform is cuda. This is a system-level toolchain version, NOT a Python package version.
-- `ascendc_available`: boolean — `true` if AscendC compiler (`ccec` command or SDK path at `/usr/local/Ascend/ascend-toolkit/latest/compiler/`) is present, `false` otherwise. This is critical for `operator_fixer` to know whether custom kernel compilation is possible.
+- `cann_version`: CANN toolkit version string (e.g. `"8.0.RC1"`). Set to `"not_found"` if NPU detected but CANN cannot be determined after discovery attempts. Set to `"n/a"` if platform is cuda. This is a system-level toolchain version, NOT a Python package version.
+- `ascendc_available`: boolean — `true` if AscendC compiler (`ccec` command or SDK headers) is available at the discovered toolkit root, `false` otherwise. This is critical for `operator_fixer` to know whether custom kernel compilation is possible.
 - `driver_version`: NPU driver/firmware version from `npu-smi info`. Set to `"not_found"` if not available.

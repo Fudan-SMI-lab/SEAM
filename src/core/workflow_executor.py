@@ -12,6 +12,7 @@ import inspect
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,6 +90,7 @@ from rule_strategies import create_migrator_resolved, resolve_rule_migration_str
 
 logger = logging.getLogger(__name__)
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
+_BASH_PATH: str = shutil.which("bash") or "/bin/bash"
 
 SUB_WORKFLOW_REPAIR_PHASE_IDS = {
     "fix_dependency",
@@ -2927,7 +2929,7 @@ class WorkflowExecutor:
             project_dir = str(context["PROJECT_DIR"])
         project_path = Path(project_dir)
         if project_path.is_dir():
-            ensure_opp_source_evidence(project_path)
+            ensure_opp_source_evidence(project_path, platform_policy=self.platform_policy)
         return validate_custom_op_opp_preflight(contract_map, project_dir, self.platform_policy)
 
     def _requires_custom_op_opp_preflight(self, contract: dict[str, object]) -> bool:
@@ -4361,7 +4363,7 @@ class WorkflowExecutor:
 
         if real_executable in shell_builtins:
             return "unsafe_run_command"
-        if real_executable in {"bash", "sh", "/bin/bash", "/bin/sh"} or real_executable.endswith(".sh"):
+        if real_executable in {"bash", "sh", "/bin/sh", _BASH_PATH} or real_executable.endswith(".sh"):
             return "unsafe_run_command"
         if real_executable in {"docker", "podman"}:
             return "unsafe_run_command"

@@ -418,7 +418,7 @@ opencode serve --hostname 127.0.0.1 --port 4098
 # V2 NPU 入口 — 已弃用，请改用 V3 + PPU workflow
 python -m tests.e2e.e2e_test_v2 \
   --server-url http://127.0.0.1:4098 \
-  --project-dir original_projects/04_Deepwave \
+  --project-dir original_projects/deepwave \
   --output-dir output_projects \
   --max-phase5-iter 5 \
   --keep-temp-dir
@@ -426,14 +426,14 @@ python -m tests.e2e.e2e_test_v2 \
 
 ```bash
 # V2 Shell launcher — 已弃用
-bash src/scripts/run_e2e_v2.sh 04_Deepwave \
+bash src/scripts/run_e2e_v2.sh deepwave \
   --dry-run \
   --server-url http://127.0.0.1:4098
 ```
 
 ```bash
 # V2 Dry-run — 已弃用
-bash src/scripts/run_e2e_v2.sh 04_Deepwave --dry-run --server-url http://127.0.0.1:4098
+bash src/scripts/run_e2e_v2.sh deepwave --dry-run --server-url http://127.0.0.1:4098
 ```
 
 > **注意**：以上不再是现行迁移方式。当前 V3 路由使用容器内 PPU 平台，不依赖 NPU/CANN/torch_npu 环境。

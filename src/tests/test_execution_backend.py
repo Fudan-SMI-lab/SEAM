@@ -19,6 +19,13 @@ from core.execution_backend import (
     LocalBackend,
     auto_select_backend,
     get_container_prompt_context,
+    _resolve_device_markers,
+    _discover_npu_devices,
+    _get_npu_devices_from_env,
+    _discover_npu_devices_via_glob,
+    _discover_npu_device_count_via_smi,
+    _AUTO_NPU_MARKER,
+    _NPU_DEVICE_CANDIDATES,
 )
 from core.workflow_executor import WorkflowExecutor
 from core.artifact_store import ArtifactStore
@@ -1838,3 +1845,226 @@ class TestAutoImageSelection:
         assert "None" not in call_ctx["candidate_images"]
         assert "good:1" in call_ctx["candidate_images"]
         assert "also-good:2" in call_ctx["candidate_images"]
+
+
+# ── NPU device auto-discovery ─────────────────────────────────────────
+
+
+class TestNpuDeviceAutoDiscovery:
+    """Unit tests for _discover_npu_devices and its helpers."""
+
+    def test_get_from_env_unset_returns_none(self, monkeypatch):
+        monkeypatch.delenv("SEAM_NPU_DEVICES", raising=False)
+        assert _get_npu_devices_from_env() is None
+
+    def test_get_from_env_set_returns_parsed_list(self, monkeypatch):
+        monkeypatch.setenv("SEAM_NPU_DEVICES", "/dev/davinci0,/dev/davinci1")
+        result = _get_npu_devices_from_env()
+        assert result == ["/dev/davinci0", "/dev/davinci1"]
+
+    def test_get_from_env_single_value(self, monkeypatch):
+        monkeypatch.setenv("SEAM_NPU_DEVICES", "/dev/davinci_manager")
+        result = _get_npu_devices_from_env()
+        assert result == ["/dev/davinci_manager"]
+
+    def test_get_from_env_whitespace_handling(self, monkeypatch):
+        monkeypatch.setenv("SEAM_NPU_DEVICES", " /dev/d0 ,  /dev/d1 ")
+        result = _get_npu_devices_from_env()
+        assert result == ["/dev/d0", "/dev/d1"]
+
+    def test_get_from_env_empty_string_returns_none(self, monkeypatch):
+        monkeypatch.setenv("SEAM_NPU_DEVICES", "")
+        assert _get_npu_devices_from_env() is None
+
+    @patch("pathlib.Path.exists", return_value=True)
+    @patch("core.execution_backend._glob_module.glob")
+    def test_glob_returns_found_devices(self, mock_glob, _mock_exists):
+        mock_glob.return_value = ["/dev/davinci_manager", "/dev/davinci0", "/dev/davinci1"]
+        result = _discover_npu_devices_via_glob()
+        assert result == sorted(["/dev/davinci_manager", "/dev/davinci0", "/dev/davinci1"])
+
+    @patch("core.execution_backend._glob_module.glob")
+    def test_glob_empty_falls_back_to_candidates(self, mock_glob):
+        mock_glob.return_value = []
+        result = _discover_npu_devices_via_glob()
+        assert result == _NPU_DEVICE_CANDIDATES
+
+    @patch("core.execution_backend._glob_module.glob")
+    def test_glob_oserror_falls_back_to_candidates(self, mock_glob):
+        mock_glob.side_effect = OSError("permission denied")
+        result = _discover_npu_devices_via_glob()
+        assert result == _NPU_DEVICE_CANDIDATES
+
+    @patch("subprocess.run")
+    def test_smi_returns_device_count(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="NPU ID: 0\nNPU ID: 1\nNPU ID: 2\n",
+            stderr="",
+        )
+        count = _discover_npu_device_count_via_smi()
+        assert count == 3
+
+    @patch("subprocess.run")
+    def test_smi_not_found_returns_zero(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("npu-smi not found")
+        count = _discover_npu_device_count_via_smi()
+        assert count == 0
+
+    @patch("subprocess.run")
+    def test_smi_nonzero_exit_returns_zero(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
+        count = _discover_npu_device_count_via_smi()
+        assert count == 0
+
+    @patch("subprocess.run", side_effect=subprocess.TimeoutExpired("npu-smi", 15))
+    def test_smi_timeout_returns_zero(self, _mock):
+        count = _discover_npu_device_count_via_smi()
+        assert count == 0
+
+    def test_discover_uses_env_first(self, monkeypatch):
+        monkeypatch.setenv("SEAM_NPU_DEVICES", "/dev/override_davinci")
+        result = _discover_npu_devices()
+        assert result == ["/dev/override_davinci"]
+
+    @patch("core.execution_backend._discover_npu_devices_via_glob")
+    def test_discover_falls_back_to_glob(self, mock_glob, monkeypatch):
+        monkeypatch.delenv("SEAM_NPU_DEVICES", raising=False)
+        mock_glob.return_value = ["/dev/davinci0", "/dev/davinci1"]
+        result = _discover_npu_devices()
+        assert result == ["/dev/davinci0", "/dev/davinci1"]
+
+    @patch("core.execution_backend._discover_npu_devices_via_glob")
+    def test_discover_falls_back_to_candidates_when_glob_empty(self, mock_glob, monkeypatch):
+        monkeypatch.delenv("SEAM_NPU_DEVICES", raising=False)
+        mock_glob.return_value = []
+        result = _discover_npu_devices()
+        assert result == _NPU_DEVICE_CANDIDATES
+
+
+class TestResolveDeviceMarkers:
+    """Unit tests for _resolve_device_markers."""
+
+    def test_empty_list_returns_empty(self):
+        assert _resolve_device_markers([]) == []
+
+    def test_passthrough_explicit_paths(self):
+        devices = ["/dev/nvidia0", "/dev/nvidiactl"]
+        result = _resolve_device_markers(devices)
+        assert result == ["/dev/nvidia0", "/dev/nvidiactl"]
+
+    @patch("core.execution_backend._discover_npu_devices")
+    def test_auto_npu_resolves(self, mock_discover):
+        mock_discover.return_value = ["/dev/davinci0", "/dev/davinci1"]
+        result = _resolve_device_markers(["auto:npu"])
+        assert result == ["/dev/davinci0", "/dev/davinci1"]
+
+    @patch("core.execution_backend._discover_npu_devices")
+    def test_auto_npu_with_mixed_devices(self, mock_discover):
+        mock_discover.return_value = ["/dev/davinci0"]
+        result = _resolve_device_markers(["/dev/kfd", "auto:npu", "/dev/dri"])
+        assert result == ["/dev/kfd", "/dev/davinci0", "/dev/dri"]
+
+    @patch("core.execution_backend._discover_npu_devices")
+    def test_multiple_auto_npu_expands_each(self, mock_discover):
+        mock_discover.return_value = ["/dev/davinci0"]
+        result = _resolve_device_markers(["auto:npu", "auto:npu"])
+        assert result == ["/dev/davinci0", "/dev/davinci0"]
+
+
+class TestContainerCreateWithAutoNpu:
+    """Integration: _do_create_container resolves auto:npu before passing --device."""
+
+    @patch("subprocess.run")
+    @patch("core.execution_backend._discover_npu_devices")
+    def test_create_expands_auto_npu(self, mock_discover, mock_run):
+        mock_discover.return_value = ["/dev/davinci0", "/dev/davinci_manager"]
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-npu\n", stderr="")
+
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest", "devices": ["auto:npu"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        cid = backend._ensure_container()
+
+        assert cid == "cid-npu"
+        create_cmd = mock_run.call_args[0][0]
+        # Verify --device flags appear for both discovered devices
+        assert "--device" in create_cmd
+        assert "/dev/davinci0" in create_cmd
+        assert "/dev/davinci_manager" in create_cmd
+
+    @patch("subprocess.run")
+    @patch("core.execution_backend._discover_npu_devices")
+    def test_create_expands_auto_npu_with_mixed_devices(self, mock_discover, mock_run):
+        mock_discover.return_value = ["/dev/davinci0"]
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-mixed\n", stderr="")
+
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest",
+             "devices": ["/dev/kfd", "auto:npu", "/dev/dri"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._ensure_container()
+
+        create_cmd = mock_run.call_args[0][0]
+        # All three device types must be present
+        assert "/dev/kfd" in create_cmd
+        assert "/dev/davinci0" in create_cmd
+        assert "/dev/dri" in create_cmd
+
+    @patch("subprocess.run")
+    def test_create_no_devices_still_works(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-nodev\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        cid = backend._ensure_container()
+        assert cid == "cid-nodev"
+
+
+class TestNpuWorkflowYamlDeviceAutoDiscovery:
+    """Verify the container YAML uses auto:npu and config survives round-trip."""
+
+    def test_yaml_devices_parsed_as_auto_npu(self, tmp_path: Path):
+        wf_path = tmp_path / "wf_npu.yaml"
+        wf_path.write_text(
+            "name: test\nversion: '1.0'\n"
+            "execution_backend:\n"
+            "  mode: container\n"
+            "  source: image\n"
+            "  image: ascendhub:24.03\n"
+            "  devices:\n"
+            "    - auto:npu\n"
+            "phases:\n"
+            "  - id: p1\n    name: P1\n    prompt_template: x\n    transitions:\n      on_success: complete\n"
+            "terminals: [complete]\n",
+            encoding="utf-8",
+        )
+        wf = load_workflow(str(wf_path))
+        assert wf.execution_backend is not None
+        assert wf.execution_backend.devices == ["auto:npu"]
+
+    def test_yaml_devices_with_auto_npu_and_explicit_mixed(self, tmp_path: Path):
+        wf_path = tmp_path / "wf_mixed_dev.yaml"
+        wf_path.write_text(
+            "name: test\nversion: '1.0'\n"
+            "execution_backend:\n"
+            "  mode: container\n"
+            "  source: image\n"
+            "  image: ascendhub:24.03\n"
+            "  devices:\n"
+            "    - auto:npu\n"
+            "    - /dev/dri/renderD128\n"
+            "phases:\n"
+            "  - id: p1\n    name: P1\n    prompt_template: x\n    transitions:\n      on_success: complete\n"
+            "terminals: [complete]\n",
+            encoding="utf-8",
+        )
+        wf = load_workflow(str(wf_path))
+        assert wf.execution_backend is not None
+        assert wf.execution_backend.devices == ["auto:npu", "/dev/dri/renderD128"]

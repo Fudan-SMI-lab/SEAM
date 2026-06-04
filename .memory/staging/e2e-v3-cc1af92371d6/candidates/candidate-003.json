@@ -1,0 +1,45 @@
+{
+  "candidate_id": "candidate-003",
+  "title": "CANN toolkit missing transitive Python dependencies in venv",
+  "problem_description": "The CANN toolkit (Ascend 8.1.RC1) install manifest does not declare its Python transitive dependencies. When Phase 2 creates a virtual environment with project deps + torch_npu, the tbe/te import probes fail because 7 standard Python packages (decorator, scipy, attrs, cloudpickle, ml-dtypes, tornado, absl-py) are missing. These are well-known packages in the Python ecosystem but CANN does not list them as install_requires and pip cannot auto-resolve them. The venv appears to have torch_npu installed correctly, but import check fails with ModuleNotFoundError for tbe/te internal imports.",
+  "rough_fix_approach": "After Phase 2 venv creation, run import probes for torch_npu, tbe, and te. If imports fail with ModuleNotFoundError, identify the missing packages from the stack trace and pip install them individually. The specific package list may vary by CANN version, but the diagnostic pattern (import probe \u2192 collect ModuleNotFoundError \u2192 pip install missing deps) is reusable.",
+  "artifact_evidence": [
+    "runtime/runtime_error_GLM-OCR_20260604_123846.md:lines 9-10",
+    "validated/phase_5_validation_canonical.json:lines 181-183",
+    "execution_journal.jsonl:line 7 (phase_5_validation 7885s includes dependency fixes)"
+  ],
+  "involved_code_files": [
+    {
+      "path": ".venv/lib/python3.10/site-packages/tbe/__init__.py",
+      "role": "CANN TBE (Tensor Boost Engine) Python package \u2014 import triggers cascade of transitive dependency imports that fail when packages are missing",
+      "line_range": [
+        1,
+        5
+      ]
+    },
+    {
+      "path": ".venv/lib/python3.10/site-packages/te/__init__.py",
+      "role": "CANN TE (Tiling Engine) Python package \u2014 similar import cascade",
+      "line_range": [
+        1,
+        5
+      ]
+    }
+  ],
+  "recommended_type": "rule",
+  "confidence": 0.55,
+  "priority": "medium",
+  "reasoning": "The specific list of 7 missing packages is CANN 8.1.RC1-specific and may differ across CANN versions. However, the diagnostic pattern \u2014 import probe failure on tbe/te revealing missing transitive deps \u2014 is reproducible across CANN versions because CANN's Python packaging consistently omits install_requires metadata. Confidence is moderate because a future CANN version might fix this packaging issue, making the fix obsolete, but the diagnostic approach (probe imports early, collect exactly which deps are missing) remains valuable.",
+  "tags": [
+    "cann-toolkit",
+    "ascend-npu",
+    "dependency-gap",
+    "tbe",
+    "te",
+    "venv"
+  ],
+  "category": "dependency_issue",
+  "subtype": "missing_transitive_deps",
+  "source_run_id": "e2e-v3-cc1af92371d6",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260604_123846"
+}

@@ -1,0 +1,8 @@
+name: sglang-npu-triton-stub-bridge-adaptor
+title: Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern
+description: Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern
+category: operator_incompat
+subtype: triton_kernel_stub
+target_roles: ["operator_fixer"]
+target_phases: ["phase_5_validation"]
+trigger_fingerprint: operator_incompat|triton_kernel_stub|ascend-npu|bridge-adaptor|fallback|sgl-kernel-npu|sglang|triton-kernel|207b3c992ed0

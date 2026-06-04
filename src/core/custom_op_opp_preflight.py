@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Mapping
 from pathlib import Path
@@ -442,15 +443,38 @@ def _should_skip(rel_path: str) -> bool:
     return any(part in _SKIP_DIR_NAMES for part in parts)
 
 
-_OPP_TEMPLATE_REL_PATH = "cuda-custom-op-to-npu-custom-op/templates/ascend_custom_op"
+_OPP_TEMPLATE_REL_PATH = os.environ.get(
+    "SEAM_OPP_TEMPLATE_REL_PATH",
+    "cuda-custom-op-to-npu-custom-op/templates/ascend_custom_op",
+)
 
 
-def ensure_opp_source_evidence(project_root: Path) -> bool:
-    """Scaffold OPP source evidence into project_root from .skills/ templates if missing."""
+def ensure_opp_source_evidence(
+    project_root: Path,
+    platform_policy: object | None = None,
+) -> bool:
+    """Scaffold OPP source evidence into project_root from .skills/ templates if missing.
+
+    Args:
+        project_root: Target project directory to scaffold evidence into.
+        platform_policy: ``PlatformPolicy`` for the active platform.
+            When ``None``, checks the ``SEAM_DEFAULT_POLICY_PRESET`` env var.
+            If that env var is set to a known preset name, that preset is used;
+            otherwise the ``generic_accelerator`` preset is used as default.
+    """
     from core.platform_policy import BUILTIN_PRESETS
 
-    platform_policy = BUILTIN_PRESETS["npu_ascend"]
-    existing = _scan_opp_evidence(project_root, platform_policy)
+    _default_preset = os.environ.get("SEAM_DEFAULT_POLICY_PRESET")
+    if platform_policy is not None:
+        policy = platform_policy
+    elif _default_preset:
+        policy = BUILTIN_PRESETS.get(_default_preset)
+        if policy is None:
+            # Unknown preset via env var: fall back to generic.
+            policy = BUILTIN_PRESETS["generic_accelerator"]
+    else:
+        policy = BUILTIN_PRESETS["generic_accelerator"]
+    existing = _scan_opp_evidence(project_root, policy)
     has_host = bool(existing["op_host_sources"])
     has_kernel = bool(existing["op_kernel_sources"])
     has_build = bool(existing["opp_build_scripts"])
@@ -479,7 +503,7 @@ def ensure_opp_source_evidence(project_root: Path) -> bool:
             except OSError:
                 pass
 
-    final = _scan_opp_evidence(project_root, platform_policy)
+    final = _scan_opp_evidence(project_root, policy)
     return bool(final["op_host_sources"]) and bool(final["op_kernel_sources"]) and bool(final["opp_build_scripts"])
 
 

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import cast
 
 # ── Recognized accelerator families ──────────────────────────────────────
 # Lowercase, underscore-normalized prefixes for packages that signal
-# a specific accelerator platform (NPU, PPU, XPU, CUDA, etc.).
+# a specific accelerator platform (PPU, XPU, CUDA, etc.).
+# Platform-specific prefixes (e.g. NPU) are injected via env var
+# SEAM_ACCELERATOR_PACKAGE_PREFIXES (comma-separated, defaults to
+# "torch_npu,torch_npu_" for backward compatibility).
 _ACCELERATOR_PREFIXES: list[str] = [
-    # Huawei Ascend NPU
-    "torch_npu",
-    "torch_npu_",
     # PPU and PPU ecosystem
     "torch_ppu",
     "ppukernel",
@@ -33,6 +34,16 @@ _ACCELERATOR_PREFIXES: list[str] = [
     "torch",
     "pytorch",
 ]
+
+# Inject platform-specific package prefixes from env var.
+_PREFIX_ENV = os.environ.get(
+    "SEAM_ACCELERATOR_PACKAGE_PREFIXES",
+    "torch_npu,torch_npu_",
+)
+for _pfx in _PREFIX_ENV.split(","):
+    _pfx_clean = _pfx.strip().lower()
+    if _pfx_clean and _pfx_clean not in _ACCELERATOR_PREFIXES:
+        _ACCELERATOR_PREFIXES.insert(0, _pfx_clean)
 
 
 def _normalize_name(raw: str) -> str:

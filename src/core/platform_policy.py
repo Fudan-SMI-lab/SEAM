@@ -7,6 +7,7 @@ external profile file is required.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -71,6 +72,42 @@ class CustomOpEvidenceConfig:
     performance_baseline_boolean_fields: list[str] = field(default_factory=lambda: ["cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked"])
     """Boolean fields that prove a baseline path was exercised."""
 
+    # -- File-level validation tweaks -----------------------------------------
+    validated_config_files: tuple[str, ...] = ()
+    """Canonical config file basenames that are expected/validated for this platform
+    (e.g. ``npu_supported_ops.json`` for NPU).  Used by custom-op final-gate
+    validators instead of hardcoded platform checks."""
+
+    skip_patterns: tuple[str, ...] = ()
+    """Substrings that cause a path/entry to be skipped during evidence scanning
+    (e.g. ``npuextension_only`` for NPU)."""
+
+
+@dataclass(frozen=True)
+class EnvValidationConfig:
+    """Per-platform environment-detection validation requirements.
+
+    Replaces hardcoded ``if platform_key == "npu"`` branches in
+    ``validate_env_detect.py`` with declarative per-preset config.
+    """
+
+    detection_field: str = ""
+    """Boolean field that proves the platform was detected (e.g. ``npu_detected``)."""
+
+    required_string_fields: tuple[str, ...] = ()
+    """String fields that MUST be non-empty for this platform
+    (e.g. ``cann_version``, ``driver_version`` for NPU)."""
+
+    required_bool_fields: tuple[str, ...] = ()
+    """Boolean fields that MUST be present and True-ish for this platform
+    (e.g. ``ascendc_available`` for NPU)."""
+
+    optional_string_fields: tuple[str, ...] = ()
+    """String fields that are optional but must be str when present."""
+
+    optional_bool_fields: tuple[str, ...] = ()
+    """Boolean fields that are optional but must be bool when present."""
+
 
 # -- Platform-agnostic serving check / obligation defaults -------------------
 _GENERIC_SERVING_REQUIRED_CHECKS = (
@@ -89,26 +126,6 @@ _GENERIC_SERVING_VALIDATION_OBLIGATIONS = (
     "accelerator_execution_evidence",
     "reject_import_only_or_smoke_only",
     "reject_forbidden_runtime_or_cpu_fallback",
-    "fresh_report_paths",
-    "route_framework_match",
-)
-
-_NPU_SERVING_REQUIRED_CHECKS = (
-    "project_demo_or_test_execution",
-    "serving_api_request_validation",
-    "readiness_probe_passed",
-    "npu_execution_evidence",
-    "no_cuda_fallback",
-    "no_cpu_fallback",
-    "fresh_serving_report",
-    "route_framework_match",
-)
-
-_NPU_SERVING_VALIDATION_OBLIGATIONS = (
-    "actual_project_demo_test_or_api_validation",
-    "npu_execution_evidence",
-    "reject_import_only_or_smoke_only",
-    "reject_cuda_or_cpu_fallback",
     "fresh_report_paths",
     "route_framework_match",
 )
@@ -143,6 +160,20 @@ class ServingRuntimePolicy:
     strip_env_prefixes: tuple[str, ...] = ()
     root_env_vars: tuple[str, ...] = ()
     root_candidates: tuple[str, ...] = ()
+    discovery_command: str = ""
+    """Shell command that discovers the runtime root directory at runtime.
+    
+    Executed inside the generated serving validation wrapper **only** when no
+    ``root_env_vars`` resolve to an existing path.  The command must output the
+    absolute toolkit root directory to stdout and exit 0 on success.
+    
+    Example for Ascend NPU::
+    
+         find ${ASCEND_SEARCH_ROOTS:-/usr/local /opt} -maxdepth 5 -name set_env.sh -path '*ascend*' \\
+             2>/dev/null | head -1 | xargs dirname | xargs dirname
+    """
+    discovery_timeout_seconds: float = 30.0
+    """Maximum wall-clock seconds allowed for ``discovery_command``."""
     env_vars_from_root: dict[str, str] = field(default_factory=dict)
     pythonpath_from_root: tuple[str, ...] = ()
     library_path_from_root: tuple[str, ...] = ()
@@ -173,6 +204,10 @@ class PlatformPolicy:
     )
 
     serving_runtime: ServingRuntimePolicy = field(default_factory=ServingRuntimePolicy)
+
+    env_validation: EnvValidationConfig = field(
+        default_factory=EnvValidationConfig
+    )
 
     # -- Rule migration strategy selection --
     default_rule_migration_strategy: str = "report_only"
@@ -271,6 +306,26 @@ _NPU_ASCEND_EVIDENCE = CustomOpEvidenceConfig(
     ),
     strict_producer_closure_required=True,
     preflight_project_evidence_required=True,
+    validated_config_files=(
+        "binary_info_config.json",
+        "aic-ascend*-ops-info.json",
+        "npu_supported_ops.json",
+    ),
+    skip_patterns=("npuextension_only",),
+)
+
+
+_NPU_ASCEND_ENV_VALIDATION = EnvValidationConfig(
+    detection_field="npu_detected",
+    required_string_fields=("cann_version", "driver_version"),
+    required_bool_fields=("ascendc_available",),
+)
+
+_PPU_CUDA_ENV_VALIDATION = EnvValidationConfig(
+    detection_field="ppu_detected",
+    required_bool_fields=("cuda_api_available",),
+    optional_string_fields=("cann_version", "driver_version"),
+    optional_bool_fields=("ascendc_available",),
 )
 
 
@@ -324,12 +379,17 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="npu_ascend",
         display_name="Ascend NPU",
         custom_op_evidence=_NPU_ASCEND_EVIDENCE,
+        env_validation=_NPU_ASCEND_ENV_VALIDATION,
         serving_runtime=ServingRuntimePolicy(
             backend="ascend",
             runtime_env_setup={
                 "source_candidates": [
-                    "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh",
-                    "/usr/local/Ascend/latest/set_env.sh",
+                    "$ASCEND_HOME_PATH (set_env.sh) if the env var is set and the directory exists",
+                    "$ASCEND_TOOLKIT_HOME (set_env.sh) if the env var is set and the directory exists",
+                    (
+                        "First match from: find ${ASCEND_SEARCH_ROOTS:-/usr/local /opt /home} -maxdepth 5 "
+                        "-name set_env.sh -path '*ascend*' 2>/dev/null"
+                    ),
                 ],
                 "pythonpath_requirements": ["tbe", "te", "torch_npu"],
                 "library_requirements": ["CANN runtime", "Ascend runtime libraries"],
@@ -369,20 +429,28 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             ),
             strip_env_prefixes=("CUDA", "NVIDIA", "NCCL"),
             root_env_vars=("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"),
-            root_candidates=(
-                "/usr/local/Ascend/ascend-toolkit/latest",
-                "/usr/local/Ascend/latest",
+            root_candidates=(),
+            discovery_command=(
+                "find ${ASCEND_SEARCH_ROOTS:-/usr/local /opt} -maxdepth 5 -name set_env.sh -path '*ascend*' "
+                "2>/dev/null | head -1 | xargs dirname | xargs dirname"
             ),
+            discovery_timeout_seconds=30.0,
             env_vars_from_root={"ASCEND_HOME_PATH": ".", "ASCEND_OPP_PATH": "opp"},
             pythonpath_from_root=(
                 "python/site-packages",
-                "opp/built-in/op_impl/ai_core/tbe",
+                os.environ.get(
+                    "SEAM_NPU_TBE_PYTHONPATH",
+                    "opp/built-in/op_impl/ai_core/tbe",
+                ),
             ),
             library_path_from_root=(
                 "lib64",
                 "runtime/lib64",
                 "compiler/lib64",
-                "opp/built-in/op_impl/ai_core/tbe/op_tiling/lib",
+                os.environ.get(
+                    "SEAM_NPU_TBE_LIBRARYPATH",
+                    "opp/built-in/op_impl/ai_core/tbe/op_tiling/lib",
+                ),
             ),
             path_from_root=("bin", "compiler/ccec_compiler/bin"),
             route_env_defaults={"vllm_serving": {"VLLM_TARGET_DEVICE": "npu"}},
@@ -394,8 +462,17 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             execution_evidence_field="npu_execution_evidence",
             execution_observed_field="npu_execution_observed",
             runtime_evidence_field="npu_runtime_evidence",
-            required_checks=_NPU_SERVING_REQUIRED_CHECKS,
-            validation_obligations=_NPU_SERVING_VALIDATION_OBLIGATIONS,
+            required_checks=(
+                "project_demo_or_test_execution",
+                "serving_api_request_validation",
+                "readiness_probe_passed",
+                "npu_execution_evidence",
+                "no_cuda_fallback",
+                "no_cpu_fallback",
+                "fresh_serving_report",
+                "route_framework_match",
+            ),
+            validation_obligations=_GENERIC_SERVING_VALIDATION_OBLIGATIONS,
         ),
         default_rule_migration_strategy="cuda_to_npu",
         guidance_prefix="Ascend NPU",
@@ -418,6 +495,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
     "ppu_cuda_compatible": PlatformPolicy(
         id="ppu_cuda_compatible",
         display_name="PPU (CUDA-Compatible)",
+        env_validation=_PPU_CUDA_ENV_VALIDATION,
         serving_runtime=ServingRuntimePolicy(backend="ppu"),
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["ppu", "cuda", "gpu", "torch_cuda"],

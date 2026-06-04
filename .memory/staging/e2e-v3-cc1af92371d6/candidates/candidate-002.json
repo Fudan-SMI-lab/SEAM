@@ -1,0 +1,38 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "SGLang NPU Triton kernel bridge-adaptor \u2014 disable broken stub with if False: fallback",
+  "problem_description": "sgl_kernel_npu.mem_cache.allocator.alloc_extend_kernel is a stub that returns a plain Python function instead of a real Triton kernel. When the sglang runtime tries to invoke it with Triton grid-launch syntax alloc_extend_kernel[(bs,)], the stub raises TypeError (plain function, not subscriptable). The real CUDA Triton kernel works, but the NPU Triton backend hasn't yet caught up. This is a recurring pattern: sgl_kernel_npu modules contain placeholder stubs for kernels that only have CUDA Triton implementations, and the runtime doesn't know to skip them.",
+  "rough_fix_approach": "Use the if False: bridge-adaptor pattern to permanently disable the broken kernel path while preserving the original code for future reference. The pure-Python alloc_extend_naive fallback already exists as the production path for num_new_pages >= 200, so this is extending a proven fallback to cover all cases. Add # NOTE(seam): comment documenting why the kernel is disabled and what error it would cause. This keeps the original code intact for when the NPU Triton backend matures.",
+  "artifact_evidence": [
+    "validated/phase_fix_dependency_canonical.json:lines 2-7",
+    "validated/phase_5_validation_canonical.json:lines 250-262",
+    "raw/phase_fix_dependency_attempt0.json:lines 2-7",
+    "serving_final_gate.json (FULL_PASS)"
+  ],
+  "involved_code_files": [
+    {
+      "path": ".venv/lib/python3.10/site-packages/sglang/srt/hardware_backend/npu/allocator_npu.py",
+      "role": "SGLang NPU hardware backend \u2014 page allocator that optionally uses sgl_kernel_npu Triton kernels for KV-cache memory management (control-plane, not compute)",
+      "line_range": [
+        54,
+        80
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.8,
+  "priority": "high",
+  "reasoning": "The sgl_kernel_npu stub-vs-real-kernel pattern is endemic across the sglang NPU backend. Any sgl_kernel_npu module that wraps a Triton kernel may be a stub on Ascend NPU because the NPU Triton backend lags CUDA Triton. The if False: bridge pattern is clean, reversible (the original code stays in the file for reference), and produces a clear NOTE(seam): comment for traceability. The pattern generalizes beyond allocators to any sgl_kernel_npu module where a pure-Python fallback exists. Verified working on Ascend 910B2C with CANN 8.1.RC1.",
+  "tags": [
+    "sglang",
+    "ascend-npu",
+    "triton-kernel",
+    "bridge-adaptor",
+    "sgl-kernel-npu",
+    "fallback"
+  ],
+  "category": "operator_incompat",
+  "subtype": "triton_kernel_stub",
+  "source_run_id": "e2e-v3-cc1af92371d6",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260604_123846"
+}

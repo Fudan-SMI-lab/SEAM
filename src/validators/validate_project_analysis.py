@@ -1,5 +1,6 @@
 """Validation for Phase 1 project analysis output."""
 
+import os
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -942,10 +943,17 @@ def _is_source_dtype_value(value: str) -> bool:
     return bool(re.fullmatch(r"(?:float|fp|int|uint|complex)(?:8|16|32|64|128)", value))
 
 
+_EXTRA_DEVICE_VALUES = frozenset(
+    v.strip().lower()
+    for v in os.environ.get("SEAM_EXTRA_DEVICE_VALUES", "npu,ascend,ascend_opp").split(",")
+    if v.strip()
+)
+
+
 def _is_source_device_value(value: str) -> bool:
-    if value in {"cpu", "cuda", "gpu", "npu", "xpu", "mlu", "mps", "hip", "rocm", "ascend", "ascend_opp"}:
+    if value in {"cpu", "cuda", "gpu", "xpu", "mlu", "mps", "hip", "rocm"} | _EXTRA_DEVICE_VALUES:
         return True
-    return bool(re.fullmatch(r"(?:cuda|gpu|npu|xpu|mlu|ascend|rocm)[_+-]?\d*", value))
+    return bool(re.fullmatch(r"(?:cuda|gpu|xpu|mlu|rocm)[_+-]?\d*", value))
 
 
 def _validate_expanded_variant_metadata(
@@ -1154,7 +1162,7 @@ def _validate_expanded_variant_target_closure_values(
             invalid_values = sorted(value for value in values if _is_non_target_axis_value(axis_name, value))
             if invalid_values:
                 errors.append(
-                    f"custom_op_surface.variant_axes.{axis_name} must describe target Ascend OPP/custom-op variants, not source/baseline/reference/loader values: "
+                    f"custom_op_surface.variant_axes.{axis_name} must describe target accelerator / custom-op variants, not source/baseline/reference/loader values: "
                     + ", ".join(invalid_values)
                 )
     if not variants:
@@ -1168,7 +1176,7 @@ def _validate_expanded_variant_target_closure_values(
         )
         if invalid_assignments:
             errors.append(
-                f"custom_op_surface.expanded_operator_variants[{index}].axis_values must describe target Ascend OPP/custom-op variants, not source/baseline/reference/loader values: "
+                f"custom_op_surface.expanded_operator_variants[{index}].axis_values must describe target accelerator / custom-op variants, not source/baseline/reference/loader values: "
                 + ", ".join(invalid_assignments)
             )
 

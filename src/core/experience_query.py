@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+from collections.abc import Iterable
+
 from core.experience_store import ExperienceStore
 
 logger = logging.getLogger(__name__)
@@ -20,33 +22,66 @@ _ATEN_ONLY_CUSTOM_OP_TERMS = frozenset({
     "privateuse1",
     "torch_utils_cpp_extension",
 })
+# Platform-agnostic default terms used when no policy is available.
+# Platform-specific terms are derived from PlatformPolicy.custom_op_evidence
+# via ExperienceQuerier.from_policy() and take precedence.
 _CONCRETE_NATIVE_CUSTOM_OP_TERMS = frozenset({
-    "aclrt",
-    "aclnn",
-    "acl_op",
-    "ascendc",
-    "cann",
-    "lascendcl",
-    "libascendcl",
-    "libacl",
     "op_host",
     "op_kernel",
-    "op_proto",
-    "msopgen",
-    "opp",
-    "aicore",
-    "aicpu",
-    "tikcpp",
-    "kernel_operator_h",
+    "custom_op",
+    "kernel",
+    "native_build",
 })
 
 
 class ExperienceQuerier:
 
-    def __init__(self, store: ExperienceStore, session_mgr) -> None:
+    def __init__(
+        self,
+        store: ExperienceStore,
+        session_mgr,
+        concrete_native_terms: frozenset[str] | None = None,
+    ) -> None:
         self.store = store
         self.session_mgr = session_mgr
         self._last_query_result: dict | None = None
+        self._concrete_native_terms = (
+            concrete_native_terms
+            if concrete_native_terms is not None
+            else _CONCRETE_NATIVE_CUSTOM_OP_TERMS
+        )
+
+    @classmethod
+    def from_policy(
+        cls,
+        store: ExperienceStore,
+        session_mgr,
+        policy: object | None = None,
+    ) -> "ExperienceQuerier":
+        """Create an ExperienceQuerier, deriving concrete-native terms from *policy*.
+
+        If *policy* (a PlatformPolicy) is None or lacks
+        custom_op_evidence, the platform-agnostic
+        _CONCRETE_NATIVE_CUSTOM_OP_TERMS is used.
+        """
+        concrete: frozenset[str] | None = None
+        if policy is not None:
+            try:
+                ev_cfg = getattr(policy, "custom_op_evidence", None)
+            except AttributeError:
+                ev_cfg = None
+            if ev_cfg is not None:
+                tokens: set[str] = set()
+                for attr in ("native_build_log_tokens", "native_source_tokens"):
+                    val = getattr(ev_cfg, attr, ())
+                    if isinstance(val, Iterable) and not isinstance(val, (str, bytes)):
+                        tokens.update(str(t) for t in val if isinstance(t, (str, bytes)))
+                concrete = frozenset(tokens) if tokens else None
+        return cls(
+            store=store,
+            session_mgr=session_mgr,
+            concrete_native_terms=concrete,
+        )
 
     def query(self, context: dict, load_full: bool = True) -> dict:
         index = self.store.read_index()
@@ -187,13 +222,19 @@ class ExperienceQuerier:
         )
         if values.intersection({"true", "1", "yes"}):
             return True
-        return "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only" in values
+        # Platform-agnostic: any "require_real_*" evidence policy string
+        # (e.g. require_real_ascend_…, require_real_ppu_…) triggers the
+        # native custom-op gate — regardless of which platform is active.
+        return any(
+            isinstance(v, str) and v.startswith("require_real_")
+            for v in values
+        )
 
     def _is_aten_only_custom_op_entry(self, entry: dict) -> bool:
         text = self._entry_filter_text(entry)
         if not any(term in text for term in _ATEN_ONLY_CUSTOM_OP_TERMS):
             return False
-        return not any(term in text for term in _CONCRETE_NATIVE_CUSTOM_OP_TERMS)
+        return not any(term in text for term in self._concrete_native_terms)
 
     @staticmethod
     def _entry_filter_text(entry: dict) -> str:

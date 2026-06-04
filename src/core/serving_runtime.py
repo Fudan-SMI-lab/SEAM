@@ -176,6 +176,8 @@ def _wrapper_runtime_config(route: str, runtime_policy: ServingRuntimePolicy) ->
         "strip_env_prefixes": list(runtime_policy.strip_env_prefixes),
         "root_env_vars": list(runtime_policy.root_env_vars),
         "root_candidates": list(runtime_policy.root_candidates),
+        "discovery_command": runtime_policy.discovery_command,
+        "discovery_timeout_seconds": runtime_policy.discovery_timeout_seconds,
         "env_vars_from_root": dict(runtime_policy.env_vars_from_root),
         "pythonpath_from_root": list(runtime_policy.pythonpath_from_root),
         "library_path_from_root": list(runtime_policy.library_path_from_root),
@@ -610,6 +612,20 @@ def build_serving_env(env: dict[str, str], backend: str) -> tuple[dict[str, str]
 
 def runtime_roots(env: dict[str, str]) -> list[Path]:
     candidates = [env.get(name) for name in cast(list[str], RUNTIME_CONFIG.get("root_env_vars", []))]
+
+    discovery_cmd = str(RUNTIME_CONFIG.get("discovery_command", ""))
+    if discovery_cmd:
+        timeout = float(RUNTIME_CONFIG.get("discovery_timeout_seconds", 30))
+        try:
+            result = subprocess.run(
+                discovery_cmd, shell=True, capture_output=True, text=True,
+                timeout=timeout,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                candidates.append(result.stdout.strip())
+        except Exception:
+            pass
+
     candidates.extend(cast(list[str], RUNTIME_CONFIG.get("root_candidates", [])))
     return [Path(value).expanduser() for value in candidates if value]
 

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
+import fnmatch
 import re
 from typing import cast
 
+from core.custom_op_variants import _OPP_HOST_DIRNAMES, _OPP_KERNEL_DIRNAMES
 from core.routes import is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 from core.platform_policy import (
@@ -25,6 +28,86 @@ from core.platform_policy import (
 
 PASS_STATES = {"PASS", "FULL_PASS", "DONE", "CLOSED_PASS"}
 EVIDENCE_PASS_STATES = PASS_STATES | {"PASSED", "SUCCESS", "OK", "VERIFIED"}
+
+_OPP_GENERATED_KERNEL_PATH_PATTERN = os.environ.get(
+    "SEAM_OPP_GENERATED_KERNEL_PATH_PATTERN",
+    "/op_impl/ai_core/tbe/kernel/",
+)
+_GENERATED_OPP_API_PREFIX = os.environ.get(
+    "SEAM_GENERATED_OPP_API_PREFIX", "aclnn_"
+)
+_OPP_TBE_CONFIG_PATH_PATTERN = os.environ.get(
+    "SEAM_OPP_TBE_CONFIG_PATH_PATTERN", "/tbe/config/"
+)
+_OPP_INFO_CFG_PATH_PATTERN = os.environ.get(
+    "SEAM_OPP_INFO_CFG_PATH_PATTERN", "/op_info_cfg/"
+)
+
+_SEAM_OPP_GENERATED_ARTIFACT_TOKENS = tuple(
+    t.strip() for t in os.environ.get(
+        "SEAM_OPP_GENERATED_ARTIFACT_TOKENS",
+        "/op_info/,op_info.json,/kernel_meta/,kernel_meta,/vendors/,/packages/,.run,.opp",
+    ).split(",") if t.strip()
+)
+"""Comma-separated tokens identifying generated OPP artifacts.
+Override via SEAM_OPP_GENERATED_ARTIFACT_TOKENS."""
+
+_SEAM_OPP_INVENTORY_PATH_TOKENS = tuple(
+    t.strip() for t in os.environ.get(
+        "SEAM_OPP_INVENTORY_PATH_TOKENS",
+        "/op_api/include/,/autogen/",
+    ).split(",") if t.strip()
+)
+"""Comma-separated path tokens identifying generated OPP inventory entries.
+Override via SEAM_OPP_INVENTORY_PATH_TOKENS."""
+
+_SEAM_OPP_CONFIG_CONTAINER_TOKENS = tuple(
+    t.strip() for t in os.environ.get(
+        "SEAM_OPP_CONFIG_CONTAINER_TOKENS",
+        "/kernel/config/,/op_proto/",
+    ).split(",") if t.strip()
+)
+"""Comma-separated path tokens identifying OPP config/container paths.
+Override via SEAM_OPP_CONFIG_CONTAINER_TOKENS."""
+
+_SEAM_OPP_ARTIFACT_CATEGORY_TOKENS = tuple(
+    t.strip() for t in os.environ.get(
+        "SEAM_OPP_ARTIFACT_CATEGORY_TOKENS",
+        "/autogen/,/generated/,/include/,/op_info/,/kernel_meta/",
+    ).split(",") if t.strip()
+)
+"""Comma-separated path tokens for generated OPP artifact category matching.
+Override via SEAM_OPP_ARTIFACT_CATEGORY_TOKENS."""
+
+_SEAM_OPP_BUILD_SCRIPT_NAMES = tuple(
+    t.strip() for t in os.environ.get(
+        "SEAM_OPP_BUILD_SCRIPT_NAMES",
+        "cmakelists.txt,build.sh,build_opp.sh,build_custom_op.sh",
+    ).split(",") if t.strip()
+)
+"""Comma-separated basenames identifying OPP build scripts.
+Override via SEAM_OPP_BUILD_SCRIPT_NAMES."""
+
+_SEAM_OPP_BUILD_SCRIPT_EXTENSIONS = tuple(
+    t.strip() for t in os.environ.get(
+        "SEAM_OPP_BUILD_SCRIPT_EXTENSIONS",
+        ".cmake,.sh",
+    ).split(",") if t.strip()
+)
+"""Comma-separated extensions identifying OPP build scripts.
+Override via SEAM_OPP_BUILD_SCRIPT_EXTENSIONS."""
+
+_SEAM_OPP_STRICT_BUILD_LOG_TOKENS = tuple(
+    t.strip() for t in os.environ.get(
+        "SEAM_OPP_STRICT_BUILD_LOG_TOKENS",
+        "cann,opp,msopgen,opc,tikcpp,ascendc,kernel_operator.h,-lascendcl",
+    ).split(",") if t.strip()
+)
+"""Comma-separated tokens used as fallback for strict OPP build-log detection.
+Override via SEAM_OPP_STRICT_BUILD_LOG_TOKENS."""
+
+"""Subpath pattern identifying platform-generated OPP kernel artifacts.
+Override via SEAM_OPP_GENERATED_KERNEL_PATH_PATTERN (e.g. ``/ppu_op/ppu_core/ppu_kernel/``)."""
 
 __all__ = ["validate_custom_op_final_gate", "_path_has_platform_artifact_signal"]
 
@@ -568,6 +651,7 @@ def validate_custom_op_final_gate(
                 closed_pass_entries,
                 resolved_project_root,
                 errors,
+                platform_policy,
             )
         if expanded_variant_units:
             _validate_expanded_variant_closure(
@@ -1268,8 +1352,9 @@ def _validate_generated_opp_inventory_closure(
     closed_pass_entries: int | None,
     project_root: Path | None,
     errors: list[str],
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
-    generated_units = _discover_generated_opp_units(project_root)
+    generated_units = _discover_generated_opp_units(project_root, platform_policy)
     if not generated_units:
         return
 
@@ -1346,18 +1431,18 @@ def _load_required_manifest_units(project_root: Path | None, errors: list[str]) 
     return units
 
 
-def _discover_generated_opp_units(project_root: Path | None) -> set[str]:
+def _discover_generated_opp_units(project_root: Path | None, platform_policy: PlatformPolicy | None = None) -> set[str]:
     if project_root is None:
         return set()
     units: set[str] = set()
-    for path in _generated_opp_scan_files(project_root):
+    for path in _generated_opp_scan_files(project_root, platform_policy):
         unit = _generated_opp_unit_from_path(path, project_root)
         if unit:
             units.add(unit)
     return units
 
 
-def _generated_opp_scan_files(project_root: Path) -> list[Path]:
+def _generated_opp_scan_files(project_root: Path, platform_policy: PlatformPolicy | None = None) -> list[Path]:
     candidates: list[Path] = []
     for path in project_root.rglob("*"):
         if not path.is_file():
@@ -1365,7 +1450,7 @@ def _generated_opp_scan_files(project_root: Path) -> list[Path]:
         relative = path.relative_to(project_root).as_posix().lower()
         if not _path_is_generated_opp_inventory_entry(relative):
             continue
-        if _generated_opp_path_is_config_or_container(relative):
+        if _generated_opp_path_is_config_or_container(relative, platform_policy):
             continue
         candidates.append(path)
     return candidates
@@ -1373,22 +1458,29 @@ def _generated_opp_scan_files(project_root: Path) -> list[Path]:
 
 def _path_is_generated_opp_inventory_entry(relative_path: str) -> bool:
     name = Path(relative_path).name
-    if relative_path.endswith(('.h', '.hpp')) and ("/op_api/include/" in relative_path or "/autogen/" in relative_path):
-        return name.startswith("aclnn_") or "op_proto" not in name
-    if relative_path.endswith(".o") and "/op_impl/ai_core/tbe/kernel/" in relative_path:
+    if relative_path.endswith(('.h', '.hpp')) and any(token in relative_path for token in _SEAM_OPP_INVENTORY_PATH_TOKENS):
+        return name.startswith(_GENERATED_OPP_API_PREFIX) or "op_proto" not in name
+    if relative_path.endswith(".o") and _OPP_GENERATED_KERNEL_PATH_PATTERN in relative_path:
         return True
-    if relative_path.endswith(".json") and "/op_impl/ai_core/tbe/kernel/" in relative_path:
+    if relative_path.endswith(".json") and _OPP_GENERATED_KERNEL_PATH_PATTERN in relative_path:
         return True
     return False
 
 
-def _generated_opp_path_is_config_or_container(relative_path: str) -> bool:
+def _generated_opp_path_is_config_or_container(relative_path: str, platform_policy: PlatformPolicy | None = None) -> bool:
     basename = Path(relative_path).name.lower()
-    if basename in {"binary_info_config.json", "aic-ascend910b-ops-info.json", "npu_supported_ops.json"}:
+    validated_configs: set[str] = {"binary_info_config.json", "aic-ascend*-ops-info.json", "npu_supported_ops.json"}
+    if platform_policy is not None and platform_policy.custom_op_evidence.validated_config_files:
+        validated_configs = set(platform_policy.custom_op_evidence.validated_config_files)
+    if basename in validated_configs:
         return True
-    if "/kernel/config/" in relative_path or "/tbe/config/" in relative_path or "/op_info_cfg/" in relative_path:
+    if any(fnmatch.fnmatch(basename, pattern) for pattern in validated_configs):
         return True
-    if "/op_proto/" in relative_path or basename == "op_proto.h":
+    if _OPP_TBE_CONFIG_PATH_PATTERN in relative_path or _OPP_INFO_CFG_PATH_PATTERN in relative_path:
+        return True
+    if any(token in relative_path for token in _SEAM_OPP_CONFIG_CONTAINER_TOKENS):
+        return True
+    if basename == "op_proto.h":
         return True
     return False
 
@@ -1400,10 +1492,10 @@ def _generated_opp_unit_from_path(path: Path, project_root: Path) -> str | None:
         return None
     basename = path.name
     lowered = relative.lower()
-    if basename.startswith("aclnn_") and basename.endswith((".h", ".hpp")):
+    if basename.startswith(_GENERATED_OPP_API_PREFIX) and basename.endswith((".h", ".hpp")):
         stem = basename.rsplit(".", 1)[0]
-        return _canonical_generated_opp_unit(stem.removeprefix("aclnn_"))
-    if path.suffix.lower() in {".o", ".json"} and "/op_impl/ai_core/tbe/kernel/" in f"/{lowered}":
+        return _canonical_generated_opp_unit(stem.removeprefix(_GENERATED_OPP_API_PREFIX))
+    if path.suffix.lower() in {".o", ".json"} and _OPP_GENERATED_KERNEL_PATH_PATTERN in f"/{lowered}":
         return _canonical_generated_opp_unit(_strip_generated_kernel_hash(path.stem))
     return None
 
@@ -1432,8 +1524,8 @@ def _canonical_generated_opp_tokens_from_value(value: object) -> set[str]:
         path_like = "/" in path or "\\" in path or Path(path).suffix
         if path_like and _is_safe_project_relative_path(path):
             basename = Path(path).name
-            if basename.startswith("aclnn_") and basename.endswith((".h", ".hpp")):
-                tokens.add(_canonical_generated_opp_unit(basename.rsplit(".", 1)[0].removeprefix("aclnn_")))
+            if basename.startswith(_GENERATED_OPP_API_PREFIX) and basename.endswith((".h", ".hpp")):
+                tokens.add(_canonical_generated_opp_unit(basename.rsplit(".", 1)[0].removeprefix(_GENERATED_OPP_API_PREFIX)))
             elif basename.endswith((".o", ".json")):
                 tokens.add(_canonical_generated_opp_unit(_strip_generated_kernel_hash(Path(basename).stem)))
             path_part = Path(path).parent.name
@@ -1466,7 +1558,7 @@ def _canonical_generated_opp_unit(value: str) -> str:
     snake = _camel_to_snake(raw).replace("-", "_").replace(".", "_")
     snake = re.sub(r"[^a-zA-Z0-9_]+", "_", snake).lower()
     snake = re.sub(r"_+", "_", snake).strip("_")
-    snake = snake.removeprefix("aclnn_")
+    snake = snake.removeprefix(_GENERATED_OPP_API_PREFIX)
     snake = re.sub(r"_(?:cuda|gpu|npu)$", "", snake)
     replacements = {
         "scalar_iso": "scalar",
@@ -2196,7 +2288,7 @@ def _validate_strict_native_producer_evidence(
             + "; a path that merely looks like /opp/ is not enough"
         )
 
-    if build_log_path is not None and not _build_log_is_strict_opp(build_log_text):
+    if build_log_path is not None and not _build_log_is_strict_opp(build_log_text, platform_policy):
         errors.append(
             f"rows[{index}].opp_custom_op_artifact_evidence.build_provenance.log_path must show a CANN/OPP build-install flow with op_host/op_kernel producer artifacts"
         )
@@ -2260,20 +2352,24 @@ def _path_candidates_from_value(value: object) -> list[str]:
 
 def _is_op_host_source_path(value: str) -> bool:
     normalized = value.strip().lower().replace("\\", "/")
-    return _is_safe_project_relative_path(value) and "/op_host/" in f"/{normalized}" and normalized.endswith((".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"))
+    padded = f"/{normalized}"
+    has_host_dir = any(f"/{d}/" in padded for d in _OPP_HOST_DIRNAMES)
+    return _is_safe_project_relative_path(value) and has_host_dir and normalized.endswith((".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"))
 
 
 def _is_op_kernel_source_path(value: str) -> bool:
     normalized = value.strip().lower().replace("\\", "/")
-    return _is_safe_project_relative_path(value) and "/op_kernel/" in f"/{normalized}" and normalized.endswith((".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"))
+    padded = f"/{normalized}"
+    has_kernel_dir = any(f"/{d}/" in padded for d in _OPP_KERNEL_DIRNAMES)
+    return _is_safe_project_relative_path(value) and has_kernel_dir and normalized.endswith((".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"))
 
 
 def _is_opp_build_script_path(value: str) -> bool:
     normalized = value.strip().lower().replace("\\", "/")
     basename = Path(normalized).name
     return _is_safe_project_relative_path(value) and (
-        basename in {"cmakelists.txt", "build.sh", "build_opp.sh", "build_custom_op.sh"}
-        or ("opp" in normalized and basename.endswith((".cmake", ".sh")))
+        basename in _SEAM_OPP_BUILD_SCRIPT_NAMES
+        or ("opp" in normalized and basename.endswith(_SEAM_OPP_BUILD_SCRIPT_EXTENSIONS))
     )
 
 
@@ -2281,19 +2377,7 @@ def _is_opp_generated_artifact_path(value: str) -> bool:
     normalized = value.strip().lower().replace("\\", "/")
     if not _is_safe_project_relative_path(value):
         return False
-    return any(
-        token in normalized
-        for token in (
-            "/op_info/",
-            "op_info.json",
-            "/kernel_meta/",
-            "kernel_meta",
-            "/vendors/",
-            "/packages/",
-            ".run",
-            ".opp",
-        )
-    )
+    return any(token in normalized for token in _SEAM_OPP_GENERATED_ARTIFACT_TOKENS)
 
 
 def _strict_opp_generated_artifacts(evidence: Mapping[object, object]) -> tuple[list[str], set[str]]:
@@ -2330,11 +2414,11 @@ def _generated_opp_artifact_category(field_name: str, value: str) -> str | None:
         "cann_package_artifacts",
     }:
         return "package" if _is_opp_generated_artifact_path(value) else None
-    if basename.endswith((".h", ".hpp")) and any(token in normalized for token in ("/autogen/", "/generated/", "/include/")):
+    if basename.endswith((".h", ".hpp")) and any(token in normalized for token in _SEAM_OPP_ARTIFACT_CATEGORY_TOKENS[:3]):
         return "generated_header"
-    if basename.endswith((".json", ".ini", ".yaml", ".yml")) and ("/op_info/" in normalized or "op_info" in basename):
+    if basename.endswith((".json", ".ini", ".yaml", ".yml")) and (_SEAM_OPP_ARTIFACT_CATEGORY_TOKENS[3] in normalized or "op_info" in basename):
         return "op_info"
-    if basename.endswith((".o", ".bin", ".json")) and ("/kernel_meta/" in normalized or "kernel_meta" in basename):
+    if basename.endswith((".o", ".bin", ".json")) and (_SEAM_OPP_ARTIFACT_CATEGORY_TOKENS[4] in normalized or "kernel_meta" in basename):
         return "kernel_meta"
     if _is_opp_generated_artifact_path(value):
         return "package"
@@ -2374,11 +2458,16 @@ def _has_install_provenance(evidence: Mapping[object, object]) -> bool:
     return False
 
 
-def _build_log_is_strict_opp(text: str) -> bool:
+def _build_log_is_strict_opp(text: str, platform_policy: PlatformPolicy | None = None) -> bool:
     normalized = text.lower()
     if not normalized.strip():
         return False
-    has_cann = any(token in normalized for token in ("cann", "opp", "msopgen", "opc", "tikcpp", "ascendc", "kernel_operator.h", "-lascendcl"))
+    native_tokens: tuple[str, ...] = _SEAM_OPP_STRICT_BUILD_LOG_TOKENS
+    if platform_policy is not None:
+        policy_tokens = get_native_build_log_tokens(platform_policy)
+        if policy_tokens:
+            native_tokens = tuple(policy_tokens)
+    has_cann = any(token in normalized for token in native_tokens)
     has_layout = "op_host" in normalized and "op_kernel" in normalized
     has_install = any(token in normalized for token in ("install", "vendors", "opp_path", "ascend_opp", "package", "deploy"))
     return has_cann and has_layout and has_install
@@ -2991,7 +3080,7 @@ def _has_baseline_proof(evidence: Mapping[object, object], platform_policy: Plat
     if _has_positive_boolean(evidence, tuple(boolean_fields)):
         return True
     baseline_devices = get_performance_baseline_device_values(platform_policy)
-    return _has_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"), baseline_devices)
+    return _has_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"), baseline_devices, platform_policy)
 
 
 def _has_target_device_custom_proof(
@@ -3007,6 +3096,7 @@ def _has_target_device_custom_proof(
             evidence,
             ("custom_device", "custom_backend", "target_device", "overall_custom_device"),
             target_device_values,
+            platform_policy,
         )
     target_device_values = set(get_target_device_values(platform_policy))
     positive_boolean_fields = get_positive_boolean_fields(platform_policy)
@@ -3016,10 +3106,11 @@ def _has_target_device_custom_proof(
         evidence,
         ("custom_device", "custom_backend", "target_device", "overall_custom_device"),
         target_device_values,
+        platform_policy,
     )
 
 
-def _has_device_value(evidence: Mapping[object, object], fields: tuple[str, ...], accepted: set[str]) -> bool:
+def _has_device_value(evidence: Mapping[object, object], fields: tuple[str, ...], accepted: set[str], platform_policy: PlatformPolicy | None = None) -> bool:
     for field_name in fields:
         value = evidence.get(field_name)
         if isinstance(value, str):
@@ -3029,7 +3120,11 @@ def _has_device_value(evidence: Mapping[object, object], fields: tuple[str, ...]
                     return True
                 if normalized.startswith((f"{accepted_value}:", f"{accepted_value}_")):
                     return True
-            if "ascend" in accepted and normalized.startswith("ascend"):
+            if platform_policy is not None and platform_policy.custom_op_evidence.target_device_values:
+                for prefix in platform_policy.custom_op_evidence.target_device_values:
+                    if normalized.startswith(f"{prefix}_") and prefix in accepted:
+                        return True
+            if any(normalized.startswith(accepted_value) for accepted_value in accepted):
                 return True
     return False
 

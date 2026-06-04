@@ -1,0 +1,46 @@
+---
+name: vllm-fused-moe-import-guard-ascend-npu
+description: Guard vLLM fused_moe CUDA extension imports for Ascend NPU startup
+tags: ["vllm", "fused-moe", "ascend-npu", "import-guard", "cuda-extension", "try-except-import", "platform-patching", "torch-npu"]
+category: operator_incompat
+subtype: cuda_extension_import_chain_on_npu
+confidence: 0.95
+occurrence_count: 1
+---
+
+# Guard vLLM fused_moe CUDA extension imports for Ascend NPU startup
+
+## When to Use
+- ImportError / ModuleNotFoundError from fused_moe_module C++ extension requiring CUDA-specific fused_topk symbol during vLLM server startup on Ascend NPU. The error occurs inside platform.pre_register_and_update() before any model is loaded, completely blocking vLLM initialization.
+
+## Root Cause
+vllm.model_executor.layers.fused_moe.__init__.py unconditionally imports fused_marlin_moe and fused_moe when HAS_TRITON is True. This triggers a multi-hop import chain: fused_marlin_moe.py → fused_moe.py → _custom_ops → fused_moe_module C++ extension. The compiled fused_moe_module contains CUDA-specific symbols (fused_topk) with no Ascend NPU equivalent, causing an ImportError that prevents vLLM from starting.
+
+## How to Use
+1. Locate the file vllm/model_executor/layers/fused_moe/__init__.py in the vLLM source tree.
+2. Find the block starting with 'if HAS_TRITON:' (near the bottom of the file) that imports fused_marlin_moe and fused_moe.
+3. Wrap the entire import block inside a try/except ImportError, so that all fused_moe-related imports and __all__ extensions are guarded.
+4. In the except ImportError clause, add a comment explaining that fused_marlin_moe/fused_moe rely on CUDA-specific compiled ops absent on Ascend NPU, and use 'pass' to silently skip.
+5. Verify that vllm_ascend's patch_module.py is present and pre-populates sys.modules['vllm.model_executor.layers.fused_moe.fused_moe'] with a dummy ModuleType to prevent downstream C++ symbol lookup errors.
+6. Start vLLM server on Ascend NPU and confirm: (a) import preflight passes without ImportError, (b) health probe returns OK, (c) API validation succeeds, (d) no CPU or CUDA fallback is detected.
+
+## Code Examples
+[
+  {
+    "file": "vllm/model_executor/layers/fused_moe/__init__.py",
+    "before": "if HAS_TRITON:\n    # import to register the custom ops\n    import vllm.model_executor.layers.fused_moe.fused_marlin_moe  # noqa\n    import vllm.model_executor.layers.fused_moe.fused_moe  # noqa\n    from vllm.model_executor.layers.fused_moe.fused_moe import (\n        fused_experts, fused_moe, fused_topk, get_config_file_name,\n        grouped_topk)\n\n    __all__ += [\n        \"fused_moe\",\n        \"fused_topk\",\n        \"fused_experts\",\n        \"get_config_file_name\",\n        \"grouped_topk\",\n    ]",
+    "after": "if HAS_TRITON:\n    # import to register the custom ops\n    try:\n        import vllm.model_executor.layers.fused_moe.fused_marlin_moe  # noqa\n        import vllm.model_executor.layers.fused_moe.fused_moe  # noqa\n        from vllm.model_executor.layers.fused_moe.fused_moe import (\n            fused_experts, fused_moe, fused_topk, get_config_file_name,\n            grouped_topk)\n\n        __all__ += [\n            \"fused_moe\",\n            \"fused_topk\",\n            \"fused_experts\",\n            \"get_config_file_name\",\n            \"grouped_topk\",\n        ]\n    except ImportError:\n        # fused_marlin_moe / fused_moe rely on CUDA-specific compiled\n        # ops (fused_moe_module) that are absent on Ascend NPU.\n        pass"
+  }
+]
+
+## Do Not
+- Do NOT attempt to compile or install fused_moe_module C++ extension on Ascend NPU — the CUDA-specific fused_topk symbol has no NPU equivalent.
+- Do NOT add CPU fallback inside the import guard — this is a platform-specific import skip, not a runtime fallback path.
+- Do NOT patch only the vllm_ascend quant_config.py side without also patching the vllm fused_moe __init__.py — both sides of the import chain must be guarded.
+- Do NOT remove the HAS_TRITON check — the fix is additive (add try/except), not a replacement of the triton guard.
+
+## References
+- https://github.com/vllm-project/vllm-ascend/blob/main/vllm_ascend/patch_module.py
+
+## Evidence
+- Source runs: e2e-v3-f24b20bd2a0b

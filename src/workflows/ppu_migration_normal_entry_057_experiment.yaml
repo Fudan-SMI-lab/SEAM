@@ -261,9 +261,10 @@ sub_workflows:
             --no-build-isolation 2>&1 | tail -20
 
           echo "[setup] Rebuilding deepwave with PPU CUDA support..."
-          export CUDA_TOOLKIT_ROOT_DIR=/usr/local/PPU_SDK/CUDA_SDK
-          export CMAKE_CUDA_COMPILER=/usr/local/PPU_SDK/CUDA_SDK/bin/nvcc
-          export CUDA_HOME=/usr/local/PPU_SDK/CUDA_SDK
+          export PPU_CUDA_SDK="${PPU_CUDA_TOOLKIT:-/usr/local/PPU_SDK/CUDA_SDK}"
+          export CUDA_TOOLKIT_ROOT_DIR="${PPU_CUDA_SDK}"
+          export CMAKE_CUDA_COMPILER="${PPU_CUDA_SDK}/bin/nvcc"
+          export CUDA_HOME="${PPU_CUDA_SDK}"
           python3 -m pip install /workspace \
             --no-build-isolation --force-reinstall --no-deps 2>&1 | tail -30
 

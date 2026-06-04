@@ -11,10 +11,71 @@ import re
 import shlex
 import sys
 from typing import cast
+import os
 
 from core.custom_op_source_discovery import discover_required_cuda_native_units_from_project
 from core.routes import SGLANG_SERVING, VLLM_SERVING
 
+
+# ---------------------------------------------------------------------------
+# Build-layout configuration (can be overridden via configure_opp_build_layout)
+# ---------------------------------------------------------------------------
+
+_ASCENDC_BUILD_SUBDIR = os.environ.get("SEAM_ASCENDC_BUILD_SUBDIR", "ascendc")
+"""Default subdirectory name under build_out/ for custom-op shared libraries."""
+
+_OPP_HOST_DIRNAMES: tuple[str, ...] = tuple(
+    d.strip() for d in os.environ.get("SEAM_OPP_HOST_DIRNAMES", "op_host").split(",") if d.strip()
+)
+"""Directory names to scan under the project root for OPP host-side evidence.
+Override via comma-separated SEAM_OPP_HOST_DIRNAMES (e.g. ``ppu_host,ppu_op``)."""
+
+_OPP_KERNEL_DIRNAMES: tuple[str, ...] = tuple(
+    d.strip() for d in os.environ.get("SEAM_OPP_KERNEL_DIRNAMES", "op_kernel").split(",") if d.strip()
+)
+"""Directory names to scan under the project root for OPP kernel-side evidence.
+Override via comma-separated SEAM_OPP_KERNEL_DIRNAMES (e.g. ``ppu_kernel``)."""
+
+
+def configure_opp_build_layout(
+    *,
+    build_subdir: str | None = None,
+    opp_host_dirnames: tuple[str, ...] | None = None,
+    opp_kernel_dirnames: tuple[str, ...] | None = None,
+) -> None:
+    """Override default build-layout names used for OPP evidence scanning.
+
+    Call this early (e.g. after resolving the active PlatformPolicy) so that
+    _artifact_evidence and _evidence_for use platform-correct paths.
+    Pass None to keep the current value.
+    """
+    global _ASCENDC_BUILD_SUBDIR, _OPP_HOST_DIRNAMES, _OPP_KERNEL_DIRNAMES
+    if build_subdir is not None:
+        _ASCENDC_BUILD_SUBDIR = build_subdir
+    if opp_host_dirnames is not None:
+        _OPP_HOST_DIRNAMES = opp_host_dirnames
+    if opp_kernel_dirnames is not None:
+        _OPP_KERNEL_DIRNAMES = opp_kernel_dirnames
+
+
+def configure_from_policy(policy: object) -> None:
+    """Extract build-layout config from a PlatformPolicy-like object.
+
+    Safe to call even if *policy* is None or lacks the expected attributes.
+    """
+    if policy is None:
+        return
+    try:
+        ev_cfg = getattr(policy, "custom_op_evidence", None)
+    except AttributeError:
+        ev_cfg = None
+    if ev_cfg is None:
+        return
+    configure_opp_build_layout(
+        build_subdir=getattr(ev_cfg, "build_subdir_name", None),
+        opp_host_dirnames=getattr(ev_cfg, "opp_host_dirnames", None),
+        opp_kernel_dirnames=getattr(ev_cfg, "opp_kernel_dirnames", None),
+    )
 
 PHASE1_REQUIRED_DISCOVERY_SOURCES = (
     "source",
@@ -2764,7 +2825,7 @@ def _evidence_for(report: object, unit: str, label: str) -> dict[str, object]:
             "loaded": True,
             "installed": True,
             "project_relative_path": "build_out/",
-            "path": "build_out/ascendc/libcust_opapi.so",
+            "path": f"build_out/{_ASCENDC_BUILD_SUBDIR}/libcust_opapi.so",
             "build_provenance": {{
                 "command": "bash build.sh",
                 "log_path": "build_out/build.log",
@@ -2772,7 +2833,7 @@ def _evidence_for(report: object, unit: str, label: str) -> dict[str, object]:
             "op_host": "op_host/op_template.cpp",
             "op_kernel": "op_kernel/op_template.cpp",
             "build_script": "build.sh",
-            "runtime_loaded_artifact": "build_out/ascendc/libcust_opapi.so",
+            "runtime_loaded_artifact": f"build_out/{_ASCENDC_BUILD_SUBDIR}/libcust_opapi.so",
             "op_info_path": "build_out/op_info.json",
             "kernel_meta_path": "kernel_meta/kernel_meta.json",
             "generated_header_path": "build_out/include/op_api.h",
@@ -2814,7 +2875,7 @@ def _evidence_for(report: object, unit: str, label: str) -> dict[str, object]:
         "performance evidence": {{
             "status": "FULL_PASS",
             "cpu_baseline": True,
-            "npu_custom": True,
+            "custom": True,
             "custom_op_route_executed": True,
             "same_run": True,
             "baseline_seconds": 0.001,
@@ -3066,10 +3127,16 @@ def _artifact_evidence(report: object, unit: str, missing: list[str]) -> dict[st
     evidence = dict(entry)
     project_root = Path(__file__).resolve().parent
 
-    op_host_found = _check_dir_with_source(project_root / "op_host")
-    op_kernel_found = _check_dir_with_source(project_root / "op_kernel")
+    opp_host_found = any(
+        _check_dir_with_source(project_root / d)
+        for d in _OPP_HOST_DIRNAMES
+    )
+    opp_kernel_found = any(
+        _check_dir_with_source(project_root / d)
+        for d in _OPP_KERNEL_DIRNAMES
+    )
 
-    is_real = bool(op_host_found or op_kernel_found)
+    is_real = bool(opp_host_found or opp_kernel_found)
     evidence["project_local"] = is_real
     evidence["in_project"] = is_real
     evidence["built"] = is_real
@@ -3079,7 +3146,10 @@ def _artifact_evidence(report: object, unit: str, missing: list[str]) -> dict[st
         evidence["status"] = "MISSING"
         evidence["missing"] = True
         if not evidence.get("detail"):
-            evidence["detail"] = f"no op_host/ or op_kernel/ found for {{unit}}"
+            evidence["detail"] = (
+                f"no {_OPP_HOST_DIRNAMES[0]}/ or {_OPP_KERNEL_DIRNAMES[0]}/ evidence found" +
+                (" (checked any of: " + ", ".join(_OPP_HOST_DIRNAMES + _OPP_KERNEL_DIRNAMES) + ")" if len(_OPP_HOST_DIRNAMES + _OPP_KERNEL_DIRNAMES) > 2 else "")
+            )
     else:
         evidence.setdefault("status", "PASS")
         evidence["verified"] = True

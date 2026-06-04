@@ -1,8 +1,0 @@
-name: npu-cann-driver-memory-kv-cache-oom-fix
-title: CANN Driver Memory Invisibility Causes vLLM KV Cache OOM on Ascend NPU
-description: CANN Driver Memory Invisibility Causes vLLM KV Cache OOM on Ascend NPU
-category: code_adaptation
-subtype: cann_driver_memory_invisible_kv_cache_oom
-target_roles: ["code_adapter", "fix_code"]
-target_phases: ["analyze_error", "fix_code"]
-trigger_fingerprint: AttributeError or NameError on MRotaryEmbedding.get_input_positions_tensor in vllm_ascend/worker/model_runner_v1.py:_init_mrope_positions, multimodal VLM (Qwen2-VL, Qwen2.5-VL, MinerU2.5-Pro) serving failure on Ascend NPU after vLLM upgrade to 0.11.2+, or traceback showing NPUModelRunner._init_mrope_positions calling a removed static method on MRotaryEmbedding.

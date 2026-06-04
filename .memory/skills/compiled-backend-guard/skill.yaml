@@ -1,8 +1,0 @@
-name: compiled-backend-guard
-title: MISSING_COMPILED_BACKEND Guard - Return None When Compiled Extensions Absent
-description: Early return None in get_backend_function() when compiled C/CUDA extensions are absent on NPU, allowing Python fallback dispatch
-category: code_adaptation
-subtype: missing_compiled_backend_early_return
-target_roles: ["code_adapter"]
-target_phases: ["phase_4_rule_migration", "phase_5_validation"]
-trigger_fingerprint: code_adaptation|missing_compiled_backend_guard|ascend-npu|backend-utils|compiled-extension|1b5d9273ae42

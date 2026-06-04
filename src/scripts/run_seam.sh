@@ -7,7 +7,7 @@
 #   ./run_e2e_v3.sh 01_Hallo
 #   ./run_e2e_v3.sh SEAM_PPU_SMOKE --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml --dry-run
 #   ./run_e2e_v3.sh 07_IndexTTS --max-iter 10
-#   ./run_e2e_v3.sh 04_Deepwave --server-port 5001 --max-iter 30
+#   ./run_e2e_v3.sh deepwave --server-port 5001 --max-iter 30
 #
 set -euo pipefail
 
@@ -85,7 +85,7 @@ Examples:
   ./run_e2e_v3.sh SEAM_PPU_SMOKE --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml
   ./run_e2e_v3.sh 05_InsectID --dry-run
   ./run_e2e_v3.sh 08_SpeechGPT-2.0-preview --review --verbose
-  ./run_e2e_v3.sh 04_Deepwave --server-port 5001 --max-iter 30 --output-dir output_projects
+  ./run_e2e_v3.sh deepwave --server-port 5001 --max-iter 30 --output-dir output_projects
 EOF
     exit 0
 }

@@ -266,7 +266,7 @@ def test_normalize_phase1_project_analysis_infers_deepwave_template_axes_without
 
 
 def test_normalize_phase1_project_analysis_infers_real_deepwave_240_inventory() -> None:
-    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "04_Deepwave"
+    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "deepwave"
     assert project_dir.is_dir()
     output: dict[str, object] = {}
 
@@ -284,7 +284,7 @@ def test_normalize_phase1_project_analysis_infers_real_deepwave_240_inventory() 
 
 
 def test_normalize_phase1_project_analysis_detects_real_pointnet2_custom_ops() -> None:
-    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "pointnet2_ops"
+    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "Pointnet2_PyTorch"
     assert project_dir.is_dir()
     output: dict[str, object] = {"migration_route": "ordinary_cuda"}
 
@@ -310,7 +310,7 @@ def test_normalize_phase1_project_analysis_detects_real_pointnet2_custom_ops() -
 
 
 def test_source_backed_custom_op_route_overrides_serving_guess() -> None:
-    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "pointnet2_ops"
+    project_dir = PROJECT_ROOT.parent / "cuda_projects" / "Pointnet2_PyTorch"
     output: dict[str, object] = {"migration_route": "sglang_serving"}
 
     normalize_phase1_project_analysis(output, project_dir=str(project_dir))
@@ -878,6 +878,11 @@ def _write_complete_generic_custom_op_reports(project_dir: Path, units: list[str
     _write_json(reports_dir / "evidence_validation.json", {"entries": [_route_and_parity_entry(unit) for unit in units]})
     _write_json(reports_dir / "runtime_coverage.json", {"entries": [_runtime_entry(unit) for unit in units]})
     _write_json(reports_dir / "performance.json", _performance_report(units))
+    # The generated validation script declares build_provenance.log_path = "build_out/build.log"
+    # which the validator checks for existence and native build evidence tokens.
+    _build_out_dir = project_dir / "build_out"
+    _build_out_dir.mkdir(parents=True, exist_ok=True)
+    (_build_out_dir / "build.log").write_text("g++ -shared -fPIC -o build/custom_op/lib/*.so\n", encoding="utf-8")
 
 
 def _source_inventory_entry(project_dir: Path, unit: str) -> dict[str, object]:

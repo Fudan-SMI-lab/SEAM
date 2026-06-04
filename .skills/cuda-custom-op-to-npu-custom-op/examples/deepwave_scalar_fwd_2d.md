@@ -130,14 +130,14 @@ context->SetBlockDim(blockDim);
 # op_host/scalar_fwd_2d.cpp: AddConfig("ascend910b")
 
 cd custom_op_scalar_fwd_2d
-rm -rf /root/.ascendc/kernel_cache/*   # this case cleared compiler cache
+rm -rf ${HOME}/.ascendc/kernel_cache/*   # this case cleared compiler cache
 rm -rf build_out/*
-source /usr/local/Ascend/cann-8.5.0/set_env.sh
+source ${ASCEND_HOME_PATH}/set_env.sh
 bash build.sh
 
 cd build_out
 bash custom_opp_ubuntu_x86_64.run \
-  --install-path=/usr/local/Ascend/cann-8.5.0 --nox11 --quiet
+  --install-path=${ASCEND_HOME_PATH} --nox11 --quiet
 ```
 
 This case recorded the `.o` file and hash after rebuilds:
@@ -347,7 +347,7 @@ needed synchronization before the output tensor was read in this binding.
 clearing `build_out/`, the compiler reuses the cached `.o` if the source hash matches.
 This means code changes appear to have no effect.
 
-**Solution**: This migration cleared `/root/.ascendc/kernel_cache/*` before rebuilding.
+**Solution**: This migration cleared `${HOME}/.ascendc/kernel_cache/*` before rebuilding.
 
 ### 9. Same-process kernel cache causes shape interference
 
@@ -406,14 +406,14 @@ shapes in the same Python process means the second shape executes the first shap
 ## Lessons for Future Migrations
 
 - **Verify API names against CANN headers before writing code.** The SDK in this case was at
-  `/usr/local/Ascend/cann-8.5.0/`. A quick `grep -r "FunctionName" /usr/local/Ascend/cann-8.5.0/include/`
+  `${ASCEND_HOME_PATH}`. A quick `grep -r "FunctionName" ${ASCEND_HOME_PATH}/include/`
   saves hours of debugging hallucinated APIs.
 
 - **SoC target consistency mattered.** A wrong `ASCEND_COMPUTE_UNIT` in `CMakePresets.json`
   produces a kernel that compiles cleanly but crashes at runtime with a cryptic Vector Core
   Exception. Check `npu-smi info` and match the SoC name exactly.
 
-- **Kernel compiler cache affected rebuilds.** `rm -rf /root/.ascendc/kernel_cache/*`
+- **Kernel compiler cache affected rebuilds.** `rm -rf ${HOME}/.ascendc/kernel_cache/*`
   helped avoid stale binaries in this case. Without it, source changes appeared to have no effect.
 
 - **Use `GetValue`/`SetValue` for scalar element access in Ascend C.** `LocalTensor::operator[]`

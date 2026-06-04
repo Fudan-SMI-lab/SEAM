@@ -1,0 +1,7 @@
+[
+  {
+    "file": "demo_gradio.py",
+    "before": "parser = argparse.ArgumentParser()\nparser.add_argument('--model_path', type=str, default='ckpt/')\nargs = parser.parse_args()\n# ... later in main ...\ndemo = gr.Blocks()\n# ... UI component construction ...\ndemo.launch()",
+    "after": "parser = argparse.ArgumentParser()\nparser.add_argument('--headless', action='store_true', help='Run headless NPU validation without launching the web UI')\nparser.add_argument('--model_path', type=str, default='ckpt/')\nargs = parser.parse_args()\n\n# Auto-fallback: if checkpoint directory is missing, force headless mode\nif not os.path.isdir(args.model_path):\n    print(f'Warning: Model path \"{args.model_path}\" not found. Running headless validation.')\n    args.headless = True\n\nif args.headless:\n    # Headless NPU validation block\n    print(f'NPU devices available: {torch_npu.npu.device_count()}')\n    x = torch.randn(2, 3).npu()\n    print(f'NPU tensor creation OK: shape={x.shape}')\n    # Validate core project imports\n    from mimo_qwen2_grouped import *\n    from Codec.models.codec import Generator as SpeechGPT2Tokenizer\n    print('All core imports validated successfully.')\n    sys.exit(0)\n\n# Only reached if headless=False AND checkpoint exists\ndemo = gr.Blocks()\n# ... UI component construction ...\ndemo.launch()"
+  }
+]

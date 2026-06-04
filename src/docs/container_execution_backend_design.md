@@ -106,7 +106,7 @@ execution_backend:
     - "${PROJECT_DIR}:/workspace"
   env_vars:
     ASCEND_VISIBLE_DEVICES: "0"
-    LD_LIBRARY_PATH: "/usr/local/Ascend/driver/lib64"
+    LD_LIBRARY_PATH: "${ASCEND_HOME_PATH}/${ASCEND_DRIVER_LIB:-driver/lib64}"
 ```
 
 #### 3.2.2 `source: existing_container`（使用已存在的运行中容器）
@@ -158,7 +158,7 @@ execution_backend:
   mode: container              # local | container | auto
   source: image                # image | existing_container；未指定时默认 image
   runtime: docker              # docker | podman
-  image: "ascendhub:24.03-pytorch"
+  image: "${ASCEND_CONTAINER_IMAGE:-ascendhub:24.03-pytorch}"
   container_name_prefix: "seam-migration"
   devices:                     # 硬件设备直通
     - /dev/davinci_manager
@@ -169,7 +169,7 @@ execution_backend:
   container_workdir: "/workspace"   # 容器内工作目录，推荐固定路径
   env_vars:                    # 容器内环境变量
     ASCEND_VISIBLE_DEVICES: "0"
-    LD_LIBRARY_PATH: "/usr/local/Ascend/driver/lib64"
+    LD_LIBRARY_PATH: "${ASCEND_HOME_PATH}/${ASCEND_DRIVER_LIB:-driver/lib64}"
   network_mode: host           # 网络模式
   runtime_flags:               # docker/podman 原始标志
     - "--cap-add=SYS_PTRACE"
@@ -501,11 +501,11 @@ docker run -d \
   -v /host/output_projects/project_12345:/output_projects/project_12345 \
   -v /data/models:/data/models:ro \
   -e ASCEND_VISIBLE_DEVICES=0 \
-  -e LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64 \
+  -e LD_LIBRARY_PATH="$ASCEND_HOME_PATH/${ASCEND_DRIVER_LIB:-driver/lib64}" \
   --network host \
   --cap-add=SYS_PTRACE \
   --log-driver=json-file --log-opt max-size=50m \
-  ascendhub:24.03-pytorch \
+  ${ASCEND_CONTAINER_IMAGE:-ascendhub:24.03-pytorch} \
   tail -f /dev/null
 ```
 
@@ -786,7 +786,7 @@ devices:
 
 | 硬件 | 基础镜像示例 | 关键环境变量 |
 |------|-------------|-------------|
-| NPU | `ascendhub:24.03-pytorch` | `ASCEND_VISIBLE_DEVICES`, `LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64` |
+| NPU | `${ASCEND_CONTAINER_IMAGE:-ascendhub:24.03-pytorch}` | `ASCEND_VISIBLE_DEVICES`, `LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/${ASCEND_DRIVER_LIB:-driver/lib64}` |
 | PPU | 待定 | 待定 |
 | GPU | `nvcr.io/nvidia/pytorch:24.05-py3` | `NVIDIA_VISIBLE_DEVICES` |
 
@@ -1115,7 +1115,7 @@ execution_backend:
   mode: container
   source: image                # 从镜像创建新容器
   runtime: docker
-  image: "ascendhub:24.03-pytorch"
+  image: "${ASCEND_CONTAINER_IMAGE:-ascendhub:24.03-pytorch}"
   container_name_prefix: "seam-npu"
   container_workdir: "/workspace"
   devices:
@@ -1126,7 +1126,7 @@ execution_backend:
     - "/data/models:/data/models:ro"
   env_vars:
     ASCEND_VISIBLE_DEVICES: "0"
-    LD_LIBRARY_PATH: "/usr/local/Ascend/driver/lib64"
+    LD_LIBRARY_PATH: "${ASCEND_HOME_PATH}/${ASCEND_DRIVER_LIB:-driver/lib64}"
   network_mode: host
   timeout: 7200
   cleanup: true
@@ -1222,7 +1222,7 @@ description: "CUDA to Ascend NPU migration with auto-detected execution backend"
 execution_backend:
   mode: auto
   runtime: docker
-  image: "ascendhub:24.03-pytorch"
+  image: "${ASCEND_CONTAINER_IMAGE:-ascendhub:24.03-pytorch}"
   # mode=auto 时，框架自动探测是否满足容器条件
   # 如果不满足，回退到 local
 

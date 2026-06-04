@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -42,6 +43,9 @@ from validators.validate_validation_final import (
 JsonDict = dict[str, object]
 ConfigDict = dict[str, object]
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
+
+# Resolve bash at runtime. On Alpine/Toybox the shell may not be /bin/bash.
+_BASH_PATH: str = shutil.which("bash") or "/bin/bash"
 
 
 class _ClassificationRequiredDict(TypedDict):
@@ -848,7 +852,7 @@ class RepairLoopEngine:
                                     stderr=stderr_handle,
                                     cwd=current_script_cwd,
                                     shell=True,
-                                    executable="/bin/bash",
+                                    executable=_BASH_PATH,
                                     timeout=entry_script_timeout,
                                     env=run_env,
                                 )
@@ -1527,12 +1531,12 @@ class RepairLoopEngine:
         shell_controls = {"&&", "||", ";", "|"}
         use_shell = len(cmd_argv) > 0 and (
             ".sh" in cmd_argv[0]
-            or cmd_argv[0] in ("bash", "sh", "/bin/bash", "/bin/sh")
+            or cmd_argv[0] in ("bash", "sh", "/bin/sh", _BASH_PATH)
             or cmd_argv[0] in shell_builtins
             or any(tok in shell_controls for tok in cmd_argv)
         )
         if use_shell and cmd_argv and cmd_argv[0] == "bash":
-            cmd_argv = ["/bin/bash"] + cmd_argv[1:]
+            cmd_argv = [_BASH_PATH] + cmd_argv[1:]
         return script_cwd, env_vars, cmd_argv, use_shell
 
     def _maybe_apply_entry_script_action(
@@ -1613,7 +1617,7 @@ class RepairLoopEngine:
         shell_controls = {"&&", "||", ";", "|", "`", "$()", ">", "<"}
         if tokens[0] in shell_builtins or any(token in shell_controls for token in tokens):
             return "unsafe_run_command"
-        if tokens[0] in {"bash", "sh", "/bin/bash", "/bin/sh"} or tokens[0].endswith(".sh"):
+        if tokens[0] in {"bash", "sh", "/bin/sh", _BASH_PATH} or tokens[0].endswith(".sh"):
             return "unsafe_run_command"
         updated_contract = dict(active_contract)
         updated_contract["run_command"] = run_command

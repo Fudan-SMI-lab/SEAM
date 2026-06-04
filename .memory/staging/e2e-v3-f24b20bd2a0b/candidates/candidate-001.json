@@ -1,0 +1,49 @@
+{
+  "candidate_id": "candidate-001",
+  "title": "vLLM fused_moe CUDA Extension Import Guard for Ascend NPU",
+  "problem_description": "When vLLM starts on Ascend NPU, the module vllm.model_executor.layers.fused_moe.__init__.py unconditionally imports fused_marlin_moe and fused_moe when HAS_TRITON is True. This triggers a multi-hop import chain: fused_marlin_moe.py \u2192 fused_moe.py \u2192 _custom_ops \u2192 fused_moe_module C++ extension. The compiled fused_moe_module requires the CUDA-specific fused_topk symbol, which does not exist on Ascend NPU. This import failure occurs during platform.pre_register_and_update() at server startup and completely blocks vLLM initialization, preventing model serving. Without this fix, vLLM cannot start on Ascend NPU regardless of the target project.",
+  "rough_fix_approach": "In vllm/model_executor/layers/fused_moe/__init__.py, identify the block guarded by 'if HAS_TRITON:' that imports fused_marlin_moe and fused_moe, and wrap those import statements inside try/except ImportError blocks so they silently skip on Ascend NPU while remaining available on CUDA. This must coordinate with vllm_ascend's patch_module.py which pre-populates sys.modules with a dummy fused_moe_module to prevent raw C++ symbol lookup errors at a lower level. Verify by checking that vLLM server starts, health probe passes, API validation succeeds, and no CPU/CUDA fallback is detected.",
+  "artifact_evidence": [
+    "raw/phase_fix_operator_attempt0.json",
+    "raw/phase_analyze_error_attempt0.json",
+    "validated/phase_5_validation_canonical.json",
+    "raw/phase_5_validation_attempt0.json:lines 55-71",
+    "execution_journal.jsonl:lines 7-8 (Phase 5 duration 1851s, 3 iterations)",
+    "migration_reports/serving/serving_final_gate.json:lines 5,120-128 (FULL_PASS, health_probe_passed=true, api_validation_passed=true, cpu_fallback_detected=false, cuda_fallback_detected=false)"
+  ],
+  "involved_code_files": [
+    {
+      "path": "/vllm-workspace/vllm/vllm/model_executor/layers/fused_moe/__init__.py",
+      "role": "vLLM framework \u2014 fused_moe module init that unconditionally imports CUDA-specific C++ extensions (fused_marlin_moe, fused_moe) when HAS_TRITON is True, triggering fused_moe_module C++ extension load needing CUDA fused_topk symbol",
+      "line_range": [
+        35,
+        51
+      ]
+    },
+    {
+      "path": "/vllm-workspace/vllm-ascend/vllm_ascend/patch_module.py",
+      "role": "vLLM Ascend plugin \u2014 pre-existing mechanism that pre-populates sys.modules with a dummy fused_moe_module to prevent low-level C++ symbol lookup errors; collaborates with the import guard fix",
+      "line_range": [
+        1,
+        50
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.85,
+  "priority": "high",
+  "reasoning": "This is a generic vLLM+Ascend NPU platform incompatibility, not specific to MinerU. Any project that uses vLLM on Ascend NPU and triggers the fused_moe import chain will encounter this failure. The fix is NPU-native (no CPU fallback), verified end-to-end (FULL_PASS gate, health probe, API validation), actionable as a step-by-step procedure, and non-trivial (requires understanding the multi-hop import chain and coordinating with vllm_ascend's patch_module.py dummy-module mechanism). Confidence is 0.85 rather than 1.0 because the exact lines affected may vary across vLLM versions and the conjunction with patch_module.py is version-dependent.",
+  "tags": [
+    "vllm",
+    "fused-moe",
+    "ascend-npu",
+    "import-guard",
+    "cuda-extension",
+    "try-except-import",
+    "platform-patching"
+  ],
+  "category": "operator_incompat",
+  "subtype": "cuda_extension_import_chain_on_npu",
+  "source_run_id": "e2e-v3-f24b20bd2a0b",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/MinerU_20260604_123844"
+}

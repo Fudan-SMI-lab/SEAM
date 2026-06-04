@@ -1,27 +1,30 @@
 {
-  "counts": {
-    "by_status": {
-      "local": 1,
-      "promoted": 11
+  "version": "2.0",
+  "updated_at": "2026-06-04T14:21:00.000000+00:00",
+  "skill_count": 2,
+  "total_experiences": 2,
+  "skills": [
+    {
+      "name": "headless-ui-gating-checkpoint-fallback",
+      "title": "Headless UI Gating with Checkpoint-Absent Auto-Fallback for Interactive Entry Scripts",
+      "category": "code_adaptation",
+      "subtype": "interactive_ui_headless_gating",
+      "confidence": 0.75,
+      "source_run_id": "e2e-v3-be9f843e86a0",
+      "promoted_at": "2026-06-04T14:21:00.000000+00:00"
     },
-    "by_type": {
-      "skill": 11,
-      "skill-pack": 1
-    },
-    "total": 12
-  },
-  "schema_version": 1,
-  "storage_roots": {
-    "archive": ".memory/archive",
-    "cases": ".memory/cases",
-    "catalog": ".memory/index/experiences.jsonl",
-    "legacy_index": ".memory/index/cases.jsonl",
-    "local_skills": ".skills",
-    "memory": ".memory",
-    "promotions": ".memory/promotions",
-    "quarantine": ".memory/quarantine",
-    "skills": ".memory/skills",
-    "staging": ".memory/staging"
-  },
-  "updated_at": "2026-06-03T01:49:57.207603+00:00"
+    {
+      "name": "vllm-fused-moe-import-guard-ascend-npu",
+      "title": "Guard vLLM fused_moe CUDA extension imports for Ascend NPU startup",
+      "category": "operator_incompat",
+      "subtype": "cuda_extension_import_chain_on_npu",
+      "confidence": 0.95,
+      "source_run_id": "e2e-v3-f24b20bd2a0b",
+      "promoted_at": "2026-06-04T14:21:00.000000+00:00"
+    }
+  ],
+  "staging_runs": [
+    "e2e-v3-be9f843e86a0",
+    "e2e-v3-f24b20bd2a0b"
+  ]
 }

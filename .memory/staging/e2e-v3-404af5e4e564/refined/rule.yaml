@@ -1,7 +1,0 @@
-title: Pin NumPy <2.0.0 before torch-npu installation for CANN 8.x compatibility
-pattern: numpy[\s><=!~]*2[\d.]*
-replacement: numpy<2.0.0
-file_patterns: ["requirements*.txt", "*.txt", "setup.cfg", "pyproject.toml"]
-target_roles: ["code_adapter"]
-target_phases: ["phase_4_rule_migration"]
-trigger_fingerprint: config_error|sglang_npu_launch_flags_missing|ascend-npu|cuda-graph-disable|launch-flags|server-warmup-skip|sglang-serving|ea1aa51548b1

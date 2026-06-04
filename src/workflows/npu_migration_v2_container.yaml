@@ -37,14 +37,17 @@ execution_backend:
   runtime: docker                  # docker | podman
 
   # Required when source=image:
-  image: "ascendhub:24.03-pytorch" # example Ascend PyTorch image; override for production
+  image: "${ASCEND_CONTAINER_IMAGE:-ascendhub:24.03-pytorch}" # example Ascend PyTorch image; override for production
   container_name_prefix: "seam-npu"
 
-  # Optional: hardware device passthrough (customize per hardware type)
+  # Optional: hardware device passthrough.
+  # "auto:npu" discovers NPU device paths at runtime:
+  #   1. SEAM_NPU_DEVICES env var (comma-separated, e.g. "/dev/davinci0,/dev/davinci1")
+  #   2. /dev/davinci* glob on the host
+  #   3. Canonical fallback list (/dev/davinci_manager, /dev/devmm_svm, /dev/hisi_hdc)
+  # Override by setting SEAM_NPU_DEVICES or replacing with explicit paths.
   devices:
-    - /dev/davinci_manager         # Ascend 910 NPU
-    - /dev/devmm_svm
-    - /dev/hisi_hdc
+    - auto:npu
 
   # Optional: extra volume mounts (project dir is auto-mounted at /workspace)
   # volumes:
@@ -56,7 +59,7 @@ execution_backend:
   # Optional: environment variables set inside the container
   # env_vars:
   #   ASCEND_VISIBLE_DEVICES: "0"
-  #   LD_LIBRARY_PATH: "/usr/local/Ascend/driver/lib64"
+  #   LD_LIBRARY_PATH: "${ASCEND_HOME_PATH}/${ASCEND_DRIVER_LIB:-driver/lib64}"
 
   # Optional: network mode
   # network_mode: host
@@ -70,7 +73,7 @@ execution_backend:
   # required_env_vars:
   #   - ASCEND_VISIBLE_DEVICES
   # required_devices:
-  #   - /dev/davinci_manager
+  #   - auto:npu
 
 # ── Globals, Agents, Hooks, Terminals (identical to npu_migration_v2.yaml) ─
 

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
-from rule_strategies import create_migrator_for_strategy
+from rule_strategies import _load_strategy_definition, create_migrator_for_strategy
 
 
 class _RuleMigratorDelegate(Protocol):
@@ -22,6 +22,7 @@ class _RuleMigratorDelegate(Protocol):
 class RuleBasedMigrator:
     strategy: str
     _delegate: _RuleMigratorDelegate
+    _report_injections: dict[str, str]
     rewrite_enabled: bool
 
     def __init__(self, target_platform: str | None = None, strategy: str | None = None):
@@ -29,12 +30,26 @@ class RuleBasedMigrator:
         self.strategy = requested or "report_only"
         self._delegate = cast(_RuleMigratorDelegate, create_migrator_for_strategy(self.strategy))
         self.rewrite_enabled = self._delegate.rewrite_enabled
+        self._report_injections = self._load_report_injections()
+
+    def _load_report_injections(self) -> dict[str, str]:
+        strategy_def = _load_strategy_definition(self.strategy)
+        if strategy_def is None:
+            return {}
+        raw = strategy_def.get("report_injections")
+        if not isinstance(raw, dict):
+            return {}
+        result: dict[str, str] = {}
+        for k, v in cast(dict[str, Any], raw).items():
+            if isinstance(k, str) and isinstance(v, str):
+                result[k] = v
+        return result
 
     def _normalize_report(self, report: dict[str, object]) -> dict[str, object]:
         rules = report.setdefault("rules", {})
-        if self.strategy.endswith("cuda_to_npu") and isinstance(rules, dict):
-            if "inject_torch_npu" not in rules:
-                rules["inject_torch_npu"] = int(rules.get("inject_imports", 0) or 0)
+        for inj_key, source_key in self._report_injections.items():
+            if isinstance(rules, dict) and inj_key not in rules:
+                rules[inj_key] = int(rules.get(source_key, 0) or 0)
         report.setdefault("strategy", self.strategy)
         return report
 
@@ -58,8 +73,8 @@ class RuleBasedMigrator:
         if isinstance(summary, dict):
             normalized_summary = cast(dict[str, object], summary)
             rules = normalized_summary.setdefault("rules", {})
-            total_files = normalized_summary.get("total_files", 0)
-            if self.strategy.endswith("cuda_to_npu") and isinstance(rules, dict) and total_files and "inject_torch_npu" not in rules:
-                rules["inject_torch_npu"] = int(rules.get("inject_imports", 0) or 0)
+            for inj_key, source_key in self._report_injections.items():
+                if isinstance(rules, dict) and inj_key not in rules:
+                    rules[inj_key] = int(rules.get(source_key, 0) or 0)
             normalized_summary.setdefault("strategy", self.strategy)
         return aggregate

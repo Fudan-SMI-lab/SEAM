@@ -45,10 +45,18 @@ class PromptLoader:
         prompt_path = self.prompts_dir / f"{phase_id}.md"
 
         if not prompt_path.exists():
-            raise FileNotFoundError(
-                f"Prompt file not found: {prompt_path}. "
-                + f"Expected file: '{phase_id}.md' in {self.prompts_dir}"
-            )
+            # Fallback: try platform-specific suffixes for renamed prompts
+            for suffix in ("_npu", "_ppu", "_musa"):
+                fallback_path = self.prompts_dir / f"{phase_id}{suffix}.md"
+                if fallback_path.exists():
+                    prompt_path = fallback_path
+                    phase_id = f"{phase_id}{suffix}"
+                    break
+            else:
+                raise FileNotFoundError(
+                    f"Prompt file not found: {prompt_path}. "
+                    + f"Expected file: '{phase_id}.md' in {self.prompts_dir}"
+                )
 
         template = prompt_path.read_text(encoding="utf-8")
 

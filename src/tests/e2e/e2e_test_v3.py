@@ -32,7 +32,12 @@ EXCLUDED_SNAPSHOT_DIRS = {".git", ".sm-artifacts", ".venv", "__pycache__"}
 
 REPO_ROOT = execution_root()
 TEMPLATE_DIR = PACKAGE_ROOT / "test_project_template"
-_default_workflow_path = PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"
+_default_workflow_path = Path(
+    os.environ.get(
+        "SEAM_DEFAULT_WORKFLOW",
+        str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"),
+    )
+)
 OUTPUT_ROOT = REPO_ROOT / "e2e-reports" / "src"
 
 

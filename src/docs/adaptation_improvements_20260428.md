@@ -153,7 +153,7 @@ runner.run_review_check(
 
 ## 验证状态
 
-- **修复 01-09**: 通过 `04_Deepwave_20260428_125333` E2E 测试结果验证 ✅
+- **修复 01-09**: 通过 `deepwave_20260428_125333` E2E 测试结果验证 ✅
 - **修复 10**: instruction 注入已在 Phase 5 attempt2.json 中确认 ✅
 - **修复 11**: 所有 raw JSON 含 `_meta` 字段 ✅
 - **修复 12-14**: 代码已修改，待下一轮 E2E 测试验证

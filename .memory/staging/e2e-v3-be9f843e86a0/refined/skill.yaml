@@ -1,0 +1,8 @@
+name: headless-ui-gating-checkpoint-fallback
+title: Headless UI Gating with Checkpoint-Absent Auto-Fallback for Interactive Entry Scripts
+description: Headless UI Gating with Checkpoint-Absent Auto-Fallback for Interactive Entry Scripts
+category: code_adaptation
+subtype: interactive_ui_headless_gating
+target_roles: ["code_adapter"]
+target_phases: ["phase_3_entry_script", "phase_5_validation"]
+trigger_fingerprint: Entry script detected in Phase 3 with interactive UI blocking signals (gradio.Blocks() / demo.launch() / streamlit.run() patterns) AND migration pipeline run_command targets the same script AND script fails with exit_code != 0 due to either (a) indefinite blocking on UI event loop or (b) HFValidationError from AutoTokenizer.from_pretrained() with nonexistent checkpoint path

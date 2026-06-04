@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import glob as _glob_module
 import json
 import logging
+import os as _os_module
 import shlex
 import subprocess
 import time
@@ -16,6 +18,128 @@ logger = logging.getLogger(__name__)
 _CONTAINER_NOT_FOUND_MSG = (
     "execution_backend.container_name is required when source=existing_container"
 )
+
+# ── NPU device auto-discovery ──────────────────────────────────────────
+
+_AUTO_NPU_MARKER = "auto:npu"
+
+# Canonical Ascend NPU management and data channel device classes.
+# Priority is intentional: davinci_manager supports multi-chip systems;
+# devmm_svm / hisi_hdc are data-plane devices present on most Ascend
+# platforms (910A/910B/310P et al.).
+_NPU_DEVICE_CANDIDATES: list[str] = [
+    "/dev/davinci_manager",
+    "/dev/devmm_svm",
+    "/dev/hisi_hdc",
+]
+
+
+def _get_npu_devices_from_env() -> list[str] | None:
+    """Return device paths from SEAM_NPU_DEVICES if the env var is set."""
+    raw = _os_module.environ.get("SEAM_NPU_DEVICES")
+    if raw is None:
+        return None
+    paths = [p.strip() for p in raw.split(",") if p.strip()]
+    return paths if paths else None
+
+
+def _discover_npu_devices_via_glob() -> list[str]:
+    """Discover NPU device files via /dev/davinci* glob.
+
+    Covers Ascend 910A/B, 310P, and future chips that follow the davinci
+    naming convention.  Falls back to the candidate list when nothing is
+    found (the container runtime will still get --device flags; it just
+    may fail if the host genuinely has no NPU hardware).
+    """
+    try:
+        found = sorted(
+            p for p in _glob_module.glob("/dev/davinci*")
+            if Path(p).exists()
+        )
+        if found:
+            return found
+    except OSError:
+        pass
+    # Fallback: use the canonical candidate list so that --device flags
+    # are still emitted.  docker/podman silently ignores non-existent
+    # paths on some drivers but fails hard on others — the list gives the
+    # best chance across platforms.
+    return list(_NPU_DEVICE_CANDIDATES)
+
+
+def _discover_npu_device_count_via_smi() -> int:
+    """Return the number of NPU chips reported by npu-smi info.
+
+    Returns 0 when npu-smi is not found or fails.
+    """
+    try:
+        proc = subprocess.run(
+            ["npu-smi", "info", "-m"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return 0
+    if proc.returncode != 0:
+        return 0
+    # npu-smi info -m prints one table row per chip (plus headers/footers).
+    # Count lines containing "NPU" as a simple heuristic.
+    count = sum(1 for line in proc.stdout.splitlines() if "NPU" in line)
+    return count
+
+
+def _discover_npu_devices() -> list[str]:
+    """Best-effort NPU device path discovery.
+
+    Resolution order (first non-empty wins):
+    1. ``SEAM_NPU_DEVICES`` environment variable (comma-separated paths)
+    2. ``/dev/davinci*`` glob (live device files on the host)
+    3. Canonical candidate list (best-effort fallback for container --device)
+
+    Rationale for not removing the candidate fallback: on hosts where
+    /dev/davinci* devices exist but the glob somehow fails (e.g. inside a
+    restricted container that cannot list /dev), the explicit --device
+    flags give the runtime its best chance to mount what is needed.
+    """
+    # 1. Explicit env override
+    env_devices = _get_npu_devices_from_env()
+    if env_devices:
+        logger.info("Using NPU devices from SEAM_NPU_DEVICES: %s", env_devices)
+        return env_devices
+
+    # 2. Live /dev/davinci* discovery
+    glob_devices = _discover_npu_devices_via_glob()
+    if glob_devices:
+        logger.info("Discovered %d NPU device(s) via /dev/davinci*", len(glob_devices))
+        return glob_devices
+
+    # 3. Canonical fallback
+    logger.warning(
+        "No NPU devices found via env or glob; using canonical fallback: %s",
+        _NPU_DEVICE_CANDIDATES,
+    )
+    return list(_NPU_DEVICE_CANDIDATES)
+
+
+def _resolve_device_markers(devices: list[str]) -> list[str]:
+    """Expand ``auto:npu`` markers in a device list to discovered paths.
+
+    Explicit device paths are passed through unchanged.
+    When the list is empty, returns the empty list unchanged.
+    """
+    if not devices:
+        return []
+    resolved: list[str] = []
+    for dev in devices:
+        if dev == _AUTO_NPU_MARKER:
+            discovered = _discover_npu_devices()
+            resolved.extend(discovered)
+            logger.info(
+                "Resolved auto:npu → %d device(s): %s",
+                len(discovered), discovered,
+            )
+        else:
+            resolved.append(dev)
+    return resolved
 
 
 class ContainerNotFoundError(RuntimeError):
@@ -244,7 +368,8 @@ class ContainerBackend:
         cname = f"{self.config.container_name_prefix}-{run_id}"
         cmd: list[str] = [self._runtime_cmd, "run", "-d", "--name", cname]
 
-        for dev in self.config.devices:
+        resolved_devices = _resolve_device_markers(self.config.devices)
+        for dev in resolved_devices:
             cmd.extend(["--device", dev])
 
         proj = self._host_project_dir or "."

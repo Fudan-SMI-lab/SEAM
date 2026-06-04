@@ -300,6 +300,14 @@ class PhaseRunner:
                 "project_dir": project_dir,
                 "previous_outputs": outputs,
             }
+            # Extract migration_route from phase_1 output for phase_2 context
+            if phase_id == "phase_2":
+                phase1_key = self._resolve_phase_spec("phase_1").prompt_id
+                phase1_output = outputs.get(phase1_key)
+                migration_route = ""
+                if isinstance(phase1_output, dict):
+                    migration_route = str(phase1_output.get("migration_route", "") or "")
+                phase_context["migration_route"] = migration_route
             result = self._run_single_phase(
                 session=session_id,
                 phase_id=phase_id,
@@ -800,9 +808,26 @@ class PhaseRunner:
         artifact_store: ArtifactStore,
     ) -> JsonObject:
         phase = self._resolve_phase_spec(phase_id)
+        # Check runtime phase index for platform-specific prompt_template override
+        runtime_prompt_id: str | None = None
+        runtime_phase = self._runtime_phase_index.get(phase_id) or self._runtime_phase_index.get(phase.prompt_id)
+        if runtime_phase and runtime_phase.prompt_template:
+            runtime_prompt_id = runtime_phase.prompt_template
+        effective_prompt_id = runtime_prompt_id or phase.prompt_id
         normalized_context: JsonObject = dict(context or {})
         prompt_context = self._build_prompt_context(phase, normalized_context)
-        prompt = self.prompt_loader.load_prompt(phase.prompt_id, prompt_context)
+        try:
+            prompt = self.prompt_loader.load_prompt(effective_prompt_id, prompt_context)
+        except FileNotFoundError:
+            # Fallback: try platform-specific suffix for renamed prompts
+            for suffix in ("_npu", "_ppu", "_musa"):
+                try:
+                    prompt = self.prompt_loader.load_prompt(effective_prompt_id + suffix, prompt_context)
+                    break
+                except (FileNotFoundError, KeyError):
+                    continue
+            else:
+                raise
         prompt = self._append_explicit_runtime_skill_markdown(prompt, phase.prompt_id)
         prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
         max_retry = self._resolve_max_retry(normalized_context)
@@ -1307,6 +1332,9 @@ class PhaseRunner:
             "project_dir": str(context.get("project_dir", ".")),
             "constraint_summary": str(context.get("constraint_summary", "")),
             "user_constraints": str(context.get("user_constraints", "")),
+            "migration_route": str(context.get("migration_route", "")),
+            "total_count": str(context.get("total_count", "0")),
+            "remaining_count": str(context.get("remaining_count", "0")),
         }
         if phase.prompt_id not in self._SHARED_SESSION_PHASES:
             filtered = self._filter_previous_outputs(phase.prompt_id, previous_output_map)

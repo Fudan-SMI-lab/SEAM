@@ -5,7 +5,7 @@
   "properties": {
     "platform": {
       "type": "string",
-      "enum": ["npu", "cuda"]
+      "enum": ["npu", "cuda", "ppu", "musa", "rocm", "mlu"]
     },
     "npu_detected": {
       "type": "boolean"

@@ -179,7 +179,7 @@ def test_run_single_phase_appends_agent_and_phase_runtime_skills(tmp_path: Path)
             PhaseDefinition(
                 id="phase_0_env_detect",
                 name="Phase 0",
-                prompt_template="phase_0_env_detect",
+                prompt_template="phase_0_env_detect_npu",
                 output_schema={},
                 validator="env_detect",
                 agent="main_engineer",
@@ -205,7 +205,7 @@ def test_run_single_phase_appends_agent_and_phase_runtime_skills(tmp_path: Path)
 
     assert result["platform"] == "npu"
     sent_prompt = session.calls[0][0]
-    assert sent_prompt.startswith("BASE PROMPT phase_0_env_detect\n\n## Explicit Runtime Skills")
+    assert sent_prompt.startswith("BASE PROMPT phase_0_env_detect_npu\n\n## Explicit Runtime Skills")
     assert "### agent-skill" in sent_prompt
     assert "### phase-skill" in sent_prompt
     assert "Agent guidance" in sent_prompt
@@ -673,7 +673,7 @@ def test_run_phase_6_fallback_on_session_error(tmp_path: Path) -> None:
     assert summary["phase5_status"] == "success"
     assert summary["migration_success"] is True
     assert summary["phase5_terminal_failure"] is False
-    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][2] == 3600
     assert session_mgr.send_calls[0][3] == 0
     assert all(Path(path).exists() for path in report_paths)
 
@@ -736,7 +736,7 @@ def test_run_phase_6_fallback_on_timeout_exception(tmp_path: Path) -> None:
 
     assert result["fallback"] is True
     assert result["fallback_reason"] == "phase 6 timed out"
-    assert session_mgr.send_calls[0][2] == 600
+    assert session_mgr.send_calls[0][2] == 3600
     assert session_mgr.send_calls[0][3] == 0
     assert all(Path(path).exists() for path in report_paths)
 
@@ -1282,24 +1282,25 @@ def test_run_phase_2_to_3_rejects_missing_custom_op_entry_script_before_phase35(
     runner, artifact_store = build_runner(tmp_path, session_mgr=session_mgr)
     runner.max_retry = 1
 
-    with pytest.raises(ValueError, match="existing file for custom-op contracts"):
-        _ = runner.run_phase_2_to_3(
-            str(tmp_path),
-            session_mgr,
-            artifact_store,
-            prior_outputs={
-                "phase_0_env_detect": valid_phase_0_output(),
-                "phase_1_project_analysis": {
-                    "project_dir": str(tmp_path),
-                    "dependencies": ["torch"],
-                    "cuda_detected": True,
-                    "entry_script": "validate_custom_ops_full.py",
-                    "custom_op_surface": {"custom_op_detected": True},
-                },
+    outputs = runner.run_phase_2_to_3(
+        str(tmp_path),
+        session_mgr,
+        artifact_store,
+        prior_outputs={
+            "phase_0_env_detect": valid_phase_0_output(),
+            "phase_1_project_analysis": {
+                "project_dir": str(tmp_path),
+                "dependencies": ["torch"],
+                "cuda_detected": True,
+                "entry_script": "validate_custom_ops_full.py",
+                "custom_op_surface": {"custom_op_detected": True},
             },
-        )
+        },
+    )
 
-    assert session_mgr.phase35_prompts == []
+    # Script is auto-created by _normalize_output → ensure_strict_non_variant_custom_op_validation_script
+    assert outputs["phase_3_entry_script"]["entry_script_path"] == str(tmp_path / "validate_custom_ops_full.py")
+    assert session_mgr.phase35_prompts != []
 
 
 def test_run_phase_2_to_3_accepts_relative_custom_op_entry_script(tmp_path: Path) -> None:
@@ -1364,7 +1365,8 @@ def test_run_phase_2_to_3_accepts_relative_custom_op_entry_script(tmp_path: Path
     )
 
     assert len(session_mgr.phase35_prompts) == 1
-    assert outputs["phase_3_entry_script"]["entry_script_path"] == "validate_custom_ops_full.py"
+    # Normalization resolves relative path to absolute
+    assert outputs["phase_3_entry_script"]["entry_script_path"] == str(project_dir / "validate_custom_ops_full.py")
     assert outputs["phase_35_static_validate"]["validation_passed"] is True
 
 
@@ -1440,7 +1442,7 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
                 PhaseDefinition(
                     id="phase_0_env_detect",
                     name="Phase 0",
-                    prompt_template="phase_0_env_detect",
+                    prompt_template="phase_0_env_detect_npu",
                     output_schema={},
                     validator="env_detect",
                     agent="main_engineer",

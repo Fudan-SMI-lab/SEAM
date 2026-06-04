@@ -1,0 +1,170 @@
+{
+  "type": "skill",
+  "skill_name": "sglang-npu-triton-stub-bridge-adaptor",
+  "title": "Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern",
+  "category": "operator_incompat",
+  "subtype": "triton_kernel_stub",
+  "tags": [
+    "sglang",
+    "ascend-npu",
+    "triton-kernel",
+    "bridge-adaptor",
+    "sgl-kernel-npu",
+    "fallback"
+  ],
+  "symptom": "TypeError: 'function' object is not subscriptable at sglang runtime when invoking alloc_extend_kernel[(bs,)] \u2014 sgl_kernel_npu exports a plain Python placeholder stub for a Triton kernel that was never ported to the NPU backend. The Triton grid-launch bracket syntax [(bs,)] fails because Python cannot subscript a plain function.",
+  "root_cause": "sgl_kernel_npu.mem_cache.allocator.alloc_extend_kernel is a stub that returns a plain Python function instead of a real Triton JIT-compiled kernel. The NPU Triton backend has not yet implemented this kernel \u2014 only the CUDA Triton implementation exists. When the sglang runtime evaluates the conditional (e.g., num_new_pages_item < 200) and enters the kernel path, it imports the stub and attempts grid-launch invocation, which crashes.",
+  "fix_steps": [
+    "1. Identify the sglang NPU hardware-backend file containing the broken Triton kernel invocation. Search under <venv>/lib/python*/site-packages/sglang/srt/hardware_backend/npu/ for files importing from sgl_kernel_npu and using Triton grid-launch bracket syntax [(var,)].",
+    "2. Locate the conditional block (e.g., if num_new_pages_item < 200:) that gates the kernel invocation code path.",
+    "3. Verify that a working pure-Python fallback already exists in the else: or subsequent branch (in this case, alloc_extend_naive from sglang.srt.mem_cache.allocator).",
+    "4. Replace the condition with if False: to permanently disable the broken kernel path while preserving the original code in the dead branch.",
+    "5. Add a # NOTE(seam): comment immediately after the if False: line documenting why the kernel is disabled, the specific error it causes (e.g., TypeError: stub is not subscriptable), and that the pure-Python fallback is used instead.",
+    "6. Run the sglang serve command with validation imports (import torch, import torch_npu, import sglang) and a health-check probe to confirm the server starts and serves requests without TypeError."
+  ],
+  "affected_patterns": [
+    "from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel",
+    "alloc_extend_kernel[(bs,)](",
+    "sgl_kernel_npu.* import in sglang/srt/hardware_backend/npu/",
+    "TypeError.*function.*not subscriptable",
+    "if num_new_pages_item < 200:  # or similar conditional gating an sgl_kernel_npu import"
+  ],
+  "code_changes": [
+    {
+      "file": "sglang/srt/hardware_backend/npu/allocator_npu.py",
+      "before": "        if num_new_pages_item < 200:\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\n\n            out_indices = torch.empty(\n                (extend_num_tokens,),\n                dtype=torch.int64,\n                device=self.device,\n            )\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\n            bs = prefix_lens.shape[0]\n            alloc_extend_kernel[(bs,)](\n                prefix_lens,\n                seq_lens,\n                last_loc,\n                self.free_pages,\n                out_indices,\n                next_power_of_2(bs),\n                self.page_size,\n                max_num_extend_tokens,\n            )\n\n        else:",
+      "after": "        if False:\n            # NOTE(seam): NPU kernel path disabled \u2014 stub returns plain function,\n            # not Triton kernel; Triton grid-launch syntax [(bs,)] fails with\n            # TypeError. Always use the pure-Python naive fallback instead.\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\n\n            out_indices = torch.empty(\n                (extend_num_tokens,),\n                dtype=torch.int64,\n                device=self.device,\n            )\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\n            bs = prefix_lens.shape[0]\n            alloc_extend_kernel[(bs,)](\n                prefix_lens,\n                seq_lens,\n                last_loc,\n                self.free_pages,\n                out_indices,\n                next_power_of_2(bs),\n                self.page_size,\n                max_num_extend_tokens,\n            )\n\n        else:"
+    }
+  ],
+  "references": [],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT delete the original kernel code inside the if False: block \u2014 the bridge-adaptor pattern preserves it for future reference when the NPU Triton backend matures.",
+    "Do NOT attempt to install, compile, or cross-compile CUDA Triton kernels on NPU \u2014 the backend must be implemented by the sgl_kernel_npu maintainers.",
+    "Do NOT attempt to fix the stub by wrapping it in a Triton JIT or grid decorator \u2014 the underlying kernel logic does not exist.",
+    "Do NOT leave the original conditional intact (e.g., num_new_pages_item < 200) \u2014 the conditional is exactly what triggers the broken code path when the condition evaluates True.",
+    "Do NOT remove or modify the pure-Python fallback (alloc_extend_naive) \u2014 it is the production path and has already been validated as correct."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-cc1af92371d6",
+    "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260604_123846",
+    "iterations_to_fix_in_source": 1,
+    "refiner_reasoning": "This fix was a single atomic edit applied during Phase 5 validation: change one conditional guard from a dynamic check (num_new_pages_item < 200) to a permanent False. The original kernel code was preserved intact inside the dead branch with a NOTE(seam) comment, while the already-working alloc_extend_naive pure-Python fallback became the unconditional execution path. The validation gate returned FULL_PASS \u2014 sglang server started on NPU, health probe returned 200, and API validation returned valid model output. The bridge-adaptor pattern (if False: + preserved code + explanatory comment) is generalizable to any sgl_kernel_npu stub that lacks a real NPU Triton implementation and has an existing pure-Python fallback.",
+    "created_at": "2026-06-04T16:18:08.537890+00:00"
+  },
+  "confidence": 0.8,
+  "target_roles": [
+    "operator_fixer"
+  ],
+  "target_phases": [
+    "phase_5_validation"
+  ],
+  "trigger_fingerprint": "operator_incompat|triton_kernel_stub|ascend-npu|bridge-adaptor|fallback|sgl-kernel-npu|sglang|triton-kernel|207b3c992ed0",
+  "solidifier": "skill_solidifier",
+  "classifier": {
+    "type": "skill",
+    "target_roles": [
+      "operator_fixer"
+    ],
+    "target_phases": [
+      "phase_5_validation"
+    ],
+    "solidifier": "skill_solidifier",
+    "reasoning": "candidate provided recommended_type/type",
+    "confidence": 0.8,
+    "trigger_fingerprint": "operator_incompat|triton_kernel_stub|ascend-npu|bridge-adaptor|fallback|sgl-kernel-npu|sglang|triton-kernel|207b3c992ed0"
+  },
+  "candidate_id": "candidate-002",
+  "problem_description": "sgl_kernel_npu.mem_cache.allocator.alloc_extend_kernel is a stub that returns a plain Python function instead of a real Triton kernel. When the sglang runtime tries to invoke it with Triton grid-launch syntax alloc_extend_kernel[(bs,)], the stub raises TypeError (plain function, not subscriptable). The real CUDA Triton kernel works, but the NPU Triton backend hasn't yet caught up. This is a recurring pattern: sgl_kernel_npu modules contain placeholder stubs for kernels that only have CUDA Triton implementations, and the runtime doesn't know to skip them.",
+  "rough_fix_approach": "Use the if False: bridge-adaptor pattern to permanently disable the broken kernel path while preserving the original code for future reference. The pure-Python alloc_extend_naive fallback already exists as the production path for num_new_pages >= 200, so this is extending a proven fallback to cover all cases. Add # NOTE(seam): comment documenting why the kernel is disabled and what error it would cause. This keeps the original code intact for when the NPU Triton backend matures.",
+  "recommended_type": "skill",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/GLM-OCR_20260604_123846",
+  "name": "sglang-npu-triton-stub-bridge-adaptor",
+  "_asset_contents": {
+    "skill_data.json": {
+      "name": "sglang-npu-triton-stub-bridge-adaptor",
+      "title": "Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern",
+      "description": "Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern",
+      "tags": [
+        "sglang",
+        "ascend-npu",
+        "triton-kernel",
+        "bridge-adaptor",
+        "sgl-kernel-npu",
+        "fallback"
+      ],
+      "category": "operator_incompat",
+      "subtype": "triton_kernel_stub",
+      "confidence": 0.8,
+      "target_roles": [
+        "operator_fixer"
+      ],
+      "target_phases": [
+        "phase_5_validation"
+      ],
+      "trigger_fingerprint": "operator_incompat|triton_kernel_stub|ascend-npu|bridge-adaptor|fallback|sgl-kernel-npu|sglang|triton-kernel|207b3c992ed0",
+      "classifier": {
+        "type": "skill",
+        "target_roles": [
+          "operator_fixer"
+        ],
+        "target_phases": [
+          "phase_5_validation"
+        ],
+        "solidifier": "skill_solidifier",
+        "reasoning": "candidate provided recommended_type/type",
+        "confidence": 0.8,
+        "trigger_fingerprint": "operator_incompat|triton_kernel_stub|ascend-npu|bridge-adaptor|fallback|sgl-kernel-npu|sglang|triton-kernel|207b3c992ed0"
+      },
+      "occurrence_count": 1,
+      "when_to_use": "TypeError: 'function' object is not subscriptable at sglang runtime when invoking alloc_extend_kernel[(bs,)] \u2014 sgl_kernel_npu exports a plain Python placeholder stub for a Triton kernel that was never ported to the NPU backend. The Triton grid-launch bracket syntax [(bs,)] fails because Python cannot subscript a plain function.",
+      "root_cause": "sgl_kernel_npu.mem_cache.allocator.alloc_extend_kernel is a stub that returns a plain Python function instead of a real Triton JIT-compiled kernel. The NPU Triton backend has not yet implemented this kernel \u2014 only the CUDA Triton implementation exists. When the sglang runtime evaluates the conditional (e.g., num_new_pages_item < 200) and enters the kernel path, it imports the stub and attempts grid-launch invocation, which crashes.",
+      "fix_steps": [
+        "1. Identify the sglang NPU hardware-backend file containing the broken Triton kernel invocation. Search under <venv>/lib/python*/site-packages/sglang/srt/hardware_backend/npu/ for files importing from sgl_kernel_npu and using Triton grid-launch bracket syntax [(var,)].",
+        "2. Locate the conditional block (e.g., if num_new_pages_item < 200:) that gates the kernel invocation code path.",
+        "3. Verify that a working pure-Python fallback already exists in the else: or subsequent branch (in this case, alloc_extend_naive from sglang.srt.mem_cache.allocator).",
+        "4. Replace the condition with if False: to permanently disable the broken kernel path while preserving the original code in the dead branch.",
+        "5. Add a # NOTE(seam): comment immediately after the if False: line documenting why the kernel is disabled, the specific error it causes (e.g., TypeError: stub is not subscriptable), and that the pure-Python fallback is used instead.",
+        "6. Run the sglang serve command with validation imports (import torch, import torch_npu, import sglang) and a health-check probe to confirm the server starts and serves requests without TypeError."
+      ],
+      "code_changes": [
+        {
+          "file": "sglang/srt/hardware_backend/npu/allocator_npu.py",
+          "before": "        if num_new_pages_item < 200:\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\n\n            out_indices = torch.empty(\n                (extend_num_tokens,),\n                dtype=torch.int64,\n                device=self.device,\n            )\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\n            bs = prefix_lens.shape[0]\n            alloc_extend_kernel[(bs,)](\n                prefix_lens,\n                seq_lens,\n                last_loc,\n                self.free_pages,\n                out_indices,\n                next_power_of_2(bs),\n                self.page_size,\n                max_num_extend_tokens,\n            )\n\n        else:",
+          "after": "        if False:\n            # NOTE(seam): NPU kernel path disabled \u2014 stub returns plain function,\n            # not Triton kernel; Triton grid-launch syntax [(bs,)] fails with\n            # TypeError. Always use the pure-Python naive fallback instead.\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\n\n            out_indices = torch.empty(\n                (extend_num_tokens,),\n                dtype=torch.int64,\n                device=self.device,\n            )\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\n            bs = prefix_lens.shape[0]\n            alloc_extend_kernel[(bs,)](\n                prefix_lens,\n                seq_lens,\n                last_loc,\n                self.free_pages,\n                out_indices,\n                next_power_of_2(bs),\n                self.page_size,\n                max_num_extend_tokens,\n            )\n\n        else:"
+        }
+      ],
+      "antipatterns": [
+        "Do NOT delete the original kernel code inside the if False: block \u2014 the bridge-adaptor pattern preserves it for future reference when the NPU Triton backend matures.",
+        "Do NOT attempt to install, compile, or cross-compile CUDA Triton kernels on NPU \u2014 the backend must be implemented by the sgl_kernel_npu maintainers.",
+        "Do NOT attempt to fix the stub by wrapping it in a Triton JIT or grid decorator \u2014 the underlying kernel logic does not exist.",
+        "Do NOT leave the original conditional intact (e.g., num_new_pages_item < 200) \u2014 the conditional is exactly what triggers the broken code path when the condition evaluates True.",
+        "Do NOT remove or modify the pure-Python fallback (alloc_extend_naive) \u2014 it is the production path and has already been validated as correct."
+      ],
+      "references": [],
+      "merged_from_runs": [
+        "e2e-v3-cc1af92371d6"
+      ]
+    },
+    "SKILL.md": "---\nname: sglang-npu-triton-stub-bridge-adaptor\ndescription: Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern\ntags: [\"sglang\", \"ascend-npu\", \"triton-kernel\", \"bridge-adaptor\", \"sgl-kernel-npu\", \"fallback\"]\ncategory: operator_incompat\nsubtype: triton_kernel_stub\nconfidence: 0.8\noccurrence_count: 1\n---\n\n# Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern\n\n## When to Use\n- TypeError: 'function' object is not subscriptable at sglang runtime when invoking alloc_extend_kernel[(bs,)] \u2014 sgl_kernel_npu exports a plain Python placeholder stub for a Triton kernel that was never ported to the NPU backend. The Triton grid-launch bracket syntax [(bs,)] fails because Python cannot subscript a plain function.\n\n## Root Cause\nsgl_kernel_npu.mem_cache.allocator.alloc_extend_kernel is a stub that returns a plain Python function instead of a real Triton JIT-compiled kernel. The NPU Triton backend has not yet implemented this kernel \u2014 only the CUDA Triton implementation exists. When the sglang runtime evaluates the conditional (e.g., num_new_pages_item < 200) and enters the kernel path, it imports the stub and attempts grid-launch invocation, which crashes.\n\n## How to Use\n1. Identify the sglang NPU hardware-backend file containing the broken Triton kernel invocation. Search under <venv>/lib/python*/site-packages/sglang/srt/hardware_backend/npu/ for files importing from sgl_kernel_npu and using Triton grid-launch bracket syntax [(var,)].\n2. Locate the conditional block (e.g., if num_new_pages_item < 200:) that gates the kernel invocation code path.\n3. Verify that a working pure-Python fallback already exists in the else: or subsequent branch (in this case, alloc_extend_naive from sglang.srt.mem_cache.allocator).\n4. Replace the condition with if False: to permanently disable the broken kernel path while preserving the original code in the dead branch.\n5. Add a # NOTE(seam): comment immediately after the if False: line documenting why the kernel is disabled, the specific error it causes (e.g., TypeError: stub is not subscriptable), and that the pure-Python fallback is used instead.\n6. Run the sglang serve command with validation imports (import torch, import torch_npu, import sglang) and a health-check probe to confirm the server starts and serves requests without TypeError.\n\n## Code Examples\n[\n  {\n    \"file\": \"sglang/srt/hardware_backend/npu/allocator_npu.py\",\n    \"before\": \"        if num_new_pages_item < 200:\\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\\n\\n            out_indices = torch.empty(\\n                (extend_num_tokens,),\\n                dtype=torch.int64,\\n                device=self.device,\\n            )\\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\\n            bs = prefix_lens.shape[0]\\n            alloc_extend_kernel[(bs,)](\\n                prefix_lens,\\n                seq_lens,\\n                last_loc,\\n                self.free_pages,\\n                out_indices,\\n                next_power_of_2(bs),\\n                self.page_size,\\n                max_num_extend_tokens,\\n            )\\n\\n        else:\",\n    \"after\": \"        if False:\\n            # NOTE(seam): NPU kernel path disabled \\u2014 stub returns plain function,\\n            # not Triton kernel; Triton grid-launch syntax [(bs,)] fails with\\n            # TypeError. Always use the pure-Python naive fallback instead.\\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\\n\\n            out_indices = torch.empty(\\n                (extend_num_tokens,),\\n                dtype=torch.int64,\\n                device=self.device,\\n            )\\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\\n            bs = prefix_lens.shape[0]\\n            alloc_extend_kernel[(bs,)](\\n                prefix_lens,\\n                seq_lens,\\n                last_loc,\\n                self.free_pages,\\n                out_indices,\\n                next_power_of_2(bs),\\n                self.page_size,\\n                max_num_extend_tokens,\\n            )\\n\\n        else:\"\n  }\n]\n\n## Do Not\n- Do NOT delete the original kernel code inside the if False: block \u2014 the bridge-adaptor pattern preserves it for future reference when the NPU Triton backend matures.\n- Do NOT attempt to install, compile, or cross-compile CUDA Triton kernels on NPU \u2014 the backend must be implemented by the sgl_kernel_npu maintainers.\n- Do NOT attempt to fix the stub by wrapping it in a Triton JIT or grid decorator \u2014 the underlying kernel logic does not exist.\n- Do NOT leave the original conditional intact (e.g., num_new_pages_item < 200) \u2014 the conditional is exactly what triggers the broken code path when the condition evaluates True.\n- Do NOT remove or modify the pure-Python fallback (alloc_extend_naive) \u2014 it is the production path and has already been validated as correct.\n\n## Evidence\n- Source runs: e2e-v3-cc1af92371d6\n",
+    "skill.yaml": "name: sglang-npu-triton-stub-bridge-adaptor\ntitle: Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern\ndescription: Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern\ncategory: operator_incompat\nsubtype: triton_kernel_stub\ntarget_roles: [\"operator_fixer\"]\ntarget_phases: [\"phase_5_validation\"]\ntrigger_fingerprint: operator_incompat|triton_kernel_stub|ascend-npu|bridge-adaptor|fallback|sgl-kernel-npu|sglang|triton-kernel|207b3c992ed0\n",
+    "verification.md": "# Verification for Disable broken NPU Triton kernel stubs with if-False bridge-adaptor pattern\n\n- Source run: e2e-v3-cc1af92371d6\n- Verify by applying the fix steps to a matching migration failure.\n",
+    "examples/code_changes.json": [
+      {
+        "file": "sglang/srt/hardware_backend/npu/allocator_npu.py",
+        "before": "        if num_new_pages_item < 200:\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\n\n            out_indices = torch.empty(\n                (extend_num_tokens,),\n                dtype=torch.int64,\n                device=self.device,\n            )\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\n            bs = prefix_lens.shape[0]\n            alloc_extend_kernel[(bs,)](\n                prefix_lens,\n                seq_lens,\n                last_loc,\n                self.free_pages,\n                out_indices,\n                next_power_of_2(bs),\n                self.page_size,\n                max_num_extend_tokens,\n            )\n\n        else:",
+        "after": "        if False:\n            # NOTE(seam): NPU kernel path disabled \u2014 stub returns plain function,\n            # not Triton kernel; Triton grid-launch syntax [(bs,)] fails with\n            # TypeError. Always use the pure-Python naive fallback instead.\n            from sgl_kernel_npu.mem_cache.allocator import alloc_extend_kernel\n\n            out_indices = torch.empty(\n                (extend_num_tokens,),\n                dtype=torch.int64,\n                device=self.device,\n            )\n            max_num_extend_tokens = next_power_of_2(extend_num_tokens)\n            bs = prefix_lens.shape[0]\n            alloc_extend_kernel[(bs,)](\n                prefix_lens,\n                seq_lens,\n                last_loc,\n                self.free_pages,\n                out_indices,\n                next_power_of_2(bs),\n                self.page_size,\n                max_num_extend_tokens,\n            )\n\n        else:"
+      }
+    ]
+  },
+  "asset_names": [
+    "SKILL.md",
+    "examples/code_changes.json",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ],
+  "id": "e2e-v3-cc1af92371d6-exp-20260604161808",
+  "run_id": "e2e-v3-cc1af92371d6",
+  "created_at": "2026-06-04T16:18:08.538099+00:00"
+}

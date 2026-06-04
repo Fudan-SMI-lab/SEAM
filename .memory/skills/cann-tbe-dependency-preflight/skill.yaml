@@ -1,8 +1,0 @@
-name: cann-tbe-dependency-preflight
-title: "CANN TBE Dependency Pre-flight: Install decorator, attrs, psutil, cffi, protobuf Before CANN Operator Execution"
-description: "CANN TBE Dependency Pre-flight: Install decorator, attrs, psutil, cffi, protobuf Before CANN Operator Execution"
-category: dependency_issue
-subtype: cann_tbe_missing_transitive_deps
-target_roles: ["dependency_fixer", "code_adapter"]
-target_phases: ["phase_2_venv_create", "phase_5_validation"]
-trigger_fingerprint: dependency_issue|cann_tbe_missing_transitive_deps|ascend-npu|tbe-te-import|decorator|attrs|psutil|cffi|protobuf|2d8e6f4c1a75
