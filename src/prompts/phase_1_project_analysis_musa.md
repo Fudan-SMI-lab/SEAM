@@ -13,8 +13,8 @@ You are executing `{phase_name}` for `{project_dir}`.
 ## Serving Route Detection
 - Classify `migration_route` as exactly one of `ordinary_cuda`, `custom_op`, `custom_op_with_variants`, `vllm_serving`, or `sglang_serving`.
 - Use `vllm_serving` only when project files show a vLLM serving runtime surface such as project-local imports, requirements, launch scripts, README commands, API demos, or tests. Use `sglang_serving` only for equivalent SGLang surface evidence. Do not infer either serving route from package availability alone.
-- For vLLM/SGLang routes, include `serving_runtime_surface` with `serving_framework`, `serving_backend`, `detection_complete`, `launch_command`, `launch_evidence`, `project_demo_or_test_evidence`, `project_test_files`, `readiness_probe`, `request_validation`, `expected_outputs`, `required_runtime_env`, and `unresolved_source_groups`.
-- Keep this MUXI/MUSA-specific and platform-neutral: do not copy Ascend/NPU-only requirements such as `torch_npu`, CANN, `tbe`, or `te`. Set `serving_backend` to `musa` for this workflow.
+- For vLLM/SGLang routes, include `serving_runtime_surface` with `serving_framework`, `detection_complete`, `launch_command`, `launch_evidence`, `project_demo_or_test_evidence`, `project_test_files`, `readiness_probe`, `request_validation`, `expected_outputs`, `required_runtime_env`, and `unresolved_source_groups`.
+- Keep this MUXI/MUSA-specific and platform-neutral: do not copy Ascend/NPU-only requirements such as `torch_npu`, CANN, `tbe`, or `te`.
 - Serving route classification is fail-closed: framework must match the route, launch/demo/API/test evidence must be project-local, `project_demo_or_test_evidence` and `project_test_files` must be non-empty, and `unresolved_source_groups` must be empty when `detection_complete=true`.
 
 ## Goal
@@ -52,7 +52,6 @@ Analyze the project migration surface without editing files. Distinguish Python 
   "migration_route": "sglang_serving",
   "serving_runtime_surface": {
     "serving_framework": "sglang",
-    "serving_backend": "musa",
     "detection_complete": true,
     "launch_command": "python -m sglang.launch_server --model-path example",
     "launch_evidence": ["README documents SGLang launch_server"],

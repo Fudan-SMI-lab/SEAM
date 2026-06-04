@@ -26,6 +26,8 @@ from core.platform_policy import (
     get_performance_baseline_boolean_fields,
 )
 
+from validators.serving_validator import validate_serving_final_gate as _validate_serving_final_gate
+
 PASS_STATES = {"PASS", "FULL_PASS", "DONE", "CLOSED_PASS"}
 EVIDENCE_PASS_STATES = PASS_STATES | {"PASSED", "SUCCESS", "OK", "VERIFIED"}
 
@@ -397,160 +399,13 @@ def validate(data: dict[str, object]) -> ValidationDict:
 def validate_serving_final_gate(
     data: dict[str, object],
     expected_route: str | None = None,
-    platform_policy: PlatformPolicy | None = None,
 ) -> ValidationDict:
     """Validate a strict vLLM/SGLang serving final-gate report.
 
-    When ``platform_policy`` is provided, serving evidence field names and
-    runtime checks are derived from the policy instead of hardcoded per-backend
-    strings.  Pass ``None`` for legacy backwards-compatible behaviour.
+    Delegates to ``validators.serving_validator.validate_serving_final_gate``
+    to avoid code duplication.
     """
-    errors: list[str] = []
-
-    route = data.get("migration_route")
-    if expected_route is not None and route != expected_route:
-        errors.append(f"migration_route must match expected serving route {expected_route}")
-    if not is_serving_route(route):
-        errors.append("migration_route must be vllm_serving or sglang_serving")
-
-    expected_framework = serving_framework_for_route(route)
-    if data.get("serving_framework") != expected_framework:
-        errors.append(f"serving_framework must be '{expected_framework}' for migration_route={route}")
-    serving_backend = data.get("serving_backend")
-    if not isinstance(serving_backend, str) or not serving_backend.strip():
-        errors.append("serving_backend must be a non-empty string")
-        serving_backend = ""
-
-    full_status = data.get("full_migration_status")
-    _reject_blocking_status(full_status, "full_migration_status", errors)
-    if full_status != "FULL_PASS":
-        errors.append("full_migration_status must be 'FULL_PASS'")
-
-    for field in ("project_test_files", "expected_outputs", "required_checks"):
-        if not _non_empty_string_list(data.get(field)):
-            errors.append(f"{field} must be a non-empty list of project validation evidence")
-
-    required_checks = set(_string_values(data.get("required_checks")))
-    backend_execution_check = _serving_execution_evidence_field(serving_backend, platform_policy)
-    backend_fallback_check = _serving_fallback_check_field(serving_backend, platform_policy)
-    for check in (
-        "project_demo_or_test_execution",
-        "serving_api_request_validation",
-        "readiness_probe_passed",
-        backend_execution_check,
-        backend_fallback_check,
-        "no_cpu_fallback",
-        "fresh_serving_report",
-        "route_framework_match",
-    ):
-        if check not in required_checks:
-            errors.append(f"required_checks must include {check}")
-
-    if not _truthy_evidence(data.get("readiness_probe")):
-        errors.append("readiness_probe must prove the serving endpoint became ready")
-    if not _truthy_evidence(data.get("request_validation")):
-        errors.append("request_validation must prove actual project API/demo requests succeeded")
-    execution_evidence_field = _serving_execution_evidence_field(serving_backend, platform_policy)
-    if not _truthy_evidence(data.get(execution_evidence_field)):
-        errors.append(f"{execution_evidence_field} must prove real accelerator execution")
-
-    if data.get("project_demo_or_test_executed") is not True:
-        errors.append("project_demo_or_test_executed must be true")
-    if data.get("serving_api_validated") is not True:
-        errors.append("serving_api_validated must be true")
-    execution_observed_field = _serving_execution_observed_field(serving_backend, platform_policy)
-    if data.get(execution_observed_field) is not True:
-        errors.append(f"{execution_observed_field} must be true")
-    _resolve_serving_runtime_validation(serving_backend, platform_policy, data, errors)
-
-    for field in ("cuda_fallback_detected", "cpu_fallback_detected", "import_only", "smoke_only"):
-        if data.get(field) is not False:
-            errors.append(f"{field} must be false")
-
-    return {"passed": not errors, "errors": errors, "warnings": []}
-
-
-def _serving_execution_evidence_field(
-    serving_backend: str,
-    platform_policy: PlatformPolicy | None,
-) -> str:
-    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
-        return platform_policy.serving_runtime.execution_evidence_field
-    _ = serving_backend
-    return "accelerator_execution_evidence"
-
-
-def _serving_fallback_check_field(
-    serving_backend: str,
-    platform_policy: PlatformPolicy | None,
-) -> str:
-    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
-        checks = platform_policy.serving_runtime.required_checks
-        if "no_cuda_fallback" in checks:
-            return "no_cuda_fallback"
-    _ = serving_backend
-    return "no_forbidden_runtime_fallback"
-
-
-def _serving_execution_observed_field(
-    serving_backend: str,
-    platform_policy: PlatformPolicy | None,
-) -> str:
-    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
-        return platform_policy.serving_runtime.execution_observed_field
-    _ = serving_backend
-    return "accelerator_execution_observed"
-
-
-def _resolve_serving_runtime_validation(
-    serving_backend: str,
-    platform_policy: PlatformPolicy | None,
-    data: dict[str, object],
-    errors: list[str],
-) -> None:
-    if platform_policy is not None and serving_backend == platform_policy.serving_runtime.backend:
-        _validate_policy_serving_runtime_evidence(data, platform_policy, errors)
-        return
-    _validate_generic_serving_runtime_evidence(data, errors)
-
-
-def _validate_policy_serving_runtime_evidence(
-    data: dict[str, object],
-    platform_policy: PlatformPolicy,
-    errors: list[str],
-) -> None:
-    field_name = platform_policy.serving_runtime.runtime_evidence_field
-    evidence_value = data.get(field_name)
-    if not isinstance(evidence_value, Mapping):
-        errors.append(f"{field_name} must be present for serving FULL_PASS validation")
-        return
-    evidence = cast(Mapping[object, object], evidence_value)
-    if evidence.get("serving_backend") != data.get("serving_backend"):
-        errors.append(f"{field_name}.serving_backend must match serving_backend")
-    if evidence.get("forbidden_runtime_markers_absent") is not True:
-        errors.append(f"{field_name}.forbidden_runtime_markers_absent must be true")
-    framework = data.get("serving_framework")
-    if isinstance(framework, str) and evidence.get(f"{framework}_imported") is not True:
-        errors.append(f"{field_name}.{framework}_imported must be true")
-    for evidence_field in platform_policy.serving_runtime.runtime_evidence_fields:
-        if evidence.get(evidence_field) is not True:
-            errors.append(f"{field_name}.{evidence_field} must be true")
-
-
-def _validate_generic_serving_runtime_evidence(data: dict[str, object], errors: list[str]) -> None:
-    evidence_value = data.get("serving_runtime_evidence")
-    if not isinstance(evidence_value, Mapping):
-        errors.append("serving_runtime_evidence must be present for serving FULL_PASS validation")
-        return
-    evidence = cast(Mapping[object, object], evidence_value)
-    backend = data.get("serving_backend")
-    if evidence.get("serving_backend") != backend:
-        errors.append("serving_runtime_evidence.serving_backend must match serving_backend")
-    if evidence.get("forbidden_runtime_markers_absent") is not True:
-        errors.append("serving_runtime_evidence.forbidden_runtime_markers_absent must be true")
-    framework = data.get("serving_framework")
-    if isinstance(framework, str) and evidence.get(f"{framework}_imported") is not True:
-        errors.append(f"serving_runtime_evidence.{framework}_imported must be true")
+    return _validate_serving_final_gate(data, expected_route=expected_route)
 
 
 def validate_custom_op_final_gate(
@@ -849,7 +704,7 @@ def _gate_declares_policy_custom_op_target(
     data: Mapping[object, object],
     platform_policy: PlatformPolicy,
 ) -> bool:
-    device = data.get("device") or data.get("target_device") or data.get("serving_backend")
+    device = data.get("device") or data.get("target_device")
     if isinstance(device, str) and _is_policy_target_device(_normalize_token(device), platform_policy):
         return True
     for field_name in ("custom_device", "custom_backend", "target_backend", "route", "migration_route"):

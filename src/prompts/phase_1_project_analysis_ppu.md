@@ -10,8 +10,8 @@ You are executing `{phase_name}` for `{project_dir}`.
 ## Serving Route Detection
 - Classify `migration_route` as exactly one of `ordinary_cuda`, `custom_op`, `custom_op_with_variants`, `vllm_serving`, or `sglang_serving`.
 - Use `vllm_serving` only when project files show a vLLM serving runtime surface such as project-local imports, requirements, launch scripts, README commands, API demos, or tests. Use `sglang_serving` only for equivalent SGLang surface evidence. Do not infer either serving route from package availability alone.
-- For vLLM/SGLang routes, include `serving_runtime_surface` with `serving_framework`, `serving_backend`, `detection_complete`, `launch_command`, `launch_evidence`, `project_demo_or_test_evidence`, `project_test_files`, `readiness_probe`, `request_validation`, `expected_outputs`, `required_runtime_env`, and `unresolved_source_groups`.
-- Keep this PPU-specific and platform-neutral: PPU uses CUDA-compatible APIs, so do not copy Ascend/NPU-only requirements such as `torch_npu`, CANN, `tbe`, or `te`. Set `serving_backend` to `ppu` for this workflow.
+- For vLLM/SGLang routes, include `serving_runtime_surface` with `serving_framework`, `detection_complete`, `launch_command`, `launch_evidence`, `project_demo_or_test_evidence`, `project_test_files`, `readiness_probe`, `request_validation`, `expected_outputs`, `required_runtime_env`, and `unresolved_source_groups`.
+- Keep this PPU-specific and platform-neutral: PPU uses CUDA-compatible APIs, so do not copy Ascend/NPU-only requirements such as `torch_npu`, CANN, `tbe`, or `te`.
 - Serving route classification is fail-closed: framework must match the route, launch/demo/API/test evidence must be project-local, `project_demo_or_test_evidence` and `project_test_files` must be non-empty, and `unresolved_source_groups` must be empty when `detection_complete=true`.
 
 ## Goal
@@ -49,7 +49,6 @@ Return exactly one JSON object with this shape:
   "migration_route": "vllm_serving",
   "serving_runtime_surface": {
     "serving_framework": "vllm",
-    "serving_backend": "ppu",
     "detection_complete": true,
     "launch_command": "python serve.py --model example",
     "launch_evidence": ["README documents python serve.py"],

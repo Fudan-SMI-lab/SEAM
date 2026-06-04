@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from core.serving_runtime import merge_serving_runtime_contract, write_serving_validation_wrapper
-from core.platform_policy import PlatformPolicy
+from core.serving_runtime import write_serving_validation_wrapper
+from validators.serving_validator import GENERIC_SERVING_REQUIRED_CHECKS, GENERIC_SERVING_VALIDATION_OBLIGATIONS
 
 
 ORDINARY_CUDA = "ordinary_cuda"
@@ -71,30 +71,6 @@ def serving_entry_kind_for_route(route: object) -> str | None:
     return None
 
 
-GENERIC_SERVING_REQUIRED_CHECKS = (
-    "project_demo_or_test_execution",
-    "serving_api_request_validation",
-    "readiness_probe_passed",
-    "accelerator_execution_evidence",
-    "no_forbidden_runtime_fallback",
-    "no_cpu_fallback",
-    "fresh_serving_report",
-    "route_framework_match",
-)
-
-SERVING_REQUIRED_CHECKS = GENERIC_SERVING_REQUIRED_CHECKS
-
-GENERIC_SERVING_VALIDATION_OBLIGATIONS = (
-    "actual_project_demo_test_or_api_validation",
-    "accelerator_execution_evidence",
-    "reject_import_only_or_smoke_only",
-    "reject_forbidden_runtime_or_cpu_fallback",
-    "fresh_report_paths",
-    "route_framework_match",
-)
-
-SERVING_VALIDATION_OBLIGATIONS = GENERIC_SERVING_VALIDATION_OBLIGATIONS
-
 CUSTOM_OP_PHASE3_ONLY_FIELDS = (
     "reports_dir",
     "operator_discovery_sources",
@@ -106,58 +82,7 @@ CUSTOM_OP_PHASE3_ONLY_FIELDS = (
 )
 
 
-
-
-def _policy_backend(platform_policy: PlatformPolicy | None) -> str:
-    if platform_policy is None:
-        return "generic"
-    return platform_policy.serving_runtime.backend
-
-
-def _resolve_serving_backend(
-    explicit_backend: object,
-    platform_policy: PlatformPolicy | None,
-) -> str:
-    policy_backend = _policy_backend(platform_policy)
-    if isinstance(explicit_backend, str) and explicit_backend.strip():
-        backend = explicit_backend.strip()
-        if backend in {"vllm", "sglang"} and platform_policy is not None:
-            return policy_backend
-        return backend
-    return policy_backend
-
-
-def serving_required_checks_for_backend(
-    backend: str,
-    platform_policy: PlatformPolicy | None = None,
-) -> tuple[str, ...]:
-    if (
-        platform_policy is not None
-        and backend == platform_policy.serving_runtime.backend
-        and platform_policy.serving_runtime.required_checks
-    ):
-        return platform_policy.serving_runtime.required_checks
-    return GENERIC_SERVING_REQUIRED_CHECKS
-
-
-def serving_validation_obligations_for_backend(
-    backend: str,
-    platform_policy: PlatformPolicy | None = None,
-) -> tuple[str, ...]:
-    if (
-        platform_policy is not None
-        and backend == platform_policy.serving_runtime.backend
-        and platform_policy.serving_runtime.validation_obligations
-    ):
-        return platform_policy.serving_runtime.validation_obligations
-    return GENERIC_SERVING_VALIDATION_OBLIGATIONS
-
-
-def normalize_serving_phase1_surface(
-    output: dict[str, object],
-    *,
-    platform_policy: PlatformPolicy | None = None,
-) -> None:
+def normalize_serving_phase1_surface(output: dict[str, object]) -> None:
     route_value = output.get("migration_route")
     if not isinstance(route_value, str) or not is_serving_route(route_value):
         return
@@ -170,12 +95,19 @@ def normalize_serving_phase1_surface(
     else:
         surface = {}
     surface["serving_framework"] = framework
-    backend = _resolve_serving_backend(surface.get("serving_backend"), platform_policy)
-    surface["serving_backend"] = backend
     if "detection_complete" not in surface:
         surface["detection_complete"] = True
-    merge_serving_runtime_contract(surface, route_value, backend, platform_policy)
+    # generic defaults for required serving runtime fields
+    if not isinstance(surface.get("runtime_env_setup"), dict) or not surface.get("runtime_env_setup"):
+        surface["runtime_env_setup"] = {"accelerator": "generic"}
+    if not surface.get("required_import_probes"):
+        surface["required_import_probes"] = ["torch"]
+    if not surface.get("forbidden_runtime_markers"):
+        surface["forbidden_runtime_markers"] = ["cpu fallback", "fallback to cpu"]
+    if not surface.get("serving_runtime_checks"):
+        surface["serving_runtime_checks"] = ["accelerator_runtime_evidence"]
     output["serving_runtime_surface"] = surface
+
 
 def normalize_serving_phase3_contract(
     contract: dict[str, object],
@@ -183,7 +115,6 @@ def normalize_serving_phase3_contract(
     route: str,
     project_dir: str | Path,
     phase1_output: Mapping[str, object] | None = None,
-    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     entry_kind = serving_entry_kind_for_route(route)
     framework = serving_framework_for_route(route)
@@ -208,6 +139,10 @@ def normalize_serving_phase3_contract(
         "project_test_files",
         "expected_outputs",
         "required_runtime_env",
+        "runtime_env_setup",
+        "required_import_probes",
+        "forbidden_runtime_markers",
+        "serving_runtime_checks",
     ):
         value = surface.get(field)
         if value and not contract.get(field):
@@ -221,14 +156,11 @@ def normalize_serving_phase3_contract(
             contract["launch_command"] = entry_command
     service_launch_command = str(launch_command or contract.get("launch_command") or "")
 
-    explicit_backend = contract.get("serving_backend") or surface.get("serving_backend")
-    backend = _resolve_serving_backend(explicit_backend, platform_policy)
-    merge_serving_runtime_contract(contract, route, backend, platform_policy)
-    required_checks = list(serving_required_checks_for_backend(backend, platform_policy=platform_policy))
+    required_checks = list(GENERIC_SERVING_REQUIRED_CHECKS)
     contract["required_checks"] = required_checks
     contract["serving_reports_dir"] = str(project_path / "migration_reports" / "serving")
     contract["required_report_paths"] = ["migration_reports/serving/serving_final_gate.json"]
-    contract["serving_validation_obligations"] = list(serving_validation_obligations_for_backend(backend, platform_policy=platform_policy))
+    contract["serving_validation_obligations"] = list(GENERIC_SERVING_VALIDATION_OBLIGATIONS)
 
     if not contract.get("project_test_files"):
         contract["project_test_files"] = ["project-provided serving demo/test/API path from Phase 1 serving surface"]
@@ -238,18 +170,24 @@ def normalize_serving_phase3_contract(
         contract["readiness_probe"] = {"type": "http", "success_condition": "serving endpoint becomes ready"}
     if not isinstance(contract.get("request_validation"), Mapping):
         contract["request_validation"] = {"type": "project_demo_or_api_request", "success_condition": "project request succeeds"}
+    if not isinstance(contract.get("runtime_env_setup"), dict) or not contract.get("runtime_env_setup"):
+        contract["runtime_env_setup"] = surface.get("runtime_env_setup", {"accelerator": "generic"})
+    if not contract.get("required_import_probes"):
+        contract["required_import_probes"] = surface.get("required_import_probes", ["torch"])
+    if not contract.get("forbidden_runtime_markers"):
+        contract["forbidden_runtime_markers"] = surface.get("forbidden_runtime_markers", ["cpu fallback", "fallback to cpu"])
+    if not contract.get("serving_runtime_checks"):
+        contract["serving_runtime_checks"] = surface.get("serving_runtime_checks", ["accelerator_runtime_evidence"])
 
     script_path = write_serving_validation_wrapper(
         project_dir=project_path,
         route=route,
-        backend=backend,
         launch_command=service_launch_command,
         readiness_probe=contract.get("readiness_probe"),
         request_validation=contract.get("request_validation"),
         project_test_files=contract.get("project_test_files"),
         expected_outputs=contract.get("expected_outputs"),
         required_checks=required_checks,
-        platform_policy=platform_policy,
     )
     contract["entry_script_path"] = str(script_path)
     venv_python = project_path / ".venv" / "bin" / "python"

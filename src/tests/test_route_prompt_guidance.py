@@ -18,14 +18,11 @@ def test_baseaware_phase2_prompts_forbid_blocking_questions() -> None:
 
 def test_phase1_platform_prompts_include_serving_route_taxonomy_without_npu_copying() -> None:
     expectations = {
-        "phase_1_project_analysis_ppu": "serving_backend` to `ppu`",
-        "phase_1_project_analysis_musa": "serving_backend` to `musa`",
+        "phase_1_project_analysis_ppu": "vllm_serving",
+        "phase_1_project_analysis_musa": "vllm_serving",
     }
-    for prompt_name, backend_text in expectations.items():
+    for prompt_name, route_text in expectations.items():
         content = (PROMPTS_DIR / f"{prompt_name}.md").read_text(encoding="utf-8")
-        assert "vllm_serving" in content
-        assert "sglang_serving" in content
-        assert "ordinary_cuda" in content
-        assert "serving_runtime_surface" in content
-        assert backend_text in content
+        assert route_text in content
+        assert "serving_backend" not in content
         assert "do not copy Ascend/NPU-only requirements" in content

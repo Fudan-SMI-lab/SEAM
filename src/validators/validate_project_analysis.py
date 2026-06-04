@@ -378,11 +378,6 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
         errors.append(
             f"serving_runtime_surface.serving_framework must be '{expected_framework}' for migration_route={migration_route}"
         )
-    serving_backend = surface.get("serving_backend")
-    if not isinstance(serving_backend, str) or not serving_backend.strip():
-        errors.append("serving_runtime_surface.serving_backend must be a non-empty string for serving routes")
-        serving_backend = ""
-
     detection_complete = surface.get("detection_complete")
     if not isinstance(detection_complete, bool):
         errors.append("serving_runtime_surface.detection_complete must be a boolean")

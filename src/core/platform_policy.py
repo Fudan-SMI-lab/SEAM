@@ -7,7 +7,6 @@ external profile file is required.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -109,84 +108,6 @@ class EnvValidationConfig:
     """Boolean fields that are optional but must be bool when present."""
 
 
-# -- Platform-agnostic serving check / obligation defaults -------------------
-_GENERIC_SERVING_REQUIRED_CHECKS = (
-    "project_demo_or_test_execution",
-    "serving_api_request_validation",
-    "readiness_probe_passed",
-    "accelerator_execution_evidence",
-    "no_forbidden_runtime_fallback",
-    "no_cpu_fallback",
-    "fresh_serving_report",
-    "route_framework_match",
-)
-
-_GENERIC_SERVING_VALIDATION_OBLIGATIONS = (
-    "actual_project_demo_test_or_api_validation",
-    "accelerator_execution_evidence",
-    "reject_import_only_or_smoke_only",
-    "reject_forbidden_runtime_or_cpu_fallback",
-    "fresh_report_paths",
-    "route_framework_match",
-)
-
-
-@dataclass(frozen=True)
-class ServingRuntimePolicy:
-    """Per-platform serving runtime/backend contract policy."""
-
-    backend: str = "generic"
-    runtime_env_setup: dict[str, object] = field(default_factory=lambda: {
-        "device_env": ["framework-provided accelerator device selection"],
-        "backend": "generic",
-    })
-    required_runtime_env: tuple[str, ...] = (
-        "generic serving runtime",
-        "serving framework installed",
-        "target accelerator runtime available",
-    )
-    common_import_probes: tuple[str, ...] = ("torch",)
-    common_forbidden_runtime_markers: tuple[str, ...] = (
-        "cpu fallback",
-        "fallback to cpu",
-    )
-    runtime_checks_field: str = "serving_runtime_checks"
-    runtime_checks: tuple[str, ...] = (
-        "serving_framework_imported",
-        "accelerator_execution_observed",
-        "forbidden_runtime_markers_absent",
-        "no_cpu_fallback",
-    )
-    strip_env_prefixes: tuple[str, ...] = ()
-    root_env_vars: tuple[str, ...] = ()
-    root_candidates: tuple[str, ...] = ()
-    discovery_command: str = ""
-    """Shell command that discovers the runtime root directory at runtime.
-    
-    Executed inside the generated serving validation wrapper **only** when no
-    ``root_env_vars`` resolve to an existing path.  The command must output the
-    absolute toolkit root directory to stdout and exit 0 on success.
-    
-    Example for Ascend NPU::
-    
-         find ${ASCEND_SEARCH_ROOTS:-/usr/local /opt} -maxdepth 5 -name set_env.sh -path '*ascend*' \\
-             2>/dev/null | head -1 | xargs dirname | xargs dirname
-    """
-    discovery_timeout_seconds: float = 30.0
-    """Maximum wall-clock seconds allowed for ``discovery_command``."""
-    env_vars_from_root: dict[str, str] = field(default_factory=dict)
-    pythonpath_from_root: tuple[str, ...] = ()
-    library_path_from_root: tuple[str, ...] = ()
-    path_from_root: tuple[str, ...] = ()
-    route_env_defaults: dict[str, dict[str, str]] = field(default_factory=dict)
-    runtime_evidence_fields: dict[str, str] = field(default_factory=dict)
-    execution_evidence_field: str = "accelerator_execution_evidence"
-    execution_observed_field: str = "accelerator_execution_observed"
-    runtime_evidence_field: str = "serving_runtime_evidence"
-    required_checks: tuple[str, ...] = _GENERIC_SERVING_REQUIRED_CHECKS
-    """Check keys required in serving final-gate ``required_checks`` list."""
-    validation_obligations: tuple[str, ...] = _GENERIC_SERVING_VALIDATION_OBLIGATIONS
-    """Obligation keys injected into serving phase-3 contract."""
 
 
 @dataclass(frozen=True)
@@ -203,8 +124,6 @@ class PlatformPolicy:
         default_factory=CustomOpEvidenceConfig
     )
 
-    serving_runtime: ServingRuntimePolicy = field(default_factory=ServingRuntimePolicy)
-
     env_validation: EnvValidationConfig = field(
         default_factory=EnvValidationConfig
     )
@@ -220,10 +139,8 @@ class PlatformPolicy:
     """
 
     # -- Guidance strings consumed by repair / operator prompts --
-    guidance_prefix: str = ""
     guidance_native_label: str = ""
     guidance_native_framework: str = ""
-    guidance_python_binary: str = "python"
     repair_prompt_ids: dict[str, str] = field(default_factory=dict)
     repair_prompt_ids_container: dict[str, str] = field(default_factory=dict)
     error_analyzer_prompt_id: str = ""
@@ -380,105 +297,9 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         display_name="Ascend NPU",
         custom_op_evidence=_NPU_ASCEND_EVIDENCE,
         env_validation=_NPU_ASCEND_ENV_VALIDATION,
-        serving_runtime=ServingRuntimePolicy(
-            backend="ascend",
-            runtime_env_setup={
-                "source_candidates": [
-                    "$ASCEND_HOME_PATH (set_env.sh) if the env var is set and the directory exists",
-                    "$ASCEND_TOOLKIT_HOME (set_env.sh) if the env var is set and the directory exists",
-                    (
-                        "First match from: find ${ASCEND_SEARCH_ROOTS:-/usr/local /opt /home} -maxdepth 5 "
-                        "-name set_env.sh -path '*ascend*' 2>/dev/null"
-                    ),
-                ],
-                "pythonpath_requirements": ["tbe", "te", "torch_npu"],
-                "library_requirements": ["CANN runtime", "Ascend runtime libraries"],
-                "device_env": ["ASCEND_VISIBLE_DEVICES or framework-provided NPU device selection"],
-            },
-            required_runtime_env=(
-                "Ascend NPU runtime",
-                "CANN toolkit set_env.sh or equivalent env export",
-                "ASCEND_HOME_PATH",
-                "ASCEND_OPP_PATH",
-                "PYTHONPATH includes CANN python/site-packages for tbe and te",
-                "LD_LIBRARY_PATH includes CANN runtime libraries",
-                "torch_npu",
-                "tbe",
-                "te",
-            ),
-            common_import_probes=("torch", "torch_npu", "tbe", "te"),
-            common_forbidden_runtime_markers=(
-                "CUDA_VISIBLE_DEVICES",
-                "NVIDIA_VISIBLE_DEVICES",
-                "nvidia-smi",
-                "NCCL_",
-                "pynccl_allocator",
-                "torch.cuda.memory",
-                "cuda fallback",
-                "cpu fallback",
-            ),
-            runtime_checks_field="npu_runtime_checks",
-            runtime_checks=(
-                "cann_env_loaded",
-                "torch_npu_imported",
-                "tbe_imported",
-                "te_imported",
-                "serving_framework_imported",
-                "cuda_nccl_markers_absent",
-                "no_cpu_fallback",
-            ),
-            strip_env_prefixes=("CUDA", "NVIDIA", "NCCL"),
-            root_env_vars=("ASCEND_HOME_PATH", "ASCEND_TOOLKIT_HOME"),
-            root_candidates=(),
-            discovery_command=(
-                "find ${ASCEND_SEARCH_ROOTS:-/usr/local /opt} -maxdepth 5 -name set_env.sh -path '*ascend*' "
-                "2>/dev/null | head -1 | xargs dirname | xargs dirname"
-            ),
-            discovery_timeout_seconds=30.0,
-            env_vars_from_root={"ASCEND_HOME_PATH": ".", "ASCEND_OPP_PATH": "opp"},
-            pythonpath_from_root=(
-                "python/site-packages",
-                os.environ.get(
-                    "SEAM_NPU_TBE_PYTHONPATH",
-                    "opp/built-in/op_impl/ai_core/tbe",
-                ),
-            ),
-            library_path_from_root=(
-                "lib64",
-                "runtime/lib64",
-                "compiler/lib64",
-                os.environ.get(
-                    "SEAM_NPU_TBE_LIBRARYPATH",
-                    "opp/built-in/op_impl/ai_core/tbe/op_tiling/lib",
-                ),
-            ),
-            path_from_root=("bin", "compiler/ccec_compiler/bin"),
-            route_env_defaults={"vllm_serving": {"VLLM_TARGET_DEVICE": "npu"}},
-            runtime_evidence_fields={
-                "torch_npu_imported": "torch_npu",
-                "tbe_imported": "tbe",
-                "te_imported": "te",
-            },
-            execution_evidence_field="npu_execution_evidence",
-            execution_observed_field="npu_execution_observed",
-            runtime_evidence_field="npu_runtime_evidence",
-            required_checks=(
-                "project_demo_or_test_execution",
-                "serving_api_request_validation",
-                "readiness_probe_passed",
-                "npu_execution_evidence",
-                "no_cuda_fallback",
-                "no_cpu_fallback",
-                "fresh_serving_report",
-                "route_framework_match",
-            ),
-            validation_obligations=_GENERIC_SERVING_VALIDATION_OBLIGATIONS,
-        ),
         default_rule_migration_strategy="cuda_to_npu",
-        guidance_prefix="Ascend NPU",
         guidance_native_label="Ascend NPU",
         guidance_native_framework="torch_npu / Ascend PyTorch primitives",
-        guidance_python_binary="python",
         repair_prompt_ids={
             "dependency_fixer": "repair_dependency_fixer_npu",
             "code_adapter": "repair_code_adapter_npu",
@@ -496,7 +317,6 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="ppu_cuda_compatible",
         display_name="PPU (CUDA-Compatible)",
         env_validation=_PPU_CUDA_ENV_VALIDATION,
-        serving_runtime=ServingRuntimePolicy(backend="ppu"),
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["ppu", "cuda", "gpu", "torch_cuda"],
             positive_boolean_fields=["ppu_custom", "custom_ppu", "ppu_custom_invoked", "cuda_custom", "custom_cuda"],
@@ -563,10 +383,8 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             ),
         ),
         default_rule_migration_strategy="preserve_cuda_report_only",
-        guidance_prefix="PPU (CUDA-Compatible)",
         guidance_native_label="PPU GPU",
         guidance_native_framework="torch.cuda / PPU-compatible PyTorch primitives",
-        guidance_python_binary="python",
         repair_prompt_ids_container={
             "dependency_fixer": "repair_dependency_fixer_container_ppu",
             "code_adapter": "repair_code_adapter_container_ppu",
@@ -623,15 +441,12 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "require_real_cuda_custom_op_artifacts"
             ),
         ),
-        guidance_prefix="NVIDIA CUDA",
         guidance_native_label="NVIDIA GPU (CUDA)",
         guidance_native_framework="torch.cuda / CUDA PyTorch primitives",
-        guidance_python_binary="python",
     ),
     "musa_muxi": PlatformPolicy(
         id="musa_muxi",
         display_name="MUXI MUSA",
-        serving_runtime=ServingRuntimePolicy(backend="musa"),
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["musa", "muxi", "musa_gpu", "maca", "metax", "mxgpu", "torch_maca"],
             positive_boolean_fields=[
@@ -697,10 +512,8 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "require_real_musa_custom_op_artifacts"
             ),
         ),
-        guidance_prefix="MUXI MUSA",
         guidance_native_label="MUXI GPU (MUSA)",
         guidance_native_framework="torch_musa / torch_maca / MUSA-MACA PyTorch primitives",
-        guidance_python_binary="python",
         repair_prompt_ids_container={
             "dependency_fixer": "repair_dependency_fixer_container_musa",
             "code_adapter": "repair_code_adapter_container_musa",
@@ -755,10 +568,8 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "require_real_rocm_custom_op_artifacts"
             ),
         ),
-        guidance_prefix="AMD ROCm",
         guidance_native_label="AMD GPU (ROCm)",
         guidance_native_framework="torch.cuda (HIP) / ROCm PyTorch primitives",
-        guidance_python_binary="python",
     ),
     "mlu_cambrian": PlatformPolicy(
         id="mlu_cambrian",
@@ -808,20 +619,15 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "require_real_mlu_custom_op_artifacts"
             ),
         ),
-        guidance_prefix="Cambrian MLU",
         guidance_native_label="Cambrian MLU",
         guidance_native_framework="torch_mlu / Cambrian PyTorch primitives",
-        guidance_python_binary="python",
     ),
     "generic_accelerator": PlatformPolicy(
         id="generic_accelerator",
         display_name="Generic Accelerator",
         custom_op_evidence=_GENERIC_EVIDENCE,
-        serving_runtime=ServingRuntimePolicy(backend="generic"),
-        guidance_prefix="Generic Accelerator",
         guidance_native_label="Target Accelerator",
         guidance_native_framework="target accelerator PyTorch primitives",
-        guidance_python_binary="python",
     ),
 }
 
@@ -967,57 +773,18 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, object]) -> Plat
         )
 
     overridden_strategy = overrides.get("default_rule_migration_strategy")
-    serving_runtime = base.serving_runtime
-    serving_overrides = overrides.get("serving_runtime")
-    if isinstance(serving_overrides, dict):
-        serving_runtime = ServingRuntimePolicy(
-            backend=_string_override(serving_overrides, "backend", serving_runtime.backend),
-            runtime_env_setup=dict(serving_overrides.get("runtime_env_setup", serving_runtime.runtime_env_setup)) if isinstance(serving_overrides.get("runtime_env_setup"), dict) else serving_runtime.runtime_env_setup,
-            required_runtime_env=tuple(_list_override(serving_overrides, "required_runtime_env", list(serving_runtime.required_runtime_env))),
-            common_import_probes=tuple(_list_override(serving_overrides, "common_import_probes", list(serving_runtime.common_import_probes))),
-            common_forbidden_runtime_markers=tuple(_list_override(serving_overrides, "common_forbidden_runtime_markers", list(serving_runtime.common_forbidden_runtime_markers))),
-            runtime_checks_field=_string_override(serving_overrides, "runtime_checks_field", serving_runtime.runtime_checks_field),
-            runtime_checks=tuple(_list_override(serving_overrides, "runtime_checks", list(serving_runtime.runtime_checks))),
-            strip_env_prefixes=tuple(_list_override(serving_overrides, "strip_env_prefixes", list(serving_runtime.strip_env_prefixes))),
-            root_env_vars=tuple(_list_override(serving_overrides, "root_env_vars", list(serving_runtime.root_env_vars))),
-            root_candidates=tuple(_list_override(serving_overrides, "root_candidates", list(serving_runtime.root_candidates))),
-            env_vars_from_root=dict(serving_overrides.get("env_vars_from_root", serving_runtime.env_vars_from_root)) if isinstance(serving_overrides.get("env_vars_from_root"), dict) else serving_runtime.env_vars_from_root,
-            pythonpath_from_root=tuple(_list_override(serving_overrides, "pythonpath_from_root", list(serving_runtime.pythonpath_from_root))),
-            library_path_from_root=tuple(_list_override(serving_overrides, "library_path_from_root", list(serving_runtime.library_path_from_root))),
-            path_from_root=tuple(_list_override(serving_overrides, "path_from_root", list(serving_runtime.path_from_root))),
-            route_env_defaults=dict(serving_overrides.get("route_env_defaults", serving_runtime.route_env_defaults)) if isinstance(serving_overrides.get("route_env_defaults"), dict) else serving_runtime.route_env_defaults,
-            runtime_evidence_fields=dict(serving_overrides.get("runtime_evidence_fields", serving_runtime.runtime_evidence_fields)) if isinstance(serving_overrides.get("runtime_evidence_fields"), dict) else serving_runtime.runtime_evidence_fields,
-            execution_evidence_field=_string_override(
-                serving_overrides,
-                "execution_evidence_field",
-                serving_runtime.execution_evidence_field,
-            ),
-            execution_observed_field=_string_override(
-                serving_overrides,
-                "execution_observed_field",
-                serving_runtime.execution_observed_field,
-            ),
-            runtime_evidence_field=_string_override(
-                serving_overrides,
-                "runtime_evidence_field",
-                serving_runtime.runtime_evidence_field,
-            ),
-        )
 
     return PlatformPolicy(
         id=str(overridden_id) if isinstance(overridden_id, str) else base.id,
         display_name=str(overridden_display_name) if isinstance(overridden_display_name, str) else base.display_name,
         custom_op_evidence=ce,
-        serving_runtime=serving_runtime,
         default_rule_migration_strategy=(
             str(overridden_strategy)
             if isinstance(overridden_strategy, str) and overridden_strategy.strip()
             else base.default_rule_migration_strategy
         ),
-        guidance_prefix=str(overrides.get("guidance_prefix", base.guidance_prefix)),
         guidance_native_label=str(overrides.get("guidance_native_label", base.guidance_native_label)),
         guidance_native_framework=str(overrides.get("guidance_native_framework", base.guidance_native_framework)),
-        guidance_python_binary=str(overrides.get("guidance_python_binary", base.guidance_python_binary)),
         repair_prompt_ids=_dict_str_override(overrides, "repair_prompt_ids", base.repair_prompt_ids),
         repair_prompt_ids_container=_dict_str_override(overrides, "repair_prompt_ids_container", base.repair_prompt_ids_container),
         error_analyzer_prompt_id=_string_override(overrides, "error_analyzer_prompt_id", base.error_analyzer_prompt_id),

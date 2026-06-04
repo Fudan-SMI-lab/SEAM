@@ -2339,7 +2339,7 @@ class WorkflowExecutor:
         if "project_analysis" in phase_id or phase_id == "phase_1":
             normalized["project_dir"] = prompt_context.get("project_dir", self.project_dir)
             self._normalize_project_analysis_variant_count(normalized)
-            normalize_serving_phase1_surface(normalized, platform_policy=self.platform_policy)
+            normalize_serving_phase1_surface(normalized)
 
         # phase_2_venv_create: fill venv_path / python_path from filesystem when LLM omits them.
         if "venv" in phase_id or phase_id == "phase_2":
@@ -2374,7 +2374,6 @@ class WorkflowExecutor:
                         route=str(phase1_route),
                         project_dir=str(self.project_dir),
                         phase1_output=ph1,
-                        platform_policy=self.platform_policy,
                     )
                 elif custom_op_contract_required:
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
@@ -3159,13 +3158,12 @@ class WorkflowExecutor:
             return "success", result
 
         gate_map = cast(dict[str, object], gate_data)
-        validation = validate_serving_final_gate(gate_map, expected_route=route, platform_policy=self.platform_policy)
+        validation = validate_serving_final_gate(gate_map, expected_route=route)
         result["passed"] = validation["passed"]
         result["errors"] = validation["errors"]
         result["summary"] = {
             "migration_route": gate_map.get("migration_route"),
             "serving_framework": gate_map.get("serving_framework"),
-            "serving_backend": gate_map.get("serving_backend"),
             "full_migration_status": gate_map.get("full_migration_status"),
         }
         if loop_state is not None:

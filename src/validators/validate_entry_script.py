@@ -35,7 +35,6 @@ SERVING_FIELDS = {
     "project_test_files",
     "expected_outputs",
     "required_runtime_env",
-    "serving_backend",
     "runtime_env_setup",
     "required_import_probes",
     "forbidden_runtime_markers",
@@ -243,11 +242,6 @@ def _validate_serving_contract(data: dict[str, object], errors: list[str]) -> No
     expected_framework = serving_framework_for_route(route)
     if data.get("serving_framework") != expected_framework:
         errors.append(f"serving_framework must be '{expected_framework}' for {entry_script_kind}")
-    serving_backend = data.get("serving_backend")
-    if not isinstance(serving_backend, str) or not serving_backend.strip():
-        errors.append("serving_backend must be a non-empty string for serving contracts")
-        serving_backend = ""
-
     _validate_serving_entry_script_path(data, expected_framework or "", errors)
     _validate_serving_run_command(data, errors)
 

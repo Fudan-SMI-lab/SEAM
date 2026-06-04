@@ -1,4 +1,8 @@
-"""Serving runtime contracts for vLLM/SGLang serving routes."""
+"""Serving runtime contracts for vLLM/SGLang serving routes.
+
+All platform-specific configuration is driven by LLM prompts —
+zero hardcoded platform names.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +11,6 @@ from pathlib import Path
 import json
 from typing import cast
 
-from core.platform_policy import PlatformPolicy, ServingRuntimePolicy
-
-
-BACKEND_GENERIC = "generic"
 VLLM_SERVING = "vllm_serving"
 SGLANG_SERVING = "sglang_serving"
 
@@ -19,122 +19,30 @@ ROUTE_TO_FRAMEWORK = {
     SGLANG_SERVING: "sglang",
 }
 
-ROUTE_IMPORT_PROBES = {
+# Framework-level import probes — always included regardless of platform.
+_FRAMEWORK_IMPORT_PROBES = {
     VLLM_SERVING: ("vllm",),
     SGLANG_SERVING: ("sglang",),
 }
 
-ROUTE_FORBIDDEN_RUNTIME_MARKERS = {
-    VLLM_SERVING: ("vllm cuda executor", "gpu_memory_utilization without NPU backend"),
+# Framework-level forbidden runtime markers — generic framework behaviour,
+# not platform-specific.
+_FRAMEWORK_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
+    VLLM_SERVING: ("vllm cuda executor",),
     SGLANG_SERVING: ("deep_gemm_wrapper", "pynccl", "nccl", "cuda_graph"),
 }
-
-GENERIC_REQUIRED_CHECKS = (
-    "project_demo_or_test_execution",
-    "serving_api_request_validation",
-    "readiness_probe_passed",
-    "accelerator_execution_evidence",
-    "no_forbidden_runtime_fallback",
-    "no_cpu_fallback",
-    "fresh_serving_report",
-    "route_framework_match",
-)
-
-GENERIC_VALIDATION_OBLIGATIONS = (
-    "actual_project_demo_test_or_api_validation",
-    "accelerator_execution_evidence",
-    "reject_import_only_or_smoke_only",
-    "reject_forbidden_runtime_or_cpu_fallback",
-    "fresh_report_paths",
-    "route_framework_match",
-)
-
-
-def serving_runtime_contract_fields(
-    route: str,
-    backend: str,
-    platform_policy: PlatformPolicy | None = None,
-) -> dict[str, object]:
-    runtime_policy = _serving_policy_for_backend(backend, platform_policy)
-    framework = ROUTE_TO_FRAMEWORK.get(route, "")
-    import_probes = [*runtime_policy.common_import_probes, *ROUTE_IMPORT_PROBES.get(route, ())]
-    forbidden = _forbidden_runtime_markers(route, runtime_policy)
-    runtime_checks = [
-        framework_check.replace("serving_framework", framework) if framework else framework_check
-        for framework_check in runtime_policy.runtime_checks
-    ]
-    return {
-        "serving_backend": backend,
-        "runtime_env_setup": dict(runtime_policy.runtime_env_setup),
-        "required_import_probes": import_probes,
-        "forbidden_runtime_markers": forbidden,
-        runtime_policy.runtime_checks_field: runtime_checks,
-    }
-
-
-def _serving_policy_for_backend(
-    backend: str,
-    platform_policy: PlatformPolicy | None,
-) -> ServingRuntimePolicy:
-    if platform_policy is not None and backend == platform_policy.serving_runtime.backend:
-        return platform_policy.serving_runtime
-    policy = ServingRuntimePolicy(backend=backend)
-    return ServingRuntimePolicy(
-        backend=backend,
-        runtime_env_setup={**policy.runtime_env_setup, "backend": backend},
-        required_runtime_env=(
-            f"{backend} serving runtime",
-            "serving framework installed",
-            "target accelerator runtime available",
-        ),
-    )
-
-
-def _forbidden_runtime_markers(route: str, runtime_policy: ServingRuntimePolicy) -> list[str]:
-    return [
-        *runtime_policy.common_forbidden_runtime_markers,
-        *ROUTE_FORBIDDEN_RUNTIME_MARKERS.get(route, ()),
-    ]
-
-
-def merge_serving_runtime_contract(
-    contract: dict[str, object],
-    route: str,
-    backend: str,
-    platform_policy: PlatformPolicy | None = None,
-) -> None:
-    runtime_policy = _serving_policy_for_backend(backend, platform_policy)
-    fields = serving_runtime_contract_fields(route, backend, platform_policy)
-    for key, value in fields.items():
-        if key in {"required_import_probes", "forbidden_runtime_markers", runtime_policy.runtime_checks_field}:
-            contract[key] = _merge_string_lists(contract.get(key), value)
-        elif key == "runtime_env_setup" and isinstance(contract.get(key), Mapping):
-            default_setup = fields.get(key)
-            current_setup = contract.get(key)
-            merged = dict(cast(Mapping[str, object], default_setup)) if isinstance(default_setup, Mapping) else {}
-            if isinstance(current_setup, Mapping):
-                merged.update(dict(cast(Mapping[str, object], current_setup)))
-            contract[key] = merged
-        else:
-            contract[key] = value
-    contract["required_runtime_env"] = _merge_string_lists(
-        contract.get("required_runtime_env"),
-        runtime_policy.required_runtime_env,
-    )
 
 
 def write_serving_validation_wrapper(
     *,
     project_dir: str | Path,
     route: str,
-    backend: str,
     launch_command: object,
     readiness_probe: object,
     request_validation: object,
     project_test_files: object,
     expected_outputs: object,
     required_checks: object,
-    platform_policy: PlatformPolicy | None = None,
 ) -> Path:
     project_path = Path(project_dir)
     framework = ROUTE_TO_FRAMEWORK[route]
@@ -143,23 +51,20 @@ def write_serving_validation_wrapper(
     readiness_probe_mapping: Mapping[object, object] = cast(Mapping[object, object], readiness_probe) if isinstance(readiness_probe, Mapping) else {}
     request_validation_mapping: Mapping[object, object] = cast(Mapping[object, object], request_validation) if isinstance(request_validation, Mapping) else {}
     body = _WRAPPER_TEMPLATE
-    runtime_policy = _serving_policy_for_backend(backend, platform_policy)
-    contract_fields = serving_runtime_contract_fields(route, backend, platform_policy)
-    runtime_config = _wrapper_runtime_config(route, runtime_policy)
+    import_probes = list(_FRAMEWORK_IMPORT_PROBES.get(route, ()))
+    forbidden_markers = list(_FRAMEWORK_FORBIDDEN_MARKERS.get(route, ()))
     replacements = {
         "__ROUTE_JSON__": json.dumps(route),
         "__FRAMEWORK_JSON__": json.dumps(framework),
-        "__BACKEND_JSON__": json.dumps(backend),
         "__LAUNCH_COMMAND_JSON__": json.dumps(str(launch_command or "")),
         "__READINESS_PROBE_JSON__": _python_json_loads_literal(readiness_probe_mapping),
         "__REQUEST_VALIDATION_JSON__": _python_json_loads_literal(request_validation_mapping),
         "__PROJECT_TEST_FILES_JSON__": _python_json_loads_literal(_string_list(project_test_files)),
         "__EXPECTED_OUTPUTS_JSON__": _python_json_loads_literal(_string_list(expected_outputs)),
         "__REQUIRED_CHECKS_JSON__": _python_json_loads_literal(_string_list(required_checks)),
-        "__IMPORT_PROBES_JSON__": _python_json_loads_literal(contract_fields["required_import_probes"]),
-        "__FORBIDDEN_MARKERS_JSON__": _python_json_loads_literal(contract_fields["forbidden_runtime_markers"]),
+        "__IMPORT_PROBES_JSON__": _python_json_loads_literal(import_probes),
+        "__FORBIDDEN_MARKERS_JSON__": _python_json_loads_literal(forbidden_markers),
         "__REPORTS_DIR_JSON__": json.dumps(str(reports_dir)),
-        "__RUNTIME_CONFIG_JSON__": _python_json_loads_literal(runtime_config),
     }
     for marker, value in replacements.items():
         body = body.replace(marker, value)
@@ -171,30 +76,7 @@ def _python_json_loads_literal(value: object) -> str:
     return f"json.loads({json.dumps(json.dumps(value))})"
 
 
-def _wrapper_runtime_config(route: str, runtime_policy: ServingRuntimePolicy) -> dict[str, object]:
-    return {
-        "strip_env_prefixes": list(runtime_policy.strip_env_prefixes),
-        "root_env_vars": list(runtime_policy.root_env_vars),
-        "root_candidates": list(runtime_policy.root_candidates),
-        "discovery_command": runtime_policy.discovery_command,
-        "discovery_timeout_seconds": runtime_policy.discovery_timeout_seconds,
-        "env_vars_from_root": dict(runtime_policy.env_vars_from_root),
-        "pythonpath_from_root": list(runtime_policy.pythonpath_from_root),
-        "library_path_from_root": list(runtime_policy.library_path_from_root),
-        "path_from_root": list(runtime_policy.path_from_root),
-        "route_env_defaults": dict(runtime_policy.route_env_defaults.get(route, {})),
-        "runtime_evidence_fields": dict(runtime_policy.runtime_evidence_fields),
-        "execution_evidence_field": runtime_policy.execution_evidence_field,
-        "execution_observed_field": runtime_policy.execution_observed_field,
-        "runtime_evidence_field": runtime_policy.runtime_evidence_field,
-    }
-def _merge_string_lists(existing: object, required: object) -> list[str]:
-    result: list[str] = []
-    for source in (existing, required):
-        for value in _string_list(source):
-            if value not in result:
-                result.append(value)
-    return result
+
 
 
 def _string_list(value: object) -> list[str]:
@@ -223,8 +105,6 @@ import urllib.request
 
 ROUTE = __ROUTE_JSON__
 FRAMEWORK = __FRAMEWORK_JSON__
-BACKEND = __BACKEND_JSON__
-RUNTIME_CONFIG = __RUNTIME_CONFIG_JSON__
 LAUNCH_COMMAND = __LAUNCH_COMMAND_JSON__
 READINESS_PROBE = __READINESS_PROBE_JSON__
 REQUEST_VALIDATION = __REQUEST_VALIDATION_JSON__
@@ -241,7 +121,7 @@ DEFAULT_SERVING_PORT = "8000"
 
 def main() -> int:
     started_at = time.time()
-    env, env_evidence = build_serving_env(os.environ.copy(), BACKEND)
+    env, env_evidence = build_serving_env(os.environ.copy())
     os.environ.clear()
     os.environ.update(env)
     sync_pythonpath_to_sys_path(env.get("PYTHONPATH", ""))
@@ -253,7 +133,7 @@ def main() -> int:
             env_evidence,
             import_evidence,
             command_result={"returncode": 1, "stdout_tail": "", "stderr_tail": import_evidence["error_summary"]},
-            failure_reason=f"{BACKEND} serving import preflight failed",
+            failure_reason="serving runtime import preflight failed",
         )
         return 1
 
@@ -286,9 +166,6 @@ def main() -> int:
         env.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
         if command and command[0] == "sglang":
             command = [sys.executable, "-m", "sglang.cli.main"] + command[1:]
-    for key, value in cast(dict[str, str], RUNTIME_CONFIG.get("route_env_defaults", {})).items():
-        env.setdefault(key, value)
-
     command_result = run_serving_validation(command, cwd=project_root, env=env)
     combined = "\n".join([
         str(command_result.get("stdout_tail") or ""),
@@ -574,60 +451,15 @@ def openai_validation_payload(api_url: str, model_id: str) -> dict[str, object]:
     }
 
 
-def build_serving_env(env: dict[str, str], backend: str) -> tuple[dict[str, str], dict[str, object]]:
-    stripped = False
-    for key in list(env):
-        upper = key.upper()
-        prefixes = tuple(str(item).upper() for item in RUNTIME_CONFIG.get("strip_env_prefixes", []))
-        if prefixes and upper.startswith(prefixes):
-            env.pop(key, None)
-            stripped = True
-    roots = runtime_roots(env)
-    selected_root = next((root for root in roots if root.exists()), None)
-    python_paths: list[str] = []
-    library_paths: list[str] = []
-    if selected_root is not None:
-        for key, rel_path in cast(dict[str, str], RUNTIME_CONFIG.get("env_vars_from_root", {})).items():
-            env.setdefault(key, str(selected_root / rel_path) if rel_path != "." else str(selected_root))
-        python_paths.extend(existing_paths([selected_root / rel_path for rel_path in cast(list[str], RUNTIME_CONFIG.get("pythonpath_from_root", []))]))
-        library_paths.extend(existing_paths([selected_root / rel_path for rel_path in cast(list[str], RUNTIME_CONFIG.get("library_path_from_root", []))]))
-        prepend_path(env, "PATH", existing_paths([selected_root / rel_path for rel_path in cast(list[str], RUNTIME_CONFIG.get("path_from_root", []))]))
+def build_serving_env(env: dict[str, str]) -> tuple[dict[str, str], dict[str, object]]:
     project_root = Path(__file__).resolve().parent
     venv_bin = project_root / ".venv" / "bin"
     if venv_bin.is_dir():
         prepend_path(env, "PATH", [str(venv_bin)])
-    prepend_path(env, "PYTHONPATH", python_paths)
-    prepend_path(env, "LD_LIBRARY_PATH", library_paths)
     return env, {
-        "serving_backend": BACKEND,
-        "selected_runtime_root": str(selected_root) if selected_root is not None else "",
-        "runtime_env_configured": "policy_root" if selected_root is not None else "framework_default",
-        "runtime_root_loaded": selected_root is not None,
-        "python_paths_added": python_paths,
-        "library_paths_added": library_paths,
-        "configured_env_prefixes_stripped": stripped,
+        "runtime_env_configured": "framework_default",
         "venv_bin_prepended": venv_bin.is_dir(),
     }
-
-
-def runtime_roots(env: dict[str, str]) -> list[Path]:
-    candidates = [env.get(name) for name in cast(list[str], RUNTIME_CONFIG.get("root_env_vars", []))]
-
-    discovery_cmd = str(RUNTIME_CONFIG.get("discovery_command", ""))
-    if discovery_cmd:
-        timeout = float(RUNTIME_CONFIG.get("discovery_timeout_seconds", 30))
-        try:
-            result = subprocess.run(
-                discovery_cmd, shell=True, capture_output=True, text=True,
-                timeout=timeout,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                candidates.append(result.stdout.strip())
-        except Exception:
-            pass
-
-    candidates.extend(cast(list[str], RUNTIME_CONFIG.get("root_candidates", [])))
-    return [Path(value).expanduser() for value in candidates if value]
 
 
 def existing_paths(paths: list[Path]) -> list[str]:
@@ -994,12 +826,9 @@ def write_gate(
         f"{FRAMEWORK}_imported": module_imported(import_evidence, FRAMEWORK),
         "forbidden_runtime_markers_absent": not forbidden_hits,
     }
-    for evidence_field, module_name in cast(dict[str, str], RUNTIME_CONFIG.get("runtime_evidence_fields", {})).items():
-        serving_runtime_evidence[evidence_field] = module_imported(import_evidence, module_name)
     report = {
         "migration_route": ROUTE,
         "serving_framework": FRAMEWORK,
-        "serving_backend": BACKEND,
         "full_migration_status": status,
         "project_test_files": PROJECT_TEST_FILES,
         "expected_outputs": EXPECTED_OUTPUTS,
@@ -1020,12 +849,6 @@ def write_gate(
         "started_at": started_at,
         "ended_at": time.time(),
     }
-    execution_evidence_field = str(RUNTIME_CONFIG.get("execution_evidence_field") or "accelerator_execution_evidence")
-    execution_observed_field = str(RUNTIME_CONFIG.get("execution_observed_field") or "accelerator_execution_observed")
-    runtime_evidence_field = str(RUNTIME_CONFIG.get("runtime_evidence_field") or "serving_runtime_evidence")
-    report[execution_evidence_field] = accelerator_execution_evidence
-    report[execution_observed_field] = passed
-    report[runtime_evidence_field] = serving_runtime_evidence
     (REPORTS_DIR / "serving_final_gate.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 

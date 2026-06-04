@@ -3963,7 +3963,6 @@ def _serving_gate_payload() -> dict[str, object]:
     return {
         "migration_route": "vllm_serving",
         "serving_framework": "vllm",
-        "serving_backend": "generic",
         "full_migration_status": "FULL_PASS",
         "project_test_files": ["demo.py"],
         "expected_outputs": ["ok"],
@@ -3984,7 +3983,6 @@ def _serving_gate_payload() -> dict[str, object]:
         "serving_api_validated": True,
         "accelerator_execution_observed": True,
         "serving_runtime_evidence": {
-            "serving_backend": "generic",
             "vllm_imported": True,
             "forbidden_runtime_markers_absent": True,
         },

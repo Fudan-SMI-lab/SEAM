@@ -333,7 +333,7 @@ def test_normalize_phase1_project_analysis_detects_sglang_serving(tmp_path: Path
     }
 
     normalize_phase1_project_analysis(output, project_dir=str(project_dir))
-    normalize_serving_phase1_surface(output, platform_policy=BUILTIN_PRESETS["npu_ascend"])
+    normalize_serving_phase1_surface(output)
 
     assert output["migration_route"] == "sglang_serving"
     surface = cast(dict[str, object], output["serving_runtime_surface"])
@@ -356,7 +356,7 @@ def test_normalize_phase1_project_analysis_detects_vllm_serving(tmp_path: Path) 
     }
 
     normalize_phase1_project_analysis(output, project_dir=str(project_dir))
-    normalize_serving_phase1_surface(output, platform_policy=BUILTIN_PRESETS["npu_ascend"])
+    normalize_serving_phase1_surface(output)
 
     assert output["migration_route"] == "vllm_serving"
     surface = cast(dict[str, object], output["serving_runtime_surface"])

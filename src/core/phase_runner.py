@@ -1407,7 +1407,7 @@ class PhaseRunner:
             normalized["python_version"] = self._current_python_version()
         if phase.prompt_id == "phase_1_project_analysis":
             normalize_phase1_project_analysis(normalized, project_dir=prompt_context["project_dir"])
-            normalize_serving_phase1_surface(normalized, platform_policy=self.platform_policy)
+            normalize_serving_phase1_surface(normalized)
         if phase.prompt_id == "phase_2_venv_create":
             self._normalize_phase2_venv_output(normalized, project_dir=prompt_context["project_dir"])
         if phase.prompt_id == "phase_3_entry_script":
@@ -1438,7 +1438,6 @@ class PhaseRunner:
                         route=phase1_route,
                         project_dir=str(prompt_context["project_dir"]),
                         phase1_output=phase1_output,
-                        platform_policy=self.platform_policy,
                     )
                 elif custom_op_contract_required:
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
