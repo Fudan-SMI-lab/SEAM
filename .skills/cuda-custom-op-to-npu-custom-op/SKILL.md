@@ -1,3 +1,7 @@
+---
+target_phases: ["fix_operator", "phase_5_validate"]
+target_roles: ["operator_fixer"]
+---
 # CUDA Custom Op To Ascend Custom Op Migration Notes
 
 This directory is an experience reference for converting CUDA or C++ custom

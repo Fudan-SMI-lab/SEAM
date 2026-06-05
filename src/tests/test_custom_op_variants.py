@@ -622,7 +622,7 @@ def test_expanded_variant_contract_injects_custom_op_phase3_defaults(tmp_path: P
 
     assert result == {"passed": True, "errors": [], "warnings": []}
     assert target["reports_dir"] == str(project_dir / "migration_reports")
-    assert target["phase5_entry_script_revision_allowed"] is True
+    assert target["runtime_entry_script_revision_allowed"] is True
     required_checks = cast(list[object], target["required_checks"])
     assert "expanded_variant_inventory" in required_checks
     assert "variant_axis_coverage" in required_checks

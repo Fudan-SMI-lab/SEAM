@@ -455,9 +455,9 @@ def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> 
         if _contains_partial_success_terms(validation_obligations):
             errors.append("validation_obligations must enforce full validation, not smoke/MVP/partial-only success")
 
-    revision_allowed = data.get("phase5_entry_script_revision_allowed")
+    revision_allowed = data.get("runtime_entry_script_revision_allowed")
     if not isinstance(revision_allowed, bool):
-        errors.append("phase5_entry_script_revision_allowed must be a boolean for custom-op contracts")
+        errors.append("runtime_entry_script_revision_allowed must be a boolean for custom-op contracts")
 
     _validate_expanded_variant_contract(data, required_checks, errors)
 

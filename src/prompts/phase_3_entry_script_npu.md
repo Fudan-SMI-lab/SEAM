@@ -52,7 +52,7 @@ Return exactly one JSON object. Legacy projects may return only the two existing
 {
   "entry_script_path": "/path/to/project/generate.py",
   "run_command": "/path/to/project/.venv/bin/python /path/to/project/generate.py --config /path/to/project/config.yml",
-  "phase5_entry_script_revision_allowed": true
+  "runtime_entry_script_revision_allowed": true
 }
 ```
 
@@ -103,7 +103,7 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
   "required_report_paths": ["migration_reports/operator_inventory.json", "migration_reports/migration_manifest.json", "migration_reports/preflight.json", "migration_reports/baseline.json", "migration_reports/runtime_coverage.json", "migration_reports/performance.json", "migration_reports/build.json", "migration_reports/implementation_resolution.json", "migration_reports/custom_op_final_gate.json", "migration_reports/evidence_validation.json", "migration_reports/summary.json"],
   "required_checks": ["inventory_manifest_equality", "closed_pass_count_equals_manifest_entries", "remaining_entries_zero", "full_migration_status_full_pass", "fine_grained_operator_unit_inventory", "kernel_launch_site_inventory", "public_entry_mapping", "inventory_granularity_fine", "per_entry_target_custom_op_artifact_evidence", "per_entry_adapter_evidence", "per_entry_parity_evidence", "integration_e2e_evidence", "same_run_runtime_coverage", "performance_evidence", "complete_performance_report", "overall_speedup_report", "no_fallback_no_zero_call_no_builtin_contamination", "native_operator_symbol_inventory"],
   "validation_obligations": ["project_local_artifact", "runtime_project_api", "numeric_performance", "complete_speedup_report", "overall_speedup_report", "no_fallback"],
-  "phase5_entry_script_revision_allowed": true
+  "runtime_entry_script_revision_allowed": true
 }
 ```
 
@@ -119,4 +119,4 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 - `required_report_paths`: required migration reports the script must produce/check.
 - `required_checks`: fail-closed checks including native operator symbol/kernel inventory, complete `migration_reports/performance.json` per-unit speedup-report closure, and one overall/end-to-end speedup after every discovered custom-op unit has been replaced.
 - `validation_obligations`: machine-checkable validation obligations; they must enforce full project-local runtime migration, a complete per-unit speedup report, and an overall all-units-replaced speedup report, not smoke/MVP/report-only success.
-- `phase5_entry_script_revision_allowed`: `true` means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract. For non-custom-op projects, revision is similarly bounded to finding a working entry that matches the project's actual migration target.
+- `runtime_entry_script_revision_allowed`: `true` means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. For custom-op projects, revision is bounded to enforcing the same full custom-op contract. For non-custom-op projects, revision is similarly bounded to finding a working entry that matches the project's actual migration target.

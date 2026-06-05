@@ -247,7 +247,7 @@ def _operator_repair_context_markdown(
         f"- Entry Command: {entry_script or str(contract.get('run_command', '(not provided)'))}",
         f"- Entry Script Path: {contract.get('entry_script_path', '(not provided)')}",
         f"- Entry Script Kind: {contract.get('entry_script_kind', '(not provided)')}",
-        f"- Phase 5 Entry Script Revision Allowed: {contract.get('phase5_entry_script_revision_allowed', False)}",
+        f"- Phase 5 Entry Script Revision Allowed: {contract.get('runtime_entry_script_revision_allowed', False)}",
         f"- Reports Dir: {reports_dir}",
         "",
         "## Phase 1 Discovery Summary",

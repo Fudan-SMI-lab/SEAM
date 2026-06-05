@@ -177,7 +177,7 @@ def _valid_custom_op_contract(
             "overall_speedup_report",
             "no_fallback",
         ],
-        "phase5_entry_script_revision_allowed": True,
+        "runtime_entry_script_revision_allowed": True,
     }
 
 

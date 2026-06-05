@@ -30,7 +30,7 @@ _FRAMEWORK_IMPORT_PROBES = {
 
 _FRAMEWORK_COMMAND_REWRITERS: dict[str, dict[str, str]] = {
     "sglang": {"sglang": "sys.executable -m sglang.cli.main"},
-    "vllm": {"vllm": "sys.executable -m vllm.entrypoints.openai.api_server"},
+    "vllm": {"vllm": "sys.executable -m vllm.entrypoints.cli.main"},
 }
 
 import os as _os_module

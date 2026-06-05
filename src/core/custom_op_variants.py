@@ -425,13 +425,96 @@ def _serving_evidence(root: Path | None, framework: str) -> list[str]:
     return evidence
 
 
+_VLLM_SERVE_MODEL_RE = re.compile(
+    r"(?:vllm\s+serve\s+|sglang\s+serve\s+(?:.*?\s+)?--model-path\s+)([\w][\w.-]*/[\w][\w.-]+)",
+    re.IGNORECASE,
+)
+_HF_MODEL_URL_RE = re.compile(
+    r"(?:huggingface\.co/(?!spaces/)|modelscope\.cn/models/(?!studios/))([\w][\w.-]*/[\w][\w.-]+)",
+    re.IGNORECASE,
+)
+_SOURCE_MODEL_PATH_RE = re.compile(
+    r"""(?:model_path|model_name|model_id|hf_model|vlm_root)\w*\s*=\s*["']([\w][\w.-]*/[\w][\w.-]+)["']""",
+    re.IGNORECASE,
+)
+
+_MODEL_PATH_SEARCH_MAX_FILES = 250
+
+
+def _resolve_model_path(root: Path | None) -> str | None:
+    """Try to discover the HuggingFace model path from project files."""
+    if root is None or not root.is_dir():
+        return None
+
+    # Phase 1 – README (highest signal, cheap)
+    for name in ("README.md", "readme.md", "README.MD"):
+        readme = root / name
+        if not readme.is_file():
+            continue
+        try:
+            text = readme.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        m = _VLLM_SERVE_MODEL_RE.search(text)
+        if m:
+            return m.group(1)
+        m = _HF_MODEL_URL_RE.search(text)
+        if m:
+            return m.group(1)
+        break  # only check one README
+
+    # Phase 2 – Python source files (model path variable assignments)
+    try:
+        py_files = _iter_project_source_files(root, suffixes={".py"})
+    except Exception:
+        py_files = []
+    for i, path in enumerate(py_files):
+        if i >= _MODEL_PATH_SEARCH_MAX_FILES:
+            break
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        m = _VLLM_SERVE_MODEL_RE.search(text)
+        if m:
+            return m.group(1)
+        m = _SOURCE_MODEL_PATH_RE.search(text)
+        if m:
+            return m.group(1)
+
+    # Phase 3 – Fallback: any file with an HF model URL
+    try:
+        all_files = _iter_project_source_files(
+            root, suffixes={".py", ".md", ".yaml", ".yml", ".json", ".html", ".txt"}
+        )
+    except Exception:
+        all_files = []
+    for i, path in enumerate(all_files):
+        if i >= _MODEL_PATH_SEARCH_MAX_FILES:
+            break
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        m = _HF_MODEL_URL_RE.search(text)
+        if m:
+            return m.group(1)
+
+    return None
+
+
 def _serving_launch_command(root: Path | None, framework: str) -> str:
     evidence = _serving_evidence(root, framework)
     if any("pyproject.toml" in item for item in evidence):
         return "mineru-vllm-server"
-    return _SERVING_LAUNCH_COMMANDS.get(
+    raw = _SERVING_LAUNCH_COMMANDS.get(
         framework, "vllm serve <project-model> --port 8000"
     )
+    if "<project-model>" in raw:
+        model_path = _resolve_model_path(root)
+        if model_path:
+            raw = raw.replace("<project-model>", model_path)
+    return raw
 
 
 def _serving_demo_or_test_files(root: Path | None) -> list[str]:
@@ -609,7 +692,11 @@ def _discover_entry_script(root: Path | None) -> str:
 
 def _iter_project_source_files(root: Path, *, suffixes: set[str]) -> list[Path]:
     files: list[Path] = []
-    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+    # Breadth-first: shallow files (config/constants) before deep dependencies
+    for path in sorted(
+        root.rglob("*"),
+        key=lambda item: (len(item.relative_to(root).parts), item.relative_to(root).as_posix()),
+    ):
         if len(files) >= 2000:
             break
         if path.is_file() and path.suffix.lower() in suffixes and _is_project_local_file(root, path):
@@ -3477,7 +3564,7 @@ def _ensure_custom_op_phase3_contract_defaults(target: dict[str, object]) -> Non
             "no_fallback",
         ],
     )
-    _ = target.setdefault("phase5_entry_script_revision_allowed", True)
+    _ = target.setdefault("runtime_entry_script_revision_allowed", True)
 
 
 def _append_required_variant_checks(target: dict[str, object]) -> None:

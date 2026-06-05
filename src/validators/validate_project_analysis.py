@@ -422,6 +422,11 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
         non_empty_message="serving_runtime_surface.required_runtime_env must list required serving accelerator runtime environment evidence",
         require_non_empty=True,
     )
+    # Auto-normalize readiness_probe and request_validation from agent output
+    # formats (string / list) into the dict form expected by the serving contract.
+    _normalize_serving_struct_field(surface, "readiness_probe")
+    _normalize_serving_struct_field(surface, "request_validation")
+
     _validate_serving_surface_contract(surface, errors)
     for field_name in ("readiness_probe", "request_validation"):
         value = surface.get(field_name)
@@ -435,6 +440,18 @@ def _validate_serving_runtime_surface(data: dict[str, object], errors: list[str]
             errors.append(
                 "serving_runtime_surface.unresolved_source_groups must be empty when detection_complete=true"
             )
+
+
+def _normalize_serving_struct_field(surface: dict[str, object], field_name: str) -> None:
+    value = surface.get(field_name)
+    if isinstance(value, dict):
+        return
+    if isinstance(value, str) and value.strip():
+        surface[field_name] = {"description": value.strip()}
+    elif isinstance(value, (list, tuple)):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        if items:
+            surface[field_name] = {"endpoints": items}
 
 
 def _validate_serving_surface_contract(surface: dict[str, object], errors: list[str]) -> None:

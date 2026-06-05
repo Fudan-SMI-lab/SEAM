@@ -117,14 +117,14 @@ Return exactly one JSON object. **Do NOT include any custom-op contract fields**
 {
   "entry_script_path": "{project_dir}/057_example_fwi.py",
   "run_command": "python3 /workspace/057_example_fwi.py",
-  "phase5_entry_script_revision_allowed": true
+  "runtime_entry_script_revision_allowed": true
 }
 ```
 
 ## Field Semantics
 - `entry_script_path`: absolute host-visible path to the selected or created script. This path is readable by file tools (such as `read`), by Phase 3.5 (static validator), and by the target execution backend after any path mapping.
 - `run_command`: exact non-interactive command the target execution backend will execute in the target execution environment. Use visible paths or paths that the backend can map. Use the interpreter from Phase 2's `python_path` as the preferred choice in this session. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
-- `phase5_entry_script_revision_allowed`: `true` (default) means the target runtime phase may revise the entry script or command if validation finds the selected command or path is incorrect. Revision is bounded to finding a working entry that matches the project's actual migration target.
+- `runtime_entry_script_revision_allowed`: `true` (default) means the target runtime phase may revise the entry script or command if validation finds the selected command or path is incorrect. Revision is bounded to finding a working entry that matches the project's actual migration target.
 
 ## MUST NOT INCLUDE
 - Do NOT output `entry_script_kind`, `reports_dir`, `required_report_paths`, `required_checks`, `operator_discovery_sources`, `operator_inventory_schema`, `performance_report_schema`, `validation_obligations`, or any other custom-op contract fields — these are omitted by route policy.

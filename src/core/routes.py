@@ -83,7 +83,7 @@ CUSTOM_OP_CONTRACT_KEYS = frozenset({
     "operator_inventory_schema",
     "performance_report_schema",
     "validation_obligations",
-    "phase5_entry_script_revision_allowed",
+    "runtime_entry_script_revision_allowed",
 })
 
 # ── Prompt fallback suffixes (platform-agnostic, used by prompt loader) ───
@@ -104,7 +104,10 @@ DEFAULT_PROMPT_FALLBACK_SUFFIXES: tuple[str, ...] = tuple(
 # Per-framework env-var defaults that are injected by the serving validation
 # wrapper.  "FRAMEWORK" in serving_runtime.py is the key.
 FRAMEWORK_SERVING_ENV_DEFAULTS: dict[str, dict[str, str]] = {
-    "sglang": {"SGLANG_ENABLE_SPEC_V2": "1"},
+    "sglang": {
+        "SGLANG_ENABLE_SPEC_V2": "1",
+        "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1",
+    },
     "vllm": {},
 }
 

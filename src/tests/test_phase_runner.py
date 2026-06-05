@@ -1195,7 +1195,7 @@ def custom_op_phase3_output(tmp_path: Path, *, create_script: bool = True) -> di
             "overall_speedup_report",
             "no_fallback",
         ],
-        "phase5_entry_script_revision_allowed": True,
+        "runtime_entry_script_revision_allowed": True,
     }
 
 
@@ -1725,7 +1725,7 @@ def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
             "operator_inventory_schema": {"semantic_rows": "one row per operator"},
             "performance_report_schema": {"entries": "per unit"},
             "validation_obligations": ["no_fallback"],
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         },
         {"project_dir": "/tmp/project"},
         {"previous_outputs": {"phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}}},
@@ -1740,7 +1740,7 @@ def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
         "operator_inventory_schema",
         "performance_report_schema",
         "validation_obligations",
-        "phase5_entry_script_revision_allowed",
+        "runtime_entry_script_revision_allowed",
     ):
         assert field not in normalized
     validation = runner.validator.validate("entry_script", normalized)

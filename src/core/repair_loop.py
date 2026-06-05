@@ -1625,7 +1625,7 @@ class RepairLoopEngine:
         normalized = self._normalize_entry_script_action(action)
         if normalized["needed"] is not True:
             return {**normalized, "applied": False, "blocked_reason": "not_needed"}
-        if active_contract.get("phase5_entry_script_revision_allowed") is not True:
+        if active_contract.get("runtime_entry_script_revision_allowed") is not True:
             return {**normalized, "applied": False, "blocked_reason": "revision_not_allowed"}
         if normalized["action"] not in {"regenerate", "modify"}:
             return {**normalized, "applied": False, "blocked_reason": "invalid_action"}

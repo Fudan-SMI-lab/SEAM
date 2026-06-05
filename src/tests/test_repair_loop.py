@@ -1391,7 +1391,7 @@ def _custom_op_phase3_contract(project_dir: Path, *, revision_allowed: bool = Fa
             "numeric_performance",
             "no_fallback",
         ],
-        "phase5_entry_script_revision_allowed": revision_allowed,
+        "runtime_entry_script_revision_allowed": revision_allowed,
     }
 
 
@@ -1803,7 +1803,7 @@ def test_repair_loop_entry_script_action_safe_revision_recomputes_command(tmp_pa
         active_contract={
             "entry_script_path": str(tmp_path / "old.py"),
             "run_command": f"{sys.executable} {tmp_path / 'old.py'}",
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         },
         project_dir=str(tmp_path),
         revision_count=0,
@@ -1858,7 +1858,7 @@ def test_repair_loop_entry_script_action_blocks_unsafe_command(tmp_path: Path, r
         active_contract={
             "entry_script_path": "old.py",
             "run_command": "python old.py",
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         },
         project_dir=str(tmp_path),
         revision_count=0,

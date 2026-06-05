@@ -1909,7 +1909,7 @@ def test_phase5_entry_script_action_allows_env_prefix_command() -> None:
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
             "run_command": "python old.py",
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         }
     }
     workflow = WorkflowDefinition(
@@ -3112,7 +3112,7 @@ def test_entry_script_action_revises_next_loop_command_and_skips_repair(tmp_path
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
             "run_command": "python -c \"import sys; sys.exit(1)\"",
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         }
     }
 
@@ -3175,7 +3175,7 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
         return json.dumps({"fixed": True})
 
     executor.session_mgr.send_command.side_effect = respond_with_iterator
-    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": "python -c \"import sys; sys.exit(1)\"", "phase5_entry_script_revision_allowed": True}}
+    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": "python -c \"import sys; sys.exit(1)\"", "runtime_entry_script_revision_allowed": True}}
 
     result = executor._execute_loop_phase(
         PhaseDefinition(
@@ -3264,7 +3264,7 @@ def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_c
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
             "run_command": "python old.py",
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         }
     }
     loop_vars = {"entry_script": "python old.py"}
@@ -5616,7 +5616,7 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
             "operator_inventory_schema": {"semantic_rows": "one row per operator"},
             "performance_report_schema": {"entries": "per unit"},
             "validation_obligations": ["no_fallback"],
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         },
         {"previous_outputs": "custom operators exist"},
         {"phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}},
@@ -5631,7 +5631,7 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
         "operator_inventory_schema",
         "performance_report_schema",
         "validation_obligations",
-        "phase5_entry_script_revision_allowed",
+        "runtime_entry_script_revision_allowed",
     ):
         assert field not in normalized
     assert validate_entry_script(normalized)["passed"] is True

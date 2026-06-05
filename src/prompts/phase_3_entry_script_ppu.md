@@ -53,7 +53,7 @@ Return exactly one JSON object. Legacy projects may return only the two existing
 {
   "entry_script_path": "/path/to/project/generate.py",
   "run_command": "python /path/to/project/generate.py --config /path/to/project/config.yml",
-  "phase5_entry_script_revision_allowed": true
+  "runtime_entry_script_revision_allowed": true
 }
 ```
 
@@ -62,4 +62,4 @@ For CUDA/C++ custom-op projects, keep those fields and add the backward-compatib
 ## Field Semantics
 - `entry_script_path`: host-visible absolute path to the selected or created script. This path is readable by file tools (such as `read`), by Phase 3.5 (static validator), and by the target execution backend after any container path mapping.
 - `run_command`: exact non-interactive command the target runtime will execute inside the framework-created container. Use container-visible paths or host paths that the backend can map. Use the container base Python interpreter by default; use a project-local venv interpreter only if Phase 2 explicitly created one. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
-- `phase5_entry_script_revision_allowed`: `true` (default) means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. Revision is bounded to finding a working entry that matches the project's actual migration target.
+- `runtime_entry_script_revision_allowed`: `true` (default) means the target runtime phase may revise the entry script/command if validation finds the selected command or path is incorrect. Revision is bounded to finding a working entry that matches the project's actual migration target.

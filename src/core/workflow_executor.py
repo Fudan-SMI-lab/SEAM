@@ -315,6 +315,40 @@ def _tokenize(expr: str) -> list[str]:
     return tokens
 
 
+def _variant_dispatch_context(phase3_contract: dict[str, object] | None) -> dict[str, str]:
+    if not isinstance(phase3_contract, dict):
+        return _variant_dispatch_fallback()
+    expanded = phase3_contract.get("expanded_variant_inventory")
+    if not isinstance(expanded, dict):
+        return _variant_dispatch_fallback()
+    unit_ids_raw: object = expanded.get("unit_identities")
+    if not isinstance(unit_ids_raw, list) or not unit_ids_raw:
+        return _variant_dispatch_fallback()
+    unit_ids = [str(item) for item in unit_ids_raw if str(item).strip()]
+    return {
+        "parallel_dispatch_guidance": (
+            f"Parallel repair dispatch: {len(unit_ids)} operator variant units discovered. "
+            "Each repair session handles a subset. Focus on your assigned units only."
+        ),
+        "assigned_units": ", ".join(unit_ids),
+        "assigned_unit_count": str(len(unit_ids)),
+    }
+
+
+def _variant_dispatch_fallback() -> dict[str, str]:
+    return {
+        "parallel_dispatch_guidance": (
+            "No parallel dispatch guidance configured; "
+            "repair all assigned operators sequentially."
+        ),
+        "assigned_units": (
+            "(No assigned operators — repair all custom-op variants "
+            "discovered in the contract)"
+        ),
+        "assigned_unit_count": "all",
+    }
+
+
 class WorkflowExecutor:
     """Core YAML-driven workflow execution engine.
 
@@ -1955,12 +1989,17 @@ class WorkflowExecutor:
                             entry_script=str(entry_script),
                             platform_policy=self.platform_policy,
                         )
+                        input_ctx["active_custom_op_full_repair_requirements"] = input_ctx["operator_custom_op_guidance"]
+                        input_ctx.update(
+                            _variant_dispatch_context(phase3_contract)
+                        )
                     else:
                         input_ctx["operator_custom_op_guidance"] = _operator_generic_guidance(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
                             platform_policy=self.platform_policy,
                         )
+                        input_ctx.update(_variant_dispatch_fallback())
             input_ctx.update({
                 "error_text": script_stderr,
                 "category": str(error_analysis.get("category", "unknown")),
@@ -2024,12 +2063,17 @@ class WorkflowExecutor:
                             entry_script=str(entry_script),
                             platform_policy=self.platform_policy,
                         )
+                        input_ctx["active_custom_op_full_repair_requirements"] = input_ctx["operator_custom_op_guidance"]
+                        input_ctx.update(
+                            _variant_dispatch_context(phase3_contract)
+                        )
                     else:
                         input_ctx["operator_custom_op_guidance"] = _operator_generic_guidance(
                             project_dir=self.project_dir,
                             entry_script=str(entry_script),
                             platform_policy=self.platform_policy,
                         )
+                        input_ctx.update(_variant_dispatch_fallback())
             input_ctx.update({
                 "error_text": script_stderr,
                 "category": str(imp_plan.get("category", "quality_improvement")),
@@ -4230,7 +4274,7 @@ class WorkflowExecutor:
         if not isinstance(contract, dict):
             contract = {}
             state["phase_3_entry_script"] = contract
-        if contract.get("phase5_entry_script_revision_allowed") is not True:
+        if contract.get("runtime_entry_script_revision_allowed") is not True:
             request["blocked_reason"] = "revision_not_allowed"
             return {**normalized, "applied": False, "blocked_reason": "revision_not_allowed"}
 

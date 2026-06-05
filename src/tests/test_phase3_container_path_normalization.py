@@ -279,7 +279,7 @@ def test_validator_rejects_missing_build_token_in_custom_op(tmp_path: Path):
             "overall_speedup_report",
             "no_fallback",
         ],
-        "phase5_entry_script_revision_allowed": True,
+        "runtime_entry_script_revision_allowed": True,
     }
 
     result = validate(data)
@@ -360,7 +360,7 @@ def test_validator_passes_when_build_token_present(tmp_path: Path):
             "overall_speedup_report",
             "no_fallback",
         ],
-        "phase5_entry_script_revision_allowed": True,
+        "runtime_entry_script_revision_allowed": True,
     }
 
     result = validate(data)
@@ -446,7 +446,7 @@ def test_phase3_container_path_normalization_allows_validator_to_find_file(tmp_p
                 "overall_speedup_report",
                 "no_fallback",
             ],
-            "phase5_entry_script_revision_allowed": True,
+            "runtime_entry_script_revision_allowed": True,
         },
         {
             "project_dir": str(project_dir),
