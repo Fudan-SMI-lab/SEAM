@@ -4,11 +4,14 @@ import re
 from pathlib import Path
 from typing import ClassVar
 
+from core.routes import DEFAULT_PROMPT_FALLBACK_SUFFIXES
+
 
 class PromptLoader:
     """Loads prompt templates from .md files and substitutes {placeholder} variables."""
 
     prompts_dir: Path
+    prompt_fallback_suffixes: tuple[str, ...]
 
     _OPTIONAL_SECTION_PATTERNS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("constraint_summary", r"\n## Migration Constraints(?: \(from Phase 1\.5\))?\n.*?(?=\n## |\Z)"),
@@ -16,16 +19,28 @@ class PromptLoader:
         ("user_constraints", r"\n## User-Provided Migration Constraints\n.*?(?=\n## |\Z)"),
     )
 
-    def __init__(self, prompts_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        prompts_dir: str | Path | None = None,
+        prompt_fallback_suffixes: tuple[str, ...] | None = None,
+    ) -> None:
         """Initialize with the directory containing prompt templates.
 
         Args:
             prompts_dir: Path to the prompts directory.
                          Defaults to `prompts/` relative to this package.
+            prompt_fallback_suffixes: Suffixes to try when a prompt file
+                         is missing.  When None, uses
+                         ``DEFAULT_PROMPT_FALLBACK_SUFFIXES``.  Callers
+                         with an active PlatformPolicy can pass
+                         ``policy.prompt_fallback_suffixes``.
         """
         if prompts_dir is None:
             prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
         self.prompts_dir = Path(prompts_dir)
+        if prompt_fallback_suffixes is None:
+            prompt_fallback_suffixes = DEFAULT_PROMPT_FALLBACK_SUFFIXES
+        self.prompt_fallback_suffixes = prompt_fallback_suffixes
 
     def load_prompt(self, phase_id: str, context: dict[str, str] | None = None) -> str:
         """Load a prompt template and substitute placeholders.
@@ -46,7 +61,7 @@ class PromptLoader:
 
         if not prompt_path.exists():
             # Fallback: try platform-specific suffixes for renamed prompts
-            for suffix in ("_npu", "_ppu", "_musa"):
+            for suffix in self.prompt_fallback_suffixes:
                 fallback_path = self.prompts_dir / f"{phase_id}{suffix}.md"
                 if fallback_path.exists():
                     prompt_path = fallback_path

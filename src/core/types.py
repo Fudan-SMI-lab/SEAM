@@ -9,6 +9,8 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from .platform_policy import TargetPlatformConfig
 
+DEFAULT_CONTAINER_WORKDIR = "/workspace"
+
 
 @dataclass
 class RuntimeSkillsConfig:
@@ -118,7 +120,7 @@ class ExecutionBackendConfig:
     env_vars: dict[str, str] = field(default_factory=dict)
     required_env_vars: list[str] = field(default_factory=list)
     required_devices: list[str] = field(default_factory=list)
-    container_workdir: str = "/workspace"
+    container_workdir: str = DEFAULT_CONTAINER_WORKDIR
     network_mode: str | None = None
     runtime_flags: list[str] = field(default_factory=list)
     timeout: int = 7200
@@ -191,7 +193,7 @@ class ExecutionBackendConfig:
             env_vars={str(k): str(v) for k, v in raw.get("env_vars", {}).items()},
             required_env_vars=list(raw.get("required_env_vars", [])),
             required_devices=list(raw.get("required_devices", [])),
-            container_workdir=str(raw.get("container_workdir", "/workspace")),
+            container_workdir=str(raw.get("container_workdir", DEFAULT_CONTAINER_WORKDIR)),
             network_mode=raw.get("network_mode"),
             runtime_flags=list(raw.get("runtime_flags", [])),
             timeout=int(raw.get("timeout", 7200)),

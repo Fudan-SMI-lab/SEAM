@@ -11,10 +11,11 @@ import re
 from typing import cast
 
 from core.custom_op_variants import _OPP_HOST_DIRNAMES, _OPP_KERNEL_DIRNAMES
-from core.routes import is_serving_route, serving_framework_for_route
+from core.routes import DEFAULT_PROMPT_FALLBACK_SUFFIXES, is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 from core.platform_policy import (
     PlatformPolicy,
+    _GENERIC_EVIDENCE,
     get_artifact_path_tokens,
     get_native_build_log_tokens,
     get_native_source_tokens,
@@ -111,6 +112,12 @@ Override via SEAM_OPP_STRICT_BUILD_LOG_TOKENS."""
 """Subpath pattern identifying platform-generated OPP kernel artifacts.
 Override via SEAM_OPP_GENERATED_KERNEL_PATH_PATTERN (e.g. ``/ppu_op/ppu_core/ppu_kernel/``)."""
 
+_OPP_UNIT_SUFFIX_PATTERN = re.compile(
+    r"_(?:" + "|".join(
+        re.escape(s.removeprefix("_")) for s in DEFAULT_PROMPT_FALLBACK_SUFFIXES
+    ) + r")$"
+)
+
 __all__ = ["validate_custom_op_final_gate", "_path_has_platform_artifact_signal"]
 
 BLOCKING_STATUSES = {
@@ -194,7 +201,6 @@ NEGATIVE_ROUTE_FIELDS = (
     "direct_custom_op_only",
     "builtin_only",
     "aten_only",
-    "npuextension_only",
     "cppextension_only",
     "python_shim_only",
     "fallback_detected",
@@ -211,7 +217,6 @@ ROUTE_BLOCKING_TEXT_TOKENS = (
     "builtin-only",
     "aten_only",
     "aten-only",
-    "npuextension_only",
     "cppextension_only",
     "fallback",
     "zero_call",
@@ -222,6 +227,27 @@ ROUTE_BLOCKING_TEXT_TOKENS = (
     "mock",
     "report_only",
 )
+
+
+def _get_negative_route_fields(
+    platform_policy: PlatformPolicy | None = None,
+) -> tuple[str, ...]:
+    """Return negative route field names augmented with policy-specific skip patterns."""
+    skip = ()
+    if platform_policy is not None:
+        skip = platform_policy.custom_op_evidence.skip_patterns
+    return NEGATIVE_ROUTE_FIELDS + skip
+
+
+def _get_route_blocking_tokens(
+    platform_policy: PlatformPolicy | None = None,
+) -> tuple[str, ...]:
+    """Return route blocking text tokens augmented with policy-specific skip patterns."""
+    skip = ()
+    if platform_policy is not None:
+        skip = platform_policy.custom_op_evidence.skip_patterns
+    return ROUTE_BLOCKING_TEXT_TOKENS + skip
+
 
 REQUIRED_FINE_GRAINED_FIELDS = (
     "unit_identity",
@@ -312,6 +338,21 @@ _OP_KERNEL_SOURCE_FIELDS = (
     "kernel_source_paths",
     "ascendc_kernel_sources",
 )
+
+
+def _get_kernel_source_fields(platform_policy: PlatformPolicy | None = None) -> tuple[str, ...]:
+    """Return kernel source field names, extended with a policy-specific name.
+
+    When a platform policy is available, the helper appends a field like
+    ``{prefix}c_kernel_sources`` (e.g. ``ppuc_kernel_sources`` for
+    ``ppu_ali``) so the validator can recognise platform-specific kernel
+    evidence fields.  Without a policy the legacy constant is used as-is.
+    """
+    if platform_policy is None:
+        return _OP_KERNEL_SOURCE_FIELDS
+    prefix = platform_policy.id.split("_")[0]  # "ppu_ali" → "ppu"
+    return _OP_KERNEL_SOURCE_FIELDS + (f"{prefix}c_kernel_sources",)
+
 
 _OPP_BUILD_SCRIPT_FIELDS = (
     "opp_build_script",
@@ -608,6 +649,8 @@ def custom_op_final_gate_unit_ledger(
             }
         )
 
+    groups, summary = _build_parallelization_groups(gate, remaining_units, rows_by_name)
+
     return {
         "total_count": len(units),
         "strict_pass_count": len(strict_pass_units),
@@ -616,7 +659,111 @@ def custom_op_final_gate_unit_ledger(
         "remaining_units": remaining_units,
         "units": ledger_rows,
         "global_errors": _dedupe_strings(root_errors),
+        "parallelization_groups": groups,
+        "parallelization_summary": summary,
     }
+
+
+def _build_parallelization_groups(
+    gate: Mapping[object, object],
+    remaining_units: list[str],
+    rows_by_name: dict[str, tuple[int, Mapping[object, object]]],
+) -> tuple[list[dict[str, object]], str]:
+    """Build parallelization groups for remaining custom-op units.
+
+    Groups units that share source files (op_host or op_kernel paths)
+    into the same parallelization group, since they cannot be
+    parallelized safely.  Independent units (no shared source files
+    with any other unit) each get their own group.
+
+    Returns a tuple of ``(groups, summary)`` where *groups* is a list
+    of ``{group_id, units, shared_sources, is_independent}`` dicts and
+    *summary* is a human-readable string like ``"3 groups (1 shared-kernel, 2 independent)"``.
+    """
+    if not remaining_units:
+        return [], "0 groups (0 shared-kernel, 0 independent)"
+
+    # Build unit → set of normalized source paths (host + kernel).
+    unit_paths: dict[str, set[str]] = {}
+    for unit in remaining_units:
+        row_pair = rows_by_name.get(unit)
+        if row_pair is None:
+            unit_paths[unit] = set()
+            continue
+        _index, row = row_pair
+        evidence = row.get("opp_custom_op_artifact_evidence")
+        if not isinstance(evidence, Mapping):
+            unit_paths[unit] = set()
+            continue
+        evidence_map = cast(Mapping[object, object], evidence)
+
+        host_paths = _path_candidates_from_fields(evidence_map, _OP_HOST_SOURCE_FIELDS)
+        kernel_paths = _path_candidates_from_fields(evidence_map, _OP_KERNEL_SOURCE_FIELDS)
+
+        all_paths = host_paths + kernel_paths
+        normalized: set[str] = set()
+        for p in all_paths:
+            norm = _normalize_reported_path(p)
+            if norm:
+                normalized.add(norm)
+        unit_paths[unit] = normalized
+
+    # Build reverse index: path → set of units that reference it.
+    path_to_units: dict[str, set[str]] = {}
+    for unit, paths in unit_paths.items():
+        for p in paths:
+            if p not in path_to_units:
+                path_to_units[p] = set()
+            path_to_units[p].add(unit)
+
+    # Find connected components (units that share at least one path).
+    visited: set[str] = set()
+    components: list[list[str]] = []
+
+    for unit in remaining_units:
+        if unit in visited:
+            continue
+        component: list[str] = []
+        queue: list[str] = [unit]
+        visited.add(unit)
+        while queue:
+            u = queue.pop(0)
+            component.append(u)
+            for p in unit_paths.get(u, set()):
+                for neighbor in path_to_units.get(p, set()):
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+        components.append(component)
+
+    # Build result group dicts.
+    groups: list[dict[str, object]] = []
+    shared_kernel_count = 0
+    independent_count = 0
+
+    for group_id, group_units in enumerate(components):
+        if len(group_units) == 1:
+            is_independent = True
+            shared_sources: list[str] = []
+            independent_count += 1
+        else:
+            is_independent = False
+            shared_kernel_count += 1
+            group_set = set(group_units)
+            shared_sources = sorted(
+                p for p, u_set in path_to_units.items()
+                if len(u_set & group_set) >= 2
+            )
+
+        groups.append({
+            "group_id": group_id,
+            "units": group_units,
+            "shared_sources": shared_sources,
+            "is_independent": is_independent,
+        })
+
+    summary = f"{len(groups)} groups ({shared_kernel_count} shared-kernel, {independent_count} independent)"
+    return groups, summary
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:
@@ -940,7 +1087,7 @@ def _validate_gate_row(
     _validate_parity_evidence(row.get("parity_evidence"), index, errors, require_strict_native_producer)
     _validate_integration_route(row.get("integration_e2e_evidence"), index, errors)
     if require_strict_native_producer:
-        _validate_per_row_route_evidence(row, index, errors)
+        _validate_per_row_route_evidence(row, index, errors, platform_policy)
     _validate_runtime_coverage(row.get("same_run_runtime_coverage"), index, errors)
     if perf_mode != "disabled":
         _validate_performance(row.get("performance_evidence"), index, errors, platform_policy, require_strict_native_producer)
@@ -1414,7 +1561,7 @@ def _canonical_generated_opp_unit(value: str) -> str:
     snake = re.sub(r"[^a-zA-Z0-9_]+", "_", snake).lower()
     snake = re.sub(r"_+", "_", snake).strip("_")
     snake = snake.removeprefix(_GENERATED_OPP_API_PREFIX)
-    snake = re.sub(r"_(?:cuda|gpu|npu)$", "", snake)
+    snake = _OPP_UNIT_SUFFIX_PATTERN.sub("", snake)
     replacements = {
         "scalar_iso": "scalar",
         "scalar_born_iso": "scalar_born",
@@ -1624,7 +1771,12 @@ def _validate_integration_route(value: object, index: int, errors: list[str]) ->
         errors.append(f"rows[{index}].integration_e2e_evidence must prove native compiled custom-op route execution")
 
 
-def _validate_per_row_route_evidence(row: Mapping[object, object], index: int, errors: list[str]) -> None:
+def _validate_per_row_route_evidence(
+    row: Mapping[object, object],
+    index: int,
+    errors: list[str],
+    platform_policy: PlatformPolicy | None = None,
+) -> None:
     route_errors: list[str] = []
     valid_route_found = False
     for field_name in ROUTE_EVIDENCE_FIELDS:
@@ -1634,7 +1786,7 @@ def _validate_per_row_route_evidence(row: Mapping[object, object], index: int, e
         field_errors: list[str] = []
         route_items = _route_evidence_items(value, field_name, index, field_errors)
         for label, evidence in route_items:
-            _validate_single_route_evidence(row, evidence, field_name, index, field_errors, label)
+            _validate_single_route_evidence(row, evidence, field_name, index, field_errors, label, platform_policy)
         if field_errors:
             route_errors.extend(field_errors)
         else:
@@ -1678,6 +1830,7 @@ def _validate_single_route_evidence(
     index: int,
     errors: list[str],
     label: str | None = None,
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     label = label or f"rows[{index}].{field_name}"
     if not evidence:
@@ -1685,7 +1838,7 @@ def _validate_single_route_evidence(
         return
     if _mapping_reports_failure(evidence) or _mapping_is_disallowed_surrogate(evidence):
         errors.append(f"{label} must be real passing evidence, not report/synthetic/mock/benchmark-only")
-    if _has_negative_route_signal(evidence):
+    if _has_negative_route_signal(evidence, platform_policy):
         errors.append(f"{label} must not be direct-only, builtin-only, fallback, zero-call, baseline-only, stub, ATen-only, or Python-shim evidence")
     if evidence.get("same_run") is not True:
         errors.append(f"{label} must prove same_run=true")
@@ -1730,13 +1883,16 @@ def _validate_single_route_evidence(
     _validate_route_identity(row, evidence, label, errors)
 
 
-def _has_negative_route_signal(evidence: Mapping[object, object]) -> bool:
-    if any(evidence.get(field_name) is True for field_name in NEGATIVE_ROUTE_FIELDS):
+def _has_negative_route_signal(
+    evidence: Mapping[object, object],
+    platform_policy: PlatformPolicy | None = None,
+) -> bool:
+    if any(evidence.get(field_name) is True for field_name in _get_negative_route_fields(platform_policy)):
         return True
     if _normalize_status(evidence.get("route_type")) in {"DIRECT_ONLY", "BUILTIN_ONLY", "ATEN_ONLY", "FALLBACK", "STUB"}:
         return True
     text = _flatten_string_values(evidence)
-    return any(token in text for token in ROUTE_BLOCKING_TEXT_TOKENS)
+    return any(token in text for token in _get_route_blocking_tokens(platform_policy))
 
 
 def _flatten_string_values(value: object) -> str:
@@ -2123,7 +2279,7 @@ def _validate_strict_native_producer_evidence(
         )
 
     op_host_paths = [path for path in _path_candidates_from_fields(evidence, _OP_HOST_SOURCE_FIELDS) if _is_op_host_source_path(path)]
-    op_kernel_paths = [path for path in _path_candidates_from_fields(evidence, _OP_KERNEL_SOURCE_FIELDS) if _is_op_kernel_source_path(path)]
+    op_kernel_paths = [path for path in _path_candidates_from_fields(evidence, _get_kernel_source_fields(platform_policy)) if _is_op_kernel_source_path(path)]
     build_script_paths = [path for path in _path_candidates_from_fields(evidence, _OPP_BUILD_SCRIPT_FIELDS) if _is_opp_build_script_path(path)]
     generated_artifact_paths, generated_artifact_categories = _strict_opp_generated_artifacts(evidence)
 
@@ -2324,7 +2480,13 @@ def _build_log_is_strict_opp(text: str, platform_policy: PlatformPolicy | None =
             native_tokens = tuple(policy_tokens)
     has_cann = any(token in normalized for token in native_tokens)
     has_layout = "op_host" in normalized and "op_kernel" in normalized
-    has_install = any(token in normalized for token in ("install", "vendors", "opp_path", "ascend_opp", "package", "deploy"))
+    install_tokens: list[str] = ["install", "vendors", "package", "deploy"]
+    if platform_policy is not None:
+        prefix = platform_policy.id.split("_")[0]  # "npu_ascend" → "npu"
+        install_tokens.extend([f"{prefix}_opp", f"{prefix}_path"])
+    else:
+        install_tokens.extend(["opp_path", "ascend_opp"])  # legacy fallback
+    has_install = any(token in normalized for token in install_tokens)
     return has_cann and has_layout and has_install
 
 
@@ -2863,14 +3025,19 @@ def _normalize_token(value: str) -> str:
 
 
 def _has_self_or_same_route_baseline(evidence: Mapping[object, object], platform_policy: PlatformPolicy | None = None) -> bool:
-    if any(evidence.get(flag_name) is True for flag_name in (
+    baseline_flags: list[str] = [
         "self_baseline",
         "same_route_baseline",
-        "same_npu_baseline",
         "baseline_is_custom",
         "custom_as_baseline",
         "placeholder_speedup",
-    )):
+    ]
+    if platform_policy is not None:
+        prefix = platform_policy.id.split("_")[0]  # "npu_ascend" → "npu"
+        baseline_flags.append(f"same_{prefix}_baseline")  # e.g. "same_npu_baseline", "same_ppu_baseline"
+    else:
+        baseline_flags.append("same_npu_baseline")  # legacy fallback
+    if any(evidence.get(flag_name) is True for flag_name in baseline_flags):
         return True
     baseline = _normalized_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device", "baseline_route"))
     custom = _normalized_device_value(evidence, ("custom_device", "custom_backend", "target_device", "overall_custom_device", "custom_route"))
@@ -2931,6 +3098,12 @@ def _has_diagnostic_baseline(evidence: Mapping[object, object]) -> bool:
 
 
 def _has_baseline_proof(evidence: Mapping[object, object], platform_policy: PlatformPolicy | None = None) -> bool:
+    if platform_policy is None:
+        boolean_fields = _GENERIC_EVIDENCE.performance_baseline_boolean_fields
+        if _has_positive_boolean(evidence, tuple(boolean_fields)):
+            return True
+        baseline_devices = set(_GENERIC_EVIDENCE.performance_baseline_device_values)
+        return _has_device_value(evidence, ("baseline_device", "baseline_backend", "source_device", "overall_baseline_device"), baseline_devices, None)
     boolean_fields = get_performance_baseline_boolean_fields(platform_policy)
     if _has_positive_boolean(evidence, tuple(boolean_fields)):
         return True

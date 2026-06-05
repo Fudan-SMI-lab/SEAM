@@ -1365,8 +1365,7 @@ def test_run_phase_2_to_3_accepts_relative_custom_op_entry_script(tmp_path: Path
     )
 
     assert len(session_mgr.phase35_prompts) == 1
-    # Normalization resolves relative path to absolute
-    assert outputs["phase_3_entry_script"]["entry_script_path"] == str(project_dir / "validate_custom_ops_full.py")
+    assert outputs["phase_3_entry_script"]["entry_script_path"] == "validate_custom_ops_full.py"
     assert outputs["phase_35_static_validate"]["validation_passed"] is True
 
 

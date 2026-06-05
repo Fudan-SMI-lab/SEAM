@@ -36,8 +36,11 @@ from core.prompt_loader import PromptLoader
 from core.routes import (
     CUSTOM_OP,
     CUSTOM_OP_WITH_VARIANTS,
+    CUSTOM_OP_CONTRACT_KEYS,
+    DEFAULT_PROMPT_FALLBACK_SUFFIXES,
     ORDINARY_CUDA,
     SERVING_ROUTES,
+    normalize_phase3_container_paths,
     normalize_serving_phase1_surface,
     normalize_serving_phase3_contract,
 )
@@ -83,45 +86,6 @@ CUSTOM_OP_NEGATIVE_PATTERNS = (
     re.compile(r"\bcustom[-_\s]+operators?\s*[:=]\s*(?:false|none|no)\b", re.IGNORECASE),
     re.compile(r"\bcustom_op_detected\s*[:=]\s*false\b", re.IGNORECASE),
 )
-
-CUSTOM_OP_CONTRACT_KEYS = frozenset(
-    {
-        "entry_script_kind",
-        "reports_dir",
-        "required_report_paths",
-        "required_checks",
-        "operator_discovery_sources",
-        "operator_inventory_schema",
-        "performance_report_schema",
-        "validation_obligations",
-        "phase5_entry_script_revision_allowed",
-    }
-)
-
-def _rewrite_container_to_host_path(
-    path_str: str,
-    project_dir: str,
-    container_workdir: str,
-) -> str:
-    """Convert a container-visible path to its host-visible equivalent.
-
-    When a model returns a path under ``container_workdir`` (e.g.
-    ``/workspace/validate_fwi.py``), return the corresponding path under
-    ``project_dir`` (e.g. ``{project_dir}/validate_fwi.py``).
-
-    Boundary-safe: ``/workspace2/x`` does NOT match container workdir ``/workspace``.
-    """
-    if not path_str:
-        return path_str
-    safe = container_workdir.rstrip("/")
-    if not safe:
-        return path_str
-    if not (path_str == safe or path_str.startswith(safe + "/")):
-        return path_str
-    rel = path_str[len(safe):].lstrip("/")
-    if not rel:
-        return project_dir
-    return str(Path(project_dir) / rel)
 
 STATUS_ONLY_RESPONSE_KEYS = frozenset(
     {
@@ -820,7 +784,8 @@ class PhaseRunner:
             prompt = self.prompt_loader.load_prompt(effective_prompt_id, prompt_context)
         except FileNotFoundError:
             # Fallback: try platform-specific suffix for renamed prompts
-            for suffix in ("_npu", "_ppu", "_musa"):
+            fallback_suffixes = self.platform_policy.prompt_fallback_suffixes or DEFAULT_PROMPT_FALLBACK_SUFFIXES
+            for suffix in fallback_suffixes:
                 try:
                     prompt = self.prompt_loader.load_prompt(effective_prompt_id + suffix, prompt_context)
                     break
@@ -1420,6 +1385,9 @@ class PhaseRunner:
                 entry_script = self._lookup_previous_output(previous_output_map, "phase_1_project_analysis", "entry_script")
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
+            normalized = normalize_phase3_container_paths(
+                normalized, prompt_context,
+            )
             raw_workflow_globals_phase35: object = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
             workflow_globals = cast(dict[str, object], raw_workflow_globals_phase35) if isinstance(raw_workflow_globals_phase35, dict) else {}
             if self._custom_op_route_disabled(workflow_globals):
@@ -1430,7 +1398,10 @@ class PhaseRunner:
                     and phase1_route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
                 ) or (
                     phase1_route is None
-                    and self._custom_op_required_signal(previous_output_map, context)
+                    and (
+                        self._custom_op_required_signal(previous_output_map, context)
+                        or normalized.get("entry_script_kind") == "custom_op_full_validation"
+                    )
                 )
                 if isinstance(phase1_route, str) and phase1_route in SERVING_ROUTES:
                     normalize_serving_phase3_contract(
@@ -1438,6 +1409,7 @@ class PhaseRunner:
                         route=phase1_route,
                         project_dir=str(prompt_context["project_dir"]),
                         phase1_output=phase1_output,
+                        platform_policy=self.platform_policy,
                     )
                 elif custom_op_contract_required:
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
@@ -1467,9 +1439,6 @@ class PhaseRunner:
                             phase2_output,
                             prompt_context["project_dir"],
                         )
-            normalized = self._normalize_phase3_container_paths(
-                normalized, prompt_context,
-            )
         if phase.prompt_id == "phase_35_static_validate":
             previous_outputs = context.get("previous_outputs", {})
             previous_output_map = cast(dict[str, object], previous_outputs) if isinstance(previous_outputs, dict) else {}
@@ -1534,51 +1503,6 @@ class PhaseRunner:
             python_path = str(Path(project_dir) / ".venv" / "bin" / "python")
         restored["run_command"] = f"{shlex.quote(python_path)} {shlex.quote(str(entry_path))}"
         return restored
-
-    @staticmethod
-    def _normalize_phase3_container_paths(
-        output: JsonObject,
-        prompt_context: dict[str, str],
-    ) -> JsonObject:
-        """Rewrite host-visible path fields when the model returns container paths.
-
-        Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
-        is NOT rewritten here — the Phase 5 execution backend already handles
-        host-to-container path mapping for command execution.
-
-        When the model returns a path that starts with the container workdir (e.g.
-        ``/workspace/...`` or the value of ``{container_project_dir}``), convert it
-        to the corresponding host-visible path under ``{project_dir}``.
-        """
-        project_dir = prompt_context.get("project_dir")
-        container_workdir = (
-            prompt_context.get("container_workdir")
-            or prompt_context.get("container_project_dir")
-        )
-        if not project_dir or not container_workdir:
-            return output
-
-        if not project_dir.startswith("/"):
-            try:
-                project_dir = str(Path(project_dir).resolve())
-            except OSError:
-                return output
-
-        normalized = dict(output)
-
-        entry = normalized.get("entry_script_path")
-        if isinstance(entry, str) and entry.strip():
-            normalized["entry_script_path"] = _rewrite_container_to_host_path(
-                entry, project_dir, container_workdir,
-            )
-
-        reports = normalized.get("reports_dir")
-        if isinstance(reports, str) and reports.strip():
-            normalized["reports_dir"] = _rewrite_container_to_host_path(
-                reports, project_dir, container_workdir,
-            )
-
-        return normalized
 
     @staticmethod
     def _normalize_phase2_venv_output(

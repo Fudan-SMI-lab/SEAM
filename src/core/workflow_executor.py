@@ -52,9 +52,11 @@ from core.custom_op_variants import (
 )
 from core.routes import (
     CUSTOM_OP,
+    CUSTOM_OP_CONTRACT_KEYS,
     CUSTOM_OP_WITH_VARIANTS,
     ORDINARY_CUDA,
     SERVING_ROUTES,
+    normalize_phase3_container_paths,
     normalize_serving_phase1_surface,
     normalize_serving_phase3_contract,
     serving_route_from_contract,
@@ -63,7 +65,6 @@ from core.phase_boundary import inject_phase_boundary
 from core.execution_backend import ContainerBackend, get_execution_context as _get_exec_ctx, get_execution_environment_context as _get_exec_env_ctx
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
-from migrator.rule_based_ppu import PPURuleBasedMigrator
 from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator
 from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, collect_phase6_prior_state, resolve_phase6_timeout
@@ -122,24 +123,6 @@ RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
 CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT = 100
 
 
-def _rewrite_container_to_host_path(
-    path_str: str,
-    project_dir: str,
-    container_workdir: str,
-) -> str:
-    """Convert a container-visible path to its host-visible equivalent."""
-    if not path_str:
-        return path_str
-    safe = container_workdir.rstrip("/")
-    if not safe:
-        return path_str
-    if not (path_str == safe or path_str.startswith(safe + "/")):
-        return path_str
-    rel = path_str[len(safe):].lstrip("/")
-    if not rel:
-        return project_dir
-    return str(Path(project_dir) / rel)
-
 
 CUSTOM_OP_REQUIRED_TERMS = (
     "custom_op",
@@ -160,20 +143,6 @@ CUSTOM_OP_NEGATIVE_PATTERNS = (
     re.compile(r"\bno\s+custom[-_\s]+operators?\s+(?:found|detected|present)\b", re.IGNORECASE),
     re.compile(r"\bcustom[-_\s]+operators?\s*[:=]\s*(?:false|none|no)\b", re.IGNORECASE),
     re.compile(r"\bcustom_op_detected\s*[:=]\s*false\b", re.IGNORECASE),
-)
-
-CUSTOM_OP_CONTRACT_KEYS = frozenset(
-    {
-        "entry_script_kind",
-        "reports_dir",
-        "required_report_paths",
-        "required_checks",
-        "operator_discovery_sources",
-        "operator_inventory_schema",
-        "performance_report_schema",
-        "validation_obligations",
-        "phase5_entry_script_revision_allowed",
-    }
 )
 
 
@@ -2355,6 +2324,10 @@ class WorkflowExecutor:
                 elif prompt_context.get("entry_script"):
                     normalized["entry_script_path"] = prompt_context["entry_script"]
             workflow_globals = getattr(getattr(self, "workflow", None), "globals", None) or {}
+            normalized = normalize_phase3_container_paths(
+                normalized, prompt_context,
+                fallback_project_dir=getattr(self, "project_dir", None),
+            )
             if self._custom_op_route_disabled(workflow_globals):
                 normalized = self._strip_custom_op_contract_fields(normalized)
             else:
@@ -2374,6 +2347,7 @@ class WorkflowExecutor:
                         route=str(phase1_route),
                         project_dir=str(self.project_dir),
                         phase1_output=ph1,
+                        platform_policy=self.platform_policy,
                     )
                 elif custom_op_contract_required:
                     _ = normalized.setdefault("entry_script_kind", "custom_op_full_validation")
@@ -2401,9 +2375,6 @@ class WorkflowExecutor:
                         normalized.pop(field, None)
                     if phase1_route == ORDINARY_CUDA:
                         normalized = self._restore_ordinary_phase3_entry_script(normalized, ph1, state)
-            normalized = self._normalize_phase3_container_paths(
-                normalized, prompt_context,
-            )
 
         if "phase_35" in phase_id or "static_validate" in phase_id:
             phase_3_output = state.get("phase_3_entry_script")
@@ -2548,48 +2519,6 @@ class WorkflowExecutor:
             if signal is not None:
                 return signal
         return None
-
-    def _normalize_phase3_container_paths(
-        self,
-        output: dict[str, Any],
-        prompt_context: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Rewrite host-visible path fields when the model returns container paths.
-
-        Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
-        is NOT rewritten.
-        """
-        from pathlib import Path
-
-        project_dir = prompt_context.get("project_dir") or getattr(self, "project_dir", None)
-        container_workdir = (
-            prompt_context.get("container_workdir")
-            or prompt_context.get("container_project_dir")
-        )
-        if not project_dir or not container_workdir:
-            return output
-
-        if not project_dir.startswith("/"):
-            try:
-                project_dir = str(Path(project_dir).resolve())
-            except OSError:
-                return output
-
-        normalized = dict(output)
-
-        entry = normalized.get("entry_script_path")
-        if isinstance(entry, str) and entry.strip():
-            normalized["entry_script_path"] = _rewrite_container_to_host_path(
-                entry, project_dir, container_workdir,
-            )
-
-        reports = normalized.get("reports_dir")
-        if isinstance(reports, str) and reports.strip():
-            normalized["reports_dir"] = _rewrite_container_to_host_path(
-                reports, project_dir, container_workdir,
-            )
-
-        return normalized
 
     # ── Shell phase ─────────────────────────────────────────────────────
 
@@ -3007,9 +2936,28 @@ class WorkflowExecutor:
 
         if operation == "ppu_rule_based_migration":
             pattern = _params.get("pattern", "*.py")
-            migrator = PPURuleBasedMigrator()
+            migrator_module = self.platform_policy.rule_based_migrator_module
+            migrator_class_name = self.platform_policy.rule_based_migrator_class
+            platform_id = self.platform_policy.id
+
+            if migrator_module and migrator_class_name:
+                try:
+                    mod = importlib.import_module(migrator_module)
+                    migrator_cls = getattr(mod, migrator_class_name)
+                    migrator = cast(Any, migrator_cls())
+                except Exception:
+                    logger.warning(
+                        "Failed to instantiate rule-based migrator %s.%s for platform %s; falling back to report_only",
+                        migrator_module,
+                        migrator_class_name,
+                        platform_id,
+                    )
+                    migrator = cast(Any, ReportOnlyRuleBasedMigrator())
+            else:
+                migrator = cast(Any, ReportOnlyRuleBasedMigrator())
+
             result = migrator.migrate_directory(self.project_dir, pattern=str(pattern))
-            return ("success", {"operation": operation, "result": result, "backend": "ppu"})
+            return ("success", {"operation": operation, "result": result, "backend": platform_id})
 
         if operation == "custom_op_final_gate":
             return self._execute_custom_op_final_gate(state, context, loop_vars, loop_state)

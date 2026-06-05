@@ -9,7 +9,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from core.types import ExecutionBackendConfig
 
@@ -19,124 +19,405 @@ _CONTAINER_NOT_FOUND_MSG = (
     "execution_backend.container_name is required when source=existing_container"
 )
 
+# ── Configurable Python version scan range ─────────────────────────────
+PYTHON_VERSION_CANDIDATES_MIN = 8
+"""Minimum minor version to probe when scanning for a Python interpreter."""
+
+PYTHON_VERSION_CANDIDATES_MAX = 14
+"""Maximum minor version (exclusive) to probe when scanning for a Python interpreter."""
+
 # ── NPU device auto-discovery ──────────────────────────────────────────
 
-_AUTO_NPU_MARKER = "auto:npu"
+_AUTO_MARKER_PREFIX = "auto:"
 
-# Canonical Ascend NPU management and data channel device classes.
-# Priority is intentional: davinci_manager supports multi-chip systems;
-# devmm_svm / hisi_hdc are data-plane devices present on most Ascend
-# platforms (910A/910B/310P et al.).
-_NPU_DEVICE_CANDIDATES: list[str] = [
+
+def _make_auto_marker(platform_id: str) -> str:
+    """Build an ``auto:{platform_id}`` marker string for device resolution.
+
+    This replaces the NPU-specific ``_AUTO_NPU_MARKER`` constant; callers
+    should use ``_make_auto_marker("npu_ascend")`` etc. instead.
+    """
+    return f"{_AUTO_MARKER_PREFIX}{platform_id}"
+
+
+# Deprecated: kept for backward compat with existing callers (e.g. tests).
+# Prefer ``_make_auto_marker("npu_ascend")`` or pass the marker string directly.
+_AUTO_NPU_MARKER = _make_auto_marker("npu")
+
+_ASCEND_DEVICE_CANDIDATES: list[str] = [
     "/dev/davinci_manager",
     "/dev/devmm_svm",
     "/dev/hisi_hdc",
 ]
 
+# Deprecated backward-compat alias — prefer ``_ASCEND_DEVICE_CANDIDATES``.
+_NPU_DEVICE_CANDIDATES = _ASCEND_DEVICE_CANDIDATES
+
 
 def _get_npu_devices_from_env() -> list[str] | None:
-    """Return device paths from SEAM_NPU_DEVICES if the env var is set."""
+    """Return device paths from SEAM_DEVICES (generic) or SEAM_NPU_DEVICES (legacy).
+
+    Precedence:
+    1. ``SEAM_DEVICES`` (generic, platform-agnostic)
+    2. ``SEAM_NPU_DEVICES`` (legacy, with deprecation warning)
+    """
+    # 1. Generic platform-agnostic env var (preferred)
+    raw = _os_module.environ.get("SEAM_DEVICES")
+    if raw is not None:
+        paths = [p.strip() for p in raw.split(",") if p.strip()]
+        if paths:
+            return paths
+
+    # 2. Legacy NPU-specific env var (backward compat with deprecation warning)
     raw = _os_module.environ.get("SEAM_NPU_DEVICES")
-    if raw is None:
-        return None
-    paths = [p.strip() for p in raw.split(",") if p.strip()]
-    return paths if paths else None
+    if raw is not None:
+        logger.warning(
+            "SEAM_NPU_DEVICES is deprecated — use SEAM_DEVICES instead."
+        )
+        paths = [p.strip() for p in raw.split(",") if p.strip()]
+        if paths:
+            return paths
+
+    return None
 
 
-def _discover_npu_devices_via_glob() -> list[str]:
-    """Discover NPU device files via /dev/davinci* glob.
+def _discover_npu_devices_via_glob(
+    glob_pattern: str | None = None,
+    fallback_devices: list[str] | None = None,
+) -> list[str]:
+    """Discover NPU device files via a configurable glob pattern.
 
     Covers Ascend 910A/B, 310P, and future chips that follow the davinci
     naming convention.  Falls back to the candidate list when nothing is
     found (the container runtime will still get --device flags; it just
     may fail if the host genuinely has no NPU hardware).
+
+    The default glob pattern is controlled by the ``SEAM_NPU_GLOB_PATTERN``
+    environment variable (default ``"/dev/davinci*"``) so that each platform
+    deployment can supply its own device-glob convention.
+
+    Args:
+        glob_pattern: Glob pattern to discover device files.
+                      If *None*, reads ``SEAM_NPU_GLOB_PATTERN``
+                      (default ``"/dev/davinci*"``).
+        fallback_devices: Fallback device paths when the glob finds nothing.
+                          Defaults to ``_NPU_DEVICE_CANDIDATES``.
     """
+    _glob = glob_pattern or _os_module.environ.get(
+        "SEAM_NPU_GLOB_PATTERN", "/dev/davinci*"
+    )
+    _fallback = fallback_devices if fallback_devices is not None else _ASCEND_DEVICE_CANDIDATES
     try:
         found = sorted(
-            p for p in _glob_module.glob("/dev/davinci*")
+            p for p in _glob_module.glob(_glob)
             if Path(p).exists()
         )
         if found:
             return found
     except OSError:
         pass
-    # Fallback: use the canonical candidate list so that --device flags
-    # are still emitted.  docker/podman silently ignores non-existent
-    # paths on some drivers but fails hard on others — the list gives the
-    # best chance across platforms.
-    return list(_NPU_DEVICE_CANDIDATES)
+    return list(_fallback)
 
 
-def _discover_npu_device_count_via_smi() -> int:
-    """Return the number of NPU chips reported by npu-smi info.
+def _discover_npu_device_count_via_smi(
+    smi_command: str | None = None,
+    chip_pattern: str | None = None,
+) -> int:
+    """Return the number of NPU chips reported by the Ascend SMI tool.
 
-    Returns 0 when npu-smi is not found or fails.
+    Returns 0 when the SMI command is not found or fails.
+
+    The default SMI command and chip-pattern are controlled by the
+    ``SEAM_NPU_SMI_COMMAND`` and ``SEAM_NPU_SMI_CHIP_PATTERN`` environment
+    variables (default ``"npu-smi"`` / ``"NPU"``) so that each platform
+    deployment can supply its own tooling conventions.
+
+    Args:
+        smi_command: Platform SMI command name or path.
+                     If *None*, reads ``SEAM_NPU_SMI_COMMAND``
+                     (default ``"npu-smi"``).
+        chip_pattern: Substring to match chip/card rows in the output.
+                      If *None*, reads ``SEAM_NPU_SMI_CHIP_PATTERN``
+                      (default ``"NPU"``).
     """
+    _smi = smi_command or _os_module.environ.get(
+        "SEAM_NPU_SMI_COMMAND", "npu-smi"
+    )
+    _chip = chip_pattern or _os_module.environ.get(
+        "SEAM_NPU_SMI_CHIP_PATTERN", "NPU"
+    )
     try:
         proc = subprocess.run(
-            ["npu-smi", "info", "-m"],
+            [_smi, "info", "-m"],
             capture_output=True, text=True, timeout=15,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return 0
     if proc.returncode != 0:
         return 0
-    # npu-smi info -m prints one table row per chip (plus headers/footers).
-    # Count lines containing "NPU" as a simple heuristic.
-    count = sum(1 for line in proc.stdout.splitlines() if "NPU" in line)
+    count = sum(1 for line in proc.stdout.splitlines() if _chip in line)
     return count
 
 
-def _discover_npu_devices() -> list[str]:
-    """Best-effort NPU device path discovery.
+def _discover_ascend_npu_devices(**kwargs: str) -> list[str]:
+    """Best-effort NPU device path discovery for Ascend platforms.
 
     Resolution order (first non-empty wins):
-    1. ``SEAM_NPU_DEVICES`` environment variable (comma-separated paths)
-    2. ``/dev/davinci*`` glob (live device files on the host)
+    1. ``SEAM_DEVICES`` / ``SEAM_NPU_DEVICES`` environment variable (comma-separated paths)
+    2. ``glob_pattern`` glob (live device files on the host, default ``/dev/davinci*``)
     3. Canonical candidate list (best-effort fallback for container --device)
 
     Rationale for not removing the candidate fallback: on hosts where
     /dev/davinci* devices exist but the glob somehow fails (e.g. inside a
     restricted container that cannot list /dev), the explicit --device
     flags give the runtime its best chance to mount what is needed.
+
+    Keyword Args:
+        glob_pattern: Override the glob pattern used for device discovery.
+                      Forwarded to ``_discover_npu_devices_via_glob()``.
+        smi_command: Override the SMI command for chip count discovery.
+                     Forwarded to ``_discover_npu_device_count_via_smi()``.
+        chip_pattern: Override the chip pattern for SMI output parsing.
+                      Forwarded to ``_discover_npu_device_count_via_smi()``.
     """
+    _glob_pattern: str = kwargs.get("glob_pattern") or _os_module.environ.get(
+        "SEAM_NPU_GLOB_PATTERN", "/dev/davinci*"
+    )
     # 1. Explicit env override
     env_devices = _get_npu_devices_from_env()
     if env_devices:
-        logger.info("Using NPU devices from SEAM_NPU_DEVICES: %s", env_devices)
+        logger.info("Using NPU devices from environment: %s", env_devices)
         return env_devices
 
-    # 2. Live /dev/davinci* discovery
-    glob_devices = _discover_npu_devices_via_glob()
+    # 2. Live glob discovery
+    glob_devices = _discover_npu_devices_via_glob(glob_pattern=_glob_pattern)
     if glob_devices:
-        logger.info("Discovered %d NPU device(s) via /dev/davinci*", len(glob_devices))
+        logger.info("Discovered %d NPU device(s) via %r", len(glob_devices), _glob_pattern)
         return glob_devices
 
     # 3. Canonical fallback
     logger.warning(
         "No NPU devices found via env or glob; using canonical fallback: %s",
-        _NPU_DEVICE_CANDIDATES,
+        _ASCEND_DEVICE_CANDIDATES,
     )
-    return list(_NPU_DEVICE_CANDIDATES)
+    return list(_ASCEND_DEVICE_CANDIDATES)
 
 
-def _resolve_device_markers(devices: list[str]) -> list[str]:
-    """Expand ``auto:npu`` markers in a device list to discovered paths.
+def _discover_generic_device() -> list[str]:
+    """Fallback device discovery for platforms without specialised hardware.
+    Returns an empty device list — the caller should handle this gracefully.
+    """
+    return []
+
+
+# ── PPU device discovery ──────────────────────────────────────────────
+
+_PPU_DEVICE_CANDIDATES: list[str] = ["/dev/kfd"]
+
+
+def _discover_ppu_devices() -> list[str]:
+    """Discover PPU GPU devices via /dev/kfd."""
+    try:
+        found = sorted(
+            p for p in _glob_module.glob("/dev/kfd*")
+            if Path(p).exists()
+        )
+        if found:
+            logger.info("Discovered %d PPU device(s) via /dev/kfd*", len(found))
+            return found
+    except OSError:
+        pass
+    logger.warning("No PPU devices found; using canonical fallback: %s", _PPU_DEVICE_CANDIDATES)
+    return list(_PPU_DEVICE_CANDIDATES)
+
+
+# ── MUSA device discovery ─────────────────────────────────────────────
+
+_MUSA_DEVICE_CANDIDATES: list[str] = ["/dev/musa0"]
+
+
+def _discover_musa_devices() -> list[str]:
+    """Discover MUSA GPU devices via /dev/musa* glob."""
+    try:
+        found = sorted(
+            p for p in _glob_module.glob("/dev/musa*")
+            if Path(p).exists()
+        )
+        if found:
+            logger.info("Discovered %d MUSA device(s) via /dev/musa*", len(found))
+            return found
+    except OSError:
+        pass
+    logger.warning("No MUSA devices found; using canonical fallback: %s", _MUSA_DEVICE_CANDIDATES)
+    return list(_MUSA_DEVICE_CANDIDATES)
+
+
+# ── ROCm device discovery ─────────────────────────────────────────────
+
+_ROCM_DEVICE_CANDIDATES: list[str] = [
+    "/dev/kfd",
+    "/dev/dri/renderD128",
+]
+
+
+def _discover_rocm_devices() -> list[str]:
+    """Discover ROCm GPU devices via /dev/kfd + /dev/dri/renderD*.
+
+    Falls back to /dev/dri/renderD* when /dev/kfd is absent.
+    """
+    try:
+        kfd = sorted(
+            p for p in _glob_module.glob("/dev/kfd*")
+            if Path(p).exists()
+        )
+        dri = sorted(
+            p for p in _glob_module.glob("/dev/dri/renderD*")
+            if Path(p).exists()
+        )
+        found = kfd + dri
+        if found:
+            logger.info("Discovered %d ROCm device(s) via /dev/kfd + /dev/dri", len(found))
+            return found
+    except OSError:
+        pass
+    logger.warning("No ROCm devices found; using canonical fallback: %s", _ROCM_DEVICE_CANDIDATES)
+    return list(_ROCM_DEVICE_CANDIDATES)
+
+
+# ── MLU device discovery ──────────────────────────────────────────────
+
+_MLU_DEVICE_CANDIDATES: list[str] = ["/dev/cambricon0"]
+
+
+def _discover_mlu_devices() -> list[str]:
+    """Discover Cambrian MLU devices via /dev/cambricon* glob."""
+    try:
+        found = sorted(
+            p for p in _glob_module.glob("/dev/cambricon*")
+            if Path(p).exists()
+        )
+        if found:
+            logger.info("Discovered %d MLU device(s) via /dev/cambricon*", len(found))
+            return found
+    except OSError:
+        pass
+    logger.warning("No MLU devices found; using canonical fallback: %s", _MLU_DEVICE_CANDIDATES)
+    return list(_MLU_DEVICE_CANDIDATES)
+
+
+# ── CUDA device discovery ─────────────────────────────────────────────
+
+_CUDA_DEVICE_CANDIDATES: list[str] = [
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-uvm",
+]
+
+
+def _discover_cuda_devices() -> list[str]:
+    """Discover NVIDIA CUDA GPU devices via /dev/nvidia* glob."""
+    try:
+        found = sorted(
+            p for p in _glob_module.glob("/dev/nvidia*")
+            if Path(p).exists()
+        )
+        if found:
+            logger.info("Discovered %d CUDA device(s) via /dev/nvidia*", len(found))
+            return found
+    except OSError:
+        pass
+    logger.warning("No CUDA devices found; using canonical fallback: %s", _CUDA_DEVICE_CANDIDATES)
+    return list(_CUDA_DEVICE_CANDIDATES)
+
+
+# ── Dispatch table ────────────────────────────────────────────────────
+
+_DEVICE_DISCOVERY_DISPATCH: dict[str, Callable[[], list[str]]] = {
+    "ascend_npu": lambda: _discover_ascend_npu_devices(),
+    # Legacy shorthand — prefer ``"ascend_npu"`` for new code.
+    "npu": lambda: _discover_ascend_npu_devices(),
+    "ppu_cuda_compatible": lambda: _discover_ppu_devices(),
+    "musa_muxi": lambda: _discover_musa_devices(),
+    "rocm_amd": lambda: _discover_rocm_devices(),
+    "mlu_cambrian": lambda: _discover_mlu_devices(),
+    "cuda_nvidia": lambda: _discover_cuda_devices(),
+}
+"""Dispatch table mapping platform ids to device-discovery functions."""
+
+
+def discover_devices(policy: object | None = None) -> list[str]:
+    """Platform-policy-driven device discovery entry point.
+
+    When *policy* is None, falls back to generic device discovery with a
+    warning (callers should pass a PlatformPolicy for platform-specific
+    discovery).
+
+    When *policy* has an ``id`` attribute that matches a key in
+    ``_DEVICE_DISCOVERY_DISPATCH``, the corresponding discovery function
+    is invoked.  Otherwise the generic fallback is returned.
+    """
+    if policy is None:
+        logger.warning(
+            "No platform policy provided for device discovery — using generic fallback. "
+            "Provide a PlatformPolicy for platform-specific discovery."
+        )
+        return _discover_generic_device()
+    try:
+        platform_id = getattr(policy, "id", None)
+    except AttributeError:
+        platform_id = None
+    if platform_id and platform_id in _DEVICE_DISCOVERY_DISPATCH:
+        discovery_func = _DEVICE_DISCOVERY_DISPATCH[platform_id]
+        return discovery_func()  # type: ignore[operator]
+    return _discover_generic_device()
+
+
+# Deprecated backward-compat alias — prefer ``_discover_ascend_npu_devices``.
+_discover_npu_devices = _discover_ascend_npu_devices
+
+
+def _resolve_auto_marker(marker: str, policy: object | None = None) -> list[str]:
+    """Resolve an ``auto:{platform_id}`` marker to discovered device paths.
+
+    * ``"auto:npu"``, ``"auto:ppu_cuda_compatible"``, ``"auto:musa_muxi"``, … —
+      dispatched via ``_DEVICE_DISCOVERY_DISPATCH`` by stripping the ``auto:``
+      prefix and looking up the resulting platform ID.
+    * When no dispatch key matches and *policy* is provided, falls through
+      to ``discover_devices(policy)``.  Otherwise returns an empty list.
+
+    Non-auto markers are NOT handled here — the caller should pass them
+    through unchanged.
+    """
+    if not marker.startswith(_AUTO_MARKER_PREFIX):
+        return [marker]
+    platform_id = marker[len(_AUTO_MARKER_PREFIX):]
+    if platform_id in _DEVICE_DISCOVERY_DISPATCH:
+        discovered = _DEVICE_DISCOVERY_DISPATCH[platform_id]()
+        logger.info("Resolved %s → %d device(s): %s", marker, len(discovered), discovered)
+        return discovered
+    if policy is not None:
+        discovered = discover_devices(policy)
+        logger.info("Resolved %s (via policy) → %d device(s): %s", marker, len(discovered), discovered)
+        return discovered
+    logger.warning("Unknown auto marker %r — no devices resolved", marker)
+    return []
+
+
+def _resolve_device_markers(devices: list[str], policy: object | None = None) -> list[str]:
+    """Expand ``auto:{platform_id}`` markers in a device list to discovered paths.
 
     Explicit device paths are passed through unchanged.
     When the list is empty, returns the empty list unchanged.
+
+    The optional *policy* argument is forwarded to ``discover_devices()``
+    for platforms not yet in the dispatch table.
     """
     if not devices:
         return []
     resolved: list[str] = []
     for dev in devices:
-        if dev == _AUTO_NPU_MARKER:
-            discovered = _discover_npu_devices()
-            resolved.extend(discovered)
-            logger.info(
-                "Resolved auto:npu → %d device(s): %s",
-                len(discovered), discovered,
-            )
+        if dev.startswith(_AUTO_MARKER_PREFIX):
+            resolved.extend(_resolve_auto_marker(dev, policy=policy))
         else:
             resolved.append(dev)
     return resolved
@@ -650,24 +931,40 @@ try:
     facts["torch_version"] = torch.__version__
     facts["torch_cuda_available"] = getattr(torch.cuda, "is_available", lambda: False)()
     facts["torch_device_count"] = getattr(torch.cuda, "device_count", lambda: 0)()
+    facts["torch_npu_available"] = getattr(torch.npu, "is_available", lambda: False)()
+    facts["torch_npu_device_count"] = getattr(torch.npu, "device_count", lambda: 0)()
+    facts["torch_musa_available"] = getattr(torch.musa, "is_available", lambda: False)()
+    facts["torch_musa_device_count"] = getattr(torch.musa, "device_count", lambda: 0)()
+    facts["torch_mlu_available"] = getattr(torch.mlu, "is_available", lambda: False)()
+    facts["torch_mlu_device_count"] = getattr(torch.mlu, "device_count", lambda: 0)()
 except Exception:
     facts["torch_version"] = "not_installed"
     facts["torch_cuda_available"] = False
     facts["torch_device_count"] = 0
+    facts["torch_npu_available"] = False
+    facts["torch_npu_device_count"] = 0
+    facts["torch_musa_available"] = False
+    facts["torch_musa_device_count"] = 0
+    facts["torch_mlu_available"] = False
+    facts["torch_mlu_device_count"] = 0
 print(json.dumps(facts))
 """.strip()
 
-        shell_probe = """
+        _py_versions = " ".join(
+            f"python3.{v}"
+            for v in range(PYTHON_VERSION_CANDIDATES_MAX - 1, PYTHON_VERSION_CANDIDATES_MIN - 1, -1)
+        )
+        shell_probe = f"""
 set -eu
 probe_python=""
-for candidate in python3 python python3.12 python3.11 python3.10 python3.9 python3.8; do
+for candidate in python3 python {_py_versions}; do
     if command -v "$candidate" >/dev/null 2>&1; then
         probe_python="$(command -v "$candidate")"
         break
     fi
 done
 if [ -z "$probe_python" ]; then
-    printf '%s\n' '{"status":"probe_failed","error":"No Python interpreter found on container PATH"}'
+    printf '%s\n' '{{"status":"probe_failed","error":"No Python interpreter found on container PATH"}}'
     exit 0
 fi
 exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"

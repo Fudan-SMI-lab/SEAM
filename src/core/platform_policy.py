@@ -138,6 +138,31 @@ class PlatformPolicy:
     ``"report_only"`` as the absolute safe fallback.
     """
 
+    rule_based_migrator_module: str = ""
+    """Fully-qualified module name for the platform's rule-based migrator
+    (e.g. ``migrator.rule_based_ppu``).  When set together with
+    ``rule_based_migrator_class``, the ``ppu_rule_based_migration`` builtin
+    operation dynamically imports and instantiates this migrator instead of
+    falling back to a report-only migrator."""
+
+    rule_based_migrator_class: str = ""
+    """Class name of the platform's rule-based migrator (e.g.
+    ``PPURuleBasedMigrator``).  Only used when ``rule_based_migrator_module``
+    is also non-empty."""
+
+    # -- Prompt fallback configuration --
+    prompt_fallback_suffixes: tuple[str, ...] = ()
+    """Suffixes tried when a phase's primary prompt template is missing.  When
+    empty the caller falls back to ``routes.DEFAULT_PROMPT_FALLBACK_SUFFIXES``."""
+
+    framework_env_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Per-framework env-var defaults merged on top of
+    ``routes.FRAMEWORK_SERVING_ENV_DEFAULTS`` (platform-specific additions)."""
+
+    framework_forbidden_markers: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    """Per-framework forbidden runtime markers merged on top of
+    ``routes.FRAMEWORK_FORBIDDEN_RUNTIME_MARKERS``."""
+
     # -- Guidance strings consumed by repair / operator prompts --
     guidance_native_label: str = ""
     guidance_native_framework: str = ""
@@ -316,6 +341,8 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
     "ppu_cuda_compatible": PlatformPolicy(
         id="ppu_cuda_compatible",
         display_name="PPU (CUDA-Compatible)",
+        rule_based_migrator_module="migrator.rule_based_ppu",
+        rule_based_migrator_class="PPURuleBasedMigrator",
         env_validation=_PPU_CUDA_ENV_VALIDATION,
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["ppu", "cuda", "gpu", "torch_cuda"],
@@ -690,21 +717,30 @@ def resolve_policy(target_platform: TargetPlatformConfig | None, workflow_name: 
     return _infer_policy_by_name(workflow_name)
 
 
+# ── Workflow-name → preset mapping ────────────────────────────────────
+# Ordered from most-specific to least-specific so that the first
+# matching prefix wins.  Keys are lowercased workflow-name prefixes;
+# values are BUILTIN_PRESETS keys.
+_INFER_MAP: tuple[tuple[str, str], ...] = (
+    ("musa_muxi_migration", "musa_muxi"),
+    ("ppu_migration", "ppu_cuda_compatible"),
+    ("npu_migration", "npu_ascend"),
+)
+
+
 def _infer_policy_by_name(name: str) -> PlatformPolicy:
     """Infer platform policy from workflow name for backward compatibility.
 
-    * ``npu_migration*`` → ``npu_ascend``
-    * ``ppu_migration*`` → ``ppu_cuda_compatible``
-    * ``musa_muxi_migration*`` → ``musa_muxi``
-    * otherwise → ``generic_accelerator``
+    The matching table is defined in ``_INFER_MAP`` so that adding
+    support for a new platform only requires inserting an entry into
+    the tuple — no code changes needed.
+
+    When no prefix matches, ``generic_accelerator`` is returned.
     """
     name_lower = name.strip().lower()
-    if name_lower.startswith("npu_migration"):
-        return BUILTIN_PRESETS["npu_ascend"]
-    if name_lower.startswith("ppu_migration"):
-        return BUILTIN_PRESETS["ppu_cuda_compatible"]
-    if name_lower.startswith("musa_muxi_migration"):
-        return BUILTIN_PRESETS["musa_muxi"]
+    for prefix, preset_key in _INFER_MAP:
+        if name_lower.startswith(prefix):
+            return BUILTIN_PRESETS[preset_key]
     return BUILTIN_PRESETS["generic_accelerator"]
 
 
@@ -783,6 +819,9 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, object]) -> Plat
             if isinstance(overridden_strategy, str) and overridden_strategy.strip()
             else base.default_rule_migration_strategy
         ),
+        prompt_fallback_suffixes=_tuple_str_override(overrides, "prompt_fallback_suffixes", base.prompt_fallback_suffixes),
+        framework_env_overrides=_dict_dict_override(overrides, "framework_env_overrides", base.framework_env_overrides),
+        framework_forbidden_markers=_dict_tuple_override(overrides, "framework_forbidden_markers", base.framework_forbidden_markers),
         guidance_native_label=str(overrides.get("guidance_native_label", base.guidance_native_label)),
         guidance_native_framework=str(overrides.get("guidance_native_framework", base.guidance_native_framework)),
         repair_prompt_ids=_dict_str_override(overrides, "repair_prompt_ids", base.repair_prompt_ids),
@@ -895,17 +934,60 @@ def get_performance_validation_mode(policy: PlatformPolicy | None) -> str:
 
 def get_performance_baseline_device_values(policy: PlatformPolicy | None) -> set[str]:
     """Return accepted baseline device values for baseline proof checks.
-    Defaults to ``{"cuda", "gpu", "torch_cuda"}`` when *policy* is ``None``.
+
+    Raises:
+        ValueError: When *policy* is ``None`` — a PlatformPolicy matching the
+            target platform must be provided to determine the correct baseline
+            device values.
     """
     if policy is None:
-        return {"cuda", "gpu", "torch_cuda"}
+        raise ValueError(
+            "No PlatformPolicy provided — cannot determine performance baseline "
+            + "device values. Provide a PlatformPolicy matching the target platform."
+        )
     return set(policy.custom_op_evidence.performance_baseline_device_values)
 
 
 def get_performance_baseline_boolean_fields(policy: PlatformPolicy | None) -> list[str]:
     """Return boolean fields that prove a baseline path was exercised.
-    Defaults to CUDA baseline fields when *policy* is ``None``.
+
+    Raises:
+        ValueError: When *policy* is ``None`` — a PlatformPolicy matching the
+            target platform must be provided to determine the correct baseline
+            boolean fields.
     """
     if policy is None:
-        return ["cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked"]
+        raise ValueError(
+            "No PlatformPolicy provided — cannot determine performance baseline "
+            + "boolean fields. Provide a PlatformPolicy matching the target platform."
+        )
     return list(policy.custom_op_evidence.performance_baseline_boolean_fields)
+
+
+def _tuple_str_override(overrides: dict[str, object], key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    val = overrides.get(key)
+    if isinstance(val, (list, tuple)):
+        return tuple(str(item) for item in val if isinstance(item, str) and item.strip())
+    return default
+
+
+def _dict_dict_override(overrides: dict[str, object], key: str, default: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    val = overrides.get(key)
+    if isinstance(val, dict):
+        result: dict[str, dict[str, str]] = {}
+        for framework, env_map in val.items():
+            if isinstance(env_map, dict):
+                result[str(framework)] = {str(k): str(v) for k, v in env_map.items() if v is not None}
+        return result if result else dict(default)
+    return dict(default)
+
+
+def _dict_tuple_override(overrides: dict[str, object], key: str, default: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    val = overrides.get(key)
+    if isinstance(val, dict):
+        result: dict[str, tuple[str, ...]] = {}
+        for framework, markers in val.items():
+            if isinstance(markers, (list, tuple)):
+                result[str(framework)] = tuple(str(m) for m in markers if isinstance(m, str) and m.strip())
+        return result if result else dict(default)
+    return dict(default)

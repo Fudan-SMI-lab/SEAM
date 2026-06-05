@@ -30,6 +30,30 @@ MAX_DISCOVERY_FILES = 2000
 MAX_DISCOVERY_BYTES = 2_000_000
 CUDA_NATIVE_SUFFIXES = ("_cuda", "_gpu")
 
+
+def _get_native_suffixes(target_device_values: frozenset[str] | None = None) -> tuple[str, ...]:
+    """Return platform-appropriate native source suffixes derived from *target_device_values*.
+
+    When *target_device_values* is ``None``, returns the default ``("_cuda", "_gpu")``.
+    Otherwise extends the defaults with platform-specific suffixes:
+    ``"npu"`` adds ``"_npu"``, ``"musa"`` adds ``"_musa"``, etc.
+    """
+    if target_device_values is None:
+        return CUDA_NATIVE_SUFFIXES
+    suffix_map: dict[str, str] = {
+        "npu": "_npu",
+        "musa": "_musa",
+        "rocm": "_hip",
+        "mlu": "_mlu",
+    }
+    extra = tuple(
+        suffix_map[v]
+        for v in sorted(target_device_values)
+        if v in suffix_map and suffix_map[v] not in CUDA_NATIVE_SUFFIXES
+    )
+    return CUDA_NATIVE_SUFFIXES + extra
+
+
 RETURN_TYPE_PATTERN = (
     r"(?:extern\s+\"C\"\s+)?"
     r"(?:(?:static|inline|constexpr|__host__|__device__|__global__|__forceinline__)\s+)*"

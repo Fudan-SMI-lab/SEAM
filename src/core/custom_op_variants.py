@@ -10,18 +10,30 @@ import json
 import re
 import shlex
 import sys
+import sysconfig
 from typing import cast
 import os
 
+# ── Shared-library extension and pip prefix configuration ──────────────
+_SHARED_LIB_EXT = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+"""Platform-aware shared-library extension (e.g. ``.so``, ``.pyd``, ``.dylib``)."""
+
+PIP_COMMAND_PREFIXES: tuple[str, ...] = ("pip:", "python -m pip", "pip3")
+"""Prefixes recognised as pip-install directives in dependency manifests."""
+
 from core.custom_op_source_discovery import discover_required_cuda_native_units_from_project
-from core.routes import SGLANG_SERVING, VLLM_SERVING
+from core.routes import ROUTE_TO_SERVING_FRAMEWORK, SGLANG_SERVING, VLLM_SERVING
 
 
 # ---------------------------------------------------------------------------
 # Build-layout configuration (can be overridden via configure_opp_build_layout)
 # ---------------------------------------------------------------------------
 
-_ASCENDC_BUILD_SUBDIR = os.environ.get("SEAM_ASCENDC_BUILD_SUBDIR", "ascendc")
+_ASCENDC_BUILD_SUBDIR = (
+    os.environ.get("SEAM_OPP_BUILD_SUBDIR")
+    or os.environ.get("SEAM_ASCENDC_BUILD_SUBDIR")
+    or "customop"
+)
 """Default subdirectory name under build_out/ for custom-op shared libraries."""
 
 _OPP_HOST_DIRNAMES: tuple[str, ...] = tuple(
@@ -173,7 +185,21 @@ STRICT_OPERATOR_INVENTORY_AXIS_NAMES = frozenset(
         "fine_grained_operator_units",
     }
 )
-DEVICE_SUFFIX_PATTERN = re.compile(r"(?:^|[:_\-])(cuda|gpu)(?:$|[:_\-])", re.IGNORECASE)
+_DEFAULT_DEVICE_SUFFIX_PATTERN = re.compile(r"(?:^|[:_\-])(cuda|gpu|npu|musa|hip|mlu)(?:$|[:_\-])", re.IGNORECASE)
+
+
+def _get_device_suffix_pattern(target_device_values: frozenset[str] | None = None) -> re.Pattern[str]:
+    """Return a compiled regex pattern matching device suffixes derived from *target_device_values*.
+
+    When *target_device_values* is ``None``, falls back to the default set
+    ``frozenset({"cuda", "gpu"})`` and returns :data:`_DEFAULT_DEVICE_SUFFIX_PATTERN`.
+    Otherwise constructs a fresh pattern from the provided values joined by ``|``.
+    """
+    if target_device_values is None:
+        return _DEFAULT_DEVICE_SUFFIX_PATTERN
+    values_alt = "|".join(re.escape(v) for v in sorted(target_device_values))
+    return re.compile(rf"(?:^|[:_\-])({values_alt})(?:$|[:_\-])", re.IGNORECASE)
+
 
 IMPLEMENTATION_DETAIL_AXIS_PATTERNS = (
     re.compile(r"(?:^|[_\-\s])(block|blocksize|block_size|threads?|thread_count|grid|gridsize|grid_size)(?:$|[_\-\s])", re.IGNORECASE),
@@ -348,7 +374,9 @@ def _discover_serving_route(root: Path | None) -> str | None:
 def _ensure_serving_runtime_surface(output: dict[str, object], root: Path | None, route: str) -> None:
     surface_value = output.get("serving_runtime_surface")
     surface = dict(cast(Mapping[str, object], surface_value)) if isinstance(surface_value, Mapping) else {}
-    framework = "sglang" if route == SGLANG_SERVING else "vllm"
+    framework = ROUTE_TO_SERVING_FRAMEWORK.get(route)
+    if framework is None:
+        raise ValueError(f"Unknown serving route {route!r} — cannot determine framework")
     evidence = _serving_evidence(root, framework)
     launch_command = _serving_launch_command(root, framework)
     demo_files = _serving_demo_or_test_files(root)
@@ -363,6 +391,21 @@ def _ensure_serving_runtime_surface(output: dict[str, object], root: Path | None
     surface.setdefault("unresolved_source_groups", [])
     surface.setdefault("detection_complete", True)
     output["serving_runtime_surface"] = surface
+
+
+_SERVING_LAUNCH_COMMANDS: dict[str, str] = {
+    "sglang": "sglang serve --model-path <project-model> --port 8080",
+    "vllm": "vllm serve <project-model> --port 8000",
+}
+
+
+def register_serving_launch_command(framework: str, command_template: str) -> None:
+    """Register a framework-specific serving launch command template.
+
+    Call this early (e.g. after resolving the active PlatformPolicy) so that
+    ``_serving_launch_command`` uses the platform-correct command.
+    """
+    _SERVING_LAUNCH_COMMANDS[framework] = command_template
 
 
 def _serving_evidence(root: Path | None, framework: str) -> list[str]:
@@ -384,11 +427,11 @@ def _serving_evidence(root: Path | None, framework: str) -> list[str]:
 
 def _serving_launch_command(root: Path | None, framework: str) -> str:
     evidence = _serving_evidence(root, framework)
-    if framework == "sglang":
-        return "sglang serve --model-path <project-model> --port 8080"
     if any("pyproject.toml" in item for item in evidence):
         return "mineru-vllm-server"
-    return "vllm serve <project-model> --port 8000"
+    return _SERVING_LAUNCH_COMMANDS.get(
+        framework, "vllm serve <project-model> --port 8000"
+    )
 
 
 def _serving_demo_or_test_files(root: Path | None) -> list[str]:
@@ -480,7 +523,7 @@ def _dependencies_from_environment_yaml(text: str) -> list[str]:
         if not in_dependencies or not stripped.startswith("-"):
             continue
         value = stripped[1:].strip()
-        if value and not value.startswith("pip:"):
+        if value and not any(str(value).startswith(prefix) for prefix in PIP_COMMAND_PREFIXES):
             dependencies.append(value)
     return dependencies
 
@@ -1274,7 +1317,7 @@ def _device_sibling_aliases(fine_units: Sequence[str], axes: Mapping[str, list[s
     unit_set = set(fine_units)
     aliases: dict[str, str] = {}
     for base_unit in fine_units:
-        if DEVICE_SUFFIX_PATTERN.search(base_unit):
+        if _get_device_suffix_pattern().search(base_unit):
             continue
         for suffix in _target_device_suffixes(axes):
             sibling = f"{base_unit}_{suffix}"
@@ -1297,9 +1340,13 @@ def _canonical_helper_family_unit(base_unit: str) -> str:
     return base_unit
 
 
-def _target_device_suffixes(axes: Mapping[str, list[str]]) -> list[str]:
+def _target_device_suffixes(
+    axes: Mapping[str, list[str]],
+    target_device_values: frozenset[str] | None = None,
+) -> list[str]:
     values = axes.get("device") or []
-    suffixes = [value for value in values if value in {"cuda", "gpu"}]
+    allowed = target_device_values if target_device_values is not None else frozenset({"cuda", "gpu"})
+    suffixes = [value for value in values if value in allowed]
     return suffixes or ["cuda"]
 
 
@@ -1946,7 +1993,8 @@ def _source_template_axis_names_for_unit(
 
 
 def _unit_is_device_target(base_unit: str, descriptor_text: str) -> bool:
-    return bool(DEVICE_SUFFIX_PATTERN.search(base_unit) or DEVICE_SUFFIX_PATTERN.search(descriptor_text))
+    pattern = _get_device_suffix_pattern()
+    return bool(pattern.search(base_unit) or pattern.search(descriptor_text))
 
 
 def _descriptor_mentions_axis_value(
@@ -2169,7 +2217,7 @@ def _device_values_for_base(base_unit: str, axes: Mapping[str, list[str]]) -> li
     axis_values = axes.get("device")
     if not axis_values:
         return [""]
-    match = DEVICE_SUFFIX_PATTERN.search(base_unit)
+    match = _get_device_suffix_pattern().search(base_unit)
     if match:
         return [match.group(1).lower()]
     return axis_values
@@ -2524,6 +2572,18 @@ def ensure_strict_non_variant_custom_op_validation_script(
         script_path = project_root / "validate_custom_ops_full.py"
         _write_strict_non_variant_validation_script(script_path)
 
+    # Preserve the model's entry_script_path when it already points to a
+    # path inside the project root.  The strict fallback script is written
+    # to disk for safety but does not override the model's intent during
+    # normalization.
+    raw_entry = target.get("entry_script_path")
+    if isinstance(raw_entry, str) and raw_entry.strip():
+        entry_path = Path(raw_entry).expanduser()
+        if not entry_path.is_absolute():
+            entry_path = project_root / entry_path
+        if _path_is_inside(entry_path, project_root):
+            return
+
     target["entry_script_path"] = str(script_path)
     target["run_command"] = _phase3_hardened_run_command(target.get("run_command"), script_path)
 
@@ -2609,7 +2669,7 @@ def _strict_expanded_variant_validation_script_text(
     return {"expanded_variant_inventory": {"expanded_operator_instances_count": 0, "unit_identities": []},
             "variant_axis_coverage": {}, "per_variant_performance_report": {}}
 '''
-    return f'''#!/usr/bin/env python3
+    return f'''#!{sys.executable}
 """Deterministic strict custom-op expanded-variant final-gate scaffold."""
 
 from __future__ import annotations
@@ -2825,7 +2885,7 @@ def _evidence_for(report: object, unit: str, label: str) -> dict[str, object]:
             "loaded": True,
             "installed": True,
             "project_relative_path": "build_out/",
-            "path": f"build_out/{_ASCENDC_BUILD_SUBDIR}/libcust_opapi.so",
+            "path": f"build_out/{_ASCENDC_BUILD_SUBDIR}/libcust_opapi{_SHARED_LIB_EXT}",
             "build_provenance": {{
                 "command": "bash build.sh",
                 "log_path": "build_out/build.log",
@@ -2833,7 +2893,7 @@ def _evidence_for(report: object, unit: str, label: str) -> dict[str, object]:
             "op_host": "op_host/op_template.cpp",
             "op_kernel": "op_kernel/op_template.cpp",
             "build_script": "build.sh",
-            "runtime_loaded_artifact": f"build_out/{_ASCENDC_BUILD_SUBDIR}/libcust_opapi.so",
+            "runtime_loaded_artifact": f"build_out/{_ASCENDC_BUILD_SUBDIR}/libcust_opapi{_SHARED_LIB_EXT}",
             "op_info_path": "build_out/op_info.json",
             "kernel_meta_path": "kernel_meta/kernel_meta.json",
             "generated_header_path": "build_out/include/op_api.h",
@@ -2974,7 +3034,7 @@ def _write_strict_non_variant_validation_script(script_path: Path) -> None:
 
 
 def _strict_non_variant_validation_script_text() -> str:
-    return f'''#!/usr/bin/env python3
+    return f'''#!{sys.executable}
 """Strict non-variant custom-op final-gate scaffold.
 
 Reads the migration manifest at runtime to discover operator units,

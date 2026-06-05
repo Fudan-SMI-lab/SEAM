@@ -105,6 +105,20 @@ def _require_explicit_repair_prompt(prompt_id: str | None, *, role: str) -> str:
     )
 
 
+_FALLBACK_ERROR_ANALYZER_PROMPT = "phase_error_recovery_npu"
+_FALLBACK_ERROR_ANALYZER_PROMPT_CONTAINER = "phase_error_recovery_container_npu"
+_FALLBACK_REPAIR_PROMPT_IDS: dict[str, str] = {
+    "dependency_fixer": "repair_dependency_fixer_npu",
+    "code_adapter": "repair_code_adapter_npu",
+    "operator_fixer": "repair_operator_fixer_npu",
+}
+_FALLBACK_REPAIR_PROMPT_IDS_CONTAINER: dict[str, str] = {
+    "dependency_fixer": "repair_dependency_fixer_container_npu",
+    "code_adapter": "repair_code_adapter_container_npu",
+    "operator_fixer": "repair_operator_fixer_container_npu",
+}
+
+
 def _default_repair_prompt_id(role: str, *, container: bool, platform_policy: PlatformPolicy | None) -> str | None:
     if platform_policy is not None:
         prompts = platform_policy.repair_prompt_ids_container if container else platform_policy.repair_prompt_ids
@@ -115,6 +129,9 @@ def _default_repair_prompt_id(role: str, *, container: bool, platform_policy: Pl
             prompt_id = platform_policy.repair_prompt_ids_container.get(role)
             if prompt_id:
                 return prompt_id
+    else:
+        prompts = _FALLBACK_REPAIR_PROMPT_IDS_CONTAINER if container else _FALLBACK_REPAIR_PROMPT_IDS
+        return prompts.get(role)
     return None
 
 
@@ -123,6 +140,8 @@ def _default_error_analyzer_prompt_id(*, container: bool, platform_policy: Platf
         prompt_id = platform_policy.error_analyzer_prompt_id_container if container else platform_policy.error_analyzer_prompt_id
         if prompt_id:
             return prompt_id
+    else:
+        return _FALLBACK_ERROR_ANALYZER_PROMPT_CONTAINER if container else _FALLBACK_ERROR_ANALYZER_PROMPT
     return None
 
 
@@ -1154,6 +1173,58 @@ class RepairLoopEngine:
                     }
                 else:
                     repair_role = str(classification["repair_role"])
+                    if (repair_role == "operator_fixer" and
+                            _operator_repair_has_custom_op_contract(active_phase3_contract)):
+                        parallel_results = self._parallel_operator_repair(
+                            entry_script=entry_script, project_dir=project_dir,
+                            iteration=iteration, error_text=error_text,
+                            classification=classification, history=context.history,
+                            constraint_summary=constraint_summary, last_review=last_review,
+                            env_context=env_context or {}, phase3_contract=active_phase3_contract,
+                            cmd_argv=cmd_argv, use_shell=use_shell,
+                            script_cwd=script_cwd, env_vars=env_vars,
+                            analyzer_session_id=analyzer_session_id, logger=logger,
+                        )
+                        if parallel_results:
+                            all_modified_files: list[str] = []
+                            all_summaries: list[str] = []
+                            parallel_success = True
+                            for result in parallel_results:
+                                status_val = result.get("status", "failed")
+                                if status_val != "success":
+                                    parallel_success = False
+                                files = result.get("modified_files", [])
+                                if isinstance(files, list):
+                                    all_modified_files.extend(cast(list[str], cast(list[object], files)))
+                                summary = result.get("fix_summary", "")
+                                if summary:
+                                    all_summaries.append(str(summary))
+                            merged_summary = "; ".join(all_summaries)
+                            fix_attempt = {
+                                "status": "success" if parallel_success else "partial",
+                                "message": f"Parallel repair dispatched {len(parallel_results)} groups",
+                                "repair_role": repair_role,
+                                "modified_files": all_modified_files,
+                                "fix_summary": merged_summary,
+                            }
+                            if parallel_success:
+                                last_fix_metadata = {
+                                    "modified_files": all_modified_files,
+                                    "summary": merged_summary,
+                                }
+                            context.history.append(fix_attempt)
+                            iteration_record = {
+                                "iteration": iteration,
+                                "exit_code": final_exit_code,
+                                "stdout": final_stdout,
+                                "stderr": final_stderr,
+                                "error": error_text,
+                                "classification": classification,
+                                "fix_attempt": fix_attempt,
+                                "error_analyzer_session_id": analyzer_session_id,
+                            }
+                            self._record_iteration(iteration, context, iteration_record)
+                            continue
                     repair_agent = self._repair_agent_for_role(
                         repair_role=repair_role,
                         phase3_contract=active_phase3_contract,
@@ -1673,6 +1744,14 @@ class RepairLoopEngine:
             result["errors"] = [f"custom-op final gate report missing: {gate_path}"]
             return result
         try:
+            gate_size = gate_path.stat().st_size
+        except OSError as exc:
+            result["errors"] = [f"custom-op final gate report could not be stat'ed: {exc}"]
+            return result
+        if gate_size > _CUSTOM_OP_GATE_REPORT_MAX_BYTES:
+            result["errors"] = [f"custom-op final gate report too large: {gate_path}"]
+            return result
+        try:
             with gate_path.open("r", encoding="utf-8") as handle:
                 gate_data = cast(object, json.load(handle))
         except (OSError, json.JSONDecodeError) as exc:
@@ -2090,6 +2169,9 @@ class RepairLoopEngine:
             "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
             "operator_repair_progress_block": "(No current custom-op repair progress block is available in this repair-loop context.)",
             "active_custom_op_full_repair_requirements": "",
+            "parallel_dispatch_guidance": "",
+            "assigned_units": "",
+            "assigned_unit_count": "",
         }
         exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
         context.update(_get_exec_ctx(
@@ -2125,6 +2207,9 @@ class RepairLoopEngine:
                 )
                 context["operator_repair_progress_block"] = _operator_custom_op_progress_block(phase3_contract, project_dir)
                 context["active_custom_op_full_repair_requirements"] = context["operator_custom_op_guidance"]
+                context["parallel_dispatch_guidance"] = "No parallel dispatch guidance configured; repair all assigned operators sequentially."
+                context["assigned_units"] = "(No assigned operators — repair all custom-op variants discovered in the contract)"
+                context["assigned_unit_count"] = "all"
             else:
                 context["operator_custom_op_guidance"] = _operator_generic_guidance(
                     project_dir=project_dir,
@@ -2132,6 +2217,277 @@ class RepairLoopEngine:
                     platform_policy=self.platform_policy,
                 )
         return self.prompt_loader.load_prompt(prompt_id, context)
+
+    def _build_scoped_repair_prompt(
+        self,
+        *,
+        entry_script: str,
+        project_dir: str,
+        iteration: int,
+        error_text: str,
+        classification: ClassificationDict,
+        history: list[object],
+        constraint_summary: str = "",
+        last_review: dict[str, object] | None = None,
+        env_context: dict[str, object] | None = None,
+        phase3_contract: dict[str, object] | None = None,
+        cmd_argv: list[str] | None = None,
+        use_shell: bool = False,
+        script_cwd: str | None = None,
+        env_vars: dict[str, str] | None = None,
+        assigned_units: list[str],
+        progress_block: str,
+    ) -> str:
+        repair_role = classification["repair_role"]
+        prompt_id = _require_explicit_repair_prompt(
+            _default_repair_prompt_id(
+                repair_role,
+                container=isinstance(getattr(self, "exec_backend", None), ContainerBackend),
+                platform_policy=self.platform_policy,
+            ),
+            role=repair_role,
+        )
+        if repair_role == "operator_fixer" and _operator_repair_has_custom_op_contract(phase3_contract):
+            prompt_id = "repair_custom_op_variant_service"
+        assigned_count = str(len(assigned_units))
+        parallel_guidance = (
+            f"If you have been assigned {assigned_count} operators, use background tasks or "
+            "nested agents to dispatch each operator to a parallel agent for simultaneous "
+            "repair. Each background agent fixes exactly one operator independently. After "
+            "all agents complete, merge their results: collect modified_files, commands_run, "
+            f"and evidence from each agent. Then run {entry_script} for final validation. "
+            "Do not wait for agents sequentially - dispatch all simultaneously."
+        )
+        context: dict[str, str] = {
+            "repair_role": repair_role,
+            "entry_script": entry_script,
+            "project_dir": project_dir,
+            "iteration": str(iteration),
+            "category": classification["category"],
+            "root_cause": classification["root_cause"],
+            "suggested_fix": classification["suggested_fix"],
+            "error_text": error_text,
+            "history_summary": self._format_history_summary(cast(list[dict[str, object]], history))
+            if history else "(No previous repair attempts)",
+            "constraint_summary": constraint_summary,
+            "last_review": self._serialize(last_review) if last_review else "(No review available)",
+            "env_context": self._serialize(env_context) if env_context else "(No environment context available)",
+            "artifact_base_path": str(getattr(self.artifact_store, "artifact_dir", "")),
+            "raw_attempt_files": self._serialize(self._list_previous_attempt_paths()),
+            "workspace_root": _workspace_root(),
+            "phase1_phase3_repair_scope": "(Phase 1 / Phase 3 repair scope is available in the operatorRepairContext artifact when active custom-op contract is present.)",
+            "strict_custom_op_acceptance_contract": "For active custom-op contracts, success requires current project-local migration reports and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted.",
+            "operator_repair_progress_block": progress_block,
+            "active_custom_op_full_repair_requirements": "",
+            "assigned_units": ", ".join(assigned_units),
+            "assigned_unit_count": assigned_count,
+            "parallel_dispatch_guidance": parallel_guidance,
+        }
+        exec_cmd: str | list[str] = shlex.join(cmd_argv) if (use_shell and cmd_argv) else (cmd_argv if cmd_argv else entry_script)
+        context.update(_get_exec_ctx(
+            getattr(self, "exec_backend", None), command=exec_cmd, cwd=script_cwd, env=env_vars,
+        ))
+        if repair_role in {"dependency_fixer", "operator_fixer"}:
+            runtime_error_path, runtime_card_path = write_repair_runtime_artifacts(
+                artifact_dir=str(getattr(self.artifact_store, "artifact_dir", project_dir)),
+                project_dir=project_dir,
+                entry_script=entry_script,
+                error_text=error_text,
+                category=classification["category"],
+                root_cause=classification["root_cause"],
+                suggested_fix=classification["suggested_fix"],
+                repair_role=repair_role,
+                experience_action_cards=[],
+            )
+            context["runtime_error_artifact_path"] = runtime_error_path
+            context["runtime_card_artifact_path"] = runtime_card_path
+        if repair_role == "operator_fixer":
+            if _operator_repair_has_custom_op_contract(phase3_contract):
+                operator_context_path = write_operator_repair_context_artifact(
+                    artifact_dir=str(getattr(self.artifact_store, "artifact_dir", project_dir)),
+                    project_dir=project_dir,
+                    entry_script=entry_script,
+                    phase3_contract=phase3_contract,
+                )
+                context["operator_custom_op_guidance"] = _operator_custom_op_guidance(
+                    operator_context_path,
+                    project_dir=project_dir,
+                    entry_script=entry_script,
+                    platform_policy=self.platform_policy,
+                )
+                context["operator_repair_progress_block"] = progress_block
+                context["active_custom_op_full_repair_requirements"] = context["operator_custom_op_guidance"]
+            else:
+                context["operator_custom_op_guidance"] = _operator_generic_guidance(
+                    project_dir=project_dir,
+                    entry_script=entry_script,
+                    platform_policy=self.platform_policy,
+                )
+        return self.prompt_loader.load_prompt(prompt_id, context)
+
+    def _parallel_operator_repair(
+        self,
+        *,
+        entry_script: str,
+        project_dir: str,
+        iteration: int,
+        error_text: str,
+        classification: ClassificationDict,
+        history: list[object],
+        constraint_summary: str,
+        last_review: dict[str, object] | None,
+        env_context: dict[str, object],
+        phase3_contract: dict[str, object],
+        cmd_argv: list[str],
+        use_shell: bool,
+        script_cwd: str,
+        env_vars: dict[str, str],
+        analyzer_session_id: str,
+        logger: Callable[[str], None] | None,
+    ) -> list[FixAttemptDict]:
+        target_units = _operator_custom_op_target_units(phase3_contract)
+        try:
+            reports_dir = safe_project_reports_dir(Path(project_dir))
+        except ValueError as exc:
+            self._log(f"Parallel repair: cannot resolve reports_dir: {exc}", logger)
+            return []
+        gate_path = reports_dir / "custom_op_final_gate.json"
+        gate_data: object = {}
+        if gate_path.exists():
+            try:
+                loaded_gate = cast(object, json.loads(gate_path.read_text(encoding="utf-8")))
+                gate_data = loaded_gate
+            except (OSError, json.JSONDecodeError):
+                gate_data = {}
+        gate_map = cast(dict[str, object], gate_data) if isinstance(gate_data, dict) else {}
+        ledger = custom_op_final_gate_unit_ledger(
+            gate_map,
+            target_units=target_units or None,
+            project_root=project_dir,
+        )
+        parallelization_groups_raw = ledger.get("parallelization_groups")
+        groups: list[dict[str, object]] = []
+        if isinstance(parallelization_groups_raw, list) and parallelization_groups_raw:
+            for item in cast(list[object], parallelization_groups_raw):
+                if isinstance(item, dict) and cast(dict[str, object], item).get("units"):
+                    groups.append(cast(dict[str, object], item))
+        if not groups:
+            remaining = ledger.get("remaining_units")
+            if isinstance(remaining, list) and remaining:
+                remaining_items = cast(list[object], remaining)
+                for unit in remaining_items:
+                    groups.append({"units": [str(unit)]})
+
+        if not groups:
+            self._log("Parallel repair: no groups to dispatch", logger)
+            return []
+
+        progress_block = _operator_custom_op_progress_block(phase3_contract, project_dir)
+        repair_role = str(classification["repair_role"])
+        repair_agent = self._repair_agent_for_role(
+            repair_role=repair_role,
+            phase3_contract=phase3_contract,
+        )
+        group_sessions: dict[str, str] = {}
+        results: list[FixAttemptDict] = []
+
+        for idx, group in enumerate(groups):
+            group_units_raw = cast(list[object], cast(dict[str, object], group).get("units", []))
+            group_units = [str(u) for u in group_units_raw]
+            group_label = f"group-{idx + 1}"
+            self._log(
+                f"[Iter {iteration}] Parallel repair: dispatching {group_label} ({len(group_units)} units)",
+                logger,
+            )
+            session_id = self.session_mgr.get_or_create(
+                role="operator_fixer",
+                lifecycle="persistent",
+                agent=repair_agent,
+            )
+            group_sessions[group_label] = session_id
+            scoped_prompt = self._build_scoped_repair_prompt(
+                entry_script=entry_script,
+                project_dir=project_dir,
+                iteration=iteration,
+                error_text=error_text,
+                classification=classification,
+                history=history,
+                constraint_summary=constraint_summary,
+                last_review=last_review,
+                env_context=env_context,
+                phase3_contract=phase3_contract,
+                cmd_argv=cmd_argv,
+                use_shell=use_shell,
+                script_cwd=script_cwd,
+                env_vars=env_vars,
+                assigned_units=group_units,
+                progress_block=progress_block,
+            )
+            try:
+                group_response = self.session_mgr.send_command(
+                    session_id,
+                    scoped_prompt,
+                    agent=repair_agent,
+                    timeout=_get_timeout(self.config, "session_timeout_repair"),
+                )
+                session_error = self._session_error_from_response(group_response)
+                if session_error:
+                    self._log(
+                        f"[Iter {iteration}] Parallel repair {group_label}: session error - {session_error}",
+                        logger,
+                    )
+                    results.append({
+                        "status": "failed",
+                        "message": f"{group_label}: {session_error}",
+                        "repair_role": repair_role,
+                        "repair_session_id": session_id,
+                        "modified_files": [],
+                        "fix_summary": "",
+                    })
+                    continue
+                fix_metadata = self._extract_fix_summary(
+                    session_id,
+                    group_response,
+                    max_retries=2,
+                )
+                nested_error = self._repair_session_nested_task_error(session_id)
+                if nested_error:
+                    fix_metadata = {
+                        "modified_files": [],
+                        "summary": nested_error,
+                    }
+                modified_files_raw: object = fix_metadata.get("modified_files")
+                modified_files_val: list[str] = cast(list[str], modified_files_raw) if isinstance(modified_files_raw, list) else []
+                results.append({
+                    "status": "success",
+                    "message": f"{group_label}: dispatched ({len(group_response)} chars)",
+                    "repair_role": repair_role,
+                    "repair_session_id": session_id,
+                    "instruction": scoped_prompt,
+                    "response": group_response,
+                    "modified_files": modified_files_val,
+                    "fix_summary": str(fix_metadata.get("summary", "")),
+                })
+                self._log(
+                    f"[Iter {iteration}] Parallel repair {group_label}: completed "
+                    f"({len(modified_files_val)} files modified)",
+                    logger,
+                )
+            except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
+                self._log(
+                    f"[Iter {iteration}] Parallel repair {group_label}: LLM call failed - {exc}",
+                    logger,
+                )
+                results.append({
+                    "status": "failed",
+                    "message": f"{group_label}: {exc}",
+                    "repair_role": repair_role,
+                    "repair_session_id": session_id,
+                    "modified_files": [],
+                    "fix_summary": "",
+                })
+
+        return results
 
     @staticmethod
     def _validate_classification(data: dict[str, object]) -> dict[str, object]:

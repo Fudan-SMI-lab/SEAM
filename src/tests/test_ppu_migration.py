@@ -394,7 +394,7 @@ class TestWorkflowExecutorPPUSelection:
         status, result = executor._execute_builtin_phase(phase, {}, {})
         assert status == "success"
         assert result["operation"] == "ppu_rule_based_migration"
-        assert result.get("backend") == "ppu"
+        assert result.get("backend") == executor.platform_policy.id
         content = (Path(temp_dir) / "sample.py").read_text()
         assert content == code, "PPU migrator must not modify source"
         assert "torch.cuda.is_available()" in content

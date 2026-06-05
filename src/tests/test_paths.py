@@ -28,15 +28,15 @@ def test_migration_utils_root_is_deprecated_alias() -> None:
 
 
 def test_execution_root_is_seam_root() -> None:
-    assert execution_root().name == "SEAM-merge-main-fusion-baseline"
+    assert execution_root().name == "merge-version"
     assert workspace_root() == execution_root()
 
 
 def test_default_outputs_are_outside_execution_root() -> None:
-    """Default output projects go outside the SEAM repo (parent workspace)."""
+    """Default output projects live alongside the SEAM repo root."""
     result = default_output_projects_root()
     assert result.name == "output_projects"
-    assert result.parent == legacy_workspace_root()
+    assert result.parent == execution_root()
 
 
 def test_default_outputs_env_override() -> None:
@@ -59,7 +59,7 @@ def test_default_outputs_env_override_empty_ignored() -> None:
         result = default_output_projects_root()
     # Should fall back to default
     assert result.name == "output_projects"
-    assert result.parent == legacy_workspace_root()
+    assert result.parent == execution_root()
 
 
 def test_project_search_roots_are_root_first_with_legacy_fallbacks() -> None:

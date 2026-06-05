@@ -7,3 +7,4 @@
 7. - 如果 analyze_error 报告的问题是 **operator 代码本身的不兼容**（编译错误、API 缺失、算子实现 bug），则修改对应的算子源码（.cpp/.cu/.py 等）。
 8. - 如果 analyze_error 报告的问题是 **entry script 输出缺少证据字段**（如 `cpu_baseline`、`npu_custom`、`project_api_invoked`、`custom_op_route_executed`、`public_api_invoked` 等布尔标志），则**必须修改 entry script 源码**（从 `{entry_script}` 命令提取脚本文件名，如 `python validate.py` → 修改 `validate.py`）来生成这些字段。**严禁只修改输出文件**（如 `migration_reports/*.json`），因为输出文件会在下轮运行时被 entry script 重新生成覆盖。
 9. - 验证时使用 `{entry_script}` 命令重新运行（该命令即为 entry script 的执行方式），确认源码修改生效且输出文件自动包含所需字段。
+10. {parallel_dispatch_guidance}

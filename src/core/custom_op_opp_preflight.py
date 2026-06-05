@@ -443,10 +443,29 @@ def _should_skip(rel_path: str) -> bool:
     return any(part in _SKIP_DIR_NAMES for part in parts)
 
 
-_OPP_TEMPLATE_REL_PATH = os.environ.get(
-    "SEAM_OPP_TEMPLATE_REL_PATH",
-    "cuda-custom-op-to-npu-custom-op/templates/ascend_custom_op",
+_LEGACY_OPP_TEMPLATE_REL_PATH = (
+    "cuda-custom-op-to-npu-custom-op/templates/ascend_custom_op"
 )
+"""Legacy Fallback OPP template path; retained for backward compatibility.
+Overridable via ``SEAM_OPP_TEMPLATE_REL_PATH`` env var or policy attribute."""
+
+
+def _resolve_opp_template_rel_path(policy: object | None) -> str:
+    """Resolve the OPP template relative path from policy, env var, or fallback.
+
+    Resolution order:
+    1. ``policy.opp_template_rel_path`` (when policy provides one)
+    2. ``SEAM_OPP_TEMPLATE_REL_PATH`` environment variable
+    3. Legacy hardcoded path (Ascend-specific, for backward compat)
+    """
+    if policy is not None:
+        from_policy = getattr(policy, "opp_template_rel_path", None)
+        if from_policy:
+            return from_policy
+    return os.environ.get(
+        "SEAM_OPP_TEMPLATE_REL_PATH",
+        _LEGACY_OPP_TEMPLATE_REL_PATH,
+    )
 
 
 def ensure_opp_source_evidence(
@@ -483,7 +502,7 @@ def ensure_opp_source_evidence(
 
     skills_dir: Path | None = None
     for parent in project_root.parents:
-        candidate = parent / ".skills" / _OPP_TEMPLATE_REL_PATH
+        candidate = parent / ".skills" / _resolve_opp_template_rel_path(policy)
         if candidate.is_dir():
             skills_dir = candidate
             break

@@ -20,7 +20,7 @@ def test_load_framework_config_defaults():
     config = load_framework_config()
     assert "framework" in config
     framework = cast(dict[str, object], config["framework"])
-    assert "session_timeout_repair" not in framework
+    assert framework["session_timeout_repair"] == 43200
     assert "entry_script_timeout" not in framework
     assert framework["max_iterations"] == 10
     assert cast(dict[str, object], framework["review"])["enabled"] is False

@@ -56,9 +56,9 @@ class ExperienceClassifier:
     def __init__(self, session_mgr: Any | None = None) -> None:
         self.session_mgr = session_mgr
 
-    def classify(self, candidate: dict, artifact_ctx: dict | None = None, timeout_sec: int = 300) -> dict:
+    def classify(self, candidate: dict, artifact_ctx: dict | None = None, timeout_sec: int = 300, platform_name: str = "Accelerator") -> dict:
         base = self._deterministic_classification(candidate)
-        llm_result = self._try_llm_classification(candidate, artifact_ctx or {}, timeout_sec)
+        llm_result = self._try_llm_classification(candidate, artifact_ctx or {}, timeout_sec, platform_name=platform_name)
         if llm_result:
             base.update({key: value for key, value in llm_result.items() if value not in (None, "", [])})
         return self._normalize(base, candidate)
@@ -102,12 +102,12 @@ class ExperienceClassifier:
             "trigger_fingerprint": self._fingerprint(candidate),
         }
 
-    def _try_llm_classification(self, candidate: dict, artifact_ctx: dict, timeout_sec: int) -> dict:
+    def _try_llm_classification(self, candidate: dict, artifact_ctx: dict, timeout_sec: int, platform_name: str = "Accelerator") -> dict:
         if not self.session_mgr or not hasattr(self.session_mgr, "send_command"):
             return {}
         try:
             session_id = self._ensure_classifier_session()
-            prompt = self._build_classifier_prompt(candidate, artifact_ctx)
+            prompt = self._build_classifier_prompt(candidate, artifact_ctx, platform_name=platform_name)
             raw = self.session_mgr.send_command(session_id, prompt, timeout=timeout_sec)
             parsed = self._parse_json(raw)
             return parsed if isinstance(parsed, dict) else {}
@@ -115,10 +115,10 @@ class ExperienceClassifier:
             logger.warning("Experience classifier LLM call failed: %s", exc)
             return {}
 
-    def _build_classifier_prompt(self, candidate: dict, artifact_ctx: dict) -> str:
+    def _build_classifier_prompt(self, candidate: dict, artifact_ctx: dict, platform_name: str = "Accelerator") -> str:
         payload = json.dumps({"candidate": candidate, "artifact_context": artifact_ctx}, indent=2)
         return (
-            "You are the experience_classifier for the CUDA-to-NPU migration memory pipeline.\n"
+            f"You are the experience_classifier for the CUDA-to-{platform_name} migration memory pipeline.\n"
             "Classify exactly one reusable experience candidate before solidification.\n"
             "Return exactly one JSON object with these keys: type, target_roles, target_phases, "
             "solidifier, reasoning, confidence, trigger_fingerprint.\n"

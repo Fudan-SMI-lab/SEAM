@@ -18,17 +18,18 @@ _ATEN_ONLY_CUSTOM_OP_TERMS = frozenset({
     "aten",
     "cpp_extension",
     "cppextension",
-    "npu_routed_cpp_extension",
     "privateuse1",
     "torch_utils_cpp_extension",
 })
+# Platform-specific ATen route terms (e.g. "npu_routed_cpp_extension")
+# are derived from the policy via ExperienceQuerier.from_policy().
+_BASE_ATEN_ONLY_TERMS: frozenset[str] = _ATEN_ONLY_CUSTOM_OP_TERMS
 # Platform-agnostic default terms used when no policy is available.
 # Platform-specific terms are derived from PlatformPolicy.custom_op_evidence
 # via ExperienceQuerier.from_policy() and take precedence.
 _CONCRETE_NATIVE_CUSTOM_OP_TERMS = frozenset({
     "op_host",
     "op_kernel",
-    "custom_op",
     "kernel",
     "native_build",
 })
@@ -41,6 +42,7 @@ class ExperienceQuerier:
         store: ExperienceStore,
         session_mgr,
         concrete_native_terms: frozenset[str] | None = None,
+        aten_only_terms: frozenset[str] | None = None,
     ) -> None:
         self.store = store
         self.session_mgr = session_mgr
@@ -50,6 +52,11 @@ class ExperienceQuerier:
             if concrete_native_terms is not None
             else _CONCRETE_NATIVE_CUSTOM_OP_TERMS
         )
+        self._aten_only_terms = (
+            aten_only_terms
+            if aten_only_terms is not None
+            else _BASE_ATEN_ONLY_TERMS
+        )
 
     @classmethod
     def from_policy(
@@ -58,13 +65,14 @@ class ExperienceQuerier:
         session_mgr,
         policy: object | None = None,
     ) -> "ExperienceQuerier":
-        """Create an ExperienceQuerier, deriving concrete-native terms from *policy*.
+        """Create an ExperienceQuerier, deriving concrete-native and ATen-only terms from *policy*.
 
         If *policy* (a PlatformPolicy) is None or lacks
         custom_op_evidence, the platform-agnostic
-        _CONCRETE_NATIVE_CUSTOM_OP_TERMS is used.
+        _CONCRETE_NATIVE_CUSTOM_OP_TERMS and _BASE_ATEN_ONLY_TERMS are used.
         """
         concrete: frozenset[str] | None = None
+        aten_only: frozenset[str] | None = None
         if policy is not None:
             try:
                 ev_cfg = getattr(policy, "custom_op_evidence", None)
@@ -77,10 +85,19 @@ class ExperienceQuerier:
                     if isinstance(val, Iterable) and not isinstance(val, (str, bytes)):
                         tokens.update(str(t) for t in val if isinstance(t, (str, bytes)))
                 concrete = frozenset(tokens) if tokens else None
+            try:
+                policy_id: str = getattr(policy, "id", "")
+            except AttributeError:
+                policy_id = ""
+            if policy_id:
+                prefix = policy_id.split("_")[0]  # "npu_ascend" → "npu"
+                route_term = f"{prefix}_routed_cpp_extension"
+                aten_only = frozenset(_BASE_ATEN_ONLY_TERMS | {route_term})
         return cls(
             store=store,
             session_mgr=session_mgr,
             concrete_native_terms=concrete,
+            aten_only_terms=aten_only,
         )
 
     def query(self, context: dict, load_full: bool = True) -> dict:
@@ -232,7 +249,7 @@ class ExperienceQuerier:
 
     def _is_aten_only_custom_op_entry(self, entry: dict) -> bool:
         text = self._entry_filter_text(entry)
-        if not any(term in text for term in _ATEN_ONLY_CUSTOM_OP_TERMS):
+        if not any(term in text for term in self._aten_only_terms):
             return False
         return not any(term in text for term in self._concrete_native_terms)
 

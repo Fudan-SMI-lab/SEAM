@@ -7,43 +7,25 @@ import re
 from typing import cast
 
 # ── Recognized accelerator families ──────────────────────────────────────
-# Lowercase, underscore-normalized prefixes for packages that signal
-# a specific accelerator platform (PPU, XPU, CUDA, etc.).
-# Platform-specific prefixes (e.g. NPU) are injected via env var
-# SEAM_ACCELERATOR_PACKAGE_PREFIXES (comma-separated, defaults to
-# "torch_npu,torch_npu_" for backward compatibility).
-_ACCELERATOR_PREFIXES: list[str] = [
-    # PPU and PPU ecosystem
-    "torch_ppu",
-    "ppukernel",
-    "ppuccl",
-    "ppu_",
-    "ppu",
-    # XPU / AliXPU
-    "xpu",
-    "alixpu",
-    # Inference engine (often accelerator-specific)
-    "vllm",
-    # Kernel language (often accelerator-specific)
-    "triton",
-    # NVIDIA CUDA ecosystem
-    "cuda",
-    "cudnn",
-    "nccl",
-    # Base torch (catch-all last)
-    "torch",
-    "pytorch",
-]
-
-# Inject platform-specific package prefixes from env var.
-_PREFIX_ENV = os.environ.get(
-    "SEAM_ACCELERATOR_PACKAGE_PREFIXES",
-    "torch_npu,torch_npu_",
+# The full set of recognized accelerator package prefixes is controlled
+# by the ``SEAM_ACCELERATOR_PACKAGE_PREFIXES`` environment variable so
+# that each platform deployment can supply its own list.  The default
+# value covers PPU, XPU, inference engines, kernel languages, and the
+# CUDA ecosystem alongside the base torch framework.
+_ACCELERATOR_PREFIXES: list[str] = sorted(
+    {
+        pfx.strip().lower()
+        for pfx in os.environ.get(
+            "SEAM_ACCELERATOR_PACKAGE_PREFIXES",
+            "torch_ppu,ppukernel,ppuccl,ppu_,ppu,"
+            "xpu,alixpu,vllm,triton,"
+            "cuda,cudnn,nccl,"
+            "torch,pytorch",
+        ).split(",")
+        if pfx.strip()
+    },
+    key=lambda x: ("z" + x) if x in ("torch", "pytorch") else x,
 )
-for _pfx in _PREFIX_ENV.split(","):
-    _pfx_clean = _pfx.strip().lower()
-    if _pfx_clean and _pfx_clean not in _ACCELERATOR_PREFIXES:
-        _ACCELERATOR_PREFIXES.insert(0, _pfx_clean)
 
 
 def _normalize_name(raw: str) -> str:

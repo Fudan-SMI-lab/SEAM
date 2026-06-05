@@ -107,7 +107,7 @@ def test_generic_generated_serving_wrapper_has_no_npu_runtime_code(project_root:
     assert "NCCL_" not in wrapper
     assert "torch.cuda.memory" not in wrapper
     assert 'cpu_fallback_detected = any("cpu" in marker for marker in forbidden_hits)' in wrapper
-    assert '"cuda_fallback_detected": cuda_fallback_detected' in wrapper
+    assert '"accelerator_fallback_detected": accelerator_fallback_detected' in wrapper
     assert '"cpu_fallback_detected": cpu_fallback_detected' in wrapper
 
 
@@ -274,7 +274,7 @@ def _final_gate_payload() -> dict[str, object]:
             "vllm_imported": True,
             "forbidden_runtime_markers_absent": True,
         },
-        "cuda_fallback_detected": False,
+        "accelerator_fallback_detected": False,
         "cpu_fallback_detected": False,
         "import_only": False,
         "smoke_only": False,

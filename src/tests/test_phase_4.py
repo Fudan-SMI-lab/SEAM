@@ -117,7 +117,8 @@ def test_run_phase_4_empty_project(tmp_path):
 
     assert report["files_migrated"] == 0
     assert report["total_replacements"] == 0
-    assert report["replacement_counts"] == {}
+    assert report["replacement_counts"].get("inject_torch_npu") == 0
+    assert set(report["replacement_counts"]) == {"inject_torch_npu"}
 
 
 def test_run_phase_4_fails_missing_project_dir(tmp_path):

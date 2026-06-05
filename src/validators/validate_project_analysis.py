@@ -12,6 +12,7 @@ from core.custom_op_source_discovery import (
     NativeUnit,
     discover_required_cuda_native_units_from_project,
 )
+from core.platform_policy import PlatformPolicy, get_target_device_values
 from core.routes import MIGRATION_ROUTES, is_serving_route, serving_framework_for_route
 from core.validator_engine import ValidationDict
 
@@ -938,17 +939,41 @@ def _is_source_dtype_value(value: str) -> bool:
     return bool(re.fullmatch(r"(?:float|fp|int|uint|complex)(?:8|16|32|64|128)", value))
 
 
-_EXTRA_DEVICE_VALUES = frozenset(
+_DEFAULT_EXTRA_DEVICE_VALUES = frozenset(
     v.strip().lower()
-    for v in os.environ.get("SEAM_EXTRA_DEVICE_VALUES", "npu,ascend,ascend_opp").split(",")
+    for v in os.environ.get("SEAM_EXTRA_DEVICE_VALUES", "npu,ppu,musa,mlu,rocm").split(",")
     if v.strip()
 )
 
 
-def _is_source_device_value(value: str) -> bool:
-    if value in {"cpu", "cuda", "gpu", "xpu", "mlu", "mps", "hip", "rocm"} | _EXTRA_DEVICE_VALUES:
+def _get_extra_device_values(
+    platform_policy: PlatformPolicy | None = None,
+) -> frozenset[str]:
+    """Return device values for the given policy or the generic-default set."""
+    if platform_policy is not None:
+        return frozenset(get_target_device_values(platform_policy))
+    return _DEFAULT_EXTRA_DEVICE_VALUES
+
+
+# Universal device values — common across all platforms.
+# Vendor-specific values come from ``_get_extra_device_values()``
+# (configurable via ``SEAM_EXTRA_DEVICE_VALUES`` or platform policy).
+_BASE_DEVICE_VALUES: frozenset[str] = frozenset({"cpu", "gpu", "mps", "cuda"})
+
+
+def _is_source_device_value(
+    value: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> bool:
+    extra = _get_extra_device_values(platform_policy)
+    if value in _BASE_DEVICE_VALUES | extra:
         return True
-    return bool(re.fullmatch(r"(?:cuda|gpu|xpu|mlu|rocm)[_+-]?\d*", value))
+    # Build a dynamic regex from the extra device values so that
+    # platform-specific indexed variants (e.g. ``npu0``, ``xpu1``)
+    # are covered automatically when new platforms are added.
+    _keys = _BASE_DEVICE_VALUES | extra
+    _pattern = "|".join(sorted(_keys, key=len, reverse=True))
+    return bool(re.fullmatch(rf"(?:{_pattern})[_+-]?\d*", value))
 
 
 def _validate_expanded_variant_metadata(

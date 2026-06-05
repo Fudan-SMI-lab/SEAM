@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-from core.platform_policy import EnvValidationConfig
+from core.platform_policy import (
+    BUILTIN_PRESETS,
+    EnvValidationConfig,
+    PlatformPolicy,
+)
 from core.validator_engine import ValidationDict
+
+# ── Legacy-to-preset key mapping ──────────────────────────────────────
+_LEGACY_KEY_TO_PRESET: dict[str, str] = {
+    "npu": "npu_ascend",
+    "ppu": "ppu_cuda_compatible",
+}
 
 
 def validate(
     data: dict[str, object],
-    platform_policy: object | None = None,
+    platform_policy: PlatformPolicy | None = None,
 ) -> ValidationDict:
     """Validate environment-detection output.
 
@@ -47,14 +57,11 @@ def validate(
 # ---------------------------------------------------------------------------
 
 
-def _try_get_env_validation(policy: object | None) -> EnvValidationConfig | None:
-    """Extract ``env_validation`` from a ``PlatformPolicy``-like object."""
+def _try_get_env_validation(policy: PlatformPolicy | None) -> EnvValidationConfig | None:
+    """Extract ``env_validation`` from a ``PlatformPolicy``."""
     if policy is None:
         return None
-    try:
-        return getattr(policy, "env_validation")  # type: ignore[no-any-return]
-    except AttributeError:
-        return None
+    return policy.env_validation
 
 
 def _validate_with_policy(
@@ -99,23 +106,25 @@ def _validate_with_policy(
 
 # ---------------------------------------------------------------------------
 # Built-in fallback configs when no platform_policy is provided.
-# Mirrors the env_validation presets in platform_policy.py.
+# Delegates to platform_policy presets where available, computes minimal
+# detection-field-only configs for platforms not covered by presets.
 # ---------------------------------------------------------------------------
 
-_LEGACY_ENV_CFG: dict[str, EnvValidationConfig] = {
-    "npu": EnvValidationConfig(
-        detection_field="npu_detected",
-        required_string_fields=("cann_version", "driver_version"),
-        required_bool_fields=("ascendc_available",),
-    ),
-    "ppu": EnvValidationConfig(
-        detection_field="ppu_detected",
-        required_bool_fields=("cuda_api_available",),
-    ),
-    "cuda": EnvValidationConfig(
-        detection_field="cuda_detected",
-    ),
-}
+
+def _get_legacy_env_validation(platform_key: str) -> EnvValidationConfig | None:
+    """Return legacy EnvValidationConfig for *platform_key*, or None.
+
+    Resolves via ``BUILTIN_PRESETS`` using the legacy-to-preset mapping;
+    avoids direct imports of platform-specific config objects.
+    """
+    preset_id = _LEGACY_KEY_TO_PRESET.get(platform_key)
+    if preset_id is not None:
+        policy = BUILTIN_PRESETS.get(preset_id)
+        if policy is not None:
+            return policy.env_validation
+    if platform_key in {"cuda", "musa", "rocm", "mlu"}:
+        return EnvValidationConfig(detection_field=f"{platform_key}_detected")
+    return None
 
 
 def _validate_legacy(
@@ -128,7 +137,7 @@ def _validate_legacy(
     Uses a built-in mapping that mirrors the env_validation presets from
     platform_policy.py.  Unknown platform keys get a generic check.
     """
-    cfg = _LEGACY_ENV_CFG.get(platform_key)
+    cfg = _get_legacy_env_validation(platform_key)
     if cfg is not None:
         _validate_with_policy(data, platform_key, cfg, errors)
         return

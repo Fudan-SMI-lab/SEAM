@@ -21,9 +21,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from core.validator_engine import ValidationDict
-
-_SERVING_ROUTES = {"vllm_serving", "sglang_serving"}
-_ROUTE_TO_FRAMEWORK = {"vllm_serving": "vllm", "sglang_serving": "sglang"}
+from core.routes import ROUTE_TO_SERVING_FRAMEWORK, SERVING_ROUTES as _SERVING_ROUTES
 
 # ---------------------------------------------------------------------------
 # Evidence field names — same for every platform
@@ -86,7 +84,7 @@ def validate_serving_final_gate(
     data: dict[str, object],
     expected_route: str | None = None,
 ) -> ValidationDict:
-    """Validate a vLLM/SGLang serving final-gate report (zero platform hardcoding).
+    """Validate a serving final-gate report (zero platform hardcoding).
 
     Every check is expressed in platform-neutral terms.  Platform-specific
     evidence field names, required checks, and validation obligations are
@@ -101,9 +99,9 @@ def validate_serving_final_gate(
             f"migration_route must match expected serving route {expected_route}"
         )
     if not isinstance(route, str) or route not in _SERVING_ROUTES:
-        errors.append("migration_route must be vllm_serving or sglang_serving")
+        errors.append(f"migration_route must be one of {_SERVING_ROUTES}")
 
-    expected_framework = _ROUTE_TO_FRAMEWORK.get(str(route))
+    expected_framework = ROUTE_TO_SERVING_FRAMEWORK.get(str(route))
     if data.get("serving_framework") != expected_framework:
         errors.append(
             f"serving_framework must be '{expected_framework}' for migration_route={route}"
@@ -148,7 +146,7 @@ def validate_serving_final_gate(
     _validate_generic_serving_runtime_evidence(data, errors)
 
     # --- fallback / synthetic flags ---
-    for field in ("cuda_fallback_detected", "cpu_fallback_detected", "import_only", "smoke_only"):
+    for field in ("accelerator_fallback_detected", "cpu_fallback_detected", "import_only", "smoke_only"):
         if data.get(field) is not False:
             errors.append(f"{field} must be false")
 

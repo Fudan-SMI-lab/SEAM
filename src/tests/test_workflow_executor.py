@@ -3986,7 +3986,7 @@ def _serving_gate_payload() -> dict[str, object]:
             "vllm_imported": True,
             "forbidden_runtime_markers_absent": True,
         },
-        "cuda_fallback_detected": False,
+        "accelerator_fallback_detected": False,
         "cpu_fallback_detected": False,
         "import_only": False,
         "smoke_only": False,

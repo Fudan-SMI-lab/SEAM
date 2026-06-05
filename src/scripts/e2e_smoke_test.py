@@ -76,6 +76,7 @@ class MockSessionManager:
         ):
             return json.dumps({
                 "platform": "cuda",
+                "cuda_detected": True,
                 "npu_detected": False,
                 "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                 "cann_version": "n/a",

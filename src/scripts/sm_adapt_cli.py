@@ -89,7 +89,7 @@ def get_default_workflow() -> str:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return os.environ.get(
         "SEAM_DEFAULT_WORKFLOW",
-        os.path.join(script_dir, "..", "workflows", "npu_migration_v1.yaml"),
+        os.path.join(script_dir, "..", "workflows", "npu_migration_v2.yaml"),
     )
 
 

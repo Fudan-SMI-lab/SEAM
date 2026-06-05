@@ -91,6 +91,7 @@ def write_operator_repair_context_artifact(
     entry_script: str,
     phase3_contract: dict[str, object] | None = None,
     phase1_analysis: dict[str, object] | None = None,
+    assigned_units: list[str] | None = None,
 ) -> str:
     runtime_dir = Path(artifact_dir) / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -104,6 +105,7 @@ def write_operator_repair_context_artifact(
             entry_script=entry_script,
             contract=contract,
             phase1_analysis=dict(phase1_analysis or {}),
+            assigned_units=assigned_units,
         ),
         encoding="utf-8",
     )
@@ -169,6 +171,7 @@ def _operator_repair_context_markdown(
     entry_script: str,
     contract: dict[str, object],
     phase1_analysis: dict[str, object],
+    assigned_units: list[str] | None = None,
 ) -> str:
     project_path = Path(project_dir).resolve()
     reports_dir = _reports_dir(project_path, contract)
@@ -309,6 +312,13 @@ def _operator_repair_context_markdown(
     else:
         lines.extend(["## Parallelizable Operator Units", "- No per-operator units found in reports; inspect the discovered inventory paths before editing.", ""])
 
+    if assigned_units:
+        assigned_units_str = ", ".join(assigned_units)
+        lines.append("## Currently Assigned Units (This Repair Session)")
+        for index, unit in enumerate(assigned_units, start=1):
+            lines.append(f"- Assigned Unit {index}: {unit}")
+        lines.append("")
+
     lines.extend([
         "## Current Final-Gate Progress",
         *[f"- {item}" for item in progress],
@@ -323,6 +333,11 @@ def _operator_repair_context_markdown(
         "- Treat the discovered inventory, manifest coverage rows, and final gate as the source of truth; do not invent passes for rows that are missing from source_inventory.",
         "- Do not execute docs/cuda_custom_op_skill_test_prompt.md as a workplan; this artifact is the bounded repair context.",
         "",
+    ])
+    if assigned_units:
+        assigned_units_str = ", ".join(assigned_units)
+        lines.append(f"- This repair session is scoped to {len(assigned_units)} unit(s): {assigned_units_str}. Do not modify units outside this scope even if they appear in the ledger.")
+    lines.extend([
         "## Warnings",
     ])
     lines.extend([f"- {warning}" for warning in warnings] or ["- None"])

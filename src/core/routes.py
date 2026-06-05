@@ -1,4 +1,9 @@
-"""Central migration route constants and helpers."""
+"""Central migration route constants and helpers.
+
+This module is the single source of truth for route names, route→framework
+mappings, custom-op contract field keys, and route classification utilities.
+All other modules import from here instead of maintaining private copies.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +11,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from core.serving_runtime import write_serving_validation_wrapper
-from validators.serving_validator import GENERIC_SERVING_REQUIRED_CHECKS, GENERIC_SERVING_VALIDATION_OBLIGATIONS
 
-
+# ── Route name constants ────────────────────────────────────────────────
 ORDINARY_CUDA = "ordinary_cuda"
 CUSTOM_OP = "custom_op"
 CUSTOM_OP_WITH_VARIANTS = "custom_op_with_variants"
@@ -24,9 +27,15 @@ MIGRATION_ROUTES = (
     SGLANG_SERVING,
 )
 
-SERVING_ROUTES = (VLLM_SERVING, SGLANG_SERVING)
-SERVING_ENTRY_KINDS = ("vllm_serving_validation", "sglang_serving_validation")
+# Internal mutable backing — updated by register_serving_route()
+_SERVING_ROUTES: list[str] = [VLLM_SERVING, SGLANG_SERVING]
+_SERVING_ENTRY_KINDS: list[str] = ["vllm_serving_validation", "sglang_serving_validation"]
 
+# Exposed tuples for backward-compatible read-only access
+SERVING_ROUTES: tuple[str, ...] = tuple(_SERVING_ROUTES)
+SERVING_ENTRY_KINDS: tuple[str, ...] = tuple(_SERVING_ENTRY_KINDS)
+
+# ── Route → framework mapping (canonical → import from here) ─────────────
 ROUTE_TO_SERVING_FRAMEWORK = {
     VLLM_SERVING: "vllm",
     SGLANG_SERVING: "sglang",
@@ -37,6 +46,83 @@ SERVING_ENTRY_KIND_TO_ROUTE = {
     "sglang_serving_validation": SGLANG_SERVING,
 }
 
+# ── Serving route registration API ─────────────────────────────────────────
+
+def register_serving_route(
+    route_name: str,
+    entry_kind: str,
+    framework: str,
+) -> None:
+    """Register a new serving route dynamically.
+
+    Appends *route_name* to :data:`SERVING_ROUTES`, *entry_kind* to
+    :data:`SERVING_ENTRY_KINDS`, and adds corresponding entries to
+    :data:`ROUTE_TO_SERVING_FRAMEWORK` and
+    :data:`SERVING_ENTRY_KIND_TO_ROUTE`.
+    """
+    global SERVING_ROUTES, SERVING_ENTRY_KINDS
+
+    _SERVING_ROUTES.append(route_name)
+    _SERVING_ENTRY_KINDS.append(entry_kind)
+    ROUTE_TO_SERVING_FRAMEWORK[route_name] = framework
+    SERVING_ENTRY_KIND_TO_ROUTE[entry_kind] = route_name
+
+    # Rebuild exposed tuples so module-level access sees the new entries
+    SERVING_ROUTES = tuple(_SERVING_ROUTES)
+    SERVING_ENTRY_KINDS = tuple(_SERVING_ENTRY_KINDS)
+
+# ── Custom-op contract field keys (canonical → import from here) ──────────
+# These are the field names that are specific to custom-op routes and should
+# be stripped from non-custom-op (serving / ordinary_cuda) contracts.
+CUSTOM_OP_CONTRACT_KEYS = frozenset({
+    "entry_script_kind",
+    "reports_dir",
+    "required_report_paths",
+    "required_checks",
+    "operator_discovery_sources",
+    "operator_inventory_schema",
+    "performance_report_schema",
+    "validation_obligations",
+    "phase5_entry_script_revision_allowed",
+})
+
+# ── Prompt fallback suffixes (platform-agnostic, used by prompt loader) ───
+# These are suffixes tried when a phase's primary prompt template is
+# missing.  PlatformPolicy presets extend this list; the list here is the
+# framework default (only used when no PlatformPolicy is active).
+import os as _os_module
+
+DEFAULT_PROMPT_FALLBACK_SUFFIXES: tuple[str, ...] = tuple(
+    s.strip()
+    for s in _os_module.environ.get(
+        "SEAM_PROMPT_FALLBACK_SUFFIXES", "_npu,_ppu,_musa,_rocm,_mlu"
+    ).split(",")
+    if s.strip()
+)
+
+# ── Framework-level serving env defaults ──────────────────────────────────
+# Per-framework env-var defaults that are injected by the serving validation
+# wrapper.  "FRAMEWORK" in serving_runtime.py is the key.
+FRAMEWORK_SERVING_ENV_DEFAULTS: dict[str, dict[str, str]] = {
+    "sglang": {"SGLANG_ENABLE_SPEC_V2": "1"},
+    "vllm": {},
+}
+
+# ── Framework-level forbidden runtime markers ────────────────────────────
+# Substrings that, when found in serving command output, indicate an
+# unwanted runtime fallback.  PlatformPolicy can override these per
+# platform; these defaults are framework-generic.
+FRAMEWORK_FORBIDDEN_RUNTIME_MARKERS: dict[str, tuple[str, ...]] = {
+    VLLM_SERVING: ("vllm cuda executor",),
+    SGLANG_SERVING: ("deep_gemm_wrapper", "pynccl", "nccl", "cuda_graph"),
+}
+
+from core.serving_runtime import write_serving_validation_wrapper
+from validators.serving_validator import GENERIC_SERVING_REQUIRED_CHECKS, GENERIC_SERVING_VALIDATION_OBLIGATIONS
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from core.platform_policy import PlatformPolicy
 
 def is_serving_route(route: object) -> bool:
     return isinstance(route, str) and route in SERVING_ROUTES
@@ -115,6 +201,7 @@ def normalize_serving_phase3_contract(
     route: str,
     project_dir: str | Path,
     phase1_output: Mapping[str, object] | None = None,
+    platform_policy: PlatformPolicy | None = None,
 ) -> None:
     entry_kind = serving_entry_kind_for_route(route)
     framework = serving_framework_for_route(route)
@@ -188,6 +275,7 @@ def normalize_serving_phase3_contract(
         project_test_files=contract.get("project_test_files"),
         expected_outputs=contract.get("expected_outputs"),
         required_checks=required_checks,
+        platform_policy=platform_policy,
     )
     contract["entry_script_path"] = str(script_path)
     venv_python = project_path / ".venv" / "bin" / "python"
@@ -200,3 +288,79 @@ def normalize_serving_phase3_contract(
     contract["entry_script_kind"] = entry_kind
     contract["migration_route"] = route
     contract["serving_framework"] = framework
+
+
+# ── Container path normalization (shared between phase_runner and workflow_executor) ──
+
+
+def rewrite_container_to_host_path(
+    path_str: str,
+    project_dir: str,
+    container_workdir: str,
+) -> str:
+    """Convert a container-visible path to its host-visible equivalent.
+
+    When a model returns a path under ``container_workdir`` (e.g.
+    ``/workspace/validate_fwi.py``), return the corresponding path under
+    ``project_dir`` (e.g. ``{project_dir}/validate_fwi.py``).
+
+    Boundary-safe: ``/workspace2/x`` does NOT match container workdir ``/workspace``.
+    """
+    if not path_str:
+        return path_str
+    safe = container_workdir.rstrip("/")
+    if not safe:
+        return path_str
+    if not (path_str == safe or path_str.startswith(safe + "/")):
+        return path_str
+    rel = path_str[len(safe):].lstrip("/")
+    if not rel:
+        return project_dir
+    return str(Path(project_dir) / rel)
+
+
+def normalize_phase3_container_paths(
+    output: dict[str, object],
+    prompt_context: dict[str, object],
+    *,
+    fallback_project_dir: str | None = None,
+) -> dict[str, object]:
+    """Rewrite host-visible path fields when the model returns container paths.
+
+    Only targets ``entry_script_path`` and ``reports_dir``.  ``run_command``
+    is NOT rewritten here — the Phase 5 execution backend already handles
+    host-to-container path mapping for command execution.
+
+    When the model returns a path that starts with the container workdir (e.g.
+    ``/workspace/...`` or the value of ``{container_project_dir}``), convert it
+    to the corresponding host-visible path under ``{project_dir}``.
+    """
+    project_dir = str(prompt_context.get("project_dir", "")) or fallback_project_dir
+    container_workdir = (
+        str(prompt_context.get("container_workdir", ""))
+        or str(prompt_context.get("container_project_dir", ""))
+    )
+    if not project_dir or not container_workdir:
+        return output
+
+    if not project_dir.startswith("/"):
+        try:
+            project_dir = str(Path(project_dir).resolve())
+        except OSError:
+            return output
+
+    normalized = dict(output)
+
+    entry = normalized.get("entry_script_path")
+    if isinstance(entry, str) and entry.strip():
+        normalized["entry_script_path"] = rewrite_container_to_host_path(
+            entry, project_dir, container_workdir,
+        )
+
+    reports = normalized.get("reports_dir")
+    if isinstance(reports, str) and reports.strip():
+        normalized["reports_dir"] = rewrite_container_to_host_path(
+            reports, project_dir, container_workdir,
+        )
+
+    return normalized

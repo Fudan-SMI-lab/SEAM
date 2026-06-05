@@ -24,8 +24,7 @@ from core.execution_backend import (
     _get_npu_devices_from_env,
     _discover_npu_devices_via_glob,
     _discover_npu_device_count_via_smi,
-    _AUTO_NPU_MARKER,
-    _NPU_DEVICE_CANDIDATES,
+    _ASCEND_DEVICE_CANDIDATES,
 )
 from core.workflow_executor import WorkflowExecutor
 from core.artifact_store import ArtifactStore
@@ -1887,13 +1886,13 @@ class TestNpuDeviceAutoDiscovery:
     def test_glob_empty_falls_back_to_candidates(self, mock_glob):
         mock_glob.return_value = []
         result = _discover_npu_devices_via_glob()
-        assert result == _NPU_DEVICE_CANDIDATES
+        assert result == _ASCEND_DEVICE_CANDIDATES
 
     @patch("core.execution_backend._glob_module.glob")
     def test_glob_oserror_falls_back_to_candidates(self, mock_glob):
         mock_glob.side_effect = OSError("permission denied")
         result = _discover_npu_devices_via_glob()
-        assert result == _NPU_DEVICE_CANDIDATES
+        assert result == _ASCEND_DEVICE_CANDIDATES
 
     @patch("subprocess.run")
     def test_smi_returns_device_count(self, mock_run):
@@ -1939,7 +1938,7 @@ class TestNpuDeviceAutoDiscovery:
         monkeypatch.delenv("SEAM_NPU_DEVICES", raising=False)
         mock_glob.return_value = []
         result = _discover_npu_devices()
-        assert result == _NPU_DEVICE_CANDIDATES
+        assert result == _ASCEND_DEVICE_CANDIDATES
 
 
 class TestResolveDeviceMarkers:
@@ -1953,19 +1952,19 @@ class TestResolveDeviceMarkers:
         result = _resolve_device_markers(devices)
         assert result == ["/dev/nvidia0", "/dev/nvidiactl"]
 
-    @patch("core.execution_backend._discover_npu_devices")
+    @patch("core.execution_backend._discover_ascend_npu_devices")
     def test_auto_npu_resolves(self, mock_discover):
         mock_discover.return_value = ["/dev/davinci0", "/dev/davinci1"]
         result = _resolve_device_markers(["auto:npu"])
         assert result == ["/dev/davinci0", "/dev/davinci1"]
 
-    @patch("core.execution_backend._discover_npu_devices")
+    @patch("core.execution_backend._discover_ascend_npu_devices")
     def test_auto_npu_with_mixed_devices(self, mock_discover):
         mock_discover.return_value = ["/dev/davinci0"]
         result = _resolve_device_markers(["/dev/kfd", "auto:npu", "/dev/dri"])
         assert result == ["/dev/kfd", "/dev/davinci0", "/dev/dri"]
 
-    @patch("core.execution_backend._discover_npu_devices")
+    @patch("core.execution_backend._discover_ascend_npu_devices")
     def test_multiple_auto_npu_expands_each(self, mock_discover):
         mock_discover.return_value = ["/dev/davinci0"]
         result = _resolve_device_markers(["auto:npu", "auto:npu"])
@@ -1976,7 +1975,7 @@ class TestContainerCreateWithAutoNpu:
     """Integration: _do_create_container resolves auto:npu before passing --device."""
 
     @patch("subprocess.run")
-    @patch("core.execution_backend._discover_npu_devices")
+    @patch("core.execution_backend._discover_ascend_npu_devices")
     def test_create_expands_auto_npu(self, mock_discover, mock_run):
         mock_discover.return_value = ["/dev/davinci0", "/dev/davinci_manager"]
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-npu\n", stderr="")
@@ -1996,7 +1995,7 @@ class TestContainerCreateWithAutoNpu:
         assert "/dev/davinci_manager" in create_cmd
 
     @patch("subprocess.run")
-    @patch("core.execution_backend._discover_npu_devices")
+    @patch("core.execution_backend._discover_ascend_npu_devices")
     def test_create_expands_auto_npu_with_mixed_devices(self, mock_discover, mock_run):
         mock_discover.return_value = ["/dev/davinci0"]
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-mixed\n", stderr="")

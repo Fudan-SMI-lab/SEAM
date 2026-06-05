@@ -1409,14 +1409,15 @@ def _custom_op_gate_report() -> dict[str, object]:
             "unit_count": 1,
             "path": "migration_reports/performance.json",
             "project_api_invoked": True,
-            "baseline_device": "cpu",
+            "custom_op_invoked": True,
+            "baseline_device": "cuda",
             "custom_device": "ascend_opp",
             "overall_baseline_seconds": 0.05,
             "overall_custom_seconds": 0.04,
             "overall_speedup_vs_baseline": 1.25,
             "overall_project_api_invoked": True,
             "overall_all_units_replaced": True,
-            "overall_baseline_device": "cpu",
+            "overall_baseline_device": "cuda",
             "overall_custom_device": "ascend_opp",
             "entries": [
                 {
@@ -1425,7 +1426,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                     "custom_seconds": 0.01,
                     "speedup_vs_baseline": 2.0,
                     "project_api_invoked": True,
-                    "baseline_device": "cpu",
+                    "custom_op_invoked": True,
+                    "baseline_device": "cuda",
                     "custom_device": "ascend_opp",
                 }
             ],
@@ -1500,7 +1502,8 @@ def _custom_op_gate_report() -> dict[str, object]:
                 "custom_seconds": 0.01,
                 "speedup_vs_baseline": 2.0,
                 "project_api_invoked": True,
-                "baseline_device": "cpu",
+                "custom_op_invoked": True,
+                "baseline_device": "cuda",
                 "custom_device": "ascend_opp",
             },
             "no_fallback_no_zero_call_no_builtin_contamination": {

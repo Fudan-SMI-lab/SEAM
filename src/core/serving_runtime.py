@@ -1,7 +1,8 @@
 """Serving runtime contracts for vLLM/SGLang serving routes.
 
-All platform-specific configuration is driven by LLM prompts —
-zero hardcoded platform names.
+All platform-specific configuration is driven by LLM prompts and
+canonical route definitions — zero hardcoded platform names or
+framework env defaults.
 """
 
 from __future__ import annotations
@@ -9,28 +10,58 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 import json
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-VLLM_SERVING = "vllm_serving"
-SGLANG_SERVING = "sglang_serving"
+from core.routes import (
+    FRAMEWORK_FORBIDDEN_RUNTIME_MARKERS,
+    FRAMEWORK_SERVING_ENV_DEFAULTS,
+    ROUTE_TO_SERVING_FRAMEWORK,
+    SGLANG_SERVING,
+    VLLM_SERVING,
+)
 
-ROUTE_TO_FRAMEWORK = {
-    VLLM_SERVING: "vllm",
-    SGLANG_SERVING: "sglang",
-}
+if TYPE_CHECKING:
+    from core.platform_policy import PlatformPolicy
 
-# Framework-level import probes — always included regardless of platform.
 _FRAMEWORK_IMPORT_PROBES = {
     VLLM_SERVING: ("vllm",),
     SGLANG_SERVING: ("sglang",),
 }
 
-# Framework-level forbidden runtime markers — generic framework behaviour,
-# not platform-specific.
-_FRAMEWORK_FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
-    VLLM_SERVING: ("vllm cuda executor",),
-    SGLANG_SERVING: ("deep_gemm_wrapper", "pynccl", "nccl", "cuda_graph"),
+_FRAMEWORK_COMMAND_REWRITERS: dict[str, dict[str, str]] = {
+    "sglang": {"sglang": "sys.executable -m sglang.cli.main"},
+    "vllm": {"vllm": "sys.executable -m vllm.entrypoints.openai.api_server"},
 }
+
+import os as _os_module
+
+_DEFAULT_FALLBACK_MARKERS: tuple[str, ...] = tuple(
+    m.strip().lower()
+    for m in _os_module.environ.get(
+        "SEAM_SERVING_FALLBACK_MARKERS", "cuda,nccl,nvidia"
+    ).split(",")
+    if m.strip()
+)
+
+
+def _merge_forbidden_markers(
+    route: str,
+    framework: str,
+    platform_policy: PlatformPolicy | None = None,
+) -> list[str]:
+    """Merge static forbidden markers with platform-policy overrides.
+
+    Platform-policy markers are appended to the static defaults with
+    deduplication: any marker already present in the static list is
+    not added a second time.
+    """
+    markers = list(FRAMEWORK_FORBIDDEN_RUNTIME_MARKERS.get(route, ()))
+    if platform_policy is not None:
+        extra = platform_policy.framework_forbidden_markers.get(framework, ())
+        if extra:
+            seen = set(markers)
+            markers.extend(m for m in extra if m not in seen)
+    return markers
 
 
 def write_serving_validation_wrapper(
@@ -43,17 +74,27 @@ def write_serving_validation_wrapper(
     project_test_files: object,
     expected_outputs: object,
     required_checks: object,
+    platform_policy: PlatformPolicy | None = None,
 ) -> Path:
     project_path = Path(project_dir)
-    framework = ROUTE_TO_FRAMEWORK[route]
+    framework = ROUTE_TO_SERVING_FRAMEWORK[route]
     wrapper_path = project_path / f"validate_{framework}_serving.py"
     reports_dir = project_path / "migration_reports" / "serving"
     readiness_probe_mapping: Mapping[object, object] = cast(Mapping[object, object], readiness_probe) if isinstance(readiness_probe, Mapping) else {}
     request_validation_mapping: Mapping[object, object] = cast(Mapping[object, object], request_validation) if isinstance(request_validation, Mapping) else {}
     body = _WRAPPER_TEMPLATE
     import_probes = list(_FRAMEWORK_IMPORT_PROBES.get(route, ()))
-    forbidden_markers = list(_FRAMEWORK_FORBIDDEN_MARKERS.get(route, ()))
+    forbidden_markers = _merge_forbidden_markers(route, framework, platform_policy)
+    env_defaults = dict(FRAMEWORK_SERVING_ENV_DEFAULTS.get(framework, {}))
+    if platform_policy is not None and platform_policy.framework_env_overrides:
+        env_defaults.update(platform_policy.framework_env_overrides.get(framework, {}))
+    cuda_markers = list(_DEFAULT_FALLBACK_MARKERS)  # sensible defaults; overridden by PlatformPolicy when available
+    if platform_policy is not None and platform_policy.framework_forbidden_markers:
+        for marker in platform_policy.framework_forbidden_markers.get(framework, ()):
+            if marker not in cuda_markers:
+                cuda_markers.append(marker)
     replacements = {
+        "__ROUTE_TO_SERVING_FRAMEWORK_JSON__": _python_json_loads_literal(dict(ROUTE_TO_SERVING_FRAMEWORK)),
         "__ROUTE_JSON__": json.dumps(route),
         "__FRAMEWORK_JSON__": json.dumps(framework),
         "__LAUNCH_COMMAND_JSON__": json.dumps(str(launch_command or "")),
@@ -64,6 +105,11 @@ def write_serving_validation_wrapper(
         "__REQUIRED_CHECKS_JSON__": _python_json_loads_literal(_string_list(required_checks)),
         "__IMPORT_PROBES_JSON__": _python_json_loads_literal(import_probes),
         "__FORBIDDEN_MARKERS_JSON__": _python_json_loads_literal(forbidden_markers),
+        "__FRAMEWORK_ENV_DEFAULTS_JSON__": _python_json_loads_literal(env_defaults),
+        "__FRAMEWORK_COMMAND_REWRITERS_JSON__": _python_json_loads_literal(
+            _FRAMEWORK_COMMAND_REWRITERS
+        ),
+        "__CUDA_FALLBACK_MARKERS_JSON__": _python_json_loads_literal(cuda_markers),
         "__REPORTS_DIR_JSON__": json.dumps(str(reports_dir)),
     }
     for marker, value in replacements.items():
@@ -113,7 +159,11 @@ EXPECTED_OUTPUTS = __EXPECTED_OUTPUTS_JSON__
 REQUIRED_CHECKS = __REQUIRED_CHECKS_JSON__
 IMPORT_PROBES = __IMPORT_PROBES_JSON__
 FORBIDDEN_MARKERS = __FORBIDDEN_MARKERS_JSON__
+FRAMEWORK_ENV_DEFAULTS = __FRAMEWORK_ENV_DEFAULTS_JSON__
+FRAMEWORK_COMMAND_REWRITERS = __FRAMEWORK_COMMAND_REWRITERS_JSON__
+CUDA_FALLBACK_MARKERS = __CUDA_FALLBACK_MARKERS_JSON__
 REPORTS_DIR = Path(__REPORTS_DIR_JSON__)
+ROUTE_TO_SERVING_FRAMEWORK = __ROUTE_TO_SERVING_FRAMEWORK_JSON__
 STARTUP_TIMEOUT_SECONDS = 900.0
 DEFAULT_SERVING_HOST = "127.0.0.1"
 DEFAULT_SERVING_PORT = "8000"
@@ -162,10 +212,14 @@ def main() -> int:
         )
         return 1
     env.update(command_env_updates)
-    if FRAMEWORK == "sglang":
-        env.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
-        if command and command[0] == "sglang":
-            command = [sys.executable, "-m", "sglang.cli.main"] + command[1:]
+    for env_key, env_val in FRAMEWORK_ENV_DEFAULTS.items():
+        env.setdefault(env_key, str(env_val))
+    rewriters = FRAMEWORK_COMMAND_REWRITERS.get(FRAMEWORK, {})
+    if command and command[0] in rewriters:
+        prefix_tokens = shlex.split(rewriters[command[0]])
+        if prefix_tokens and prefix_tokens[0] == "sys.executable":
+            prefix_tokens[0] = sys.executable
+        command = prefix_tokens + command[1:]
     command_result = run_serving_validation(command, cwd=project_root, env=env)
     combined = "\n".join([
         str(command_result.get("stdout_tail") or ""),
@@ -302,7 +356,7 @@ def resolve_serving_endpoints(command: list[str]) -> dict[str, str]:
 
 
 def default_openai_validation_path() -> str:
-    if FRAMEWORK in {"vllm", "sglang"}:
+    if FRAMEWORK in set(ROUTE_TO_SERVING_FRAMEWORK.values()):
         return "/v1/chat/completions"
     return "/"
 
@@ -814,7 +868,7 @@ def write_gate(
         for marker in cast(list[object], command_result.get("forbidden_runtime_marker_hits") or [])
     ]
     cpu_fallback_detected = any("cpu" in marker for marker in forbidden_hits)
-    cuda_fallback_detected = any("cuda" in marker or "nccl" in marker or "nvidia" in marker for marker in forbidden_hits)
+    accelerator_fallback_detected = any(any(marker_word in hit for marker_word in CUDA_FALLBACK_MARKERS) for hit in forbidden_hits)
     accelerator_execution_evidence = {
         "passed": passed,
         "serving_runtime": env_evidence,
@@ -840,7 +894,7 @@ def write_gate(
         "project_demo_or_test_executed": passed,
         "serving_api_validated": passed,
         "accelerator_execution_observed": passed,
-        "cuda_fallback_detected": cuda_fallback_detected,
+        "accelerator_fallback_detected": accelerator_fallback_detected,
         "cpu_fallback_detected": cpu_fallback_detected,
         "import_only": False,
         "smoke_only": False,

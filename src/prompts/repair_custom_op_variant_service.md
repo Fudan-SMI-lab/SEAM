@@ -34,6 +34,18 @@ This is not a report-generation task. Your job is to produce a real, runnable ta
 {operator_custom_op_guidance}
 ```
 
+## Assigned Operators (Parallel Dispatch)
+
+{parallel_dispatch_guidance}
+
+Your assigned operator identities for this repair session:
+
+```text
+{assigned_units}
+```
+
+Focus only on these {assigned_unit_count} operators. Do not work on operators outside this assigned scope.
+
 ## Mission
 
 For every source-discovered CUDA/native operator and every expanded variant, replace the CUDA path with a target-platform-native implementation that is actually invoked by the project.
@@ -71,6 +83,9 @@ You must close all operator+variant rows with real implementation, build, instal
 
 - You may use available tools, nested agents, or background work when needed to complete the repair. Keep the parent repair session updated with the final concrete changes and verification evidence.
 - Do not ask the user or call the question tool. If a decision is required, choose the safest option that advances the required validation evidence.
+- If you have been assigned multiple operators, use background tasks or nested agents to dispatch each operator to a parallel agent. Each agent focuses on exactly one operator. Dispatch all agents simultaneously - do not wait for them sequentially.
+- After all parallel agents complete, merge their results: collect all modified_files, commands_run, and evidence objects. Then run {entry_script} for unified final validation.
+- If a single operator requires multiple background agents (e.g., one for source discovery, one for implementation, one for testing), dispatch them as a pipeline. But different operators must be dispatched as parallel independent workstreams.
 - Do the investigation yourself with direct file reads, searches, shell commands, builds, and the project validation command.
 - If more research is needed, perform it inline in this same session and summarize the exact findings before editing.
 - If the remaining work is too large for this call, return `INCOMPLETE` with the unresolved operators/variants and blockers instead of starting a nested task.
@@ -112,8 +127,8 @@ Return one JSON object only:
 ```json
 {
   "status": "FULL_PASS or INCOMPLETE or FAILED",
-  "modified_files": ["files actually changed"],
-  "commands_run": ["commands actually run"],
+  "modified_files": ["files actually changed across all parallel agents"],
+  "commands_run": ["commands run by all agents"],
   "implemented_units": ["unit identities truly implemented"],
   "remaining_units": ["unit identities not yet closed"],
   "build_evidence": ["selected-platform native build/install logs and artifacts"],

@@ -155,7 +155,7 @@ def test_skill_solidifier_writes_package_assets(tmp_path):
         "references": ["phase_5_validation"],
     }, "run-1", {})
 
-    refined_dir = tmp_path / "memory" / "staging" / "run-1" / "refined"
+    refined_dir = tmp_path / ".memory" / "staging" / "run-1" / "refined"
     assert refined["type"] == "skill"
     assert (refined_dir / "skill_data.json").is_file()
     assert (refined_dir / "SKILL.md").is_file()
@@ -181,7 +181,7 @@ def test_dispatcher_classifies_before_refining_without_llm(tmp_path):
     assert results[0]["type"] == "document"
     assert results[0]["classifier"]["type"] == "document"
     assert "target_roles" in results[0]
-    refined_dir = tmp_path / "memory" / "staging" / "run-1" / "refined"
+    refined_dir = tmp_path / ".memory" / "staging" / "run-1" / "refined"
     assert (refined_dir / "document.md").is_file()
 
 
@@ -193,7 +193,7 @@ def test_nested_asset_writes_are_safe(tmp_path):
         "examples/data.json": {"ok": True},
     })
 
-    refined_dir = tmp_path / "memory" / "staging" / "run-1" / "refined"
+    refined_dir = tmp_path / ".memory" / "staging" / "run-1" / "refined"
     assert (refined_dir / "references" / "source.md").read_text(encoding="utf-8") == "nested text\n"
     assert json.loads((refined_dir / "examples" / "data.json").read_text(encoding="utf-8")) == {"ok": True}
 
@@ -205,7 +205,7 @@ def test_list_json_assets_round_trip_as_valid_json_in_staging_and_promotion(tmp_
     store.write_refined_experience("run-1", {"title": "List Asset"}, {
         "examples/code_changes.json": code_changes,
     })
-    refined_asset = tmp_path / "memory" / "staging" / "run-1" / "refined" / "examples" / "code_changes.json"
+    refined_asset = tmp_path / ".memory" / "staging" / "run-1" / "refined" / "examples" / "code_changes.json"
     assert json.loads(refined_asset.read_text(encoding="utf-8")) == code_changes
 
     promoted_path = store.promote_from_staging("run-1", "skill", {
@@ -224,9 +224,9 @@ def test_list_json_assets_round_trip_as_valid_json_in_staging_and_promotion(tmp_
 def test_non_skill_promotion_paths_and_catalog_assets(tmp_path):
     store = ExperienceStore(str(tmp_path))
     cases = [
-        ("document", "document.md", os.path.join("memory", "promotions", "knowledge")),
-        ("rule", "rule.yaml", os.path.join("memory", "promotions", "rules")),
-        ("prompt", "proposal.yaml", os.path.join("memory", "promotions", "prompt_proposals")),
+    ("document", "document.md", os.path.join(".memory", "promotions", "knowledge")),
+    ("rule", "rule.yaml", os.path.join(".memory", "promotions", "rules")),
+    ("prompt", "proposal.yaml", os.path.join(".memory", "promotions", "prompt_proposals")),
     ]
 
     for exp_type, asset_name, expected_root in cases:

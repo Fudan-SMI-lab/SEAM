@@ -9,17 +9,18 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.phase_runner import PhaseRunner, PhaseSpec, _rewrite_container_to_host_path
+from core.phase_runner import PhaseRunner, PhaseSpec
+from core.routes import rewrite_container_to_host_path, normalize_phase3_container_paths
 from core.prompt_loader import PromptLoader
 from core.validator_engine import ValidatorEngine
 from validators.validate_entry_script import REQUIRED_REPORT_TOKENS, validate
 
 
-# ── _rewrite_container_to_host_path ────────────────────────────────────
+# ── rewrite_container_to_host_path ────────────────────────────────────
 
 
 def test_rewrite_container_to_host_path_basic():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/validate_fwi.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -28,7 +29,7 @@ def test_rewrite_container_to_host_path_basic():
 
 
 def test_rewrite_container_to_host_path_deep_path():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/tests/unit/test_validate.py",
         "/src/project",
         "/workspace",
@@ -37,7 +38,7 @@ def test_rewrite_container_to_host_path_deep_path():
 
 
 def test_rewrite_container_to_host_path_no_match():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/home/user/outside.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -46,7 +47,7 @@ def test_rewrite_container_to_host_path_no_match():
 
 
 def test_rewrite_container_to_host_path_empty_path():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "",
         "/srv/projects/my-project",
         "/workspace",
@@ -55,7 +56,7 @@ def test_rewrite_container_to_host_path_empty_path():
 
 
 def test_rewrite_container_to_host_path_exact_container_workdir():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace",
         "/srv/projects/my-project",
         "/workspace",
@@ -64,7 +65,7 @@ def test_rewrite_container_to_host_path_exact_container_workdir():
 
 
 def test_rewrite_container_to_host_path_with_trailing_slash_in_workdir():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/validate.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -73,7 +74,7 @@ def test_rewrite_container_to_host_path_with_trailing_slash_in_workdir():
 
 
 def test_rewrite_container_to_host_path_prefix_boundary_no_false_match():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace2/file.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -82,7 +83,7 @@ def test_rewrite_container_to_host_path_prefix_boundary_no_false_match():
 
 
 def test_rewrite_container_to_host_path_prefix_boundary_deeper_no_match():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace_backup/deep/file.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -91,7 +92,7 @@ def test_rewrite_container_to_host_path_prefix_boundary_deeper_no_match():
 
 
 def test_rewrite_container_to_host_path_trailing_slash_boundary_still_matches():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/validate.py",
         "/srv/projects/my-project",
         "/workspace/",
@@ -100,7 +101,7 @@ def test_rewrite_container_to_host_path_trailing_slash_boundary_still_matches():
 
 
 def test_rewrite_container_to_host_path_trailing_slash_boundary_exact():
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/",
         "/srv/projects/my-project",
         "/workspace/",
@@ -132,11 +133,11 @@ def test_normalize_phase3_container_paths_normalizes_entry_script():
 
 
 def test_normalize_phase3_container_paths_normalizes_reports_dir():
-    runner = PhaseRunner(_noop_session_mgr(), _null_store(), PromptLoader(), ValidatorEngine())
-    spec = PhaseSpec("phase_3", "phase_3_entry_script", "entry_script")
-
-    normalized = runner._normalize_output(
-        spec,
+    """Test normalize_phase3_container_paths directly — _normalize_output
+    strips custom-op fields (including reports_dir) for non-custom-op
+    routes before the normalization call, so we exercise the standalone
+    function here."""
+    normalized = normalize_phase3_container_paths(
         {
             "entry_script_path": "/srv/projects/test-project/validate_fwi.py",
             "reports_dir": "/workspace/migration_reports",
@@ -146,7 +147,6 @@ def test_normalize_phase3_container_paths_normalizes_reports_dir():
             "project_dir": "/srv/projects/test-project",
             "container_workdir": "/workspace",
         },
-        {"previous_outputs": {}},
     )
 
     assert normalized["reports_dir"] == "/srv/projects/test-project/migration_reports"
@@ -462,13 +462,13 @@ def test_phase3_container_path_normalization_allows_validator_to_find_file(tmp_p
     assert validation.passed is True, f"validation failed: {validation.errors}"
 
 
-# ── WorkflowExecutor: _rewrite_container_to_host_path ──────────────────
+# ── WorkflowExecutor: rewrite_container_to_host_path ──────────────────
 
 
 def test_workflow_executor_rewrites_entry_script_container_path():
-    from core.workflow_executor import _rewrite_container_to_host_path
+    from core.routes import rewrite_container_to_host_path
 
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/validate_fwi.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -477,9 +477,9 @@ def test_workflow_executor_rewrites_entry_script_container_path():
 
 
 def test_workflow_executor_rewrites_reports_dir_container_path():
-    from core.workflow_executor import _rewrite_container_to_host_path
+    from core.routes import rewrite_container_to_host_path
 
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/migration_reports",
         "/srv/projects/my-project",
         "/workspace",
@@ -488,9 +488,9 @@ def test_workflow_executor_rewrites_reports_dir_container_path():
 
 
 def test_workflow_executor_rewrite_passthrough_for_non_matching_paths():
-    from core.workflow_executor import _rewrite_container_to_host_path
+    from core.routes import rewrite_container_to_host_path
 
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/home/user/outside.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -499,9 +499,9 @@ def test_workflow_executor_rewrite_passthrough_for_non_matching_paths():
 
 
 def test_workflow_executor_rewrite_prefix_boundary_no_false_match():
-    from core.workflow_executor import _rewrite_container_to_host_path
+    from core.routes import rewrite_container_to_host_path
 
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace2/file.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -510,9 +510,9 @@ def test_workflow_executor_rewrite_prefix_boundary_no_false_match():
 
 
 def test_workflow_executor_rewrite_prefix_boundary_deeper_no_match():
-    from core.workflow_executor import _rewrite_container_to_host_path
+    from core.routes import rewrite_container_to_host_path
 
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace_backup/deep/file.py",
         "/srv/projects/my-project",
         "/workspace",
@@ -521,16 +521,16 @@ def test_workflow_executor_rewrite_prefix_boundary_deeper_no_match():
 
 
 def test_workflow_executor_rewrite_trailing_slash_boundary_still_matches():
-    from core.workflow_executor import _rewrite_container_to_host_path
+    from core.routes import rewrite_container_to_host_path
 
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         "/workspace/validate.py",
         "/srv/projects/my-project",
         "/workspace/",
     )
     assert result == "/srv/projects/my-project/validate.py"
 
-# ── WorkflowExecutor: _normalize_phase3_container_paths ───────────────
+# ── WorkflowExecutor: normalize_phase3_container_paths ───────────────
 
 
 def _make_minimal_executor(project_dir: str):
@@ -653,7 +653,7 @@ def test_workflow_executor_normalize_phase3_preserves_host_paths():
 )
 def test_rewrite_container_root_workdir_does_not_rewrite_arbitrary_paths(path_str):
     """When container_workdir is '/', no absolute path should be rewritten."""
-    result = _rewrite_container_to_host_path(
+    result = rewrite_container_to_host_path(
         path_str,
         "/srv/projects/my-project",
         "/",
@@ -672,7 +672,7 @@ def test_rewrite_container_root_workdir_does_not_rewrite_arbitrary_paths(path_st
 )
 def test_workflow_executor_rewrite_root_workdir_does_not_rewrite(path_str):
     """WorkflowExecutor copy of the helper must also guard against root workdir."""
-    from core.workflow_executor import _rewrite_container_to_host_path as _we_rewrite
+    from core.routes import rewrite_container_to_host_path as _we_rewrite
 
     result = _we_rewrite(
         path_str,
