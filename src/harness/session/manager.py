@@ -78,6 +78,10 @@ class SessionCompacted(SessionManagerError):
     pass
 
 
+class SessionLostError(SessionManagerError):
+    """Session disappeared from server (likely due to server restart)."""
+
+
 def extract_json_response(text: str) -> dict[str, Any]:
     if not text:
         return {}
@@ -160,6 +164,7 @@ class MigrationSessionManager:
             self._auth_header = "Basic " + base64.b64encode(token).decode()
         self._sessions: dict[str, SessionRecord] = {}
         self._detected_agent: str | None = None
+        self._last_session_gone_check: dict[str, float] = {}
         if auto_detect_agent:
             self._detect_agent()
 
@@ -298,6 +303,27 @@ class MigrationSessionManager:
                     session_id, attempt + 1, retries + 1, exc,
                 )
                 time.sleep(2 ** attempt)
+            except SessionLostError as exc:
+                last_error = exc
+                if not record or attempt >= retries:
+                    break
+                logger.warning(
+                    "send_command: session %s lost (role=%s, agent=%s), recreating and retrying",
+                    session_id, record.role, record.agent,
+                )
+                self._sessions.pop(session_id, None)
+                self._last_session_gone_check.pop(session_id, None)
+                new_id = self.create_session(
+                    role=record.role,
+                    agent=record.agent,
+                    lifecycle=record.lifecycle,
+                    working_dir=record.working_dir,
+                )
+                session_id = new_id
+                record = self._sessions.get(new_id)
+                if record:
+                    record.last_used_at = time.time()
+                    record.command_count += 1
             except (SessionTransportError, SessionCompacted, urllib.error.URLError, RuntimeError, ValueError) as exc:
                 last_error = exc
                 if "blocking user question" in str(exc):
@@ -887,6 +913,43 @@ class MigrationSessionManager:
             f"Phase automation forbids blocking user questions, but session {_session_id} used guarded tool {tool_name!r}"
         )
 
+    def _check_session_gone(self, session_id: str, throttle_s: float = 30.0) -> bool:
+        """Check if server is alive but session no longer exists (server restarted).
+
+        This is a throttled check — it only re-queries the server every
+        ``throttle_s`` seconds per session so long-running Phase 5 repairs
+        are not interrupted by frequent liveness checks.
+
+        Returns ``True`` only when the server IS reachable (``/agent``
+        responds) BUT the session returns 404 — the signature of a server
+        restart that purged session state.
+        """
+        now = time.time()
+        last = self._last_session_gone_check.get(session_id, 0)
+        if now - last < throttle_s:
+            return False
+        self._last_session_gone_check[session_id] = now
+
+        try:
+            liveness = self._http("GET", "/agent", timeout=3)
+            if not liveness.get("ok"):
+                return False  # server unreachable — might come back
+        except Exception:
+            return False
+
+        try:
+            session_check = self._http("GET", f"/session/{session_id}", timeout=5)
+            if not session_check.get("ok") and isinstance(session_check.get("status"), int):
+                if session_check["status"] == 404:
+                    logger.warning(
+                        "Session %s not found on server (404) while server is alive — likely server restart",
+                        session_id,
+                    )
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _post_session_message_with_guard(
         self,
         session_id: str,
@@ -931,6 +994,12 @@ class MigrationSessionManager:
                 )
                 if recovered is not None:
                     return {"ok": True, "data": recovered}
+                # Check if session disappeared due to server restart
+                # (throttled: only re-queries every 30 s per session)
+                if self._check_session_gone(session_id):
+                    raise SessionLostError(
+                        f"Session {session_id} disappeared — server likely restarted"
+                    )
                 if time.time() - _started > _guard_timeout:
                     # One last recovery attempt before giving up.
                     recovered = self._completed_latest_response_payload(

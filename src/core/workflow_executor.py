@@ -1323,6 +1323,9 @@ class WorkflowExecutor:
             sid = session_id or self.session_mgr.get_or_create(
                 role=agent_id, lifecycle="persistent"
             )
+        # Refresh session in case registry cache is stale after server restart
+        # (Layer 2 recovery: get_or_create finds recreated session by role+agent)
+        sid = self.session_mgr.get_or_create(role=agent_id, lifecycle="persistent")
 
         # 2. Build prompt context — replicate PhaseRunner._build_prompt_context behavior
         input_ctx = self._resolve_input_mapping(

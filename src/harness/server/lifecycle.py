@@ -166,6 +166,7 @@ def start_server(
         stderr=log_fh,
         cwd=work_dir,
         env=env,
+        start_new_session=True,
     )
 
     return proc

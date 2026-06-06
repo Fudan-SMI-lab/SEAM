@@ -325,6 +325,13 @@ fi
 
 cd "$REPO_ROOT"
 
+# Ignore external termination signals — the orchestrator is a thin coordinator;
+# persistent OpenCode agent sessions do the real work and survive independently.
+# SIGHUP:  SSH disconnect / terminal close (most common unintended kill)
+# SIGTERM: external process management tools
+# SIGPIPE: broken pipe + `set -o pipefail` can cause premature exit
+trap '' HUP TERM PIPE
+
 if [[ -n "$SERVER_PORT_FLAG" ]]; then
     ${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \
         $SERVER_PORT_FLAG \

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -649,6 +650,9 @@ def _resolve_user_constraints(raw: str | None) -> str:
 
 
 def main() -> int:
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+        signal.signal(sig, signal.SIG_IGN)
+
     parser = build_parser()
     args = parser.parse_args()
 
