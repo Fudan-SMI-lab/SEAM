@@ -7,6 +7,8 @@ import shlex
 from pathlib import Path
 from typing import cast
 
+_COLLAPSED_VARIANT_SYNTAX = re.compile(r"[{}|]")
+
 from core.routes import SERVING_ENTRY_KINDS, serving_framework_for_route, serving_route_from_contract
 from core.validator_engine import ValidationDict
 
@@ -476,6 +478,12 @@ def _validate_expanded_variant_contract(data: dict[str, object], required_checks
         units = _string_list(inventory_dict.get("unit_identities"))
         if units is None or not units:
             errors.append("expanded_variant_inventory.unit_identities must list expanded variant unit identities")
+        elif any(_COLLAPSED_VARIANT_SYNTAX.search(unit) for unit in units):
+            errors.append(
+                "expanded_variant_inventory.unit_identities must list individual expanded variant units "
+                "(no collapsed multi-variant syntax); each unit must be a single resolved identity "
+                "without brace/pipe combinators"
+            )
         if inventory_dict.get("variant_axes_detected") is not True:
             errors.append("expanded_variant_inventory.variant_axes_detected must be true")
         count = inventory_dict.get("expanded_operator_instances_count")

@@ -1,4 +1,4 @@
-"""CLI entry point for SM-Adapt v2 — CUDA to NPU migration orchestrator."""
+"""CLI entry point for SM-Adapt v2 — CUDA to NPU migration."""
 
 import argparse
 import os
@@ -165,10 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.user_constraints:
             print(f"[INFO] User constraints: {args.user_constraints}")
 
-    # TODO: Integrate with orchestrator when ready
-    # NOTE: `user_constraints` should be passed to `orchestrator.run_workflow()`
     print_progress("Initialization", "success", "CLI arguments parsed successfully")
-    print_progress("Execution", "skipped", "Orchestrator integration pending")
+    print_progress("Execution", "skipped", "Integration pending")
 
     return 0
 

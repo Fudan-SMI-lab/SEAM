@@ -521,71 +521,6 @@ class TestAcceleratorContextExtraction:
         assert "nccl" in result["accelerator_packages"]
 
 
-# ── orchestrator._build_env_context integration ──────────────────────────
-
-
-class TestOrchestratorBuildEnvContext:
-    def test_includes_generic_torch_npu_package_version(self):
-        from core.orchestrator import Orchestrator
-
-        result = Orchestrator._build_env_context(
-            {"os": "Linux"},
-            {"installed_packages": ["torch-npu==2.1.0"]},
-        )
-        assert result["accelerator_package_versions"].get("torch_npu") == "2.1.0"
-        assert result["os"] == "Linux"
-
-    def test_includes_accelerator_packages(self):
-        from core.orchestrator import Orchestrator
-
-        result = Orchestrator._build_env_context(
-            {"os": "Linux"},
-            {"installed_packages": ["ppukernel==1.0.0", "torch-ppu==0.1.0"]},
-        )
-        assert "torch_npu" not in result["accelerator_package_versions"]
-        assert "ppukernel" in result["accelerator_packages"]
-        assert "torch_ppu" in result["accelerator_packages"]
-
-    def test_includes_accelerator_package_versions(self):
-        from core.orchestrator import Orchestrator
-
-        result = Orchestrator._build_env_context(
-            {"os": "Linux"},
-            {"installed_packages": ["ppukernel==1.0.0"]},
-        )
-        assert result["accelerator_package_versions"]["ppukernel"] == "1.0.0"
-
-    def test_empty_accelerator_packages_when_no_match(self):
-        from core.orchestrator import Orchestrator
-
-        result = Orchestrator._build_env_context(
-            {"os": "Linux"},
-            {"installed_packages": ["numpy==1.24.0", "requests"]},
-        )
-        assert "torch_npu" not in result["accelerator_package_versions"]
-        assert result["accelerator_packages"] == []
-        assert result["accelerator_package_versions"] == {}
-
-    def test_ppu_smoke_scenario(self):
-        """Full PPU smoke scenario: no torch-npu, has ppukernel, vllm, torch, cuda."""
-        from core.orchestrator import Orchestrator
-
-        result = Orchestrator._build_env_context(
-            {"os": "Linux"},
-            {"installed_packages": [
-                "vllm==0.18.0",
-                "torch==2.9.0",
-                "ppukernel==1.0.0",
-                "ppuccl==1.0.0",
-                "cuda",
-            ]},
-        )
-        assert "torch_npu" not in result["accelerator_package_versions"]
-        assert "vllm" in result["accelerator_packages"]
-        assert "ppukernel" in result["accelerator_packages"]
-        assert "ppuccl" in result["accelerator_packages"]
-
-
 # ── workflow_executor._build_env_context integration ─────────────────────
 
 
@@ -632,16 +567,10 @@ class TestWorkflowExecutorBuildEnvContext:
         assert result["accelerator_packages"] == []
         assert result["accelerator_package_versions"] == {}
 
-    def test_npu_ppu_mixed_behavior_identical_to_orchestrator(self):
-        from core.orchestrator import Orchestrator
+    def test_npu_ppu_mixed_behavior(self):
         from core.workflow_executor import WorkflowExecutor
 
         packages = ["torch-npu==2.1.0", "torch-ppu==0.1.0", "ppukernel==1.0.0", "vllm==0.18.0"]
-
-        orch_result = Orchestrator._build_env_context(
-            {"os": "Linux"},
-            {"installed_packages": packages},
-        )
 
         wfe = WorkflowExecutor.__new__(WorkflowExecutor)
         wf_result = wfe._build_env_context({
@@ -649,6 +578,7 @@ class TestWorkflowExecutorBuildEnvContext:
             "phase_2_venv_create": {"installed_packages": packages},
         })
 
-        assert orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]
-        assert set(orch_result["accelerator_packages"]) == set(wf_result["accelerator_packages"])
-        assert orch_result["accelerator_package_versions"] == wf_result["accelerator_package_versions"]
+        assert wf_result["accelerator_package_versions"]["torch_npu"] == "2.1.0"
+        assert wf_result["accelerator_package_versions"]["torch_ppu"] == "0.1.0"
+        assert "ppukernel" in wf_result["accelerator_packages"]
+        assert "vllm" in wf_result["accelerator_packages"]

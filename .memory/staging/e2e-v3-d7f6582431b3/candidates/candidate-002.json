@@ -1,0 +1,37 @@
+{
+  "candidate_id": "candidate-002",
+  "title": "NPU device auto-selection via memory probing for multi-tenant environments",
+  "problem_description": "Hardcoding DEVICE='npu:0' fails when NPU device 0 is congested by other processes (~33 GB used out of 60 GB on Ascend 910B2C), leaving insufficient contiguous memory for a 7B-param bf16 model (~14 GB). On multi-tenant NPU clusters, device 0 is often the most congested because other users and system processes default to it. The model silently OOMs or hangs during weight loading.",
+  "rough_fix_approach": "Replace hardcoded device selection with a `_select_device()` function that iterates through `torch.npu.device_count()` devices, probes each with a configurable memory allocation (e.g., 16 GiB bf16 tensor), catches RuntimeError on allocation failure, and returns the first device that succeeds. Falls back to 'cpu' if no NPU device has sufficient memory. Include `torch.npu.empty_cache()` after each probe attempt to clean up.",
+  "artifact_evidence": [
+    "validated/phase_fix_dependency_canonical.json:lines 14-26 (change description with reasoning)",
+    "validated/phase_5_validation_canonical.json:lines 403-428 (fix_dependency closure with evidence selected_device=npu:1)",
+    "demo_gradio.py:lines 32-56 (actual _select_device() implementation)",
+    "validated/phase_5_validation_canonical.json:lines 284-285 (verification: 7/7 shards loaded, Gradio started on npu:1)"
+  ],
+  "involved_code_files": [
+    {
+      "path": "demo_gradio.py",
+      "role": "Entry script \u2014 device selection logic at module level replacing hardcoded DEVICE='npu:0'",
+      "line_range": [
+        32,
+        56
+      ]
+    }
+  ],
+  "recommended_type": "skill",
+  "confidence": 0.82,
+  "priority": "high",
+  "reasoning": "NPU device contention is a universal problem for multi-tenant or multi-user NPU servers (common in academic/enterprise deployments). The probing pattern (allocate \u2192 catch \u2192 fallback) is simple, generalizable beyond the specific model size by adjusting probe_size_giB, and works for any NPU deployment with torch-npu. Unlike CPU fallback (which OOMs on large models), this keeps execution on NPU. Verified on 8-device Ascend 910B2C cluster where npu:0 was congested and npu:1 succeeded.",
+  "tags": [
+    "torch-npu",
+    "device-selection",
+    "memory-probing",
+    "multi-tenant",
+    "oom-avoidance"
+  ],
+  "category": "config_error",
+  "subtype": "hardcoded_device_on_congested_npu",
+  "source_run_id": "e2e-v3-d7f6582431b3",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/SpeechGPT-2.0-preview_20260606_134637"
+}

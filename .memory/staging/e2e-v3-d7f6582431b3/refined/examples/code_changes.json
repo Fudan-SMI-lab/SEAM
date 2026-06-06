@@ -1,0 +1,7 @@
+[
+  {
+    "file": ".venv/lib/python3.10/site-packages/torchvision/__init__.py",
+    "before": "from .extension import _HAS_OPS  # usort:skip\nfrom torchvision import _meta_registrations",
+    "after": "from .extension import _HAS_OPS  # usort:skip\ntry:\n    from torchvision import _meta_registrations\nexcept RuntimeError:\n    pass"
+  }
+]

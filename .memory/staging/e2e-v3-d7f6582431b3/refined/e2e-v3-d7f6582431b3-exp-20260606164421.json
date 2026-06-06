@@ -1,0 +1,172 @@
+{
+  "type": "skill",
+  "skill_name": "npu-torchvision-cuda-build-import-guard",
+  "title": "Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision",
+  "category": "dependency_issue",
+  "subtype": "cuda_built_package_import_crash",
+  "tags": [
+    "torch-npu",
+    "torchvision",
+    "venv",
+    "import-guard",
+    "operator-incompat",
+    "cuda-build"
+  ],
+  "symptom": "RuntimeError: operator torchvision::nms does not exist \u2014 torchvision 0.20.1+cu124 (CUDA build) crashes at import time on Ascend NPU because _meta_registrations eagerly registers fake implementations for CUDA C++ custom ops (nms, roi_align, deform_conv2d) that are absent from the NPU PyTorch dispatch table.",
+  "root_cause": "torchvision/__init__.py eagerly executes `from torchvision import _meta_registrations` (lines 10-13), which at line 163 calls `@torch.library.register_fake('torchvision::nms')` without an `_has_ops()` guard. The CUDA-built torchvision C++ extension is not loaded, so these custom ops do not exist in the NPU PyTorch dispatch table. The crash occurs during any transitive import of torchvision (e.g., via transformers or directly), even if the project never uses nms, roi_align, or deform_conv2d.",
+  "fix_steps": [
+    "1. Locate the torchvision __init__.py inside the project virtual environment (typically .venv/lib/python3.10/site-packages/torchvision/__init__.py).",
+    "2. Find the `from torchvision import _meta_registrations` statement, usually around lines 10-13, immediately after `from .extension import _HAS_OPS`.",
+    "3. Confirm the project does not depend on torchvision C++ custom ops (nms, roi_align, deform_conv2d) by checking imports \u2014 most projects only need pure-Python symbols like InterpolationMode, transforms, datasets.",
+    "4. Wrap the import in a try/except RuntimeError guard: replace the bare `from torchvision import _meta_registrations` with a try block that catches RuntimeError and passes silently.",
+    "5. Run the project entry script to verify all imports succeed and the application starts correctly on NPU with EXIT_CODE=0.",
+    "6. If the project actually uses torchvision C++ ops, revert the guard and instead install torchvision from source built against torch-npu \u2014 the try/except guard is only safe when those ops are unused."
+  ],
+  "affected_patterns": [
+    "from torchvision import _meta_registrations",
+    "import torchvision.__init__",
+    "torchvision/__init__.py line 10-13 _meta_registrations import"
+  ],
+  "code_changes": [
+    {
+      "file": ".venv/lib/python3.10/site-packages/torchvision/__init__.py",
+      "before": "from .extension import _HAS_OPS  # usort:skip\nfrom torchvision import _meta_registrations",
+      "after": "from .extension import _HAS_OPS  # usort:skip\ntry:\n    from torchvision import _meta_registrations\nexcept RuntimeError:\n    pass"
+    }
+  ],
+  "references": [],
+  "tools_needed": [],
+  "antipatterns": [
+    "Do NOT attempt to install torchvision from source unless the project actually depends on nms, roi_align, or deform_conv2d C++ ops \u2014 the import guard is sufficient for most use cases.",
+    "Do NOT remove the .extension._HAS_OPS import when adding the guard \u2014 it must execute before _meta_registrations to load the _C extension.",
+    "Do NOT catch a bare `except:` \u2014 only catch RuntimeError, the specific exception raised when a C++ custom op is missing from the dispatch table.",
+    "Do NOT assume this fix survives a torchvision upgrade \u2014 the try/except must be re-applied if the venv is rebuilt or torchvision is updated to a newer CUDA build."
+  ],
+  "meta": {
+    "source_run_id": "e2e-v3-d7f6582431b3",
+    "iterations_to_fix_in_source": 1,
+    "refiner_reasoning": "Fix was applied in Phase 5 iteration 1 and persisted through all 7 iterations. Verification confirmed all imports pass, 7 model shards load successfully on Ascend NPU, and Gradio server starts on port 7860 with EXIT_CODE=0. The project (SpeechGPT-2.0) only uses InterpolationMode from torchvision.transforms \u2014 a pure-Python enum \u2014 and never calls nms, roi_align, or deform_conv2d. The try/except RuntimeError guard is the minimal, safe fix for this class of CUDA-built package import crashes on NPU.",
+    "project_source_root": "SpeechGPT-2.0-preview-7B/",
+    "torchvision_version": "0.20.1+cu124",
+    "affected_ops": [
+      "torchvision::nms",
+      "torchvision::roi_align",
+      "torchvision::deform_conv2d"
+    ],
+    "created_at": "2026-06-06T16:44:21.658395+00:00"
+  },
+  "confidence": 0.9,
+  "target_roles": [
+    "main_engineer"
+  ],
+  "target_phases": [
+    "phase_5_validation"
+  ],
+  "trigger_fingerprint": "dependency_issue|huggingface_hub_strict_validation|dependency-version|from_pretrained|huggingface-hub|path-normalization|venv|aa45a5e050e3",
+  "solidifier": "skill_solidifier",
+  "classifier": {
+    "type": "skill",
+    "target_roles": [
+      "main_engineer"
+    ],
+    "target_phases": [
+      "phase_5_validation"
+    ],
+    "solidifier": "skill_solidifier",
+    "reasoning": "candidate provided recommended_type/type",
+    "confidence": 0.68,
+    "trigger_fingerprint": "dependency_issue|huggingface_hub_strict_validation|dependency-version|from_pretrained|huggingface-hub|path-normalization|venv|aa45a5e050e3"
+  },
+  "candidate_id": "candidate-003",
+  "problem_description": "huggingface_hub >=0.27.0 enforces strict repo_id format validation in from_pretrained(). Relative paths with trailing slashes (e.g., 'SpeechGPT-2.0-preview-7B/') are rejected with HFValidationError because they don't match the expected org/repo pattern. This occurs when users pass model directories as command-line arguments with trailing slashes (common shell tab-completion behavior), and particularly affects NPU venvs where a newer huggingface_hub version is installed than what the project was developed against on CUDA.",
+  "rough_fix_approach": "In the entry script's argument handling, convert all path arguments to absolute paths using `os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), path_arg))` before passing to from_pretrained() or LoadFromCheckpoint(). This strips trailing slashes and normalizes separators, bypassing the repo_id validation logic since absolute paths are treated as local directories.",
+  "recommended_type": "skill",
+  "project_source_root": "/inspire/sj-ssd/project/daijinquan/zhangjiaquan-253108540222/SEAM/merge-version/output_projects/SpeechGPT-2.0-preview_20260606_134637",
+  "name": "npu-torchvision-cuda-build-import-guard",
+  "_asset_contents": {
+    "skill_data.json": {
+      "name": "npu-torchvision-cuda-build-import-guard",
+      "title": "Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision",
+      "description": "Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision",
+      "tags": [
+        "torch-npu",
+        "torchvision",
+        "venv",
+        "import-guard",
+        "operator-incompat",
+        "cuda-build"
+      ],
+      "category": "dependency_issue",
+      "subtype": "cuda_built_package_import_crash",
+      "confidence": 0.9,
+      "target_roles": [
+        "main_engineer"
+      ],
+      "target_phases": [
+        "phase_5_validation"
+      ],
+      "trigger_fingerprint": "dependency_issue|huggingface_hub_strict_validation|dependency-version|from_pretrained|huggingface-hub|path-normalization|venv|aa45a5e050e3",
+      "classifier": {
+        "type": "skill",
+        "target_roles": [
+          "main_engineer"
+        ],
+        "target_phases": [
+          "phase_5_validation"
+        ],
+        "solidifier": "skill_solidifier",
+        "reasoning": "candidate provided recommended_type/type",
+        "confidence": 0.68,
+        "trigger_fingerprint": "dependency_issue|huggingface_hub_strict_validation|dependency-version|from_pretrained|huggingface-hub|path-normalization|venv|aa45a5e050e3"
+      },
+      "occurrence_count": 1,
+      "when_to_use": "RuntimeError: operator torchvision::nms does not exist \u2014 torchvision 0.20.1+cu124 (CUDA build) crashes at import time on Ascend NPU because _meta_registrations eagerly registers fake implementations for CUDA C++ custom ops (nms, roi_align, deform_conv2d) that are absent from the NPU PyTorch dispatch table.",
+      "root_cause": "torchvision/__init__.py eagerly executes `from torchvision import _meta_registrations` (lines 10-13), which at line 163 calls `@torch.library.register_fake('torchvision::nms')` without an `_has_ops()` guard. The CUDA-built torchvision C++ extension is not loaded, so these custom ops do not exist in the NPU PyTorch dispatch table. The crash occurs during any transitive import of torchvision (e.g., via transformers or directly), even if the project never uses nms, roi_align, or deform_conv2d.",
+      "fix_steps": [
+        "1. Locate the torchvision __init__.py inside the project virtual environment (typically .venv/lib/python3.10/site-packages/torchvision/__init__.py).",
+        "2. Find the `from torchvision import _meta_registrations` statement, usually around lines 10-13, immediately after `from .extension import _HAS_OPS`.",
+        "3. Confirm the project does not depend on torchvision C++ custom ops (nms, roi_align, deform_conv2d) by checking imports \u2014 most projects only need pure-Python symbols like InterpolationMode, transforms, datasets.",
+        "4. Wrap the import in a try/except RuntimeError guard: replace the bare `from torchvision import _meta_registrations` with a try block that catches RuntimeError and passes silently.",
+        "5. Run the project entry script to verify all imports succeed and the application starts correctly on NPU with EXIT_CODE=0.",
+        "6. If the project actually uses torchvision C++ ops, revert the guard and instead install torchvision from source built against torch-npu \u2014 the try/except guard is only safe when those ops are unused."
+      ],
+      "code_changes": [
+        {
+          "file": ".venv/lib/python3.10/site-packages/torchvision/__init__.py",
+          "before": "from .extension import _HAS_OPS  # usort:skip\nfrom torchvision import _meta_registrations",
+          "after": "from .extension import _HAS_OPS  # usort:skip\ntry:\n    from torchvision import _meta_registrations\nexcept RuntimeError:\n    pass"
+        }
+      ],
+      "antipatterns": [
+        "Do NOT attempt to install torchvision from source unless the project actually depends on nms, roi_align, or deform_conv2d C++ ops \u2014 the import guard is sufficient for most use cases.",
+        "Do NOT remove the .extension._HAS_OPS import when adding the guard \u2014 it must execute before _meta_registrations to load the _C extension.",
+        "Do NOT catch a bare `except:` \u2014 only catch RuntimeError, the specific exception raised when a C++ custom op is missing from the dispatch table.",
+        "Do NOT assume this fix survives a torchvision upgrade \u2014 the try/except must be re-applied if the venv is rebuilt or torchvision is updated to a newer CUDA build."
+      ],
+      "references": [],
+      "merged_from_runs": [
+        "e2e-v3-d7f6582431b3"
+      ]
+    },
+    "SKILL.md": "---\nname: npu-torchvision-cuda-build-import-guard\ndescription: Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision\ntags: [\"torch-npu\", \"torchvision\", \"venv\", \"import-guard\", \"operator-incompat\", \"cuda-build\"]\ncategory: dependency_issue\nsubtype: cuda_built_package_import_crash\nconfidence: 0.9\noccurrence_count: 1\n---\n\n# Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision\n\n## When to Use\n- RuntimeError: operator torchvision::nms does not exist \u2014 torchvision 0.20.1+cu124 (CUDA build) crashes at import time on Ascend NPU because _meta_registrations eagerly registers fake implementations for CUDA C++ custom ops (nms, roi_align, deform_conv2d) that are absent from the NPU PyTorch dispatch table.\n\n## Root Cause\ntorchvision/__init__.py eagerly executes `from torchvision import _meta_registrations` (lines 10-13), which at line 163 calls `@torch.library.register_fake('torchvision::nms')` without an `_has_ops()` guard. The CUDA-built torchvision C++ extension is not loaded, so these custom ops do not exist in the NPU PyTorch dispatch table. The crash occurs during any transitive import of torchvision (e.g., via transformers or directly), even if the project never uses nms, roi_align, or deform_conv2d.\n\n## How to Use\n1. Locate the torchvision __init__.py inside the project virtual environment (typically .venv/lib/python3.10/site-packages/torchvision/__init__.py).\n2. Find the `from torchvision import _meta_registrations` statement, usually around lines 10-13, immediately after `from .extension import _HAS_OPS`.\n3. Confirm the project does not depend on torchvision C++ custom ops (nms, roi_align, deform_conv2d) by checking imports \u2014 most projects only need pure-Python symbols like InterpolationMode, transforms, datasets.\n4. Wrap the import in a try/except RuntimeError guard: replace the bare `from torchvision import _meta_registrations` with a try block that catches RuntimeError and passes silently.\n5. Run the project entry script to verify all imports succeed and the application starts correctly on NPU with EXIT_CODE=0.\n6. If the project actually uses torchvision C++ ops, revert the guard and instead install torchvision from source built against torch-npu \u2014 the try/except guard is only safe when those ops are unused.\n\n## Code Examples\n[\n  {\n    \"file\": \".venv/lib/python3.10/site-packages/torchvision/__init__.py\",\n    \"before\": \"from .extension import _HAS_OPS  # usort:skip\\nfrom torchvision import _meta_registrations\",\n    \"after\": \"from .extension import _HAS_OPS  # usort:skip\\ntry:\\n    from torchvision import _meta_registrations\\nexcept RuntimeError:\\n    pass\"\n  }\n]\n\n## Do Not\n- Do NOT attempt to install torchvision from source unless the project actually depends on nms, roi_align, or deform_conv2d C++ ops \u2014 the import guard is sufficient for most use cases.\n- Do NOT remove the .extension._HAS_OPS import when adding the guard \u2014 it must execute before _meta_registrations to load the _C extension.\n- Do NOT catch a bare `except:` \u2014 only catch RuntimeError, the specific exception raised when a C++ custom op is missing from the dispatch table.\n- Do NOT assume this fix survives a torchvision upgrade \u2014 the try/except must be re-applied if the venv is rebuilt or torchvision is updated to a newer CUDA build.\n\n## Evidence\n- Source runs: e2e-v3-d7f6582431b3\n",
+    "skill.yaml": "name: npu-torchvision-cuda-build-import-guard\ntitle: Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision\ndescription: Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision\ncategory: dependency_issue\nsubtype: cuda_built_package_import_crash\ntarget_roles: [\"main_engineer\"]\ntarget_phases: [\"phase_5_validation\"]\ntrigger_fingerprint: dependency_issue|huggingface_hub_strict_validation|dependency-version|from_pretrained|huggingface-hub|path-normalization|venv|aa45a5e050e3\n",
+    "verification.md": "# Verification for Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision\n\n- Source run: e2e-v3-d7f6582431b3\n- Verify by applying the fix steps to a matching migration failure.\n",
+    "examples/code_changes.json": [
+      {
+        "file": ".venv/lib/python3.10/site-packages/torchvision/__init__.py",
+        "before": "from .extension import _HAS_OPS  # usort:skip\nfrom torchvision import _meta_registrations",
+        "after": "from .extension import _HAS_OPS  # usort:skip\ntry:\n    from torchvision import _meta_registrations\nexcept RuntimeError:\n    pass"
+      }
+    ]
+  },
+  "asset_names": [
+    "SKILL.md",
+    "examples/code_changes.json",
+    "skill.yaml",
+    "skill_data.json",
+    "verification.md"
+  ],
+  "id": "e2e-v3-d7f6582431b3-exp-20260606164421",
+  "run_id": "e2e-v3-d7f6582431b3",
+  "created_at": "2026-06-06T16:44:21.658600+00:00"
+}

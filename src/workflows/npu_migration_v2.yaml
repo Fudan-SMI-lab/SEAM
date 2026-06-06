@@ -192,6 +192,7 @@ sub_workflows:
         type: shell
         command: "${loop_vars.entry_script}"
         cwd: "${loop_vars.project_dir}"
+        timeout: 1800
         capture:
           exit_code: "script_exit_code"
           stdout: "script_stdout"

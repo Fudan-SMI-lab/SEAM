@@ -1,0 +1,8 @@
+name: npu-torchvision-cuda-build-import-guard
+title: Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision
+description: Guard torchvision _meta_registrations import against RuntimeError on NPU when using CUDA-built torchvision
+category: dependency_issue
+subtype: cuda_built_package_import_crash
+target_roles: ["main_engineer"]
+target_phases: ["phase_5_validation"]
+trigger_fingerprint: dependency_issue|huggingface_hub_strict_validation|dependency-version|from_pretrained|huggingface-hub|path-normalization|venv|aa45a5e050e3

@@ -66,7 +66,7 @@ from core.execution_backend import ContainerBackend, get_execution_context as _g
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
 from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator
-from core.runtime_artifacts import write_operator_repair_context_artifact, write_repair_runtime_artifacts
+from core.runtime_artifacts import safe_project_reports_dir, write_operator_repair_context_artifact, write_repair_runtime_artifacts
 from core.phase6_fallback import build_phase6_fallback_report, collect_phase6_prior_artifacts, collect_phase6_prior_state, resolve_phase6_timeout
 from core.validation_correction import (
     build_validation_correction_prompt,
@@ -77,6 +77,7 @@ from core.validation_correction import (
 from core.repair_loop import (
     _operator_custom_op_guidance,
     _operator_custom_op_progress_block,
+    _operator_custom_op_target_units,
     _operator_generic_guidance,
     _operator_repair_has_custom_op_contract,
     force_custom_op_operator_routing_if_needed,
@@ -84,6 +85,7 @@ from core.repair_loop import (
 from core.platform_policy import resolve_policy, PlatformPolicy
 from validators.validate_entry_script import validate as validate_entry_script, _extract_env_prefix
 from validators.validate_validation_final import (
+    custom_op_final_gate_unit_ledger,
     validate_custom_op_final_gate,
     validate_serving_final_gate,
 )
@@ -122,6 +124,21 @@ RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
 }
 CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT = 100
 
+# ── Parallel custom-op fix configuration ───────────────────────────────
+_CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT = 3
+
+
+def _is_custom_op_migration_route(state: dict[str, Any]) -> bool:
+    """Check Phase 1 migration_route for custom-op routes (relaxed trigger).
+
+    This bypasses the Phase 3 canonical contract, which may be stripped
+    for certain serving-normalized routes.
+    """
+    ph1 = state.get("phase_1_project_analysis")
+    if not isinstance(ph1, dict):
+        return False
+    route = ph1.get("migration_route")
+    return isinstance(route, str) and route in {CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}
 
 
 CUSTOM_OP_REQUIRED_TERMS = (
@@ -1714,12 +1731,251 @@ class WorkflowExecutor:
         state: dict[str, Any],
     ) -> str:
         if phase_id in {"fix_operator", "imp_fix_operator"}:
-            phase3_contract = state.get("phase_3_entry_script")
-            if isinstance(phase3_contract, dict) and _operator_repair_has_custom_op_contract(
-                cast(dict[str, object], phase3_contract)
-            ):
+            ph1 = state.get("phase_1_project_analysis")
+            route = ph1.get("migration_route") if isinstance(ph1, dict) else None
+            if route == CUSTOM_OP_WITH_VARIANTS:
                 return "repair_custom_op_variant_service"
+            # CUSTOM_OP (no variants) falls through to default_template
+            # (repair_operator_fixer_npu.md), which also supports scoping
+            # via _execute_parallel_custom_op_fix.
         return default_template
+
+    def _execute_parallel_custom_op_fix(
+        self,
+        *,
+        phase_id: str,
+        mini: PhaseDefinition,
+        state: dict[str, Any],
+        step_outputs: dict[str, Any],
+        loop_vars: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        project_dir = (
+            (str(loop_vars["project_dir"]) if loop_vars and loop_vars.get("project_dir") else None)
+            or self.project_dir
+        )
+        project_path = Path(project_dir)
+        contract = state.get("phase_3_entry_script")
+        if not isinstance(contract, dict):
+            contract = {}
+        target_units = _operator_custom_op_target_units(cast(dict[str, object], contract))
+
+        reports_dir = safe_project_reports_dir(project_path)
+        gate_path = reports_dir / "custom_op_final_gate.json"
+        gate_data: dict[str, object] = {}
+        if gate_path.exists():
+            try:
+                loaded = cast(object, json.loads(gate_path.read_text(encoding="utf-8")))
+                if isinstance(loaded, dict):
+                    gate_data = cast(dict[str, object], loaded)
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        ledger = custom_op_final_gate_unit_ledger(
+            gate_data,
+            target_units=target_units or None,
+            project_root=project_dir,
+        )
+        groups_raw = ledger.get("parallelization_groups")
+        groups: list[list[str]] = []
+        if isinstance(groups_raw, list) and groups_raw:
+            for item in cast(list[object], groups_raw):
+                if isinstance(item, dict):
+                    units = cast(dict[str, object], item).get("units")
+                    if isinstance(units, list):
+                        group_units = [str(u) for u in cast(list[object], units)]
+                        if group_units:
+                            groups.append(group_units)
+        if not groups:
+            remaining = ledger.get("remaining_units")
+            if isinstance(remaining, list) and remaining:
+                for unit in cast(list[object], remaining):
+                    groups.append([str(unit)])
+        if not groups and target_units:
+            fixer_count = _CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT
+            fixer_count = min(fixer_count, len(target_units))
+            chunk_size = max(1, (len(target_units) + fixer_count - 1) // fixer_count)
+            for i in range(0, len(target_units), chunk_size):
+                groups.append(list(target_units[i : i + chunk_size]))
+
+        if not groups:
+            logger.warning("Parallel custom_op fix: no groups to dispatch — falling back to single fix_operator")
+            return None
+
+        agent_id = mini.agent or "operator_fixer"
+        timeout = self._resolve_sub_workflow_llm_timeout(mini)
+        prompt_template = self._prompt_template_for_llm_phase(
+            phase_id=str(phase_id),
+            default_template=mini.prompt_template,
+            state=state,
+        )
+
+        # ── Write shared runtime / operator-context artifacts once ─────
+        # Mirrors _build_active_repair_prompt_context for the non-parallel
+        # fix_operator path.  Artifacts are identical across all groups so
+        # we write them once outside the closure.
+        contract_dict = cast(dict[str, object], contract) if isinstance(contract, dict) and contract else {}
+        entry_script_str = str(contract_dict.get("entry_script_path", loop_vars.get("entry_script", "") if loop_vars else ""))
+        script_stderr = str(step_outputs.get("script_stderr", ""))
+        error_analysis_raw = step_outputs.get("error_analysis", {})
+        error_analysis: dict[str, Any] = error_analysis_raw if isinstance(error_analysis_raw, dict) else {}
+        runtime_error_path, runtime_card_path = self._write_repair_runtime_artifacts(
+            project_dir=project_dir,
+            entry_script=entry_script_str,
+            error_text=script_stderr,
+            category=str(error_analysis.get("category", "unknown")),
+            root_cause=str(error_analysis.get("root_cause", "")),
+            suggested_fix=str(error_analysis.get("suggested_fix", "")),
+            repair_role=agent_id,
+            experience_action_cards=step_outputs.get("experience_action_cards", []),
+        )
+        if _operator_repair_has_custom_op_contract(contract_dict):
+            operator_context_path = self._write_operator_repair_context_artifact(
+                project_dir=project_dir,
+                entry_script=entry_script_str,
+                phase3_contract=contract_dict,
+            )
+            repair_scope = self._custom_op_phase1_phase3_repair_scope(contract_dict)
+            custom_op_guidance = _operator_custom_op_guidance(
+                operator_context_path,
+                project_dir=project_dir,
+                entry_script=entry_script_str,
+                platform_policy=self.platform_policy,
+            )
+            strict_acceptance = (
+                "For active custom-op contracts, success requires current project-local migration reports "
+                "and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted."
+            )
+        else:
+            repair_scope = ""
+            custom_op_guidance = _operator_generic_guidance(
+                project_dir=project_dir,
+                entry_script=entry_script_str,
+                platform_policy=self.platform_policy,
+            )
+            strict_acceptance = ""
+
+        def _build_group_prompt(group_units: list[str], group_idx: int) -> str:
+            # Build scoped progress block so this group only sees its own
+            # assigned units — not the global target/remaining counts.
+            scoped_ledger = custom_op_final_gate_unit_ledger(
+                gate_data,
+                target_units=group_units,
+                project_root=project_dir,
+            )
+            scoped_progress_lines = [
+                "Current strict custom-op final-gate progress (YOUR ASSIGNED UNITS ONLY)",
+                f"assigned_units={len(group_units)}",
+                f"strict_pass_units={scoped_ledger.get('strict_pass_count', 0)}",
+                f"remaining_units={scoped_ledger.get('remaining_count', 0)}",
+            ]
+            remaining = scoped_ledger.get("remaining_units")
+            if isinstance(remaining, list) and remaining:
+                remaining_items = cast(list[object], remaining)
+                scoped_progress_lines.append(
+                    "remaining_unit_identities="
+                    + ", ".join(str(u) for u in remaining_items[:50])
+                )
+            scoped_progress_block = "\n".join(scoped_progress_lines)
+
+            input_ctx: dict[str, str] = {
+                "phase_name": phase_id,
+                "project_dir": project_dir,
+                "workspace_root": str(workspace_root()),
+                "entry_script": entry_script_str,
+                "error_text": str(step_outputs.get("script_stderr", "")),
+                "category": str(step_outputs.get("error_analysis", {}).get("category", "operator_fix")),
+                "root_cause": str(step_outputs.get("error_analysis", {}).get("root_cause", "")),
+                "suggested_fix": str(step_outputs.get("error_analysis", {}).get("suggested_fix", "")),
+                "repair_role": "operator_fixer",
+                "constraint_summary": self._resolve_constraint_summary(state),
+                "assigned_units": ", ".join(group_units),
+                "assigned_unit_count": str(len(group_units)),
+                "operator_repair_progress_block": scoped_progress_block,
+                "runtime_error_artifact_path": runtime_error_path,
+                "runtime_card_artifact_path": runtime_card_path,
+                "operator_custom_op_guidance": custom_op_guidance,
+                "active_custom_op_full_repair_requirements": custom_op_guidance,
+                "parallel_dispatch_guidance": (
+                    f"Group {group_idx + 1}/{len(groups)}: You are assigned {len(group_units)} specific operators. "
+                    "Use background tasks to dispatch each operator to a parallel agent for simultaneous repair. "
+                    "After all complete, merge results and run the entry script for final validation."
+                ),
+            }
+            if strict_acceptance:
+                input_ctx["phase1_phase3_repair_scope"] = repair_scope
+                input_ctx["strict_custom_op_acceptance_contract"] = strict_acceptance
+            self._inject_llm_baseline_context(input_ctx, mini, state)
+            prompt_text = self.prompt_loader.load_prompt(prompt_template, input_ctx)
+            prompt_text, _ = self._append_explicit_runtime_skill_markdown(
+                prompt_text, mini, agent_id
+            )
+            return prompt_text
+
+        results: list[dict[str, Any]] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(groups)) as pool:
+            futures: dict[concurrent.futures.Future[str], int] = {}
+            for idx, group_units in enumerate(groups):
+                prompt = _build_group_prompt(group_units, idx)
+                group_agent_id = f"{agent_id}_group{idx + 1}"
+                sid = self.session_mgr.get_or_create(
+                    role=group_agent_id, lifecycle="persistent"
+                )
+                future = pool.submit(
+                    self._send_sub_workflow_llm_command,
+                    phase_id=f"{phase_id}_group{idx + 1}",
+                    agent_id=group_agent_id,
+                    session_id=sid,
+                    prompt_text=prompt,
+                    timeout=timeout,
+                )
+                futures[future] = idx
+            for future in concurrent.futures.as_completed(futures):
+                idx = futures[future]
+                group_label = f"group-{idx + 1}"
+                try:
+                    raw = future.result()
+                    output = extract_json_response(raw)
+                    self._raise_for_session_error_output(output, f"{phase_id}_{group_label}")
+                    if not output:
+                        output = {"raw_response": raw, "status": "raw_only"}
+                    if isinstance(output, dict):
+                        output["_parallel_group"] = group_label
+                        output["_assigned_units"] = groups[idx]
+                    results.append((idx, output))
+                except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
+                    logger.warning("Parallel fix %s: LLM call failed — %s", group_label, exc)
+                    results.append((idx, {"status": "failed", "message": str(exc), "_parallel_group": group_label}))
+
+        results.sort(key=lambda r: r[0])
+        sorted_outputs = [r[1] for r in results]
+
+        all_modified: list[str] = []
+        all_summaries: list[str] = []
+        all_success = True
+        for out in sorted_outputs:
+            if out.get("status") in ("failed", "raw_only"):
+                all_success = False
+            modified = out.get("modified_files")
+            if isinstance(modified, list):
+                for f in modified:
+                    if isinstance(f, str):
+                        all_modified.append(f)
+            summary = out.get("fix_summary", "")
+            if summary:
+                all_summaries.append(str(summary))
+
+        merged = {
+            "status": "success" if all_success else "partial",
+            "message": f"Parallel custom_op fix: dispatched {len(groups)} groups",
+            "repair_role": "operator_fixer",
+            "modified_files": all_modified,
+            "fix_summary": "; ".join(all_summaries),
+            "_parallel_results": sorted_outputs,
+            "_parallel_group_count": len(groups),
+        }
+        step_outputs["fix_operator"] = merged
+        state["fix_operator"] = merged
+        return merged
 
     def _recover_operator_repair_from_current_final_gate(
         self,
@@ -1733,9 +1989,9 @@ class WorkflowExecutor:
     ) -> dict[str, object] | None:
         if not self._is_operator_repair_phase(phase_id):
             return None
-        contract = state.get("phase_3_entry_script")
-        if not isinstance(contract, dict) or not has_custom_op_contract(cast(dict[str, object], contract)):
+        if not _is_custom_op_migration_route(state):
             return None
+        contract = state.get("phase_3_entry_script")
         reports_dir = self._resolve_custom_op_reports_dir(cast(dict[str, Any], contract), context, loop_vars)
         gate_path = reports_dir / "custom_op_final_gate.json"
         try:
@@ -3815,6 +4071,20 @@ class WorkflowExecutor:
 
             try:
                 if ptype == "llm":
+                    if pid in {"fix_operator", "imp_fix_operator"} and _is_custom_op_migration_route(state):
+                        mini = self._mini_phase(imp_phase)
+                        parallel_result = self._execute_parallel_custom_op_fix(
+                            phase_id=pid,
+                            mini=mini,
+                            state=state,
+                            step_outputs=step_outputs,
+                            loop_vars=loop_vars if loop_vars else None,
+                        )
+                        if parallel_result is not None:
+                            step_outputs[pid] = parallel_result
+                            state[pid] = parallel_result
+                            continue
+
                     mini = self._mini_phase(imp_phase)
                     input_ctx = self._resolve_input_mapping(
                         mini, state, context,
@@ -3885,6 +4155,21 @@ class WorkflowExecutor:
                                     self._inject_sub_workflow_context(
                                         mini_ctx, str(rest.get("id") or ""), step_outputs, {}, state, [],
                                     )
+                                    if next_id in {"fix_operator", "imp_fix_operator"} and _is_custom_op_migration_route(state):
+                                        parallel_result = self._execute_parallel_custom_op_fix(
+                                            phase_id=next_id,
+                                            mini=rest_mini,
+                                            state=state,
+                                            step_outputs=step_outputs,
+                                            loop_vars=loop_vars if loop_vars else None,
+                                        )
+                                        if parallel_result is not None:
+                                            if isinstance(parallel_result, dict):
+                                                self._attach_experience_usage_report(step_outputs, next_id, parallel_result)
+                                            step_outputs[next_id] = parallel_result
+                                            state[next_id] = parallel_result
+                                            break
+
                                     prompt = self.prompt_loader.load_prompt(
                                         rest_mini.prompt_template, mini_ctx)
                                     agent_id = rest_mini.agent or "main_engineer"
@@ -4010,6 +4295,22 @@ class WorkflowExecutor:
                         loop_vars=loop_vars, loop_state=step_outputs,
                     )
                 elif phase_type == "llm":
+                    # ── Parallel custom-op fix: intercept operator_fixer dispatch ──
+                    if phase_id in {"fix_operator", "imp_fix_operator"} and _is_custom_op_migration_route(state):
+                        mini = self._mini_phase(sub_phase)
+                        parallel_result = self._execute_parallel_custom_op_fix(
+                            phase_id=phase_id,
+                            mini=mini,
+                            state=state,
+                            step_outputs=step_outputs,
+                            loop_vars=loop_vars,
+                        )
+                        if parallel_result is not None:
+                            phase_output = parallel_result
+                            step_outputs[phase_id] = phase_output
+                            state[phase_id] = phase_output
+                            continue
+
                     mini = self._mini_phase(sub_phase)
                     input_ctx = self._resolve_input_mapping(
                         mini, state, context,
