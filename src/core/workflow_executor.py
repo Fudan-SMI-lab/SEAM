@@ -3578,6 +3578,17 @@ class WorkflowExecutor:
             logger.info("Loop iteration %d/%d for phase '%s'", iteration, max_iterations, phase.id)
             iter_start = time.time()
             step_outputs: dict[str, Any] = {}
+            # Compute effective stagnation threshold BEFORE sub-workflow runs
+            # so that sub-phase conditions see the elevated threshold for
+            # custom-op / operator_fixer repair roles.
+            effective = self._effective_stagnation_threshold(
+                base_threshold=stagnation_threshold,
+                phase_id=phase.id,
+                state=state,
+                step_outputs=step_outputs,
+                loop_state=loop_state,
+            )
+            loop_state["_effective_stagnation_threshold"] = effective
             self._carry_pending_experience_verifications(loop_state, step_outputs)
 
             # Execute sub-workflow
@@ -3790,6 +3801,7 @@ class WorkflowExecutor:
 
             cond = imp_phase.get("condition")
             if cond:
+                cond = self._inject_effective_stagnation_threshold(cond, loop_state)
                 cond_met = self._evaluate_condition(
                     cond, state, context,
                     loop_vars={}, loop_state=loop_state,
@@ -3972,6 +3984,7 @@ class WorkflowExecutor:
             # Evaluate condition
             cond = sub_phase.get("condition")
             if cond:
+                cond = self._inject_effective_stagnation_threshold(cond, loop_state)
                 cond_met = self._evaluate_condition(
                     cond, state, context,
                     loop_vars=loop_vars, loop_state=loop_state or {},
@@ -4923,6 +4936,35 @@ class WorkflowExecutor:
         return None
 
     # ── Stagnation detection ────────────────────────────────────────────
+
+    @staticmethod
+    def _inject_effective_stagnation_threshold(
+        condition: str,
+        loop_state: dict[str, Any] | None,
+    ) -> str:
+        """Rewrite the hardcoded numeric threshold in ``$.stagnation_count < N``
+        to the effective stagnation threshold stored in *loop_state*.
+
+        Sub-phase YAML conditions are written as ``$.stagnation_count < 3``.
+        When the *operator_fixer* repair role is active the executor elevates
+        the effective threshold (default 100), but the sub-phase conditions
+        still reference the literal ``3``.  This helper replaces that literal
+        so the elevated threshold actually gates the fix phases.
+        """
+        if not condition or "stagnation_count" not in condition:
+            return condition
+        if not loop_state:
+            return condition
+        effective = loop_state.get("_effective_stagnation_threshold")
+        if not isinstance(effective, int):
+            return condition
+        # Only rewrite "< N" patterns — the stop condition uses ">=" and
+        # must keep its own (intentionally huge) threshold.
+        return re.sub(
+            r'(\$\.stagnation_count\s*<\s*)\d+',
+            rf'\g<1>{effective}',
+            condition,
+        )
 
     def _effective_stagnation_threshold(
         self,
