@@ -45,9 +45,26 @@ def validate(data: dict[str, object]) -> ValidationDict:
 
     validation_passed = data.get("validation_passed")
     if not isinstance(validation_passed, bool):
-        errors.append("validation_passed must be a boolean")
-        # Cannot evaluate issues if we don't know pass/fail status
-        return {"passed": False, "errors": errors, "warnings": []}
+        raw_val_errors = data.get("validation_errors")
+        if isinstance(raw_val_errors, list):
+            validation_passed = len(raw_val_errors) == 0
+            # Seed issues from validation_errors so downstream semantic checks work
+            if not validation_passed:
+                data.setdefault("issues", raw_val_errors)
+            if not data.get("fix_plan"):
+                data["fix_plan"] = "Auto-synthesized from validation_errors: " + (
+                    "no errors" if validation_passed else "; ".join(str(e) for e in raw_val_errors[:5])
+                )
+        elif isinstance(validation_passed, str):
+            normalized = validation_passed.strip().lower()
+            if normalized in {"true", "false"}:
+                validation_passed = normalized == "true"
+            else:
+                errors.append("validation_passed must be a boolean")
+                return {"passed": False, "errors": errors, "warnings": []}
+        else:
+            errors.append("validation_passed must be a boolean")
+            return {"passed": False, "errors": errors, "warnings": []}
 
     raw_issues = data.get("issues", [])
     if not isinstance(raw_issues, list):

@@ -19,7 +19,7 @@ from typing import Any, Literal, cast
 
 logger = logging.getLogger("harness.session.manager")
 
-RUNNING_TOKENS = {"running", "queued", "processing", "thinking", "in_progress", "active", "busy", "retry", "compacting"}
+RUNNING_TOKENS = {"running", "queued", "processing", "thinking", "in_progress", "active", "busy", "retry", "compacting", "tool-calls"}
 COMPACTION_TOKENS = {"compaction", "summary"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
 FALLBACK_AGENT_NAME = "Sisyphus"
@@ -813,6 +813,8 @@ class MigrationSessionManager:
         finish = str(payload.get("finish") or info_dict.get("finish") or "").lower()
         if finish in RUNNING_TOKENS:
             return True
+        if not finish and role == "assistant":
+            return True
         if finish not in {"stop", "success"}:
             return None
         return False
@@ -955,9 +957,18 @@ class MigrationSessionManager:
                 return cast(dict[str, Any], value)
             raise RuntimeError("Unexpected guarded session response payload")
 
-    def wait_for_idle(self, session_id: str, timeout_s: int | float | None = 300, interval_s: float = 2.0) -> bool:
+    def wait_for_idle(
+        self,
+        session_id: str,
+        timeout_s: int | float | None = 300,
+        interval_s: float = 2.0,
+        max_restart_cycles: int = 5,
+        idle_confirm_polls: int = 3,
+    ) -> bool:
         started = time.time()
         effective_timeout = self._effective_wait_timeout(timeout_s)
+        restart_cycles = 0
+        consecutive_idle_polls = 0
         while effective_timeout is None or time.time() - started < effective_timeout:
             status = self._http("GET", "/session/status", timeout=5)
             if not status.get("ok"):
@@ -986,13 +997,34 @@ class MigrationSessionManager:
                 if assistant_state is None:
                     # Transient failure (timeout, connection error) → retry
                     logger.warning("wait_for_idle: transient assistant completion check failure for %s (will retry)", session_id)
+                    consecutive_idle_polls = 0
                     time.sleep(interval_s)
                     continue
                 if assistant_state is True:
+                    if consecutive_idle_polls > 0:
+                        restart_cycles += 1
+                        logger.warning(
+                            "wait_for_idle: session %s restarted after appearing idle (cycle %d/%d)",
+                            session_id,
+                            restart_cycles,
+                            max_restart_cycles,
+                        )
+                        if restart_cycles >= max_restart_cycles:
+                            logger.warning(
+                                "wait_for_idle: max restart cycles (%d) reached for %s -- session likely in auto-continuation loop, treating as idle",
+                                max_restart_cycles,
+                                session_id,
+                            )
+                            return True
+                    consecutive_idle_polls = 0
                     time.sleep(interval_s)
                     continue
                 if assistant_state is False:
-                    return True
+                    consecutive_idle_polls += 1
+                    if consecutive_idle_polls >= idle_confirm_polls:
+                        return True
+                    time.sleep(interval_s)
+                    continue
 
             todo_state = self._session_has_incomplete_todos(session_id)
             if todo_state is True:

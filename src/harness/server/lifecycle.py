@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import http.client
 import os
+from pathlib import Path
 import shutil
 import socket
 import subprocess
@@ -115,6 +116,13 @@ def probe_server(server_url: str, server_type: str) -> ServerProbe:
     return ServerProbe(state="free", base_url=base_url, detail=f"{spec.hostname}:{spec.port} is available")
 
 
+def _server_log_path(port: int) -> Path:
+    """Return the log file path for an opencode server on the given port."""
+    log_dir = Path(os.environ.get("SEAM_SERVER_LOG_DIR", "/tmp/seam-server-logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / f"opencode-{port}.log"
+
+
 def start_server(
     work_dir: str,
     port: int | None = None,
@@ -127,6 +135,9 @@ def start_server(
 
     Supports both legacy start_server(work_dir, port, auth_header) and
     root-style start_server(work_dir=..., server_url=...).
+
+    Stdout and stderr are written to log files under SEAM_SERVER_LOG_DIR
+    (default /tmp/seam-server-logs/) so that startup crashes can be diagnosed.
     """
     _ = validate_server_type(server_type)
     if server_url is not None:
@@ -142,18 +153,21 @@ def start_server(
     if shutil.which("opencode") is None:
         raise FileNotFoundError("opencode not found in PATH")
 
-    cmd = ["opencode", "serve", "--port", str(selected_port), "--hostname", hostname]
+    cmd = ["opencode", "serve", "--port", str(selected_port), "--hostname", hostname, "--log-level", "INFO"]
     env: dict[str, str] | None = None
     if auth_header:
         env = {**os.environ, "AUTH_HEADER": auth_header}
 
+    log_path = _server_log_path(selected_port)
+    log_fh = open(str(log_path), "a")
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=log_fh,
         cwd=work_dir,
         env=env,
     )
+
     return proc
 
 
@@ -227,14 +241,78 @@ def ensure_server(
     return ManagedServer(base_url=selected_url, port=selected_port, process=proc, reused=False, started=True)
 
 
-def wait_for_server(url: str, timeout: int = 30) -> bool:
-    """Poll server health endpoint until 200 response or timeout."""
-    health_url = f"{url}/agent"
+def _get_session(base_url: str, timeout: int = 10) -> str | None:
+    """Create a lightweight probe session to verify the server can handle full requests.
+
+    Uses the opencode API: POST /session with {"title": "probe"}.
+    Response: {"ok": true, "data": {"id": "session_xxx"}}.
+
+    Returns the session ID on success, None on failure.
+    """
+    import json as _json
+    import urllib.request as _urllib
+
+    session_url = f"{base_url.rstrip('/')}/session"
+    payload = _json.dumps({"title": "seam-probe"}).encode("utf-8")
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+
+    try:
+        req = _urllib.Request(session_url, data=payload, headers=headers, method="POST")
+        resp = _urllib.urlopen(req, timeout=timeout)
+        body = _json.loads(resp.read().decode("utf-8"))
+        data = body.get("data")
+        if isinstance(data, dict):
+            session_id = str(data.get("id", ""))
+            if session_id:
+                return session_id
+        return None
+    except Exception:
+        return None
+
+
+def verify_server_ready(base_url: str, *, session_timeout: int = 10) -> bool:
+    """Deep health check that verifies the server can handle real workflow requests.
+
+    Goes beyond a simple HTTP 200 on /agent:
+      1. HTTP GET /agent → 200
+      2. Create a probe session via POST /session → get session_id
+      3. (Future) Send a trivial message to the session and verify response
+
+    Returns True only when all checks pass.
+    """
+    agent_url = f"{base_url.rstrip('/')}/agent"
+    if not health_check(agent_url):
+        return False
+
+    session_id = _get_session(base_url, timeout=session_timeout)
+    if not session_id:
+        return False
+
+    session_check_url = f"{base_url.rstrip('/')}/session/{session_id}"
+    return health_check(session_check_url)
+
+
+def wait_for_server(url: str, timeout: int = 30, *, deep_check: bool = True) -> bool:
+    """Poll server health endpoint until 200 response or timeout.
+
+    When deep_check=True (default), also attempts to verify the server can create
+    sessions after the basic HTTP check passes.  If the deep check repeatedly fails
+    but the basic health endpoint is up, the caller still gets True (the server is
+    alive — session creation may need more warm-up time).
+    """
+    agent_url = f"{url.rstrip('/')}/agent"
     deadline = time.time() + timeout
+    deep_failures = 0
 
     while time.time() < deadline:
-        if health_check(health_url):
-            return True
+        if health_check(agent_url):
+            if not deep_check:
+                return True
+            if verify_server_ready(url, session_timeout=min(10, max(3, int(deadline - time.time())))):
+                return True
+            deep_failures += 1
+            if deep_failures >= 5:
+                return True
         time.sleep(1)
 
     return False

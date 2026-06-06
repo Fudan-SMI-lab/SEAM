@@ -592,6 +592,20 @@ class WorkflowExecutor:
         except Exception as exc:
             logger.error("Execution backend cleanup failed: %s", exc)
 
+    @staticmethod
+    def _is_server_healthy(server_url: str) -> bool:
+        """Lightweight server liveness check via HTTP GET /agent.
+
+        Returns True if the server responds with 200 within the timeout.
+        This is intentionally lightweight so it can be called before every phase
+        without adding meaningful overhead.
+        """
+        try:
+            from harness.server.lifecycle import health_check
+            return health_check(f"{server_url.rstrip('/')}/agent")
+        except Exception:
+            return False
+
     def _set_telemetry_active_phase(self, phase_id: str | None) -> None:
         setter = getattr(self.telemetry_observer, "set_active_phase", None)
         if callable(setter):
@@ -633,6 +647,13 @@ class WorkflowExecutor:
                 break
 
             logger.info(">>> Executing phase: %s (%s)", phase.id, phase.type)
+
+            server_url = ctx.get("SEAM_SERVER_URL")
+            if server_url and not self._is_server_healthy(server_url):
+                logger.critical(
+                    "Server health check failed for %s before phase '%s'. The opencode server may have crashed. Consider checking the server log.",
+                    server_url, phase.id,
+                )
 
             # Skip Phase 7 when experience.phase7_enabled is false
             if phase.id in ("phase_7a_evaluate", "phase_7b_refine"):

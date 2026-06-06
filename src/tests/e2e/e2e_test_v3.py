@@ -507,6 +507,7 @@ def run_e2e_v3(
         executor.execute({
             "PROJECT_DIR": str(temp_dir),
             "USER_CONSTRAINTS": user_constraints if user_constraints else "",
+            "SEAM_SERVER_URL": base_url,
         })
 
         telemetry_bridge.set_metadata("agent_name", agent_name)

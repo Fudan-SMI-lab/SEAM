@@ -845,3 +845,145 @@ def test_wait_for_idle_tolerant_empty_status_no_todos(monkeypatch: pytest.Monkey
     manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
 
     manager._wait_after_hard_error("ses-1", timeout=1, interval_s=0)
+
+
+
+def test_wait_for_idle_requires_consecutive_idle_confirmations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix: single idle observation is NOT enough – must confirm idle over N consecutive polls."""
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): {
+            "ok": True,
+            "data": [{"info": {"role": "assistant", "finish": "stop"}, "parts": []}],
+        },
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    result = manager.wait_for_idle("ses-1", timeout_s=5, interval_s=0, idle_confirm_polls=3, max_restart_cycles=5)
+    assert result is True
+
+    message_calls = [c for c in manager.calls if c["method"] == "GET" and c["path"] == "/session/ses-1/message"]
+    assert len(message_calls) >= 3, f"expected >=3 confirmation polls, got {len(message_calls)}"
+
+
+def test_wait_for_idle_detects_restart_loop_and_breaks_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix: when session alternates idle→running→idle→running, detect auto-continuation loop
+    and return True after max_restart_cycles."""
+    poll_counter = [0]
+
+    def message_route(call: dict[str, Any]) -> dict[str, Any]:
+        if call.get("query") != {"limit": 20}:
+            return {"ok": True, "data": [{"parts": []}]}
+        poll_counter[0] += 1
+        if poll_counter[0] % 2 == 1:
+            return {"ok": True, "data": [{"info": {"role": "assistant", "finish": "stop"}, "parts": []}]}
+        return {"ok": True, "data": [{"info": {"role": "assistant", "finish": "processing"}, "parts": []}]}
+
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    result = manager.wait_for_idle("ses-1", timeout_s=10, interval_s=0, idle_confirm_polls=3, max_restart_cycles=3)
+    assert result is True
+
+    message_calls = [c for c in manager.calls if c["method"] == "GET" and c["path"] == "/session/ses-1/message" and c["query"] == {"limit": 20}]
+    assert len(message_calls) <= 6, f"expected <=6 assistant polls before loop detection, got {len(message_calls)}"
+
+
+def test_wait_for_idle_single_restart_then_stable_idle_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix: a single restart followed by stable idle should NOT trigger loop detection.
+    idle_confirm_polls counter resets on restart, then re-accumulates."""
+    poll_counter = [0]
+
+    def message_route(call: dict[str, Any]) -> dict[str, Any]:
+        if call.get("query") != {"limit": 20}:
+            return {"ok": True, "data": [{"parts": []}]}
+        poll_counter[0] += 1
+        states = {1: "idle", 2: "running", 3: "idle", 4: "idle", 5: "idle"}
+        state = states.get(poll_counter[0], "idle")
+        if state == "running":
+            return {"ok": True, "data": [{"info": {"role": "assistant", "finish": "processing"}, "parts": []}]}
+        return {"ok": True, "data": [{"info": {"role": "assistant", "finish": "stop"}, "parts": []}]}
+
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    result = manager.wait_for_idle("ses-1", timeout_s=10, interval_s=0, idle_confirm_polls=3, max_restart_cycles=5)
+    assert result is True
+
+    message_calls = [c for c in manager.calls if c["method"] == "GET" and c["path"] == "/session/ses-1/message" and c["query"] == {"limit": 20}]
+    assert len(message_calls) == 5, f"expected 5 assistant polls (1 restart + 3 confirmations), got {len(message_calls)}"
+
+
+def test_wait_for_idle_transient_none_resets_idle_counter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix: transient assistant check failure (None) must reset consecutive_idle_polls
+    to prevent an intermittent network blip from triggering a false idle return."""
+    poll_counter = [0]
+
+    def message_route(call: dict[str, Any]) -> dict[str, Any]:
+        if call.get("query") != {"limit": 20}:
+            return {"ok": True, "data": [{"parts": []}]}
+        poll_counter[0] += 1
+        if poll_counter[0] == 2:
+            return {"ok": True, "data": [{"info": {"role": "user"}, "parts": []}]}
+        return {"ok": True, "data": [{"info": {"role": "assistant", "finish": "stop"}, "parts": []}]}
+
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    result = manager.wait_for_idle("ses-1", timeout_s=10, interval_s=0, idle_confirm_polls=3, max_restart_cycles=5)
+    assert result is True
+
+    message_calls = [c for c in manager.calls if c["method"] == "GET" and c["path"] == "/session/ses-1/message" and c["query"] == {"limit": 20}]
+    assert len(message_calls) == 5, f"expected 5 assistant polls after transient reset, got {len(message_calls)}"
+
+
+def test_wait_for_idle_still_times_out_when_session_never_idles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix: existing timeout behaviour unchanged — when session stays running it still returns False."""
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): {
+            "ok": True,
+            "data": [{"info": {"role": "assistant", "finish": "processing"}, "parts": []}],
+        },
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    result = manager.wait_for_idle("ses-1", timeout_s=0.01, interval_s=0, idle_confirm_polls=3, max_restart_cycles=5)
+    assert result is False
+
+
+def test_wait_for_idle_consecutive_running_does_not_increment_restart_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix: consecutive 'running' states without any preceding idle should NOT
+    count as restart cycles. Only idle→running transitions count."""
+    poll_counter = [0]
+
+    def message_route(_call: dict[str, Any]) -> dict[str, Any]:
+        poll_counter[0] += 1
+        # All polls return running → never idle → never increment restart_cycles
+        return {"ok": True, "data": [{"info": {"role": "assistant", "finish": "processing"}, "parts": []}]}
+
+    manager = FakeSessionManager({
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+
+    # With short timeout, should hit timeout (return False) because restart_cycles never
+    # increments and we never enter the loop-detection return.
+    result = manager.wait_for_idle("ses-1", timeout_s=0.01, interval_s=0, idle_confirm_polls=3, max_restart_cycles=1)
+    assert result is False
