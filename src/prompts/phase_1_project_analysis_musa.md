@@ -7,7 +7,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 ## User-Provided Constraints
 {user_constraints}
 
-## Prior Phase Context
+## Context from Earlier Steps
 {previous_outputs}
 
 ## Serving Route Detection

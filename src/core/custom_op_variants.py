@@ -216,10 +216,22 @@ COMBINED_AXIS_VALUE_PATTERN = re.compile(r"[{}|,]|\w+\s*=")
 
 
 def expanded_variant_contract_from_outputs(outputs: object) -> dict[str, object]:
-    """Return a canonical expanded-variant overlay from phase outputs."""
+    """Return a canonical expanded-variant overlay from phase outputs.
+
+    Prefers Phase 3.5's custom_op_surface (LLM-generated, most complete) over
+    Phase 1's surface (normalizer-enriched, source-backed) and Phase 3's contract
+    (last resort fallback).
+    """
     if not isinstance(outputs, Mapping):
         return {}
     output_map = cast(Mapping[object, object], outputs)
+    # Phase 3.5 produces the authoritative custom_op_surface with full
+    # fine-grained enumeration — prefer it whenever available.
+    ph35 = output_map.get("phase_35_static_validate")
+    ph35_overlay = expanded_variant_contract_from_phase1(ph35)
+    if ph35_overlay:
+        return ph35_overlay
+    # Fall back to Phase 1's source-backed discovery surface.
     phase1 = output_map.get("phase_1_project_analysis") or output_map.get("phase_1")
     phase1_overlay = expanded_variant_contract_from_phase1(phase1)
     if phase1_overlay:

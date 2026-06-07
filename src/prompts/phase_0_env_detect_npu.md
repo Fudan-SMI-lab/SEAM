@@ -7,7 +7,7 @@ You are executing `{phase_name}` for the target project at `{project_dir}`.
 - If NPU is detected, probe the system-level CANN toolchain version, AscendC compiler availability, and driver/firmware version.
 - **Use runtime discovery, not hardcoded paths.** No assumption about installation directories.
 - Read the project README before making conclusions.
-- Report a minimal machine-readable result for downstream phases.
+- Report a minimal machine-readable result for the migration workflow.
 
 ## Required Actions
 1. Inspect README files under `{project_dir}` first, especially `README*`, setup notes, and environment instructions.

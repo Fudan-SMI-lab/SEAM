@@ -568,12 +568,17 @@ def custom_op_final_gate_unit_ledger(
     *,
     target_units: list[str] | None = None,
     project_root: str | Path | None = None,
+    custom_op_surface: Mapping[object, object] | None = None,
 ) -> dict[str, object]:
     """Build a diagnostic strict per-unit progress ledger for custom-op repair prompts.
 
     This helper never relaxes ``validate_custom_op_final_gate``. It classifies each
     target unit from the same strict row/source/performance checks so repair prompts
     can say which units are genuinely closed and which still need evidence.
+
+    When *custom_op_surface* is provided it is forwarded to the parallelization-
+    group builder so variant-heavy projects can be grouped by shared source files
+    even when the gate file is missing.
     """
 
     root_errors: list[str] = []
@@ -649,7 +654,7 @@ def custom_op_final_gate_unit_ledger(
             }
         )
 
-    groups, summary = _build_parallelization_groups(gate, remaining_units, rows_by_name)
+    groups, summary = _build_parallelization_groups(gate, remaining_units, rows_by_name, custom_op_surface=custom_op_surface)
 
     return {
         "total_count": len(units),
@@ -668,6 +673,7 @@ def _build_parallelization_groups(
     gate: Mapping[object, object],
     remaining_units: list[str],
     rows_by_name: dict[str, tuple[int, Mapping[object, object]]],
+    custom_op_surface: Mapping[object, object] | None = None,
 ) -> tuple[list[dict[str, object]], str]:
     """Build parallelization groups for remaining custom-op units.
 
@@ -675,6 +681,12 @@ def _build_parallelization_groups(
     into the same parallelization group, since they cannot be
     parallelized safely.  Independent units (no shared source files
     with any other unit) each get their own group.
+
+    When *custom_op_surface* is provided and gate-file rows lack source
+    evidence (e.g. gate file is missing or empty), source paths are
+    derived from the Phase 3.5 contract surface so that variant-heavy
+    projects still receive properly merged groups instead of every unit
+    becoming its own singleton.
 
     Returns a tuple of ``(groups, summary)`` where *groups* is a list
     of ``{group_id, units, shared_sources, is_independent}`` dicts and
@@ -707,6 +719,16 @@ def _build_parallelization_groups(
             if norm:
                 normalized.add(norm)
         unit_paths[unit] = normalized
+
+    # Fallback: populate unit_paths from Phase 3.5 custom_op_surface when
+    # gate-file rows lack source evidence (e.g. gate file missing, or rows
+    # present but without opp_custom_op_artifact_evidence).  This prevents
+    # variant-heavy projects with N expanded units from degrading to N
+    # singleton parallel groups.
+    if custom_op_surface is not None:
+        _populate_unit_paths_from_contract_surface(
+            unit_paths, remaining_units, custom_op_surface,
+        )
 
     # Build reverse index: path → set of units that reference it.
     path_to_units: dict[str, set[str]] = {}
@@ -764,6 +786,92 @@ def _build_parallelization_groups(
 
     summary = f"{len(groups)} groups ({shared_kernel_count} shared-kernel, {independent_count} independent)"
     return groups, summary
+
+
+def _populate_unit_paths_from_contract_surface(
+    unit_paths: dict[str, set[str]],
+    remaining_units: list[str],
+    custom_op_surface: Mapping[object, object],
+) -> None:
+    """Populate *unit_paths* for units that lack source evidence from the gate file.
+
+    Derives source file paths from ``fine_grained_operator_unit_evidence`` (base
+    operator → source files) and ``expanded_operator_variants`` (variant →
+    base_unit_identity) in the Phase 3.5 contract surface.  Only touches entries
+    where *unit_paths* is currently empty.
+    """
+    # Build base_unit → source file paths from evidence entries.
+    evidence_list = custom_op_surface.get("fine_grained_operator_unit_evidence")
+    base_source_files: dict[str, set[str]] = {}
+    if isinstance(evidence_list, list):
+        for ev in cast(list[object], evidence_list):
+            if not isinstance(ev, Mapping):
+                continue
+            ev_map = cast(Mapping[object, object], ev)
+            unit_id = str(ev_map.get("unit_identity", "")).strip()
+            src_evidence = ev_map.get("source_evidence")
+            if not unit_id or not isinstance(src_evidence, list):
+                continue
+            paths: set[str] = set()
+            for se in cast(list[object], src_evidence):
+                if not isinstance(se, str):
+                    continue
+                path = se.split(":", 1)[0].strip()
+                if path:
+                    paths.add(path)
+            if paths:
+                base_source_files[unit_id] = paths
+
+    if not base_source_files:
+        return
+
+    # Build variant → base_unit mapping from expanded_operator_variants.
+    variants = custom_op_surface.get("expanded_operator_variants")
+    if not isinstance(variants, list):
+        return
+
+    variant_base_map: dict[str, str] = {}
+    variant_own_paths: dict[str, set[str]] = {}
+    for v in cast(list[object], variants):
+        if not isinstance(v, Mapping):
+            continue
+        v_map = cast(Mapping[object, object], v)
+        unit_id = str(v_map.get("unit_identity", "")).strip()
+        base_id = str(v_map.get("base_unit_identity", "")).strip()
+        if not unit_id:
+            continue
+        if base_id:
+            variant_base_map[unit_id] = base_id
+        v_se = v_map.get("source_evidence")
+        if isinstance(v_se, list):
+            paths: set[str] = set()
+            for se in cast(list[object], v_se):
+                if not isinstance(se, str):
+                    continue
+                path = se.split(":", 1)[0].strip()
+                if path:
+                    paths.add(path)
+            if paths:
+                variant_own_paths[unit_id] = paths
+
+    # Populate empty unit_paths entries.
+    for unit in remaining_units:
+        if unit_paths.get(unit):
+            continue
+        paths: set[str] = set()
+        base_id = variant_base_map.get(unit, "")
+        if base_id and base_id in base_source_files:
+            paths.update(base_source_files[base_id])
+        if unit in variant_own_paths:
+            paths.update(variant_own_paths[unit])
+        # Last resort: strip axis suffix and try base lookup.
+        if not paths and ":" in unit:
+            axis_sep = unit.rfind(":")
+            base_guess = unit[:axis_sep]
+            if base_guess in base_source_files:
+                paths.update(base_source_files[base_guess])
+        if paths:
+            unit_paths[unit] = set(_normalize_reported_path(p) for p in paths if _normalize_reported_path(p))
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:

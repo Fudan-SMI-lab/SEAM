@@ -5377,7 +5377,7 @@ def test_we_filter_previous_outputs_empty_for_early_phases(temp_dir):
 
 
 def test_we_filter_previous_outputs_phase35_only_includes_phase3(temp_dir):
-    """Phase 3.5 must receive only phase_3_entry_script, not earlier phases."""
+    """Phase 3.5 must receive phase_3_entry_script and phase_1_project_analysis, not other earlier phases."""
     workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
     executor = WorkflowExecutor(
         workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
@@ -5395,8 +5395,8 @@ def test_we_filter_previous_outputs_phase35_only_includes_phase3(temp_dir):
     )
     filtered = executor._filter_previous_outputs(phase, state)
     assert "phase_3_entry_script" in filtered
+    assert "phase_1_project_analysis" in filtered
     assert "phase_0_env_detect" not in filtered
-    assert "phase_1_project_analysis" not in filtered
     assert "phase_2_venv_create" not in filtered
 
 
@@ -5414,7 +5414,7 @@ def test_we_filter_previous_outputs_fallback_to_all_for_unlisted(temp_dir):
 
 
 def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
-    """Integration: _inject_llm_baseline_context produces filtered JSON for Phase 3.5."""
+    """Integration: _inject_llm_baseline_context produces filtered JSON for Phase 3.5 with Phase 1 data."""
     workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
     executor = WorkflowExecutor(
         workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
@@ -5436,8 +5436,8 @@ def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
     assert isinstance(previous_outputs, str)
     parsed = json.loads(previous_outputs)
     assert "phase_3_entry_script" in parsed
+    assert "phase_1_project_analysis" in parsed
     assert "phase_0_env_detect" not in parsed
-    assert "phase_1_project_analysis" not in parsed
     assert "phase_2_venv_create" not in parsed
 
 

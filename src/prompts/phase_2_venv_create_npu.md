@@ -25,7 +25,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 - **DO NOT** create migration scripts, test scripts, custom operator validation scripts, or serving wrapper scripts.
 - **DO NOT** modify any existing project files.
 - Your ONLY mission: create the virtual environment, install all required dependencies, and report the result.
-- Script creation belongs to later target-runtime phases. You are Phase 2 — venv only.
+- Script creation is out of scope for this step — venv setup only.
 
 ## Hard Rules
 - Use domestic mirrors first for all installs, including sources such as 阿里云镜像, 清华镜像, or other reachable domestic mirrors.

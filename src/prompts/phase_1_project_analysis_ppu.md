@@ -5,7 +5,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 ## User-Provided Constraints (for awareness)
 {user_constraints}
 
-*Note: A detailed, project-specific constraint summary will be generated in Phase 1.5.*
+*Note: A detailed, project-specific constraint summary will be generated after this analysis.*
 
 ## Serving Route Detection
 - Classify `migration_route` as exactly one of `ordinary_cuda`, `custom_op`, `custom_op_with_variants`, `vllm_serving`, or `sglang_serving`.

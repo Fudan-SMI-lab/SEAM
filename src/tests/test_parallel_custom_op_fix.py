@@ -116,7 +116,7 @@ def test_parallel_fix_creates_unique_sessions_per_group() -> None:
         gate_path = project_dir / "migration_reports" / "custom_op_final_gate.json"
         gate_path.write_text(json.dumps({"full_migration_status": "INCOMPLETE"}), encoding="utf-8")
 
-        def _fake_ledger(gate_data, *, target_units=None, project_root=None):
+        def _fake_ledger(gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
             # Return 2 groups with 2 units each
             return cast(
                 dict[str, object],

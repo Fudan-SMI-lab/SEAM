@@ -15,7 +15,7 @@ You are executing `{phase_name}` for the target project at `{project_dir}`.
 When `execution_backend_mode` is `container`, the target runtime is the container above. Use `container_env_facts` and read-only probes inside that container as evidence. Host-side file tool command output is setup context only; it is not authoritative for Python, torch, accelerator availability, device count, SDK paths, or runtime libraries used by the target runtime. If a container probe is incomplete or failed, try safe read-only container probes with the command prefix above before reporting unknowns. Do not substitute host Python or host torch facts for missing container facts.
 
 ## Goal
-Detect facts about the target runtime that later validation phases will use. The workflow targets the MUXI accelerator family, but the observed vendor stack may be native MUSA, MACA/MetaX, mcPyTorch, or another CUDA-compatible vendor PyTorch distribution.
+Detect facts about the target runtime for the validation workflow. The workflow targets the MUXI accelerator family, but the observed vendor stack may be native MUSA, MACA/MetaX, mcPyTorch, or another CUDA-compatible vendor PyTorch distribution.
 
 ## Runtime Selection Rule
 - If the execution context says `execution_backend_mode: container`, probe inside the framework target container/base image when commands are available.

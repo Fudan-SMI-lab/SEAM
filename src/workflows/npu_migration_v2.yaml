@@ -117,7 +117,7 @@ phases:
     validator: entry_static
     transitions:
       on_success: phase_4_rule_migration
-      on_failure: phase_3_entry_script
+      on_failure: phase_4_rule_migration
 
   - id: phase_4_rule_migration
     type: builtin

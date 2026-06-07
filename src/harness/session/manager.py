@@ -981,6 +981,19 @@ class MigrationSessionManager:
             # DEFAULT_SESSION_WAIT_TIMEOUT is typed as float|None but always 3600.0
             _guard_timeout: float = 3630.0
 
+        # Activity stall watchdog: when the HTTP timeout is long (>1h),
+        # poll the session for new messages.  If no new output appears for
+        # 1 hour the LLM is likely stuck (e.g. hanging bash command).
+        _ACTIVITY_CHECK_INTERVAL = 30
+        _ACTIVITY_STALL_TIMEOUT = 3600
+        _activity_last_text: str = ""
+        _activity_last_time: float = _started
+        _activity_poll_count: int = 0
+        _activity_enabled: bool = (
+            http_timeout is not None
+            and http_timeout > _ACTIVITY_STALL_TIMEOUT + 60
+        )
+
         while True:
             try:
                 kind, value = result_queue.get(timeout=NESTED_TASK_GUARD_POLL_SECONDS)
@@ -1000,6 +1013,30 @@ class MigrationSessionManager:
                     raise SessionLostError(
                         f"Session {session_id} disappeared — server likely restarted"
                     )
+
+                # Activity stall detection: poll the session every 30 s.
+                # If the last message hasn't changed for 1 hour, kill the
+                # hung session so the caller can retry with a fresh one.
+                if _activity_enabled:
+                    _activity_poll_count += 1
+                    if _activity_poll_count % _ACTIVITY_CHECK_INTERVAL == 0:
+                        try:
+                            current_text = self._last_message_text_tolerant(session_id)
+                        except Exception:
+                            current_text = ""
+                        if current_text and current_text != _activity_last_text:
+                            _activity_last_text = current_text
+                            _activity_last_time = time.time()
+                        elif time.time() - _activity_last_time > _ACTIVITY_STALL_TIMEOUT:
+                            try:
+                                _ = self.cleanup_session(session_id)
+                            except Exception:
+                                pass
+                            raise TimeoutError(
+                                f"Session {session_id} stalled: no new messages for "
+                                f"{_ACTIVITY_STALL_TIMEOUT}s"
+                            )
+
                 if time.time() - _started > _guard_timeout:
                     # One last recovery attempt before giving up.
                     recovered = self._completed_latest_response_payload(

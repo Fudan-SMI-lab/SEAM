@@ -1,7 +1,0 @@
-title: vLLM Serving Routes with NPU-Aware vLLM Are Zero-Operator Migration
-pattern: 
-replacement: 
-file_patterns: ["*.py"]
-target_roles: ["code_adapter"]
-target_phases: ["phase_4_rule_migration"]
-trigger_fingerprint: code_adaptation|vllm_serving_zero_operator|ascend-npu|low-complexity|operator-short-circuit|serving|vllm|zero-operator|10f7260ea7c0

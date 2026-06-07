@@ -382,7 +382,9 @@ def test_project_analysis_accepts_generic_multi_unit_custom_op_surface() -> None
     assert result == {"passed": True, "errors": [], "warnings": []}
 
 
-def test_project_analysis_rejects_detected_custom_op_surface_without_fine_grained_units() -> None:
+def test_project_analysis_accepts_custom_op_surface_without_fine_grained_units() -> None:
+    """Phase 1 validator no longer checks fine_grained_operator_units — that is Phase 3.5's responsibility.
+    The relaxed validator only checks the 10 detection-level fields in CUSTOM_OP_SURFACE_FIELDS."""
     surface = _valid_project_analysis_custom_op_surface()
     surface["fine_grained_operator_units"] = []
     surface["fine_grained_operator_unit_evidence"] = []
@@ -396,8 +398,7 @@ def test_project_analysis_rejects_detected_custom_op_surface_without_fine_graine
         }
     )
 
-    assert result["passed"] is False
-    assert any("fine_grained_operator_units" in error and "at least one" in error for error in result["errors"])
+    assert result["passed"] is True
 
 
 def test_project_analysis_rejects_detected_custom_op_surface_without_discovery_complete() -> None:

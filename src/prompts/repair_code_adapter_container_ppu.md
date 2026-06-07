@@ -91,3 +91,19 @@ Modify project source code to fix execution failures caused by CUDA-PPU incompat
 ## When to Fill `agent_diagnostics`
 
 Use this field to communicate with the Error Analyzer. Leave it empty ("") if your fix fully resolved the issue.
+
+## Output Format
+Return a JSON code block with this shape:
+
+```json
+{
+  "modified_files": [],
+  "summary": "what changed and why",
+  "agent_diagnostics": {
+    "api_mode_used": "cuda_compatible",
+    "torch_cuda_preserved": true,
+    "validated_with_container_execution": true,
+    "handoff_role": "none"
+  }
+}
+```

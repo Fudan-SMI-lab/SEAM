@@ -4,7 +4,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 
 {execution_environment_context}
 
-## Prior Phase Context
+## Context from Earlier Steps
 {previous_outputs}
 
 ## Goal

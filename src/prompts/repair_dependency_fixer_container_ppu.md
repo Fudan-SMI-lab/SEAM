@@ -89,3 +89,19 @@ Do NOT `pip install` these from public PyPI — they can overwrite PPU-built whe
 3. **Pin to vendor versions**: if install is needed, use the specific version provided by the PPU image.
 4. **Use --no-deps when possible**: avoid pulling in transitive dependencies that might conflict.
 5. **Inspect the container base Python environment first**. Use the base env interpreter by default when installing or verifying packages. Create a project-local `.venv` only when explicitly required by the project — do not assume `.venv` exists.
+
+## Output Format
+Return a JSON code block with this shape:
+
+```json
+{
+  "modified_files": [],
+  "summary": "what changed and why",
+  "agent_diagnostics": {
+    "base_env_checked": true,
+    "selected_python": "/opt/t-head/python3.10/bin/python3",
+    "vendor_ppu_packages_preserved": true,
+    "validated_with_actual_execution_command": true
+  }
+}
+```

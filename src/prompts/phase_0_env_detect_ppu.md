@@ -6,7 +6,7 @@ You are executing `{phase_name}` for the target project at `{project_dir}`.
 - Detect whether the host environment exposes PPU devices through CUDA-compatible APIs.
 - In this environment, PPU devices are accessible via **`torch.cuda`**, not `torch.npu` or `torch_npu`.
 - Read the project README before making conclusions.
-- Report a minimal machine-readable result for downstream phases.
+- Report a minimal machine-readable result for the migration workflow.
 
 ## Required Actions
 1. Inspect README files under `{project_dir}` first, especially `README*`, setup notes, and environment instructions.
@@ -58,7 +58,7 @@ Return exactly one JSON object with this shape:
 - `cuda_api_available`: whether `torch.cuda.is_available()` returns True. For PPU this is expected to be True.
 - `python_version`: concrete interpreter version string.
 - `device_name`: PPU device identifier such as `"PPU-ZW810"`. Set to `"not_found"` if not determinable.
-- `npu_detected`: always `false` for PPU (compatibility field for downstream phases).
+- `npu_detected`: always `false` for PPU (compatibility field).
 - `cann_version`: `"n/a"` for PPU (compatibility field; PPU does not use CANN toolchain).
 - `ascendc_available`: always `false` for PPU (compatibility field; PPU does not use AscendC).
 - `driver_version`: `"not_applicable"` for PPU (compatibility field).

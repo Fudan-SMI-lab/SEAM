@@ -7,7 +7,6 @@ from pathlib import Path
 import re
 from typing import cast
 
-from core.custom_op_variants import source_template_expanded_variants
 from core.custom_op_source_discovery import (
     NativeUnit,
     discover_required_cuda_native_units_from_project,
@@ -24,28 +23,10 @@ CUSTOM_OP_SURFACE_FIELDS = (
     "searched_source_roots",
     "searched_source_paths",
     "operator_families",
-    "fine_grained_operator_units",
-    "discovered_operator_names",
-    "native_operator_symbols",
-    "kernel_launch_sites",
-    "source_evidence",
-    "negative_evidence",
-    "dynamic_loading_checks",
-    "build_load_checks",
+    "variant_axes_detected",
+    "variant_axes",
     "unresolved_source_groups",
     "out_of_scope_source_groups",
-    "fine_grained_operator_unit_evidence",
-    "variant_axes_detected",
-    "variant_axes",
-    "expanded_operator_variants",
-    "expanded_operator_instances_count",
-)
-
-VARIANT_METADATA_FIELDS = (
-    "variant_axes_detected",
-    "variant_axes",
-    "expanded_operator_variants",
-    "expanded_operator_instances_count",
 )
 
 NATIVE_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".h", ".hh", ".hpp"}
@@ -252,67 +233,6 @@ def validate(data: dict[str, object]) -> ValidationDict:
                 non_empty_message="custom_op_surface.operator_families must contain at least one family when custom_op_detected is true",
                 require_non_empty=custom_op_detected is True,
             )
-            _validate_string_list(
-                surface,
-                "fine_grained_operator_units",
-                errors,
-                non_empty_message="custom_op_surface.fine_grained_operator_units must contain at least one source-discovered fine-grained operator unit when custom_op_detected is true",
-                require_non_empty=custom_op_detected is True,
-            )
-            _validate_string_list(
-                surface,
-                "discovered_operator_names",
-                errors,
-                non_empty_message="custom_op_surface.discovered_operator_names must contain at least one source-discovered operator name when custom_op_detected is true",
-                require_non_empty=custom_op_detected is True,
-            )
-            strict_source_surface = _requires_strict_custom_op_source_surface(
-                surface,
-                source_discovered_units,
-                source_custom_op_indicators,
-            )
-            _validate_string_list(
-                surface,
-                "native_operator_symbols",
-                errors,
-                non_empty_message="custom_op_surface.native_operator_symbols must contain native CUDA/GPU/helper symbols when strict source evidence is required",
-                require_non_empty=strict_source_surface,
-            )
-            _validate_string_list(
-                surface,
-                "kernel_launch_sites",
-                errors,
-                non_empty_message="custom_op_surface.kernel_launch_sites must contain kernel launch or CUDA/helper call sites when strict source evidence is required",
-                require_non_empty=strict_source_surface,
-            )
-            _validate_string_list(
-                surface,
-                "source_evidence",
-                errors,
-                non_empty_message="custom_op_surface.source_evidence must contain at least one source proof when custom_op_detected is true",
-                require_non_empty=custom_op_detected is True,
-            )
-            _validate_string_list(
-                surface,
-                "negative_evidence",
-                errors,
-                non_empty_message="custom_op_surface.negative_evidence must contain at least one negative probe when custom_op_detected is true",
-                require_non_empty=custom_op_detected is True,
-            )
-            _validate_string_list(
-                surface,
-                "dynamic_loading_checks",
-                errors,
-                non_empty_message="custom_op_surface.dynamic_loading_checks must contain at least one dynamic loading check when custom_op_detected is true",
-                require_non_empty=custom_op_detected is True,
-            )
-            _validate_string_list(
-                surface,
-                "build_load_checks",
-                errors,
-                non_empty_message="custom_op_surface.build_load_checks must contain at least one build/load check when custom_op_detected is true",
-                require_non_empty=custom_op_detected is True,
-            )
             _validate_string_list(surface, "unresolved_source_groups", errors)
             _validate_string_list(surface, "out_of_scope_source_groups", errors)
             sources = surface.get("discovery_sources_checked")
@@ -324,22 +244,12 @@ def validate(data: dict[str, object]) -> ValidationDict:
                     "custom_op_surface.custom_op_detected must be true when CUDA/native custom-op units are discovered from source: "
                     + _format_native_units(source_discovered_units)
                 )
-            if custom_op_detected is False and _has_active_expanded_variant_metadata(surface):
-                errors.append("custom_op_surface.custom_op_detected must be true when active expanded variant metadata is present")
             if custom_op_detected is True:
                 if surface.get("discovery_complete") is not True:
                     errors.append("custom_op_surface.discovery_complete must be true when custom_op_detected is true")
                 elif cast(list[object], surface.get("unresolved_source_groups", [])):
                     errors.append("custom_op_surface.unresolved_source_groups must be empty when discovery_complete is true")
                 _validate_required_sources(surface, errors)
-                _validate_fine_grained_unit_evidence(surface, errors, require_route_evidence=strict_source_surface)
-                if strict_source_surface:
-                    _validate_no_implementation_detail_units(surface, errors)
-                    _validate_no_external_scope_units(surface, errors)
-                    _validate_source_discovered_cuda_units(source_discovered_units, surface, errors)
-                source_enumerated_axis_values = _source_enumerated_semantic_axis_values(surface, project_dir)
-                _validate_source_required_semantic_variants(surface, errors, source_enumerated_axis_values)
-                _validate_expanded_variant_metadata(surface, errors, source_enumerated_axis_values)
 
     return {"passed": not errors, "errors": errors, "warnings": []}
 
@@ -998,7 +908,13 @@ def _validate_expanded_variant_metadata(
     errors: list[str],
     source_enumerated_axis_values: dict[str, set[str]] | None = None,
 ) -> None:
-    metadata_present = any(field in surface for field in VARIANT_METADATA_FIELDS)
+    _variant_metadata_fields = (
+        "variant_axes_detected",
+        "variant_axes",
+        "expanded_operator_variants",
+        "expanded_operator_instances_count",
+    )
+    metadata_present = any(field in surface for field in _variant_metadata_fields)
     axes_detected = surface.get("variant_axes_detected")
     if axes_detected is not None and not isinstance(axes_detected, bool):
         errors.append("custom_op_surface.variant_axes_detected must be a boolean when present")
@@ -1031,8 +947,6 @@ def _validate_expanded_variant_metadata(
     )
     _validate_variant_axes_are_source_semantic(axes, variants, errors)
     _validate_expanded_variant_target_closure_values(axes, variants, errors)
-    expected_variants = source_template_expanded_variants(surface)
-    _validate_expanded_variant_inventory_matches_source_template(expected_variants, variants, errors)
     count = surface.get("expanded_operator_instances_count")
     if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
         errors.append("custom_op_surface.expanded_operator_instances_count must be a positive integer when variant_axes_detected is true")

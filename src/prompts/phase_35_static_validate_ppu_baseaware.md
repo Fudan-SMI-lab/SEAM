@@ -23,7 +23,7 @@ Examine the entry script file at `{entry_script_path}`. This path is an absolute
 
 ## Custom-Op Contract Gate
 
-The `previous_outputs` block below contains **only** the `phase_3_entry_script` output (entry script path, run command, and custom-op contract fields). It does not include outputs from earlier phases.
+The `previous_outputs` block below contains the `phase_3_entry_script` output (entry script path, run command, and custom-op contract fields) along with the project analysis output for custom-op surface detection.
 
 ```json
 {previous_outputs}

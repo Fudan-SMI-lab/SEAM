@@ -81,10 +81,10 @@ When a project-local venv is justified:
 }
 ```
 
-You may additionally include `"env_type": "base_env"` or `"env_type": "venv"` to help Phase 3 read your choice in this same session, but `venv_path`, `python_path`, and `installed_packages` are the required keys.
+You may additionally include `"env_type": "base_env"` or `"env_type": "venv"` so later processing can read your choice in this same session, but `venv_path`, `python_path`, and `installed_packages` are the required keys.
 
 ## Field Semantics
 - `venv_path`: absolute path to the active Python environment root. For a base environment, use the base prefix (e.g. `/usr/local`). For a project-local virtual environment, use the `.venv` directory path.
 - `python_path`: absolute path to (or PATH command for) the Python interpreter callable in the **target runtime**. For container backends, this is the interpreter path or command valid inside the container, not necessarily the host Python discovered by file tools.
 - `installed_packages`: concise package list that reflects the usable execution environment.
-- `env_type` (optional): `"base_env"` or `"venv"`. Present to help Phase 3 read your choice; the three keys above are the required ones.
+- `env_type` (optional): `"base_env"` or `"venv"`. Present so later processing can read your choice; the three keys above are the required ones.

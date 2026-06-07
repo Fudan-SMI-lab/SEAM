@@ -40,3 +40,19 @@ If runtime errors involve missing CUDA symbols, custom operator loading failures
 - In `summary`, include what you checked, which hints were verified or rejected, what packages/env settings changed, how vendor runtime was preserved, any remaining issue, and whether the remaining issue is in scope or should be handed off.
 
 3. 可以参考的文档：历史运行报错：{runtime_error_artifact_path},运行经验文档：{runtime_card_artifact_path}
+
+## Output Format
+Return a JSON code block with this shape:
+
+```json
+{
+  "modified_files": [],
+  "summary": "what changed and why",
+  "agent_diagnostics": {
+    "base_env_checked": true,
+    "selected_python": "/usr/local/python3.10/bin/python3",
+    "vendor_torch_npu_preserved": true,
+    "validated_with_actual_execution_command": true
+  }
+}
+```

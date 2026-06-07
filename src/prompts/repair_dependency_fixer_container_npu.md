@@ -55,3 +55,19 @@ This workflow uses a container execution backend.
 - After each in-scope dependency/environment fix, run `actual_execution_command`. If the next failure is still a dependency/environment issue and can be fixed without replacing vendor runtime packages, continue fixing before your final response.
 - If the remaining issue is native/custom-op compilation, shared-object loading, missing native symbols, or final-gate evidence, stop and write the handoff reason to `summary` for the next analyzer.
 - In `summary`, include what you checked, which hints were verified or rejected, what packages/env settings changed, how vendor runtime was preserved, any remaining issue, and whether the remaining issue is in scope or should be handed off.
+
+## Output Format
+Return a JSON code block with this shape:
+
+```json
+{
+  "modified_files": [],
+  "summary": "what changed and why",
+  "agent_diagnostics": {
+    "base_env_checked": true,
+    "selected_python": "/usr/local/python3.10/bin/python3",
+    "vendor_torch_npu_preserved": true,
+    "validated_with_actual_execution_command": true
+  }
+}
+```

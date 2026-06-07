@@ -1770,10 +1770,21 @@ class WorkflowExecutor:
             except (OSError, json.JSONDecodeError):
                 pass
 
+        # Derive custom_op_surface from Phase 3.5 state so the ledger can
+        # build proper parallelization groups even when the gate file is
+        # missing (e.g. Phase 4 was blocked by a Phase 3.5 recovery cycle).
+        custom_op_surface: Mapping[object, object] | None = None
+        phase35_state = state.get("phase_35_static_validate")
+        if isinstance(phase35_state, dict):
+            surface_raw = cast(dict[str, object], phase35_state).get("custom_op_surface")
+            if isinstance(surface_raw, Mapping):
+                custom_op_surface = cast(Mapping[object, object], surface_raw)
+
         ledger = custom_op_final_gate_unit_ledger(
             gate_data,
             target_units=target_units or None,
             project_root=project_dir,
+            custom_op_surface=custom_op_surface,
         )
         groups_raw = ledger.get("parallelization_groups")
         groups: list[list[str]] = []
@@ -2072,8 +2083,9 @@ class WorkflowExecutor:
         "phase_1_5_constraint_summary": [],
         # Phase 3 only needs its own input mapping; no prior outputs required.
         "phase_3_entry_script": [],
-        # Phase 3.5 needs ONLY Phase 3 entry script output, not Phase 0/1/1.5/2 noise.
-        "phase_35_static_validate": ["phase_3_entry_script"],
+        # Phase 3.5 needs Phase 3 entry script output + Phase 1 project analysis
+        # (variant_axes, operator_families) for custom-op surface generation.
+        "phase_35_static_validate": ["phase_3_entry_script", "phase_1_project_analysis"],
         # Phase 6/report still receives all prior outputs (full context required).
         # No entry → falls through to legacy "all" behaviour.
     }

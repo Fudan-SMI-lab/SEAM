@@ -58,6 +58,7 @@ class _ClassificationRequiredDict(TypedDict):
 
 class ClassificationDict(_ClassificationRequiredDict, total=False):
     entry_script_action: dict[str, object]
+    error_analyzer_session_id: str
 
 
 class FixAttemptDict(TypedDict, total=False):
@@ -465,6 +466,9 @@ class SessionManagerLike(Protocol):
         ...
 
     def send_command(self, session_id: str, command: str, agent: str = "", timeout: object = None) -> str:
+        ...
+
+    def cleanup_session(self, session_id: str) -> None:
         ...
 
 
@@ -1103,6 +1107,11 @@ class RepairLoopEngine:
                     script_cwd=str(script_cwd),
                     env_vars=dict(env_vars),
                 )
+                updated_sid = cast(dict[str, object], cast(object, classification)).get(
+                    "error_analyzer_session_id"
+                )
+                if isinstance(updated_sid, str) and updated_sid:
+                    analyzer_session_id = updated_sid
                 classification = cast(ClassificationDict, cast(object, force_custom_op_operator_routing_if_needed(
                     cast(dict[str, object], cast(object, classification)),
                     error_text=error_text,
@@ -1300,6 +1309,20 @@ class RepairLoopEngine:
                                 logger,
                             )
                             if attempt < max_retries:
+                                self._discard_repair_session(
+                                    repair_session_ids, repair_role, repair_session_id
+                                )
+                                repair_session_id = self.session_mgr.get_or_create(
+                                    role=repair_role,
+                                    lifecycle="persistent",
+                                    agent=repair_agent,
+                                )
+                                repair_session_ids[repair_role] = repair_session_id
+                                self._log(
+                                    f"[Iter {iteration}] Recreated repair session "
+                                    f"{repair_session_id} after timeout (role: {repair_role})",
+                                    logger,
+                                )
                                 time.sleep(retry_delays[attempt])
                                 continue
                             repair_failed = True
@@ -1309,6 +1332,20 @@ class RepairLoopEngine:
                                 logger,
                             )
                             if attempt < max_retries:
+                                self._discard_repair_session(
+                                    repair_session_ids, repair_role, repair_session_id
+                                )
+                                repair_session_id = self.session_mgr.get_or_create(
+                                    role=repair_role,
+                                    lifecycle="persistent",
+                                    agent=repair_agent,
+                                )
+                                repair_session_ids[repair_role] = repair_session_id
+                                self._log(
+                                    f"[Iter {iteration}] Recreated repair session "
+                                    f"{repair_session_id} after error (role: {repair_role})",
+                                    logger,
+                                )
                                 time.sleep(retry_delays[attempt])
                                 continue
                             repair_failed = True
@@ -1488,25 +1525,59 @@ class RepairLoopEngine:
                 break
             except TimeoutError:
                 if attempt < max_send_retries:
+                    # Activity watchdog killed the session; recreate for retry
+                    try:
+                        self.session_mgr.cleanup_session(analyzer_session_id)
+                    except Exception:
+                        pass
+                    analyzer_session_id = self.session_mgr.get_or_create(
+                        role=_ANALYZER_ROLE, lifecycle="persistent"
+                    )
                     time.sleep(retry_delays[attempt])
                     continue
+                # All retries exhausted; create a fresh session for the next call
+                try:
+                    self.session_mgr.cleanup_session(analyzer_session_id)
+                except Exception:
+                    pass
+                analyzer_session_id = self.session_mgr.get_or_create(
+                    role=_ANALYZER_ROLE, lifecycle="persistent"
+                )
                 return {
                     "category": "communication_error",
                     "root_cause": "Error analyzer LLM call timed out after retries",
                     "suggested_fix": "Check OpenCode server health",
                     "repair_role": "dependency_fixer",
                     "raw_response": "",
+                    "error_analyzer_session_id": analyzer_session_id,
                 }
             except (RuntimeError, ConnectionRefusedError) as e:
                 if attempt < max_send_retries:
+                    # Session may be dead; recreate for retry
+                    try:
+                        self.session_mgr.cleanup_session(analyzer_session_id)
+                    except Exception:
+                        pass
+                    analyzer_session_id = self.session_mgr.get_or_create(
+                        role=_ANALYZER_ROLE, lifecycle="persistent"
+                    )
                     time.sleep(retry_delays[attempt])
                     continue
+                # All retries exhausted; create a fresh session for the next call
+                try:
+                    self.session_mgr.cleanup_session(analyzer_session_id)
+                except Exception:
+                    pass
+                analyzer_session_id = self.session_mgr.get_or_create(
+                    role=_ANALYZER_ROLE, lifecycle="persistent"
+                )
                 return {
                     "category": "communication_error",
                     "root_cause": f"Error analyzer LLM connection refused: {e}",
                     "suggested_fix": "Check OpenCode server connectivity",
                     "repair_role": "dependency_fixer",
                     "raw_response": "",
+                    "error_analyzer_session_id": analyzer_session_id,
                 }
 
         max_retries = 2
@@ -2478,6 +2549,10 @@ class RepairLoopEngine:
                     f"[Iter {iteration}] Parallel repair {group_label}: LLM call failed - {exc}",
                     logger,
                 )
+                try:
+                    self.session_mgr.cleanup_session(session_id)
+                except Exception:
+                    pass
                 results.append({
                     "status": "failed",
                     "message": f"{group_label}: {exc}",
@@ -2632,6 +2707,10 @@ class RepairLoopEngine:
                 f"[Improvement] Repair LLM call failed for role={repair_role}",
                 logger,
             )
+            try:
+                self.session_mgr.cleanup_session(repair_session_id)
+            except Exception:
+                pass
             return {
                 "status": "improvement_repair_failed",
                 "repair_role": repair_role,

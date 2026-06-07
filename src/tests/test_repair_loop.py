@@ -1261,16 +1261,34 @@ def test_analyze_error_session_error_returns_communication_error(monkeypatch: py
 
 
 def test_repair_call_timeout_retries_and_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """run() repair send_command with TimeoutError retries 3 times per iteration, then continues to next."""
+    """run() repair send_command with TimeoutError retries 3 times per iteration, then continues to next.
+
+    Since the activity watchdog kills hung sessions, each retry now discards the dead
+    session and creates a fresh one via get_or_create.
+    """
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
-    session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
+    # Per iteration: 1 initial repair session + 2 retry recreations = 3
+    # 2 iterations: 6 repair sessions + 1 analyzer = 7 total
+    session_mgr.get_or_create.side_effect = [
+        "analyzer-1",
+        "repair-i1-a0",  # iteration 1, attempt 0 (initial)
+        "repair-i1-a1",  # iteration 1, attempt 1 (retry)
+        "repair-i1-a2",  # iteration 1, attempt 2 (retry)
+        "repair-i2-a0",  # iteration 2, attempt 0 (initial)
+        "repair-i2-a1",  # iteration 2, attempt 1 (retry)
+        "repair-i2-a2",  # iteration 2, attempt 2 (retry)
+    ]
     (tmp_path / "dummy.py").write_text("x = 1\n", encoding="utf-8")
 
     repair_call_count = [0]
+    repair_session_ids = [
+        "repair-i1-a0", "repair-i1-a1", "repair-i1-a2",
+        "repair-i2-a0", "repair-i2-a1", "repair-i2-a2",
+    ]
 
     def mock_send(session_id: str, command: str, agent: str = "", timeout: object = None) -> str:
         # Analyzer calls succeed; repair calls always timeout
-        if session_id == "repair-1":
+        if session_id in repair_session_ids:
             repair_call_count[0] += 1
             raise TimeoutError("repair timed out")
         return "{}"

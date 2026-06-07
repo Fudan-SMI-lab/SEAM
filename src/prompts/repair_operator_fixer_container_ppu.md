@@ -28,3 +28,18 @@ the `actual_execution_command` provided by the framework.
 不要直接在宿主机上运行 `{entry_script}`，该脚本需要在容器环境中执行。
 如果需要在容器内手动验证，请使用：
 `{actual_execution_command}`
+
+## Output Format
+Return a JSON code block with this shape:
+
+```json
+{
+  "modified_files": [],
+  "summary": "what changed and why",
+  "agent_diagnostics": {
+    "native_path_validated": true,
+    "final_gate_schema_preserved": true,
+    "validated_with_container_execution": true
+  }
+}
+```

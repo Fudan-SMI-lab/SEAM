@@ -109,6 +109,22 @@ Fill it when ANY of the following applies:
   should focus on. Example: "The timeout was caused by interactive input().
   Adding non-interactive mode should be the next step."
 - **Repeated pattern**: You noticed the same category of error appearing across
-  multiple iterations without being addressed. Example: "This is the 3rd time
-  pathing errors appear. The script's directory structure relative to
-  original_src/ is fundamentally broken."
+   multiple iterations without being addressed. Example: "This is the 3rd time
+   pathing errors appear. The script's directory structure relative to
+   original_src/ is fundamentally broken."
+
+## Output Format
+Return a JSON code block with this shape:
+
+```json
+{
+  "modified_files": [],
+  "summary": "what changed and why",
+  "agent_diagnostics": {
+    "api_mode_used": "torch_npu",
+    "vendor_cuda_replaced": true,
+    "validated_with_entry_script": true,
+    "handoff_role": "none"
+  }
+}
+```

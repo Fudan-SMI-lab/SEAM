@@ -14,7 +14,7 @@ You are executing `{phase_name}` for `{project_dir}`.
 
 When `execution_backend_mode` is `container`, choose an environment valid inside that container. Use `container_env_facts` as a starting point, then prefer safe read-only verification inside the container when the facts are incomplete or surprising. Host-side file tool command output is not authoritative for `python_path`, package availability, torch location, accelerator runtime, or device visibility. If container evidence is unavailable after safe probing, report the container runtime as unknown or blocked rather than filling `python_path` with a host-only interpreter.
 
-## Prior Phase Context
+## Context from Earlier Steps
 {previous_outputs}
 
 ## Migration Constraints
