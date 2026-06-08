@@ -452,12 +452,13 @@ class WorkflowExecutor:
         # Send selection prompt to agent
         selected = self._send_image_selection_prompt(candidates, is_discovered)
         if selected and selected in candidates:
+            ordered_candidates = [selected] + [img for img in candidates if img != selected]
             config = _EBC(
                 mode=config.mode,
                 source=config.source,
                 runtime=config.runtime,
                 image=selected,
-                images=candidates,
+                images=ordered_candidates,
                 container_name=config.container_name,
                 container_name_prefix=config.container_name_prefix,
                 devices=config.devices,
@@ -1991,6 +1992,7 @@ class WorkflowExecutor:
         ]
         latest_category = "unknown"
         latest_repair_role = ""
+        latest_history_entry = next((h for h in reversed(loop_history) if isinstance(h, dict)), None)
         fixer_details: list[dict] = []
         for h in loop_history:
             if not isinstance(h, dict):
@@ -2003,9 +2005,16 @@ class WorkflowExecutor:
             fixer_out = h.get("fixer_outputs", {}) if isinstance(h.get("fixer_outputs"), dict) else {}
             row_summary = ""
             row_diag = ""
+            top_level_diag = h.get("agent_diagnostics")
+            top_level_diags = []
+            if top_level_diag:
+                if isinstance(top_level_diag, dict):
+                    top_level_diags.append(json.dumps(top_level_diag, ensure_ascii=False))
+                else:
+                    top_level_diags.append(str(top_level_diag))
             if fixer_out:
                 summaries = []
-                diags = []
+                diags = list(top_level_diags)
                 for pid, meta in fixer_out.items():
                     if isinstance(meta, dict):
                         s = meta.get("summary", "")
@@ -2017,16 +2026,20 @@ class WorkflowExecutor:
                                 diags.append(json.dumps(ad, ensure_ascii=False))
                             else:
                                 diags.append(str(ad))
-                        if meta.get("modified_files"):
+                        if h is latest_history_entry and (
+                            meta.get("summary") or meta.get("modified_files") or meta.get("agent_diagnostics")
+                        ):
                             fixer_details.append({
                                 "iteration": h.get("iteration", "?"),
                                 "phase": pid,
                                 "summary": s,
-                                "modified_files": meta["modified_files"],
+                                "modified_files": meta.get("modified_files", []),
                                 "agent_diagnostics": ad,
                             })
                 row_summary = "; ".join(summaries)[:120] if summaries else ""
                 row_diag = "; ".join(diags)[:120] if diags else ""
+            elif top_level_diags:
+                row_diag = "; ".join(top_level_diags)[:120]
             lines.append(
                 f"| Iter {h.get('iteration', '?')} | {h.get('status', '?')} | "
                 f"{h.get('duration', '?')} | {row_category} | {row_repair_role or '(none)'} | "
@@ -2963,7 +2976,10 @@ class WorkflowExecutor:
 
         # 4. Iterate
         final_status = "success"
-        for iteration in range(1, max_iterations + 1):
+        iteration = 0
+        post_repair_validation_ran = False
+        while iteration < max_iterations:
+            iteration += 1
             logger.info("Loop iteration %d/%d for phase '%s'", iteration, max_iterations, phase.id)
             iter_start = time.time()
             step_outputs: dict[str, Any] = {}
@@ -2984,6 +3000,14 @@ class WorkflowExecutor:
             verification_signal = self._record_pending_experience_verification(
                 loop_state, step_outputs, iteration
             )
+            fixer_outputs = self._collect_fixer_outputs(step_outputs)
+            repair_phase_executed = any(pid in step_outputs for pid in SUB_WORKFLOW_REPAIR_PHASE_ORDER)
+            entry_script_revision_only = bool(step_outputs.get("entry_script_revision_applied")) and not repair_phase_executed
+            if entry_script_revision_only:
+                loop_state["stagnation_count"] = 0
+                iteration -= 1
+                loop_state["iteration"] = iteration
+                continue
 
             # Record iteration
             history_entry = {
@@ -3006,7 +3030,6 @@ class WorkflowExecutor:
                 history_entry["entry_script_action"] = revision_result
             if verification_signal:
                 history_entry["experience_verification"] = verification_signal
-            fixer_outputs = self._collect_fixer_outputs(step_outputs)
             if fixer_outputs:
                 history_entry["fixer_outputs"] = fixer_outputs
             loop_history.append(history_entry)
@@ -3021,10 +3044,6 @@ class WorkflowExecutor:
                 final_status = stop_status
                 logger.info("Stop condition matched: '%s'", stop_status)
                 break
-
-            if step_outputs.get("entry_script_revision_applied"):
-                loop_state["stagnation_count"] = 0
-                continue
 
             # 4c. Stagnation check (builtin)
             error_sig = self._normalize_error_signature(
@@ -3044,16 +3063,20 @@ class WorkflowExecutor:
                 final_status = "skipped"
                 break
 
-            # 4e. Post-repair canonical rerun (last iteration only)
+            # 4e. Post-repair validation rerun (last iteration only)
             # When a repair fixer executed in the final iteration but the stale
-            # script_exit_code is still nonzero, re-run the sub-workflow once to
-            # obtain a fresh exit code and let success-conditioned phases (e.g.
-            # custom_op_final_gate) validate the repaired state.
-            if iteration == max_iterations and loop_state.get("script_exit_code", 0) != 0:
+            # script_exit_code is still nonzero, run validation phases once more
+            # without invoking analyzer/dispatch/fixer LLM phases.
+            if (
+                iteration == max_iterations
+                and not post_repair_validation_ran
+                and loop_state.get("script_exit_code", 0) != 0
+            ):
                 fixer_outputs = self._collect_fixer_outputs(step_outputs)
                 if fixer_outputs:
+                    post_repair_validation_ran = True
                     logger.info(
-                        "Last-iteration post-repair canonical rerun for phase '%s' (fixer: %s)",
+                        "Last-iteration post-repair canonical rerun (validation-only) for phase '%s' (fixer: %s)",
                         phase.id, list(fixer_outputs.keys()),
                     )
                     # Save experience-tracking state that the bonus
@@ -3064,6 +3087,7 @@ class WorkflowExecutor:
                     bonus_result = self._run_sub_workflow(
                         sub_wf_def, loop_vars, state, context, sub_wf_phases,
                         sub_wf_blocks, step_outputs, loop_history, loop_state,
+                        validation_only=True,
                     )
                     loop_state.update(bonus_result.get("step_outputs", {}))
                     # Restore experience-tracking records so the bonus
@@ -3320,6 +3344,7 @@ class WorkflowExecutor:
         step_outputs: dict | None = None,
         loop_history: list | None = None,
         loop_state: dict | None = None,
+        validation_only: bool = False,
     ) -> dict:
         """Execute sub-workflow phases in order, collecting step_outputs."""
         if step_outputs is None:
@@ -3356,6 +3381,9 @@ class WorkflowExecutor:
 
             # Re-read phase_id (was already read above but we preserve it)
             phase_type = (sub_phase.get("type") or "llm").lower()
+
+            if validation_only and phase_type in {"llm", "dispatch", "review"}:
+                continue
 
             # Evaluate condition
             cond = sub_phase.get("condition")
@@ -3593,7 +3621,6 @@ class WorkflowExecutor:
                         if action_result.get("applied"):
                             step_outputs["entry_script_revision_applied"] = True
                             phase_status = "entry_script_revised"
-                            break
 
             # Early exit on failure with break
             if phase_status == "failure":

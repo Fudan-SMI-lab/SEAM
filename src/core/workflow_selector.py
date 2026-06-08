@@ -96,6 +96,29 @@ def is_selector_file(path: str | Path) -> bool:
     return is_selector_yaml(raw)
 
 
+def selector_resolution_metadata_path(materialized_path: str | Path) -> Path:
+    p = Path(materialized_path)
+    return p.with_name(f"{p.name}.selector.json")
+
+
+def read_selector_resolution_metadata(
+    materialized_path: str | Path,
+) -> dict[str, str] | None:
+    metadata_path = selector_resolution_metadata_path(materialized_path)
+    if not metadata_path.exists():
+        return None
+    try:
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    required = ("selector_path", "selected_path", "materialized_path")
+    if not all(isinstance(raw.get(key), str) and raw.get(key) for key in required):
+        return None
+    return {key: str(raw[key]) for key in required}
+
+
 def resolve_workflow_from_selector(
     selector_path: str,
     session_mgr: Any,
@@ -200,9 +223,15 @@ def resolve_workflow_from_selector(
         output_dir=Path(output_dir),
     )
 
+    _write_selector_resolution_metadata(
+        selector_path=selector_abs,
+        selected_path=selected_path,
+        materialized_path=materialized_path,
+    )
+
     logger.info(
         "Workflow selector resolved: %s → %s → %s",
-        selector_path,
+        selector_abs,
         selected_path,
         materialized_path,
     )
@@ -329,6 +358,24 @@ def _record_event(telemetry: Any, event_type: str, **details: object) -> None:
             recorder(event_type, **details)
         except Exception:
             pass  # never let telemetry errors break selection
+
+
+def _write_selector_resolution_metadata(
+    *,
+    selector_path: Path,
+    selected_path: Path,
+    materialized_path: Path,
+) -> None:
+    metadata_path = selector_resolution_metadata_path(materialized_path)
+    payload = {
+        "selector_path": str(selector_path),
+        "selected_path": str(selected_path),
+        "materialized_path": str(materialized_path),
+    }
+    metadata_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _select_workflow_via_agent(

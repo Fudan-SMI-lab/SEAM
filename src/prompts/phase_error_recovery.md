@@ -106,7 +106,7 @@ recommended agent.
    b. If the C library has `_cuda` symbols but NO `_npu` symbols → this is an **operator** issue, not migration logic. The kernel needs to be ported to AscendC.
    c. Do NOT classify as "migration logic" when the real gap is at the C/kernel level.
 5. **Review Feedback Integration**: If the previous review assessment detected CPU fallback and suggested alternatives, consider classifying this as `"operator"` with `"repair_role": "operator_fixer"` to force operator-level fixes.
-6. Decide whether the Phase 3 entry-script command itself is wrong for the contract. If so, request a bounded entry-script revision instead of routing to a repair agent.
+6. Decide whether the Phase 3 `run_command` itself is wrong for the contract. If so, request a bounded entry-script command revision. Still select a repair role when source, dependency, operator, or report edits are also needed.
 7. Propose the minimum corrective action that lets the workflow continue, prioritizing NPU-native solutions.
 8. If the failure is package or installation related, recommend domestic mirrors first (阿里云镜像 or 清华镜像).
 
@@ -117,7 +117,8 @@ recommended agent.
 - **NPU-First**: Always suggest NPU-native fixes first. CPU fallback is the last resort.
 - Prefer deterministic fixes over broad speculative refactors.
 - Keep the response concise, operational, and directly usable by the next retry attempt.
-- Use `entry_script_action` only when the command should be regenerated or modified to satisfy the existing Phase 3 contract. Do not use it to weaken required reports, checks, or custom-op evidence.
+- Use `entry_script_action` only to replace the Phase 3 `run_command` used by Phase 5 validation. It never edits the entry script source file. Source edits must be handled by the selected repair agent.
+- Do not use `entry_script_action` to weaken required reports, checks, or custom-op evidence.
 - When no entry-script revision is needed, set `entry_script_action.needed=false` and `entry_script_action.action="none"`.
 - When a revision is needed, set `entry_script_action.needed=true`, use `action` `regenerate` or `modify`, and provide a non-empty replacement `run_command`. Include `entry_script_path` only when it should change.
 

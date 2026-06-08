@@ -40,7 +40,7 @@ def server_available(base_url: str = BASE_URL, timeout: float = 1.0) -> bool:
         )
         parsed = extract_json_response(response_text)
         return parsed.get("ok") is True
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, RuntimeError):
         return False
     finally:
         if session_mgr is not None:

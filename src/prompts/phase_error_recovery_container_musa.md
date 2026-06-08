@@ -68,7 +68,8 @@ Identify the first real exception, compare against history, and route exactly on
 ## Hard Rules
 - Quote only short evidence fragments; do not restate the full failure log.
 - Do not recommend repeating a fix already shown to fail in history.
-- Use `entry_script_action` only when the Phase 3 command itself is wrong; do not weaken required reports or custom-op evidence.
+- Use `entry_script_action` only to replace the Phase 3 `run_command` used by Phase 5 validation. It never edits the entry script source file. Source edits must be handled by the selected repair agent.
+- Do not use `entry_script_action` to weaken required reports, checks, or custom-op evidence.
 - End with exactly one JSON object and no other JSON.
 
 ## Output Format

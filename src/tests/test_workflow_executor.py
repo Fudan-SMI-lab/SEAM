@@ -4,6 +4,7 @@ import json
 import pytest
 import tempfile
 import os
+import sys
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 from typing import cast
@@ -1386,6 +1387,7 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
         artifact_store,
         prompt_loader,
         validator,
+        framework_config={"custom_op_operator_routing_override_enabled": True},
         project_dir=str(tmp_path),
         output_dir=str(tmp_path),
     )
@@ -1588,7 +1590,7 @@ def test_phase5_entry_command_does_not_expand_globs_or_tilde(tmp_path: Path) -> 
         phase,
         state={},
         context={},
-        loop_vars={"entry_script": f"python {recorder.name} *.txt ~"},
+        loop_vars={"entry_script": f"{sys.executable} {recorder.name} *.txt ~"},
         loop_state={},
     )
 
@@ -1634,7 +1636,7 @@ def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: 
         phase,
         state={},
         context={},
-        loop_vars={"entry_script": "python train.py --config cfg.yaml"},
+        loop_vars={"entry_script": f"{sys.executable} train.py --config cfg.yaml"},
         loop_state=loop_state,
     )
 
@@ -2593,11 +2595,10 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert "dependency | dependency_fixer |" in formatted
     assert "| Iter 2 | success |" in formatted and "operator | operator_fixer |" in formatted
     assert "Latest error category: operator (repair role: operator_fixer)" in formatted
-    # Verify fixer outputs appear in the formatted table and details section
     assert "Installed torch_npu" in formatted
     assert "Replaced unsupported op" in formatted
     assert "Previous Fixer Outputs" in formatted
-    assert "requirements.txt" in formatted
+    assert "requirements.txt" not in formatted
     assert "model.py" in formatted
 
     legacy_formatted = executor._format_error_analyzer_history(
@@ -2807,7 +2808,7 @@ def test_format_error_analyzer_history_renders_fixer_outputs():
     assert "Installed torch_npu" in formatted
     assert "Replaced unsupported op with AscendC impl" in formatted
     assert "## Previous Fixer Outputs" in formatted
-    assert "requirements.txt" in formatted
+    assert "requirements.txt" not in formatted
     assert "model.py" in formatted
     assert "ops/custom_ops.cpp" in formatted
 
@@ -2923,14 +2924,14 @@ def _entry_script_revision_executor(tmp_path: Path, workflow: WorkflowDefinition
     return executor
 
 
-def test_entry_script_action_revises_next_loop_command_and_skips_repair(tmp_path: Path):
-    workflow = _entry_script_revision_workflow(max_iterations=3, max_revisions=2)
+def test_entry_script_action_revises_next_loop_command_without_consuming_repair_iteration(tmp_path: Path):
+    workflow = _entry_script_revision_workflow(max_iterations=1, max_revisions=2)
     executor = _entry_script_revision_executor(tmp_path, workflow)
     revised_script = tmp_path / "final_evidence_validate.py"
     revised_script.write_text("from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8")
-    revised_command = f"python {revised_script}"
+    revised_command = f"{sys.executable} {revised_script}"
     executor.session_mgr.send_command.return_value = json.dumps({
-        "repair_role": "code_adapter",
+        "repair_role": "",
         "category": "validation",
         "root_cause": "Phase 3 command used the wrong script",
         "suggested_fix": "Regenerate the command",
@@ -2945,7 +2946,7 @@ def test_entry_script_action_revises_next_loop_command_and_skips_repair(tmp_path
     state = {
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
-            "run_command": "python -c \"import sys; sys.exit(1)\"",
+            "run_command": f"{sys.executable} -c \"import sys; sys.exit(1)\"",
             "phase5_entry_script_revision_allowed": True,
         }
     }
@@ -2965,16 +2966,78 @@ def test_entry_script_action_revises_next_loop_command_and_skips_repair(tmp_path
     )
 
     assert result["status"] == "success"
+    assert result["iterations"] == 1
+    assert executor.state["phase_5_validation"]["iterations"] == 1
     assert (tmp_path / "entry-ok").read_text(encoding="utf-8") == "ok"
     assert state["phase_3_entry_script"]["run_command"] == revised_command
     assert state["phase_3_entry_script"]["entry_script_path"] == str(revised_script)
     assert result["loop_state"]["entry_script"] == revised_command
     assert result["loop_state"]["entry_script_revision_count"] == 1
-    assert result["loop_history"][0]["entry_script_action"]["applied"] is True
-    assert result["loop_history"][0]["entry_script_action"]["revision_number"] == 1
-    assert "repair_dispatch" not in result["loop_history"][0]["step_outputs_summary"]
+    assert result["loop_state"]["entry_script_revision_requests"][0]["applied"] is True
+    assert result["loop_state"]["entry_script_revision_requests"][0]["revision_number"] == 1
+    assert len(result["loop_history"]) == 1
+    assert result["loop_history"][0]["iteration"] == 1
+    assert "entry_script_action" not in result["loop_history"][0]
+    assert "analyze_error" not in result["loop_history"][0]["step_outputs_summary"]
+    assert "fix_code" not in result["loop_history"][0]["step_outputs_summary"]
     called_sessions = [call.args[0] for call in executor.session_mgr.send_command.call_args_list]
     assert called_sessions == ["session:error_analyzer"]
+
+
+def test_entry_script_action_with_repair_role_dispatches_after_command_revision(tmp_path: Path):
+    workflow = _entry_script_revision_workflow(max_iterations=1, max_revisions=2)
+    executor = _entry_script_revision_executor(tmp_path, workflow)
+    revised_script = tmp_path / "final_evidence_validate.py"
+    revised_script.write_text("from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8")
+    revised_command = f"{sys.executable} {revised_script}"
+
+    def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
+        if session_id == "session:error_analyzer":
+            return json.dumps({
+                "repair_role": "code_adapter",
+                "category": "validation",
+                "root_cause": "Phase 3 command and source both need repair",
+                "suggested_fix": "Revise command, then edit source",
+                "entry_script_action": {
+                    "needed": True,
+                    "action": "modify",
+                    "reason": "Use the generated validation script",
+                    "entry_script_path": str(revised_script),
+                    "run_command": revised_command,
+                },
+            })
+        return json.dumps({"fixed": True, "summary": "Updated validation source", "modified_files": [str(revised_script)]})
+
+    executor.session_mgr.send_command.side_effect = respond
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "old.py",
+            "run_command": f"{sys.executable} -c \"import sys; sys.exit(1)\"",
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}"},
+        ),
+        state=state,
+        context={},
+    )
+
+    assert result["status"] == "success"
+    assert state["phase_3_entry_script"]["run_command"] == revised_command
+    assert result["loop_history"][0]["entry_script_action"]["applied"] is True
+    assert result["loop_history"][0]["fixer_outputs"]["fix_code"]["summary"] == "Updated validation source"
+    assert (tmp_path / "entry-ok").read_text(encoding="utf-8") == "ok"
+    called_sessions = [call.args[0] for call in executor.session_mgr.send_command.call_args_list]
+    assert called_sessions == ["session:error_analyzer", "session:code_adapter"]
 
 
 def test_entry_script_action_max_revision_limit_records_without_applying(tmp_path: Path):
@@ -2984,8 +3047,8 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
     first_revision_script.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
     blocked_revision_script = tmp_path / "blocked_revision.py"
     blocked_revision_script.write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
-    first_revision = f"python {first_revision_script}"
-    blocked_revision = f"python {blocked_revision_script}"
+    first_revision = f"{sys.executable} {first_revision_script}"
+    blocked_revision = f"{sys.executable} {blocked_revision_script}"
 
     # Use an iterator because loop_state is not stored on executor.state until the loop returns.
     analyzer_outputs = iter([first_revision, blocked_revision])
@@ -3009,7 +3072,7 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
         return json.dumps({"fixed": True})
 
     executor.session_mgr.send_command.side_effect = respond_with_iterator
-    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": "python -c \"import sys; sys.exit(1)\"", "phase5_entry_script_revision_allowed": True}}
+    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": f"{sys.executable} -c \"import sys; sys.exit(1)\"", "phase5_entry_script_revision_allowed": True}}
 
     result = executor._execute_loop_phase(
         PhaseDefinition(
@@ -3035,7 +3098,12 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
     assert result["loop_history"][1]["entry_script_action"]["blocked_reason"] == "max_revisions_exceeded"
     assert result["loop_history"][1]["repair_role"] == "code_adapter"
     called_sessions = [call.args[0] for call in executor.session_mgr.send_command.call_args_list]
-    assert called_sessions == ["session:error_analyzer", "session:error_analyzer", "session:code_adapter"]
+    assert called_sessions == [
+        "session:error_analyzer",
+        "session:code_adapter",
+        "session:error_analyzer",
+        "session:code_adapter",
+    ]
 
 
 def test_entry_script_action_blocks_when_phase3_contract_flag_false(tmp_path: Path):
@@ -3483,6 +3551,8 @@ def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_contex
     assert '"needed": false' in prompt_content
     assert '"action": "none"' in prompt_content
     assert '"run_command": ""' in prompt_content
+    assert "It never edits the entry script source file" in prompt_content
+    assert "Source edits must be handled by the selected repair agent" in prompt_content
     assert "reason freely" not in prompt_content
 
     executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
@@ -3675,7 +3745,7 @@ def _custom_op_gate_workflow(max_iterations: int = 1) -> WorkflowDefinition:
                     {
                         "id": "run_entry_script",
                         "type": "shell",
-                        "command": "python -c \"print('ok')\"",
+                        "command": f"{sys.executable} -c \"print('ok')\"",
                         "on_failure": "continue",
                     },
                     {

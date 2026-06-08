@@ -117,7 +117,7 @@ the codebase and understand their own scope limitations.
    b. If the C library has `_cuda` symbols but no PPU-equivalent symbols → this is an **operator** issue. The kernel needs to be ported.
    c. Do NOT classify as "migration logic" when the real gap is at the C/kernel level.
 5. **Review Feedback Integration**: If the previous review assessment detected CPU fallback and suggested alternatives, consider classifying this as `"operator"` with `"repair_role": "operator_fixer"`.
-6. Decide whether the Phase 3 entry-script command itself is wrong for the contract. If so, request a bounded entry-script revision.
+6. Decide whether the Phase 3 `run_command` itself is wrong for the contract. If so, request a bounded entry-script command revision. Still select a repair role when source, dependency, operator, or report edits are also needed.
 7. Propose the minimum corrective action that lets the workflow continue, prioritizing PPU-native solutions.
 8. If the failure is package or installation related, recommend PPU vendor index, PTG/t-head artifactory, or offline PPU wheelhouse first. Public PyPI installs can contaminate the PPU environment.
 
@@ -128,7 +128,8 @@ the codebase and understand their own scope limitations.
 - **PPU-First**: Always suggest PPU-native fixes first. CPU fallback is the last resort.
 - Prefer deterministic fixes over broad speculative refactors.
 - Keep the response concise, operational, and directly usable by the next retry attempt.
-- Use `entry_script_action` only when the command should be regenerated or modified to satisfy the existing Phase 3 contract.
+- Use `entry_script_action` only to replace the Phase 3 `run_command` used by Phase 5 validation. It never edits the entry script source file. Source edits must be handled by the selected repair agent.
+- Do not use `entry_script_action` to weaken required reports, checks, or custom-op evidence.
 - When no entry-script revision is needed, set `entry_script_action.needed=false` and `entry_script_action.action="none"`.
 - When a revision is needed, set `entry_script_action.needed=true`, use `action` `regenerate` or `modify`, and provide a non-empty replacement `run_command`.
 

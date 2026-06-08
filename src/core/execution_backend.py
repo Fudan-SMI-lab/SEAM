@@ -309,7 +309,12 @@ class ContainerBackend:
 
         cmd.extend([image_name, "tail", "-f", "/dev/null"])
 
-        logger.info("Container create: %s", " ".join(cmd[:6]))
+        logger.info(
+            "Container create attempt: runtime=%s name=%s image=%s",
+            self._runtime_cmd,
+            cname,
+            image_name,
+        )
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             raise RuntimeError(

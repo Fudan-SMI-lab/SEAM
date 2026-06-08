@@ -358,8 +358,8 @@ def _operator_routing_override_enabled(config: ConfigDict | None) -> bool:
     2. ``framework.custom_op_operator_routing_override_enabled`` as a nested key
        (framework config form).
 
-    When any is explicitly ``False``, the routing override is skipped.
-    When absent or ``True``, the override is active (default).
+    When explicitly ``True``, the routing override is active.
+    When absent or explicitly ``False``, the override is disabled by default.
 
     Accepts string values: ``"false"``, ``"0"``, ``"no"`` → False;
     ``"true"``, ``"1"``, ``"yes"`` → True.
@@ -372,7 +372,7 @@ def _operator_routing_override_enabled(config: ConfigDict | None) -> bool:
         nested = _parse_config_bool(framework_cfg.get("custom_op_operator_routing_override_enabled"))
         if nested is not None:
             return nested
-    return True
+    return False
 
 
 def _parse_config_bool(value: object) -> bool | None:
@@ -425,9 +425,9 @@ def _repair_role_descriptions_text(available_roles: set[str] | None = None) -> s
     if has_report:
         role_list.append("`final_gate_report_fixer`")
     lines.append(f"- `repair_role`: One of {', '.join(role_list)}.")
-    lines.append("- `entry_script_action.needed`: `true` to revise the Phase 3 entry-script command, `false` otherwise.")
+    lines.append("- `entry_script_action.needed`: `true` only to replace the Phase 3 `run_command`, `false` otherwise.")
     lines.append("- `entry_script_action.action`: `\"none\"`, `\"regenerate\"`, or `\"modify\"`.")
-    lines.append("- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`.")
+    lines.append("- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`. Source edits belong to repair agents.")
 
     return "\n".join(lines)
 _STAGNATION_THRESHOLD = 3

@@ -16,7 +16,7 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.e2e.e2e_test_v3 import _build_project_context
+from tests.e2e.e2e_test_v3 import _build_project_context, _format_selector_result_log
 
 
 class TestBuildProjectContext:
@@ -34,8 +34,7 @@ class TestBuildProjectContext:
         assert ctx["language"] == "Python"
         assert ctx["build_system"] == "setuptools"
         assert ctx["file_count"] == 3  # setup.py + src/main.py + src/utils.py
-        assert "src/main.py" in ctx["file_hints"]
-        assert "src/utils.py" in ctx["file_hints"]
+        assert "file_hints" not in ctx
 
     def test_detects_pyproject_toml(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
@@ -47,11 +46,12 @@ class TestBuildProjectContext:
         ctx = _build_project_context(tmp_path)
         assert ctx["build_system"] == ""
 
-    def test_file_hints_capped_at_10(self, tmp_path: Path) -> None:
+    def test_project_context_does_not_emit_file_hints(self, tmp_path: Path) -> None:
         for i in range(15):
             (tmp_path / f"file_{i}.py").write_text("pass")
         ctx = _build_project_context(tmp_path)
-        assert len(ctx["file_hints"]) <= 10
+        assert ctx["file_count"] == 15
+        assert "file_hints" not in ctx
 
 
 class TestSelectorIntegrationFlow:
@@ -100,6 +100,22 @@ class TestSelectorIntegrationFlow:
         assert materialized.exists()
         loaded = yaml.safe_load(materialized.read_text())
         assert loaded["name"] == "test_wf"
+
+    def test_selector_result_log_includes_all_paths(self, tmp_path: Path) -> None:
+        selector = tmp_path / "selector.yaml"
+        selected = tmp_path / "workflow.yaml"
+        materialized = tmp_path / "out" / "resolved.yaml"
+
+        line = _format_selector_result_log(
+            str(selector),
+            str(selected),
+            str(materialized),
+        )
+
+        assert line.startswith("Workflow selector result: ")
+        assert f"selector={selector}" in line
+        assert f"selected={selected}" in line
+        assert f"materialized={materialized}" in line
 
     def test_selector_override_preserved_in_output(self, tmp_path: Path) -> None:
         """Overrides from selector are merged into materialized workflow."""

@@ -11,7 +11,12 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from harness.server.lifecycle import is_local_url, parse_host_port, start_server
+from harness.server.lifecycle import (
+    collect_server_diagnostics,
+    is_local_url,
+    parse_host_port,
+    start_server,
+)
 
 
 class TestIsLocalUrl:
@@ -67,6 +72,127 @@ class TestParseHostPort:
         host, port = parse_host_port("//127.0.0.1", default_port=4096)
         assert host == "127.0.0.1"
         assert port == 4096
+
+
+class TestServerDiagnostics:
+    def test_collects_process_config_and_openagent_models_without_secrets(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        config_dir = tmp_path / ".opencode"
+        config_dir.mkdir()
+        _ = (config_dir / "opencode.jsonc").write_text(
+            '{"provider": {"demo": {"apiKey": "opencode-secret"}}}',
+            encoding="utf-8",
+        )
+        _ = (config_dir / "oh-my-openagent.json").write_text(
+            """
+            {
+              // JSONC comments are accepted, but values are not logged.
+              "agents": {
+                "build": {"model": "openagent-build", "apiKey": "agent-secret"}
+              },
+              "categories": {
+                "deep": {"model": "openagent-deep"}
+              },
+            }
+            """,
+            encoding="utf-8",
+        )
+        _ = (config_dir / "oh-my-opencode.json").write_text(
+            json.dumps({
+                "agents": {"legacy": {"model": "legacy-model"}},
+                "token": "legacy-token",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "harness.server.lifecycle._find_opencode_serve_process",
+            MagicMock(return_value={
+                "pid": 4321,
+                "cwd": str(tmp_path),
+                "cmdline": ["opencode", "serve", "--port", "4098"],
+            }),
+        )
+
+        diagnostics = collect_server_diagnostics(
+            "http://127.0.0.1:4098",
+            work_dir="/fallback/workdir",
+        )
+
+        assert diagnostics["source"] == "existing"
+        assert diagnostics["pid"] == 4321
+        assert diagnostics["cwd"] == str(tmp_path)
+        assert diagnostics["config_base_dir"] == str(tmp_path)
+        assert diagnostics["model_config_path"] == str(config_dir / "oh-my-openagent.json")
+        assert diagnostics["models"] == ["openagent-build", "openagent-deep"]
+
+        config_files = {
+            item["name"]: item for item in diagnostics["config_files"]
+        }
+        assert config_files["opencode.jsonc"]["exists"] is True
+        assert config_files["oh-my-openagent.json"]["exists"] is True
+        assert config_files["oh-my-opencode.json"]["exists"] is True
+
+        serialized = json.dumps(diagnostics)
+        assert "opencode-secret" not in serialized
+        assert "agent-secret" not in serialized
+        assert "legacy-token" not in serialized
+        assert "legacy-model" not in serialized
+
+    def test_collects_legacy_models_when_openagent_config_missing(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        config_dir = tmp_path / ".opencode"
+        config_dir.mkdir()
+        _ = (config_dir / "oh-my-opencode.json").write_text(
+            json.dumps({
+                "agents": {"qa": {"model": "legacy-qa"}},
+                "categories": {"quick": {"model": "legacy-quick"}},
+                "secret": "hidden-value",
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "harness.server.lifecycle._find_opencode_serve_process",
+            MagicMock(return_value=None),
+        )
+
+        diagnostics = collect_server_diagnostics(
+            "http://localhost:4096",
+            work_dir=str(tmp_path),
+        )
+
+        assert diagnostics["model_config_path"] == str(config_dir / "oh-my-opencode.json")
+        assert diagnostics["models"] == ["legacy-qa", "legacy-quick"]
+        assert "hidden-value" not in json.dumps(diagnostics)
+
+    def test_auto_started_process_uses_pid_and_work_dir_fallback(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        config_dir = tmp_path / ".opencode"
+        config_dir.mkdir()
+        _ = (config_dir / "oh-my-openagent.json").write_text(
+            json.dumps({"agents": {"build": {"model": "auto-model"}}}),
+            encoding="utf-8",
+        )
+        proc = MagicMock()
+        proc.pid = 9876
+        monkeypatch.setattr(
+            "harness.server.lifecycle._process_info_from_pid",
+            MagicMock(return_value={"pid": 9876, "cwd": None, "cmdline": []}),
+        )
+
+        diagnostics = collect_server_diagnostics(
+            "http://127.0.0.1:4097",
+            server_proc=proc,
+            work_dir=str(tmp_path),
+        )
+
+        assert diagnostics["source"] == "auto-started"
+        assert diagnostics["pid"] == 9876
+        assert diagnostics["cwd"] is None
+        assert diagnostics["config_base_dir"] == str(tmp_path)
+        assert diagnostics["models"] == ["auto-model"]
 
 
 class TestStartServerHostname:

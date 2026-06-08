@@ -664,12 +664,13 @@ class Orchestrator:
 
         selected = self._send_image_selection_prompt(candidates, is_discovered)
         if selected and selected in candidates:
+            ordered_candidates = [selected] + [img for img in candidates if img != selected]
             config = _EBC(
                 mode=config.mode,
                 source=config.source,
                 runtime=config.runtime,
                 image=selected,
-                images=candidates,
+                images=ordered_candidates,
                 container_name=config.container_name,
                 container_name_prefix=config.container_name_prefix,
                 devices=config.devices,

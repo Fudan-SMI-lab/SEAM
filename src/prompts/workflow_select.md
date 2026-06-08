@@ -60,13 +60,14 @@ the PRIMARY evidence for platform selection:
 
 ## Selection Guidance
 
-After exploring the device environment, analyze the project context and select
-the workflow that best matches:
+After exploring the device environment, inspect the target project path and
+analyze the project files, repository structure, and available context. Combine
+that with the device environment and workflow descriptions to select the
+workflow that best matches:
 
 - **Discovered device / accelerator platform** (PRIMARY): Which of the above device-discovery probes succeeded? Match the discovered platform to the candidate workflows' target accelerators.
 - **Framework alignment** (SECONDARY): Does the project use PyTorch, TensorFlow, JAX, or other frameworks? Use this to narrow between workflows for the same discovered platform.
-- **Project complexity**: Choose simpler workflows for small projects, more comprehensive ones for large codebases with custom operators.
-- **Migration scope**: If the project has custom CUDA kernels (`*.cu`, `.cuh` files, `cpp_extension`, `pybind11`), prefer workflows that include operator migration phases.
+- **Project complexity and migration scope**: Choose simpler workflows for small projects, and more comprehensive workflows when the inspected project structure and available context indicate broader migration needs.
 
 ## Hard Rules
 

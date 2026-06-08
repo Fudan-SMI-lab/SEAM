@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -927,7 +928,6 @@ class TestWorkflowExecutorCleanup:
             backend.cleanup()  # should log warning, not raise
 
     def test_backend_cleanup_logged_warning_on_failure(self, tmp_path: Path, caplog):
-        import logging
         caplog.set_level(logging.ERROR, logger="core.workflow_executor")
 
         mock_backend = MagicMock()
@@ -1605,6 +1605,38 @@ class TestCandidateImageResolution:
 
 class TestSequentialCreateFallback:
     @patch("subprocess.run")
+    def test_logs_each_candidate_image_before_create(self, mock_run, caplog):
+        def side_effect(*args, **kwargs):
+            cmd = args[0]
+            if "first:1" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="pull failed")
+            return MagicMock(returncode=0, stdout="cid-2\n", stderr="")
+
+        caplog.set_level(logging.INFO, logger="core.execution_backend")
+        mock_run.side_effect = side_effect
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["first:1", "second:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+
+        backend._create_container_from_image()
+
+        messages = [record.message for record in caplog.records]
+        assert any(
+            "Container create attempt: runtime=docker" in msg
+            and " name=" in msg
+            and "image=first:1" in msg
+            for msg in messages
+        )
+        assert any(
+            "Container create attempt: runtime=docker" in msg
+            and " name=" in msg
+            and "image=second:2" in msg
+            for msg in messages
+        )
+
+    @patch("subprocess.run")
     def test_first_image_succeeds(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
         cfg = ExecutionBackendConfig.from_dict(
@@ -1781,7 +1813,7 @@ class TestAutoImageSelection:
 
         mock_session = MagicMock()
         mock_session.get_or_create.return_value = "sel-sid"
-        mock_session.send_command.return_value = self._mock_response("img-b:2")
+        mock_session.send_command.return_value = self._mock_response("img-c:3")
 
         mock_prompt_loader = MagicMock()
         mock_prompt_loader.load_prompt.return_value = "fake prompt"
@@ -1802,7 +1834,8 @@ class TestAutoImageSelection:
 
         assert executor.exec_backend is not None
         assert isinstance(executor.exec_backend, ContainerBackend)
-        assert executor.exec_backend.config.image == "img-b:2"
+        assert executor.exec_backend.config.image == "img-c:3"
+        assert executor.exec_backend.config.images == ["img-c:3", "img-a:1", "img-b:2"]
 
         # Verify the prompt loader was called with the candidates
         call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
@@ -1879,6 +1912,7 @@ class TestAutoImageSelection:
         assert executor.exec_backend is not None
         assert isinstance(executor.exec_backend, ContainerBackend)
         assert executor.exec_backend.config.image == "local-hub:v2"
+        assert executor.exec_backend.config.images == ["local-hub:v2", "local-hub:v1"]
 
     @patch("subprocess.run")
     def test_auto_no_images_no_discovered_falls_back_to_local(
@@ -1941,6 +1975,7 @@ class TestAutoImageSelection:
 
         assert executor.exec_backend is not None
         assert executor.exec_backend.config.image == "img-b:2"
+        assert executor.exec_backend.config.images == ["img-b:2", "img-a:1"]
 
         call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
         assert "img-a:1" in call_ctx["candidate_images"]

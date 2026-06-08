@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.workflow_selector import (
     is_selector_yaml,
     is_selector_file,
+    read_selector_resolution_metadata,
     resolve_workflow_from_selector,
     _validate_selector_schema,
     _resolve_candidates,
@@ -563,6 +564,12 @@ class TestResolveWorkflowFromSelector:
         assert loaded["name"] == "npu"
         assert len(prompt_loader.loaded) == 1
         assert prompt_loader.loaded[0][0] == "workflow_select"
+        metadata = read_selector_resolution_metadata(result)
+        assert metadata == {
+            "selector_path": str(selector),
+            "selected_path": str(wf_a),
+            "materialized_path": str(result),
+        }
 
     def test_end_to_end_with_overrides(self, tmp_path: Path) -> None:
         """Selector with overrides should produce merged workflow."""

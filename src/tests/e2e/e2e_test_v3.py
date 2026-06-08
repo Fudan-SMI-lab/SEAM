@@ -139,6 +139,57 @@ def check_server_running(base_url: str) -> None:
         )
 
 
+def log_server_diagnostics(
+    base_url: str,
+    server_proc: subprocess.Popen[bytes] | None,
+    work_dir: str,
+) -> None:
+    try:
+        from harness.server.lifecycle import collect_server_diagnostics
+        diagnostics = collect_server_diagnostics(
+            base_url,
+            server_proc=server_proc,
+            work_dir=work_dir,
+        )
+    except Exception as exc:
+        log(f"OpenCode server diagnostics unavailable: {exc}")
+        return
+
+    def display(value: object) -> str:
+        if value is None or value == "":
+            return "unknown"
+        return str(value)
+
+    log(
+        "OpenCode server diagnostics: "
+        f"url={display(diagnostics.get('url'))} "
+        f"source={display(diagnostics.get('source'))} "
+        f"pid={display(diagnostics.get('pid'))} "
+        f"cwd={display(diagnostics.get('cwd'))} "
+        f"start_work_dir={display(diagnostics.get('start_work_dir'))}"
+    )
+
+    config_files = diagnostics.get("config_files")
+    if isinstance(config_files, list):
+        for item in config_files:
+            if not isinstance(item, dict):
+                continue
+            log(
+                "OpenCode config file: "
+                f"name={display(item.get('name'))} "
+                f"path={display(item.get('path'))} "
+                f"exists={display(item.get('exists'))}"
+            )
+
+    models = diagnostics.get("models")
+    model_text = ", ".join(str(model) for model in models) if isinstance(models, list) and models else "none found"
+    log(
+        "OpenCode model config: "
+        f"path={display(diagnostics.get('model_config_path'))} "
+        f"models={model_text}"
+    )
+
+
 def copy_project_light(src: Path, dst: Path) -> int:
     if not dst.is_dir():
         dst.mkdir(parents=True, exist_ok=True)
@@ -201,6 +252,19 @@ def write_json(path: Path, payload: object) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     _ = path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     return str(path)
+
+
+def _format_selector_result_log(
+    selector_path: str,
+    selected_path: str,
+    materialized_path: str,
+) -> str:
+    return (
+        "Workflow selector result: "
+        f"selector={selector_path} "
+        f"selected={selected_path} "
+        f"materialized={materialized_path}"
+    )
 
 
 def copy_artifacts(temp_dir: Path, output_dir: Path) -> str | None:
@@ -283,8 +347,6 @@ def build_v3_summary(
 
 
 def _build_project_context(project_dir: Path) -> dict[str, object]:
-    py_files = list(project_dir.rglob("*.py"))
-    file_hints = [str(p.relative_to(project_dir)) for p in py_files[:10]]
     setup_py = project_dir / "setup.py"
     setup_cfg = project_dir / "setup.cfg"
     pyproject_toml = project_dir / "pyproject.toml"
@@ -297,9 +359,8 @@ def _build_project_context(project_dir: Path) -> dict[str, object]:
         "project_path": str(project_dir),
         "project_name": project_dir.name,
         "language": "Python",
-        "file_count": len(py_files),
+        "file_count": sum(1 for path in project_dir.rglob("*") if path.is_file()),
         "build_system": build_system,
-        "file_hints": file_hints,
     }
 
 
@@ -381,7 +442,11 @@ def run_e2e_v3(
     from core.telemetry_bridge import TelemetryBridge
     from core.validator_engine import ValidatorEngine
     from core.workflow_executor import WorkflowExecutor
-    from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
+    from core.workflow_selector import (
+        is_selector_file,
+        read_selector_resolution_metadata,
+        resolve_workflow_from_selector,
+    )
     from harness.session.manager import SessionManager
     from tests.e2e.e2e_observer import TelemetryObserver
     from validators.validate_env_detect import validate as validate_env_detect
@@ -426,6 +491,7 @@ def run_e2e_v3(
             log(f"Auto-started OpenCode server at {base_url}")
         check_server_running(base_url)
         log(f"OpenCode server reachable at {base_url}")
+        log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
     except Exception as exc:
         print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
         return 1
@@ -492,8 +558,21 @@ def run_e2e_v3(
                 )
                 effective_workflow_path = materialized
                 selector_resolved_path = str(materialized)
-                log(f"Selector resolved to: {materialized}")
+                selector_metadata = read_selector_resolution_metadata(materialized) or {}
+                selected_workflow_path = selector_metadata.get("selected_path", "(unknown)")
+                selector_path_for_log = selector_metadata.get(
+                    "selector_path", str(original_workflow_path)
+                )
+                materialized_path_for_log = selector_metadata.get(
+                    "materialized_path", str(materialized)
+                )
+                log(_format_selector_result_log(
+                    selector_path_for_log,
+                    selected_workflow_path,
+                    materialized_path_for_log,
+                ))
                 observer.set_metadata("selector_path", str(original_workflow_path))
+                observer.set_metadata("selected_workflow_path", selected_workflow_path)
                 observer.set_metadata("resolved_workflow_path", selector_resolved_path)
         except Exception:
             log(f"Selector resolution failed; re-raising to surface the error")

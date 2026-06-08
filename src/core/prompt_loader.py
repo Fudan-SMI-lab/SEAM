@@ -76,9 +76,9 @@ class PromptLoader:
                 "- `root_cause`: Specific explanation with supporting evidence.\n"
                 "- `suggested_fix`: Concrete corrective action for downstream repair agent.\n"
                 "- `repair_role`: One of `dependency_fixer`, `code_adapter`, `operator_fixer`.\n"
-                "- `entry_script_action.needed`: `true` to revise the Phase 3 entry-script command, `false` otherwise.\n"
+                "- `entry_script_action.needed`: `true` only to replace the Phase 3 `run_command`, `false` otherwise.\n"
                 "- `entry_script_action.action`: `\"none\"`, `\"regenerate\"`, or `\"modify\"`.\n"
-                "- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`."
+                "- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`. Source edits belong to repair agents."
             )
 
         placeholders: list[str] = re.findall(r"\{(\w+)\}", template)
