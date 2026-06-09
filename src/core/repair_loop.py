@@ -2453,7 +2453,6 @@ class RepairLoopEngine:
             self._log("Parallel repair: no groups to dispatch", logger)
             return []
 
-        progress_block = _operator_custom_op_progress_block(phase3_contract, project_dir)
         repair_role = str(classification["repair_role"])
         repair_agent = self._repair_agent_for_role(
             repair_role=repair_role,
@@ -2476,6 +2475,28 @@ class RepairLoopEngine:
                 agent=repair_agent,
             )
             group_sessions[group_label] = session_id
+            # Build per-group scoped progress block so this group only sees
+            # its own assigned units, not the global remaining_units count.
+            _scoped_ledger = custom_op_final_gate_unit_ledger(
+                gate_map,
+                target_units=group_units,
+                project_root=project_dir,
+            )
+            _scoped_progress_lines = [
+                "Current strict custom-op final-gate progress (YOUR ASSIGNED UNITS ONLY)",
+                f"assigned_units={len(group_units)}",
+                f"strict_pass_units={_scoped_ledger.get('strict_pass_count', 0)}",
+                f"remaining_units={_scoped_ledger.get('remaining_count', 0)}",
+            ]
+            _scoped_remaining = _scoped_ledger.get("remaining_units")
+            if isinstance(_scoped_remaining, list) and _scoped_remaining:
+                _scoped_remaining_items = cast(list[object], _scoped_remaining)
+                _scoped_progress_lines.append(
+                    "remaining_unit_identities="
+                    + ", ".join(str(u) for u in _scoped_remaining_items[:50])
+                )
+            scoped_progress_block = "\n".join(_scoped_progress_lines)
+
             scoped_prompt = self._build_scoped_repair_prompt(
                 entry_script=entry_script,
                 project_dir=project_dir,
@@ -2492,7 +2513,7 @@ class RepairLoopEngine:
                 script_cwd=script_cwd,
                 env_vars=env_vars,
                 assigned_units=group_units,
-                progress_block=progress_block,
+                progress_block=scoped_progress_block,
             )
             try:
                 group_response = self.session_mgr.send_command(

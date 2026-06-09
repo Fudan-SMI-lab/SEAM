@@ -23,7 +23,10 @@ Statically validate the Phase 3 entry script and command contract before the tar
 ## Hard Rules
 - Do not execute the target runtime here.
 - Do not accept CPU fallback or validation that only imports modules.
-- Return exactly one JSON object and no other JSON.
+- The **last thing** in your response MUST be one complete, properly-closed JSON object. No prose, markdown, or any other text after the final `}`. If no valid JSON is found, the entire phase fails.
+- Keep any reasoning before the JSON **brief** — the JSON is what the validator consumes.
+- All boolean values MUST use JSON booleans: `true` or `false` (lowercase). NEVER use Python booleans `True` or `False`.
+- The `validation_passed` field MUST be a JSON boolean. Null, string, integer, or any non-boolean value will cause an immediate validation failure.
 - Do not return Phase 3 entry-script fields from this phase: no `entry_script_path`, no `run_command`, and no `runtime_entry_script_revision_allowed` at the top level. If a different entry script is needed, set `validation_passed=false`, describe the replacement in `issues`, and put the proposed Phase 3 contract in `fix_plan` text.
 
 ## Output Format

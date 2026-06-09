@@ -86,11 +86,17 @@ def extract_json_response(text: str) -> dict[str, Any]:
     if not text:
         return {}
 
-    candidates = [match.group(1).strip() for match in re.finditer(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)]
-    candidates.reverse()
-    candidates.append(text.strip())
+    # Collect code-fenced candidates (handles both complete and truncated fences)
+    fenced_candidates: list[str] = []
+    for match in re.finditer(r"```(?:json)?\s*\n(.*?)(?:\n```|$)", text, re.DOTALL):
+        content = match.group(1).strip()
+        if content:
+            fenced_candidates.append(content)
 
-    for candidate in candidates:
+    fenced_candidates.reverse()
+    fenced_candidates.append(text.strip())
+
+    for candidate in fenced_candidates:
         parsed = _parse_json_candidate(candidate)
         if parsed:
             return parsed
@@ -108,6 +114,10 @@ def _parse_json_candidate(candidate: str) -> dict[str, Any]:
             return parsed
     except json.JSONDecodeError:
         pass
+
+    result = _parse_with_repair(candidate)
+    if result:
+        return result
 
     return _parse_last_json_object(candidate)
 
@@ -131,6 +141,109 @@ def _parse_last_json_object(text: str) -> dict[str, Any]:
             best = (start, absolute_end, parsed)
 
     return best[2] if best is not None else {}
+
+
+def _parse_with_repair(text: str) -> dict[str, Any]:
+    """Attempt to parse truncated/incomplete JSON by balancing braces and strings.
+
+    Common LLM failure mode: output window truncates JSON mid-object.
+    This repairs by counting delimiters and closing open structures.
+    """
+    for match in re.finditer(r"{", text):
+        start = match.start()
+        fragment = text[start:]
+        repaired = _close_json_fragment(fragment)
+        if repaired is None:
+            continue
+        try:
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        repaired2 = _close_json_fragment(fragment, close_strings=True)
+        if repaired2 is None:
+            continue
+        try:
+            parsed = json.loads(repaired2)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    return {}
+
+
+def _close_json_fragment(fragment: str, *, close_strings: bool = False) -> str | None:
+    """Balance JSON delimiters in a possibly-truncated fragment.
+
+    Returns the repaired fragment or None if irreparable.
+    """
+    i = 0
+    n = len(fragment)
+    stack: list[str] = []
+    in_string = False
+    escape_next = False
+
+    while i < n:
+        ch = fragment[i]
+        if escape_next:
+            escape_next = False
+            i += 1
+            continue
+        if ch == "\\":
+            escape_next = True
+            i += 1
+            continue
+        if ch == '"':
+            if not in_string:
+                in_string = True
+            else:
+                in_string = False
+            i += 1
+            continue
+        if in_string:
+            i += 1
+            continue
+        if ch in "{[":
+            stack.append(ch)
+        elif ch == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+            else:
+                # Mismatched closing brace — fragment is structurally broken
+                return None
+        elif ch == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+            else:
+                return None
+        i += 1
+
+    # If still inside a string, try to close it
+    if close_strings and in_string:
+        fragment = fragment + '"'
+
+    # Close remaining open delimiters in reverse order
+    closing = ""
+    while stack:
+        opener = stack.pop()
+        if opener == "{":
+            closing += "}"
+        elif opener == "[":
+            closing += "]"
+
+    if closing:
+        fragment = fragment + closing
+        # Fix dangling syntax from truncation after key colon or comma
+        # "key": } → "key": null}  and  [1, ] → [1]
+        fragment = re.sub(r":\s*}", ": null}", fragment)
+        fragment = re.sub(r":\s*]", ": null]", fragment)
+        fragment = re.sub(r",\s*}", "}", fragment)
+        fragment = re.sub(r",\s*]", "]", fragment)
+
+    return fragment
 
 
 @dataclass

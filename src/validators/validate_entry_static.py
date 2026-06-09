@@ -59,11 +59,26 @@ def validate(data: dict[str, object]) -> ValidationDict:
             normalized = validation_passed.strip().lower()
             if normalized in {"true", "false"}:
                 validation_passed = normalized == "true"
+            elif normalized in {"yes", "pass", "ok", "success", "y", "1"}:
+                validation_passed = True
+            elif normalized in {"no", "fail", "error", "n", "0"}:
+                validation_passed = False
             else:
-                errors.append("validation_passed must be a boolean")
+                errors.append(f"validation_passed must be a boolean, got string {validation_passed!r}")
                 return {"passed": False, "errors": errors, "warnings": []}
+        elif isinstance(validation_passed, (int, float)):
+            # LLM sometimes outputs 0/1 or 0.0/1.0 as booleans
+            validation_passed = bool(validation_passed)
+        elif validation_passed is None:
+            # LLM emitted JSON null — treat as False but note the ambiguity
+            validation_passed = False
+            data.setdefault("issues", list(data.get("issues", []))).append(
+                "validation_passed was null / missing — treated as False"
+            )
         else:
-            errors.append("validation_passed must be a boolean")
+            errors.append(
+                f"validation_passed must be a boolean, got {type(validation_passed).__name__}: {validation_passed!r}"
+            )
             return {"passed": False, "errors": errors, "warnings": []}
 
     raw_issues = data.get("issues", [])

@@ -105,11 +105,18 @@ When Phase 3 contains an `expanded_variant_inventory` with many operator variant
 - `if __name__ == "__main__":` guards are expected and good.
 - The analysis should be **conservative but practical**: flag genuine blockers, not theoretical edge cases.
 - If the script imports a module that does interactive things, check if the import path is actually executed.
-- You may reason freely, but end with one JSON object using exactly the fields below.
+- You may reason freely in your response, but keep reasoning brief — the JSON object is the essential output. For custom-op projects where the JSON payload can be very large, be especially concise. If you spend too much output on analysis, the JSON may be truncated.
 - Do not return Phase 3 entry-script fields from this phase: no `entry_script_path`, no `run_command`, and no `runtime_entry_script_revision_allowed` at the top level. If a different entry script is needed, set `validation_passed=false`, describe the replacement in `issues`, and put the proposed Phase 3 contract in `fix_plan` text.
 
+## JSON Format Rules — HARD CONTRACT
+
+- The **last thing** in your response MUST be one complete, properly-closed JSON object. No prose, markdown, or any other text after the final `}`. If no valid JSON is found, the entire phase fails.
+- All boolean values MUST use JSON booleans: `true` or `false` (lowercase). NEVER use Python booleans `True` or `False`.
+- The `validation_passed` field MUST be a JSON boolean. Null, string, integer, or any non-boolean value will cause an immediate validation failure.
+- For custom-op projects with large variant inventories: prioritize emitting the complete JSON. If output limits force a tradeoff, drop or minimize reasoning — the JSON is what the validator consumes, and a truncated JSON causes the entire phase to fail and restart.
+
 ## Output Format
-Return exactly one JSON object. When custom operators are detected and `custom_op_surface` is generated, include it alongside the validation fields:
+Return a single parseable JSON object. When custom operators are detected and `custom_op_surface` is generated, include it alongside the validation fields:
 
 ```json
 {

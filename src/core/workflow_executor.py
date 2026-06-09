@@ -2018,6 +2018,19 @@ class WorkflowExecutor:
         else:
             strict_acceptance = ""
 
+        # Gate file may be stale (groups produce raw_only responses that
+        # don't update it).  Extract previous-iteration parallel results so
+        # _build_group_prompt can inject prior file-change evidence.
+        _prev_parallel_results: list[dict[str, Any]] = []
+        if has_custom_op_contract:
+            _prev_fix_result = state.get(phase_id)
+            if isinstance(_prev_fix_result, dict):
+                _raw = _prev_fix_result.get("_parallel_results")
+                if isinstance(_raw, list):
+                    _prev_parallel_results = [
+                        r for r in cast(list[object], _raw) if isinstance(r, dict)
+                    ]
+
         def _build_group_prompt(group_units: list[str], group_idx: int) -> str:
             # Build scoped progress block so this group only sees its own
             # assigned units — not the global target/remaining counts.
@@ -2040,6 +2053,30 @@ class WorkflowExecutor:
                     "remaining_unit_identities="
                     + ", ".join(str(u) for u in remaining_items[:50])
                 )
+            # When the gate shows zero passes but a previous iteration
+            # produced file-system changes for this group, inject evidence
+            # so the LLM knows the gate data may be stale.
+            if has_custom_op_contract and scoped_ledger.get("strict_pass_count", 0) == 0:
+                for prev_result in _prev_parallel_results:
+                    if not isinstance(prev_result, dict):
+                        continue
+                    prev_units = prev_result.get("_assigned_units")
+                    if prev_units == group_units:
+                        prev_modified = prev_result.get("modified_files")
+                        if isinstance(prev_modified, list) and prev_modified:
+                            scoped_progress_lines.append("")
+                            scoped_progress_lines.append(
+                                f"WARNING: gate file may be stale — {len(prev_modified)} "
+                                "file(s) changed in previous iteration for this group. "
+                                "The gate ledger was not yet updated.  Re-run "
+                                f"`{entry_script_str}` and inspect filesystem for "
+                                "actual unit pass/fail status before re-implementing."
+                            )
+                            scoped_progress_lines.append(
+                                "Previous iteration changed files: "
+                                + ", ".join(str(f) for f in prev_modified[:20])
+                            )
+                        break
             scoped_progress_block = "\n".join(scoped_progress_lines)
             if has_custom_op_contract:
                 operator_context_path = self._write_operator_repair_context_artifact(

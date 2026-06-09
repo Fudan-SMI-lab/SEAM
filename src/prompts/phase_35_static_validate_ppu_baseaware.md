@@ -36,10 +36,16 @@ If Phase 3 includes `entry_script_kind: custom_op_full_validation`, validate the
 - Training loops with epoch limits (e.g., `for epoch in range(epochs):`) are **acceptable** — they will eventually exit.
 - `if __name__ == "__main__":` guards are expected and good.
 - The analysis should be **conservative but practical**: flag genuine blockers, not theoretical edge cases.
-- You may reason freely, but end with one JSON object using exactly the fields below.
+- You may include **brief** reasoning before the JSON, but the JSON object is the essential output. Keep reasoning concise — the JSON is what the validator consumes. If you spend too much output on analysis, the JSON may be truncated.
+
+## JSON Format Rules — HARD CONTRACT
+
+- The **last thing** in your response MUST be one complete, properly-closed JSON object. No prose, markdown, or any other text after the final `}`. If no valid JSON is found, the entire phase fails.
+- All boolean values MUST use JSON booleans: `true` or `false` (lowercase). NEVER use Python booleans `True` or `False`.
+- The `validation_passed` field MUST be a JSON boolean. Null, string, integer, or any non-boolean value will cause an immediate validation failure.
 
 ## Output Format
-Return exactly one JSON object with this shape:
+Return exactly one parseable JSON object with this shape:
 
 ```json
 {
