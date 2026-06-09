@@ -2104,7 +2104,106 @@ class WorkflowExecutor:
             )
             return prompt_text
 
-        def _parse_group_response(raw: str, group_idx: int, group_units: list[str]) -> dict[str, Any]:
+        # ------------------------------------------------------------------
+        # File-system evidence helpers: when the LLM does real work (tool
+        # calls create/modify files) but its final text message lacks
+        # structured JSON, we detect FS changes directly so progress is
+        # not discarded as "raw_only".
+        #
+        # These are platform-agnostic: we walk the whole project directory
+        # and only exclude known build-artifact / internal directories so
+        # the detection works for NPU, PPU, Muxi, etc. without per-platform
+        # directory hardcodes.
+        # ------------------------------------------------------------------
+        _PROJECT_FS_EXCLUDE_DIRS: frozenset[str] = frozenset({
+            ".sm-artifacts", ".memory", ".git", "__pycache__",
+            ".venv", "venv", "dist", "build", ".eggs",
+        })
+        _PROJECT_FS_EXCLUDE_PREFIXES: tuple[str, ...] = (".",)  # hidden files / dirs
+
+        def _take_project_fs_snapshot(proj_dir: str) -> dict[str, float]:
+            """Snapshot mtimes for all source files in the project (platform-agnostic)."""
+            snapshot: dict[str, float] = {}
+            proj_path = Path(proj_dir)
+            for entry in proj_path.rglob("*"):
+                if not entry.is_file():
+                    continue
+                # Skip directories excluded by name
+                if any(
+                    parent.name in _PROJECT_FS_EXCLUDE_DIRS
+                    for parent in entry.parents
+                ):
+                    continue
+                # Skip hidden directories / files
+                if any(
+                    part.startswith(_PROJECT_FS_EXCLUDE_PREFIXES)
+                    for part in entry.parts[len(proj_path.parts):]
+                ):
+                    continue
+                try:
+                    rel = str(entry.relative_to(proj_path))
+                    snapshot[rel] = entry.stat().st_mtime
+                except OSError:
+                    pass
+            return snapshot
+
+        def _detect_project_fs_changes(proj_dir: str, snapshot: dict[str, float]) -> list[str]:
+            """Return list of file paths that are new or modified vs snapshot."""
+            changed: set[str] = set()
+            proj_path = Path(proj_dir)
+            for rel, prev_mtime in snapshot.items():
+                fpath = proj_path / rel
+                try:
+                    if fpath.stat().st_mtime != prev_mtime:
+                        changed.add(rel)
+                except OSError:
+                    pass
+            # Scan for new files not in snapshot (same walk, same exclusions)
+            for entry in proj_path.rglob("*"):
+                if not entry.is_file():
+                    continue
+                if any(
+                    parent.name in _PROJECT_FS_EXCLUDE_DIRS
+                    for parent in entry.parents
+                ):
+                    continue
+                if any(
+                    part.startswith(_PROJECT_FS_EXCLUDE_PREFIXES)
+                    for part in entry.parts[len(proj_path.parts):]
+                ):
+                    continue
+                rel = str(entry.relative_to(proj_path))
+                if rel not in snapshot:
+                    changed.add(rel)
+            return sorted(changed)
+
+        def _derive_implemented_units_via_gate(group_units: list[str]) -> list[str]:
+            """Reload the gate file and return which assigned units now pass
+            strict gate validation, so auto-detected progress can report
+            accurate per-unit completion (not just modified_files)."""
+            if not has_custom_op_contract:
+                return []
+            try:
+                if gate_path.exists():
+                    reloaded = json.loads(gate_path.read_text(encoding="utf-8"))
+                else:
+                    return []
+            except (OSError, json.JSONDecodeError):
+                return []
+            if not isinstance(reloaded, dict):
+                return []
+            ledger = custom_op_final_gate_unit_ledger(
+                cast(dict[str, object], reloaded),
+                target_units=group_units,
+                project_root=project_dir,
+                custom_op_surface=custom_op_surface,
+            )
+            strict_pass = ledger.get("strict_pass_units")
+            if isinstance(strict_pass, list):
+                return [str(u) for u in strict_pass]
+            return []
+
+        def _parse_group_response(raw: str, group_idx: int, group_units: list[str], pre_snapshot: dict[str, float] | None = None) -> dict[str, Any]:
             parsed = extract_json_response(raw)
             group_label = f"group-{group_idx + 1}"
             self._raise_for_session_error_output(parsed, f"{phase_id}_{group_label}")
@@ -2114,6 +2213,32 @@ class WorkflowExecutor:
                 output: dict[str, Any] = {}
             if not output:
                 output = {"raw_response": raw, "status": "raw_only"}
+                # When the LLM failed to produce structured JSON but may
+                # have done real work via tool calls, detect file changes
+                # on disk so progress is not discarded.
+                if pre_snapshot is not None and has_custom_op_contract:
+                    changed_files = _detect_project_fs_changes(project_dir, pre_snapshot)
+                    if changed_files:
+                        output["modified_files"] = changed_files
+                        output["status"] = "auto_detected_progress"
+                        output["_auto_evidence"] = True
+                        # Re-derive implemented units from the gate file so
+                        # downstream grouping sees accurate per-unit completion
+                        # (not just a flat file list).  The gate file is the
+                        # single source of truth for unit-level pass/fail.
+                        implemented = _derive_implemented_units_via_gate(group_units)
+                        if implemented:
+                            output["implemented_units"] = implemented
+                            output["remaining_units"] = [
+                                u for u in group_units if u not in set(implemented)
+                            ]
+                        logger.info(
+                            "Custom-op %s: auto-detected %d file-system changes "
+                            "+ %d implemented units despite raw_only LLM response",
+                            group_label,
+                            len(changed_files),
+                            len(implemented),
+                        )
             output["_parallel_group"] = group_label
             output["_assigned_units"] = group_units
             return output
@@ -2127,6 +2252,7 @@ class WorkflowExecutor:
             session_id: str,
             prompt: str,
         ) -> dict[str, Any]:
+            snapshot = _take_project_fs_snapshot(project_dir) if has_custom_op_contract else None
             raw = self._send_sub_workflow_llm_command(
                 phase_id=f"{phase_id}_group{group_idx + 1}",
                 agent_id=group_agent_id,
@@ -2134,7 +2260,7 @@ class WorkflowExecutor:
                 prompt_text=prompt,
                 timeout=timeout,
             )
-            output = _parse_group_response(raw, group_idx, group_units)
+            output = _parse_group_response(raw, group_idx, group_units, pre_snapshot=snapshot)
             attempt = 0
             while (
                 has_custom_op_contract
@@ -2156,6 +2282,7 @@ class WorkflowExecutor:
                     max_attempts=max_continue_attempts,
                     entry_script=entry_script_str,
                 )
+                snapshot = _take_project_fs_snapshot(project_dir)
                 raw = self._send_sub_workflow_llm_command(
                     phase_id=f"{phase_id}_group{group_idx + 1}_continue{attempt}",
                     agent_id=group_agent_id,
@@ -2163,7 +2290,7 @@ class WorkflowExecutor:
                     prompt_text=continuation_prompt,
                     timeout=timeout,
                 )
-                output = _parse_group_response(raw, group_idx, group_units)
+                output = _parse_group_response(raw, group_idx, group_units, pre_snapshot=snapshot)
                 output["_incomplete_continuation_attempts"] = attempt
             return output
 
