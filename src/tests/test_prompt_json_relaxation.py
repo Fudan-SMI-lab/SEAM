@@ -65,6 +65,23 @@ def test_phase_35_custom_op_example_includes_validator_boolean_contract():
         assert f'"{field}": true' in content, f"phase 3.5 expanded-variant example missing {field}"
 
 
+def test_phase_35_prompts_forbid_phase3_entry_contract_fields():
+    filenames = (
+        "phase_35_static_validate_npu.md",
+        "phase_35_static_validate_ppu.md",
+        "phase_35_static_validate_ppu_baseaware.md",
+        "phase_35_static_validate_ppu_normal_entry_057.md",
+        "phase_35_static_validate_musa_baseaware.md",
+    )
+
+    for filename in filenames:
+        content = (PROMPTS_DIR / filename).read_text()
+        assert "Do not return Phase 3 entry-script fields" in content
+        assert "no `entry_script_path`" in content
+        assert "no `run_command`" in content
+        assert "validation_passed=false" in content
+
+
 def test_phase3_forbids_hard_coded_and_report_only_custom_op_gates():
     content = (PROMPTS_DIR / "phase_3_entry_script_npu.md").read_text()
 

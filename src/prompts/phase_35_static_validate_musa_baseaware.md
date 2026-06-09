@@ -24,6 +24,7 @@ Statically validate the Phase 3 entry script and command contract before the tar
 - Do not execute the target runtime here.
 - Do not accept CPU fallback or validation that only imports modules.
 - Return exactly one JSON object and no other JSON.
+- Do not return Phase 3 entry-script fields from this phase: no `entry_script_path`, no `run_command`, and no `runtime_entry_script_revision_allowed` at the top level. If a different entry script is needed, set `validation_passed=false`, describe the replacement in `issues`, and put the proposed Phase 3 contract in `fix_plan` text.
 
 ## Output Format
 ```json

@@ -66,3 +66,4 @@ Or if issues are found:
 - `validation_passed`: `true` if the script can run fully non-interactively; `false` if any blocking patterns are found.
 - `issues`: List of human-readable descriptions of each issue found.
 - `fix_plan`: Actionable plan to resolve all issues.
+- Do not return Phase 3 entry-script fields from this phase: no `entry_script_path`, no `run_command`, and no `runtime_entry_script_revision_allowed` at the top level. If a different entry script is needed, set `validation_passed=false`, describe the replacement in `issues`, and put the proposed Phase 3 contract in `fix_plan` text.

@@ -13,7 +13,9 @@ Covers:
 import json
 import sys
 import tempfile
+import concurrent.futures
 from pathlib import Path
+from collections.abc import Callable
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -27,11 +29,95 @@ from core.types import PhaseDefinition
 from core.workflow_executor import WorkflowExecutor
 
 
+class _RecordingThreadPoolExecutor:
+    created_max_workers: list[int | None] = []
+    submitted_count: int = 0
+
+    def __init__(self, max_workers: int | None = None):
+        self.created_max_workers.append(max_workers)
+
+    def __enter__(self) -> "_RecordingThreadPoolExecutor":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        return False
+
+    def submit(self, fn: Callable[..., str], *args: object, **kwargs: object) -> concurrent.futures.Future[str]:
+        self.__class__.submitted_count += 1
+        future: concurrent.futures.Future[str] = concurrent.futures.Future()
+        future.set_result(fn(*args, **kwargs))
+        return future
+
+
 def _make_workflow():
     wf = MagicMock()
     wf.name = "generic_migration"
     wf.target_platform = None
     return wf
+
+
+def _make_parallel_executor(project_dir: Path, output_dir: str | Path) -> WorkflowExecutor:
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = "## Prompt"
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.return_value = "session-1"
+    executor = WorkflowExecutor(
+        _make_workflow(), session_mgr, MagicMock(), prompt_loader, MagicMock(),
+        project_dir=str(project_dir), output_dir=str(output_dir),
+    )
+    executor.platform_policy = MagicMock()
+    return executor
+
+
+def _fix_operator_mini() -> PhaseDefinition:
+    return PhaseDefinition(
+        id="fix_operator", name="fix_operator",
+        prompt_template="repair_operator_fixer_npu",
+        output_schema={}, type="llm",
+        agent="operator_fixer",
+    )
+
+
+def _custom_op_state(target_units: list[str], phase35: dict[str, object] | None = None) -> dict[str, object]:
+    state: dict[str, object] = {
+        "phase_3_entry_script": {
+            "entry_script_path": "python train.py",
+            "entry_script_kind": "custom_op_full_validation",
+            "operator_inventory_schema": {"fine_grained_operator_units": target_units},
+        },
+    }
+    if phase35 is not None:
+        state["phase_35_static_validate"] = phase35
+    return state
+
+
+def _run_parallel_fix_with_mocked_llm(
+    executor: WorkflowExecutor,
+    project_dir: Path,
+    state: dict[str, object],
+    ledger_side_effect: Callable[..., dict[str, object]],
+):
+    (project_dir / "migration_reports").mkdir(exist_ok=True)
+    with (
+        patch("core.workflow_executor.custom_op_final_gate_unit_ledger", side_effect=ledger_side_effect),
+        patch.object(executor, "_write_repair_runtime_artifacts", return_value=("/tmp/re.md", "/tmp/card.md")),
+        patch.object(executor, "_write_operator_repair_context_artifact", return_value="/tmp/ctx.md"),
+        patch.object(executor, "_custom_op_phase1_phase3_repair_scope", return_value=""),
+        patch.object(executor, "_resolve_constraint_summary", return_value=""),
+        patch.object(executor, "_inject_llm_baseline_context"),
+        patch.object(executor, "_append_explicit_runtime_skill_markdown", return_value=("prompt", "")),
+        patch.object(executor, "_send_sub_workflow_llm_command", return_value=json.dumps({
+            "status": "success", "modified_files": [], "fix_summary": "ok", "agent_diagnostics": "",
+        })),
+        patch.object(executor, "_resolve_sub_workflow_llm_timeout", return_value=600),
+    ):
+        return executor._execute_parallel_custom_op_fix(
+            phase_id="fix_operator",
+            mini=_fix_operator_mini(),
+            state=state,
+            step_outputs={"script_stderr": "some error", "error_analysis": {"category": "operator"}},
+            loop_vars={"project_dir": str(project_dir)},
+        )
 
 
 # ── Template routing ────────────────────────────────────────────────────
@@ -447,3 +533,89 @@ def test_parallel_fix_returns_none_when_no_groups_and_no_gate(tmp_path: Path) ->
         )
 
     assert result is None
+
+
+def test_invalid_phase35_custom_op_surface_is_not_forwarded_to_ledger(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    surface = {"fine_grained_operator_unit_evidence": [{"unit_identity": "unit_a"}]}
+    seen_surfaces: list[object] = []
+
+    def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
+        seen_surfaces.append(custom_op_surface)
+        return cast(dict[str, object], {"strict_pass_count": 0, "remaining_count": 0, "parallelization_groups": []})
+
+    result = _run_parallel_fix_with_mocked_llm(
+        executor,
+        project_dir,
+        _custom_op_state(["unit_a"], {
+            "validation_passed": False,
+            "issues": ["static surface failed"],
+            "custom_op_surface": surface,
+        }),
+        _ledger,
+    )
+
+    assert result is not None
+    assert seen_surfaces[0] is None
+
+
+def test_valid_phase35_custom_op_surface_is_forwarded_to_ledger(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    surface = {"fine_grained_operator_unit_evidence": [{"unit_identity": "unit_a"}]}
+    seen_surfaces: list[object] = []
+
+    def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
+        seen_surfaces.append(custom_op_surface)
+        return cast(dict[str, object], {"strict_pass_count": 0, "remaining_count": 0, "parallelization_groups": []})
+
+    result = _run_parallel_fix_with_mocked_llm(
+        executor,
+        project_dir,
+        _custom_op_state(["unit_a"], {
+            "validation_passed": True,
+            "issues": [],
+            "validation_errors": [],
+            "custom_op_surface": surface,
+        }),
+        _ledger,
+    )
+
+    assert result is not None
+    assert seen_surfaces[0] is surface
+
+
+def test_parallel_fix_caps_worker_count_while_dispatching_all_groups(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    _RecordingThreadPoolExecutor.created_max_workers = []
+    _RecordingThreadPoolExecutor.submitted_count = 0
+
+    def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
+        if target_units == ["unit_a", "unit_b", "unit_c", "unit_d", "unit_e"]:
+            groups = [{"units": [unit]} for unit in cast(list[str], target_units)]
+        else:
+            groups = []
+        return cast(dict[str, object], {
+            "strict_pass_count": 0,
+            "remaining_count": len(target_units or []),
+            "remaining_units": list(target_units or []),
+            "parallelization_groups": groups,
+        })
+
+    with patch("core.workflow_executor.concurrent.futures.ThreadPoolExecutor", _RecordingThreadPoolExecutor):
+        result = _run_parallel_fix_with_mocked_llm(
+            executor,
+            project_dir,
+            _custom_op_state(["unit_a", "unit_b", "unit_c", "unit_d", "unit_e"]),
+            _ledger,
+        )
+
+    assert result is not None
+    assert result["_parallel_group_count"] == 5
+    assert _RecordingThreadPoolExecutor.created_max_workers == [3]
+    assert _RecordingThreadPoolExecutor.submitted_count == 5

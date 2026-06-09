@@ -35,6 +35,7 @@ If Phase 3 includes `entry_script_kind: custom_op_full_validation`, validate the
 - `if __name__ == "__main__":` guards are expected and good.
 - The analysis should be **conservative but practical**: flag genuine blockers, not theoretical edge cases.
 - You may reason freely, but end with one JSON object using exactly the fields below.
+- Do not return Phase 3 entry-script fields from this phase: no `entry_script_path`, no `run_command`, and no `runtime_entry_script_revision_allowed` at the top level. If a different entry script is needed, set `validation_passed=false`, describe the replacement in `issues`, and put the proposed Phase 3 contract in `fix_plan` text.
 
 ## Output Format
 Return exactly one JSON object with this shape:

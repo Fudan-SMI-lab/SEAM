@@ -106,6 +106,7 @@ When Phase 3 contains an `expanded_variant_inventory` with many operator variant
 - The analysis should be **conservative but practical**: flag genuine blockers, not theoretical edge cases.
 - If the script imports a module that does interactive things, check if the import path is actually executed.
 - You may reason freely, but end with one JSON object using exactly the fields below.
+- Do not return Phase 3 entry-script fields from this phase: no `entry_script_path`, no `run_command`, and no `runtime_entry_script_revision_allowed` at the top level. If a different entry script is needed, set `validation_passed=false`, describe the replacement in `issues`, and put the proposed Phase 3 contract in `fix_plan` text.
 
 ## Output Format
 Return exactly one JSON object. When custom operators are detected and `custom_op_surface` is generated, include it alongside the validation fields:

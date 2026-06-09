@@ -827,38 +827,38 @@ def _populate_unit_paths_from_contract_surface(
 
     # Build variant → base_unit mapping from expanded_operator_variants.
     variants = custom_op_surface.get("expanded_operator_variants")
-    if not isinstance(variants, list):
-        return
-
     variant_base_map: dict[str, str] = {}
     variant_own_paths: dict[str, set[str]] = {}
-    for v in cast(list[object], variants):
-        if not isinstance(v, Mapping):
-            continue
-        v_map = cast(Mapping[object, object], v)
-        unit_id = str(v_map.get("unit_identity", "")).strip()
-        base_id = str(v_map.get("base_unit_identity", "")).strip()
-        if not unit_id:
-            continue
-        if base_id:
-            variant_base_map[unit_id] = base_id
-        v_se = v_map.get("source_evidence")
-        if isinstance(v_se, list):
-            paths: set[str] = set()
-            for se in cast(list[object], v_se):
-                if not isinstance(se, str):
-                    continue
-                path = se.split(":", 1)[0].strip()
-                if path:
-                    paths.add(path)
-            if paths:
-                variant_own_paths[unit_id] = paths
+    if isinstance(variants, list):
+        for v in cast(list[object], variants):
+            if not isinstance(v, Mapping):
+                continue
+            v_map = cast(Mapping[object, object], v)
+            unit_id = str(v_map.get("unit_identity", "")).strip()
+            base_id = str(v_map.get("base_unit_identity", "")).strip()
+            if not unit_id:
+                continue
+            if base_id:
+                variant_base_map[unit_id] = base_id
+            v_se = v_map.get("source_evidence")
+            if isinstance(v_se, list):
+                variant_paths: set[str] = set()
+                for se in cast(list[object], v_se):
+                    if not isinstance(se, str):
+                        continue
+                    path = se.split(":", 1)[0].strip()
+                    if path:
+                        variant_paths.add(path)
+                if variant_paths:
+                    variant_own_paths[unit_id] = variant_paths
 
     # Populate empty unit_paths entries.
     for unit in remaining_units:
         if unit_paths.get(unit):
             continue
         paths: set[str] = set()
+        if unit in base_source_files:
+            paths.update(base_source_files[unit])
         base_id = variant_base_map.get(unit, "")
         if base_id and base_id in base_source_files:
             paths.update(base_source_files[base_id])

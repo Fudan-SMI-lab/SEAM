@@ -1011,6 +1011,38 @@ def test_phase_35_prompt_context_includes_previous_outputs() -> None:
     assert "custom_op_full_validation" in result["previous_outputs"]
 
 
+def test_phase_35_phase3_shaped_response_becomes_retryable_static_failure(tmp_path: Path) -> None:
+    runner, _ = build_runner(tmp_path)
+    spec = PhaseSpec("phase_35", "phase_35_static_validate", "entry_static")
+
+    result = runner._normalize_output(
+        spec,
+        {
+            "entry_script_path": str(tmp_path / "validate_entry.py"),
+            "run_command": f"{tmp_path / '.venv' / 'bin' / 'python'} validate_entry.py",
+            "runtime_entry_script_revision_allowed": True,
+        },
+        {"project_dir": str(tmp_path)},
+        {
+            "project_dir": str(tmp_path),
+            "previous_outputs": {
+                "phase_3_entry_script": {
+                    "entry_script_path": str(tmp_path / "demo_gradio.py"),
+                    "run_command": "python demo_gradio.py",
+                }
+            },
+        },
+    )
+
+    issues = cast(list[str], result["issues"])
+    assert result["validation_passed"] is False
+    assert "Phase 3.5 returned a Phase 3 entry-script contract" in issues[0]
+    assert "Retry Phase 3" in str(result["fix_plan"])
+    proposed = cast(dict[str, object], result["proposed_phase_3_entry_script"])
+    assert proposed["entry_script_path"] == str(tmp_path / "validate_entry.py")
+    assert proposed["runtime_entry_script_revision_allowed"] is True
+
+
 def test_run_phase_6_uses_persistent_session(tmp_path: Path) -> None:
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
 
@@ -1088,10 +1120,10 @@ def test_run_phase_2_to_3_retries_phase_3_after_phase_35_failure(tmp_path: Path)
                         "installed_packages": ["torch", "torch_npu"],
                     }
                 )
-            if command.startswith("# Phase 3.5") or "phase_35_static_validate" in command:
+            if command.startswith("# Phase 3.5") or command.startswith("Your previous output for phase_35_static_validate"):
                 self.phase35_prompts.append(command)
                 return json.dumps(self.phase35_outputs.pop(0))
-            if "Phase 3" in command:
+            if command.startswith("# Phase 3 -") or command.startswith("Your previous output for phase_3_entry_script"):
                 self.phase3_prompts.append(command)
                 return json.dumps(self.phase3_outputs.pop(0))
             raise AssertionError(f"Unexpected prompt: {command}")
@@ -1117,6 +1149,8 @@ def test_run_phase_2_to_3_retries_phase_3_after_phase_35_failure(tmp_path: Path)
 
     assert len(session_mgr.phase3_prompts) == 2
     assert len(session_mgr.phase35_prompts) == 3
+    assert "Phase 3.5 VALIDATION FAILED" in session_mgr.phase3_prompts[1]
+    assert "interactive input remains" in session_mgr.phase3_prompts[1]
     assert outputs["phase_3_entry_script"]["run_command"] == "python good.py"
     assert outputs["phase_35_static_validate"]["validation_passed"] is True
     assert "phase_35_static_validate_failure" not in outputs

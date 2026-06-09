@@ -112,6 +112,32 @@ PHASE_RESPONSE_REQUIRED_KEYS = {
 logger = logging.getLogger(__name__)
 
 
+def _phase35_entry_contract_failure(output: Mapping[str, object]) -> JsonObject | None:
+    has_entry_contract = any(key in output for key in ("entry_script_path", "run_command"))
+    if not has_entry_contract or "validation_passed" in output:
+        return None
+
+    proposed: JsonObject = {}
+    for key in ("entry_script_path", "run_command", "runtime_entry_script_revision_allowed"):
+        if key in output:
+            proposed[key] = output[key]
+
+    issue = (
+        "Phase 3.5 returned a Phase 3 entry-script contract instead of static validation JSON. "
+        f"Proposed entry_script_path={proposed.get('entry_script_path')!r}, "
+        f"run_command={proposed.get('run_command')!r}."
+    )
+    return {
+        "validation_passed": False,
+        "issues": [issue],
+        "fix_plan": (
+            "Retry Phase 3 and return the proposed headless entry contract there; "
+            "Phase 3.5 must only return validation_passed, issues, and fix_plan."
+        ),
+        "proposed_phase_3_entry_script": proposed,
+    }
+
+
 class SessionManagerLike(Protocol):
     def get_or_create(self, role: str, lifecycle: str, agent: str = "") -> str:
         ...
@@ -1278,7 +1304,7 @@ class PhaseRunner:
         "phase_1_project_analysis": [],
         "phase_2_venv_create": [],
         "phase_1_5_constraint_summary": [],
-        "phase_3_entry_script": ["phase_35_static_validate"],
+        "phase_3_entry_script": ["phase_35_static_validate", "phase_35_static_validate_failure"],
         "phase_35_static_validate": ["phase_3_entry_script"],
     }
 
@@ -1305,6 +1331,11 @@ class PhaseRunner:
         if phase.prompt_id not in self._SHARED_SESSION_PHASES:
             filtered = self._filter_previous_outputs(phase.prompt_id, previous_output_map)
             prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
+        if phase.prompt_id == "phase_3_entry_script":
+            feedback = self._phase35_retry_feedback(previous_output_map)
+            if feedback:
+                current = prompt_ctx.get("constraint_summary", "")
+                prompt_ctx["constraint_summary"] = f"{current}\n\n{feedback}" if current else feedback
         if phase.prompt_id == "phase_35_static_validate":
             filtered = self._filter_previous_outputs(phase.prompt_id, previous_output_map)
             prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
@@ -1332,6 +1363,30 @@ class PhaseRunner:
         if isinstance(value, str):
             return value
         return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _phase35_retry_feedback(previous_outputs: JsonObject) -> str:
+        phase35 = previous_outputs.get("phase_35_static_validate")
+        if isinstance(phase35, dict) and phase35.get("validation_passed") is False:
+            issues = phase35.get("issues", [])
+            if isinstance(issues, list):
+                issue_text = "\n".join(f"  - {issue}" for issue in issues)
+            else:
+                issue_text = str(issues)
+            fix_plan = str(phase35.get("fix_plan", ""))
+            return (
+                "=== Phase 3.5 VALIDATION FAILED - FIX THE FOLLOWING BEFORE RETRYING ===\n"
+                f"Issues found by Phase 3.5:\n{issue_text}\n\n"
+                f"Fix plan:\n{fix_plan}"
+            )
+
+        failure = previous_outputs.get("phase_35_static_validate_failure")
+        if isinstance(failure, dict) and failure.get("error"):
+            return (
+                "=== Phase 3.5 VALIDATION FAILED - FIX THE FOLLOWING BEFORE RETRYING ===\n"
+                f"{failure['error']}"
+            )
+        return ""
 
     def _resolve_max_retry(self, context: JsonObject) -> int:
         raw_value = context.get("max_retry", self.max_retry)
@@ -1397,7 +1452,7 @@ class PhaseRunner:
                 if isinstance(entry_script, str) and entry_script:
                     normalized["entry_script_path"] = entry_script
             normalized = normalize_phase3_container_paths(
-                normalized, prompt_context,
+                normalized, cast(dict[str, object], prompt_context),
             )
             raw_workflow_globals_phase35: object = getattr(self.workflow, "globals", None) or {} if self.workflow else {}
             workflow_globals = cast(dict[str, object], raw_workflow_globals_phase35) if isinstance(raw_workflow_globals_phase35, dict) else {}
@@ -1451,6 +1506,9 @@ class PhaseRunner:
                             prompt_context["project_dir"],
                         )
         if phase.prompt_id == "phase_35_static_validate":
+            entry_contract_failure = _phase35_entry_contract_failure(normalized)
+            if entry_contract_failure is not None:
+                normalized = entry_contract_failure
             previous_outputs = context.get("previous_outputs", {})
             previous_output_map = cast(dict[str, object], previous_outputs) if isinstance(previous_outputs, dict) else {}
             entry_script_kind = self._lookup_previous_output(

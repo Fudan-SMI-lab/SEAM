@@ -96,6 +96,32 @@ logger = logging.getLogger(__name__)
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
 _BASH_PATH: str = shutil.which("bash") or "/bin/bash"
 
+
+def _phase35_entry_contract_failure(output: Mapping[str, object]) -> dict[str, Any] | None:
+    has_entry_contract = any(key in output for key in ("entry_script_path", "run_command"))
+    if not has_entry_contract or "validation_passed" in output:
+        return None
+
+    proposed: dict[str, Any] = {}
+    for key in ("entry_script_path", "run_command", "runtime_entry_script_revision_allowed"):
+        if key in output:
+            proposed[key] = output[key]
+
+    issue = (
+        "Phase 3.5 returned a Phase 3 entry-script contract instead of static validation JSON. "
+        f"Proposed entry_script_path={proposed.get('entry_script_path')!r}, "
+        f"run_command={proposed.get('run_command')!r}."
+    )
+    return {
+        "validation_passed": False,
+        "issues": [issue],
+        "fix_plan": (
+            "Retry Phase 3 and return the proposed headless entry contract there; "
+            "Phase 3.5 must only return validation_passed, issues, and fix_plan."
+        ),
+        "proposed_phase_3_entry_script": proposed,
+    }
+
 SUB_WORKFLOW_REPAIR_PHASE_IDS = {
     "fix_dependency",
     "fix_code",
@@ -1777,8 +1803,16 @@ class WorkflowExecutor:
         custom_op_surface: Mapping[object, object] | None = None
         phase35_state = state.get("phase_35_static_validate")
         if isinstance(phase35_state, dict):
-            surface_raw = cast(dict[str, object], phase35_state).get("custom_op_surface")
-            if isinstance(surface_raw, Mapping):
+            phase35_map = cast(dict[str, object], phase35_state)
+            validation_errors = phase35_map.get("validation_errors")
+            issues = phase35_map.get("issues")
+            phase35_clean = (
+                phase35_map.get("validation_passed") is True
+                and (not isinstance(validation_errors, list) or not validation_errors)
+                and (not isinstance(issues, list) or not issues)
+            )
+            surface_raw = phase35_map.get("custom_op_surface")
+            if phase35_clean and isinstance(surface_raw, Mapping):
                 custom_op_surface = cast(Mapping[object, object], surface_raw)
 
         ledger = custom_op_final_gate_unit_ledger(
@@ -1923,8 +1957,9 @@ class WorkflowExecutor:
             )
             return prompt_text
 
-        results: list[dict[str, Any]] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(groups)) as pool:
+        results: list[tuple[int, dict[str, Any]]] = []
+        max_workers = min(len(groups), _CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures: dict[concurrent.futures.Future[str], int] = {}
             for idx, group_units in enumerate(groups):
                 prompt = _build_group_prompt(group_units, idx)
@@ -1946,13 +1981,16 @@ class WorkflowExecutor:
                 group_label = f"group-{idx + 1}"
                 try:
                     raw = future.result()
-                    output = extract_json_response(raw)
-                    self._raise_for_session_error_output(output, f"{phase_id}_{group_label}")
+                    parsed = extract_json_response(raw)
+                    self._raise_for_session_error_output(parsed, f"{phase_id}_{group_label}")
+                    if isinstance(parsed, dict):
+                        output = cast(dict[str, Any], parsed)
+                    else:
+                        output: dict[str, Any] = {}
                     if not output:
                         output = {"raw_response": raw, "status": "raw_only"}
-                    if isinstance(output, dict):
-                        output["_parallel_group"] = group_label
-                        output["_assigned_units"] = groups[idx]
+                    output["_parallel_group"] = group_label
+                    output["_assigned_units"] = groups[idx]
                     results.append((idx, output))
                 except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
                     logger.warning("Parallel fix %s: LLM call failed — %s", group_label, exc)
@@ -2176,8 +2214,8 @@ class WorkflowExecutor:
             input_ctx.setdefault("total_count", str(total_variants) if total_variants else "0")
             # Inject variant_placeholder with actual variant axis data from framework
             ph1 = state.get("phase_1_project_analysis")
-            ph3_map = cast(Mapping[str, Any], ph3) if isinstance(ph3, dict) else None
-            ph1_map = cast(Mapping[str, Any], ph1) if isinstance(ph1, dict) else None
+            ph3_map = cast(Mapping[object, object], ph3) if isinstance(ph3, dict) else None
+            ph1_map = cast(Mapping[object, object], ph1) if isinstance(ph1, dict) else None
             input_ctx.setdefault(
                 "variant_placeholder",
                 build_variant_placeholder_content(ph3_map, ph1_map),
@@ -2719,6 +2757,9 @@ class WorkflowExecutor:
                         normalized = self._restore_ordinary_phase3_entry_script(normalized, ph1, state)
 
         if "phase_35" in phase_id or "static_validate" in phase_id:
+            entry_contract_failure = _phase35_entry_contract_failure(normalized)
+            if entry_contract_failure is not None:
+                normalized = entry_contract_failure
             phase_3_output = state.get("phase_3_entry_script")
             workflow_globals = getattr(getattr(self, "workflow", None), "globals", None) or {}
             if (
@@ -4065,10 +4106,12 @@ class WorkflowExecutor:
         state: dict[str, Any],
         context: dict[str, Any],
         loop_state: dict[str, Any],
+        loop_vars: dict[str, Any] | None = None,
     ) -> None:
         imp_phases = block_cfg.get("phases", [])
         if not imp_phases:
             return
+        effective_loop_vars = loop_vars or {}
         step_outputs: dict[str, Any] = {}
         for imp_phase in imp_phases:
             if not isinstance(imp_phase, dict):
@@ -4081,7 +4124,7 @@ class WorkflowExecutor:
                 cond = self._inject_effective_stagnation_threshold(cond, loop_state)
                 cond_met = self._evaluate_condition(
                     cond, state, context,
-                    loop_vars={}, loop_state=loop_state,
+                    loop_vars=effective_loop_vars, loop_state=loop_state,
                     step_outputs=step_outputs,
                 )
                 if not cond_met:
@@ -4096,7 +4139,7 @@ class WorkflowExecutor:
                             mini=mini,
                             state=state,
                             step_outputs=step_outputs,
-                            loop_vars=loop_vars if loop_vars else None,
+                            loop_vars=effective_loop_vars or None,
                         )
                         if parallel_result is not None:
                             step_outputs[pid] = parallel_result
@@ -4106,12 +4149,12 @@ class WorkflowExecutor:
                     mini = self._mini_phase(imp_phase)
                     input_ctx = self._resolve_input_mapping(
                         mini, state, context,
-                        loop_vars={}, loop_state=loop_state,
+                        loop_vars=effective_loop_vars, loop_state=loop_state,
                         step_outputs=step_outputs,
                     )
                     self._inject_llm_baseline_context(input_ctx, mini, state)
                     self._inject_sub_workflow_context(
-                        input_ctx, pid, step_outputs, {}, state, [],
+                        input_ctx, pid, step_outputs, effective_loop_vars, state, [],
                     )
                     prompt_template = self._prompt_template_for_llm_phase(
                         phase_id=str(pid),
@@ -4156,7 +4199,7 @@ class WorkflowExecutor:
                 elif ptype == "dispatch":
                     next_id = self._execute_dispatch_phase(
                         self._mini_phase(imp_phase), state, context,
-                        loop_vars={}, loop_state=step_outputs,
+                        loop_vars=effective_loop_vars, loop_state=step_outputs,
                         step_outputs=step_outputs,
                     )
                     if next_id:
@@ -4166,12 +4209,12 @@ class WorkflowExecutor:
                                 if (rest.get("type") or "llm").lower() == "llm":
                                     mini_ctx = self._resolve_input_mapping(
                                         rest_mini, state, context,
-                                        loop_vars={}, loop_state=step_outputs,
+                                        loop_vars=effective_loop_vars, loop_state=step_outputs,
                                         step_outputs=step_outputs,
                                     )
                                     self._inject_llm_baseline_context(mini_ctx, rest_mini, state)
                                     self._inject_sub_workflow_context(
-                                        mini_ctx, str(rest.get("id") or ""), step_outputs, {}, state, [],
+                                        mini_ctx, str(rest.get("id") or ""), step_outputs, effective_loop_vars, state, [],
                                     )
                                     if next_id in {"fix_operator", "imp_fix_operator"} and _is_custom_op_migration_route(state):
                                         parallel_result = self._execute_parallel_custom_op_fix(
@@ -4179,7 +4222,7 @@ class WorkflowExecutor:
                                             mini=rest_mini,
                                             state=state,
                                             step_outputs=step_outputs,
-                                            loop_vars=loop_vars if loop_vars else None,
+                                            loop_vars=effective_loop_vars or None,
                                         )
                                         if parallel_result is not None:
                                             if isinstance(parallel_result, dict):
@@ -4228,7 +4271,7 @@ class WorkflowExecutor:
                     cmd = self.resolver.resolve(
                         getattr(mini, "command", "") or "",
                         state=state, globals=self.workflow.globals,
-                        context=context, loop_state=loop_state,
+                        context=context, loop_vars=effective_loop_vars, loop_state=loop_state,
                     )
                     subprocess.run(str(cmd), shell=True, cwd=self.project_dir, timeout=self._mini_phase(imp_phase).timeout)
             except Exception as exc:
@@ -4530,7 +4573,7 @@ class WorkflowExecutor:
                         imp_block = blocks.get("improvement_block")
                         if imp_block:
                             self._execute_improvement_block(
-                                imp_block, state, context, step_outputs,
+                                imp_block, state, context, step_outputs, loop_vars=loop_vars,
                             )
 
                 else:

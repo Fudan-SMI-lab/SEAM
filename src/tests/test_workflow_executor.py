@@ -3537,6 +3537,58 @@ def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tm
     assert session_mgr.send_command.call_count == 2
 
 
+def test_workflow_executor_phase35_phase3_shaped_response_becomes_retryable_static_failure(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="phase_35_static_validate",
+        name="Static Validate",
+        prompt_template="phase_35_static_validate",
+        output_schema={},
+        type="llm",
+        validator="entry_static",
+        agent="main_engineer",
+    )
+    workflow = WorkflowDefinition(
+        name="phase35-entry-contract",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+        agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        ValidatorEngine(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    output = executor._normalize_llm_output(
+        phase,
+        {
+            "entry_script_path": str(tmp_path / "validate_entry.py"),
+            "run_command": f"{tmp_path / '.venv' / 'bin' / 'python'} validate_entry.py",
+            "runtime_entry_script_revision_allowed": True,
+        },
+        {"project_dir": str(tmp_path)},
+        {
+            "phase_3_entry_script": {
+                "entry_script_path": str(tmp_path / "demo_gradio.py"),
+                "run_command": "python demo_gradio.py",
+            }
+        },
+    )
+
+    issues = cast(list[str], output["issues"])
+    assert output["validation_passed"] is False
+    assert "Phase 3.5 returned a Phase 3 entry-script contract" in issues[0]
+    assert "Retry Phase 3" in output["fix_plan"]
+    proposed = cast(dict[str, object], output["proposed_phase_3_entry_script"])
+    assert proposed["entry_script_path"] == str(tmp_path / "validate_entry.py")
+    assert proposed["runtime_entry_script_revision_allowed"] is True
+
+
 def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mark_validated(tmp_path: Path) -> None:
     phase = PhaseDefinition(
         id="phase_35_static_validate",
@@ -3673,6 +3725,54 @@ def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_contex
     assert contract["run_command"] == "python old.py"
     assert contract["required_report_paths"] == ["migration_reports/full.md"]
     assert contract["required_checks"] == ["full_validation"]
+
+
+def test_improvement_block_passes_loop_vars_to_parallel_custom_op_fix(tmp_path: Path) -> None:
+    workflow = WorkflowDefinition(
+        name="improvement-loop-vars",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={"operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"}},
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    loop_vars = {"project_dir": str(tmp_path), "entry_script": "python validate.py"}
+    captured: dict[str, object] = {}
+
+    def _parallel_fix(**kwargs):
+        captured["loop_vars"] = kwargs["loop_vars"]
+        return {"status": "success"}
+
+    with (
+        patch("core.workflow_executor._is_custom_op_migration_route", return_value=True),
+        patch.object(executor, "_execute_parallel_custom_op_fix", side_effect=_parallel_fix),
+    ):
+        executor._execute_improvement_block(
+            {
+                "phases": [
+                    {
+                        "id": "fix_operator",
+                        "type": "llm",
+                        "prompt_template": "repair_operator_fixer_npu",
+                        "agent": "operator_fixer",
+                    }
+                ]
+            },
+            {"phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"}},
+            {},
+            {},
+            loop_vars=loop_vars,
+        )
+
+    assert captured["loop_vars"] is loop_vars
 
 
 def test_missing_experience_usage_fields_normalize_to_empty(tmp_path: Path):

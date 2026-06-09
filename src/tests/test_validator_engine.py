@@ -1,6 +1,6 @@
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TypeAlias, cast
 
@@ -18,6 +18,7 @@ from validators.validate_project_analysis import validate as validate_project_an
 from validators.validate_reports import validate as validate_reports
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_validation_final import (
+    custom_op_final_gate_unit_ledger,
     validate as validate_validation_final,
     validate_custom_op_final_gate,
 )
@@ -380,6 +381,27 @@ def test_project_analysis_accepts_generic_multi_unit_custom_op_surface() -> None
     )
 
     assert result == {"passed": True, "errors": [], "warnings": []}
+
+
+def test_custom_op_ledger_groups_non_variant_units_by_direct_surface_evidence() -> None:
+    surface: Mapping[object, object] = {
+        "fine_grained_operator_unit_evidence": [
+            {"unit_identity": "unit_a", "source_evidence": ["csrc/shared.cpp:unit_a"]},
+            {"unit_identity": "unit_b", "source_evidence": ["csrc/shared.cpp:unit_b"]},
+            {"unit_identity": "unit_c", "source_evidence": ["csrc/independent.cpp:unit_c"]},
+        ],
+    }
+
+    ledger = custom_op_final_gate_unit_ledger(
+        {},
+        target_units=["unit_a", "unit_b", "unit_c"],
+        custom_op_surface=surface,
+    )
+
+    groups = cast(list[dict[str, object]], ledger["parallelization_groups"])
+    grouped_units = [set(cast(list[str], group["units"])) for group in groups]
+    assert {"unit_a", "unit_b"} in grouped_units
+    assert {"unit_c"} in grouped_units
 
 
 def test_project_analysis_accepts_custom_op_surface_without_fine_grained_units() -> None:
