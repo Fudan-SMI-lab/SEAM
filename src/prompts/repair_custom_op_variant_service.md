@@ -52,6 +52,13 @@ For every assigned source-discovered CUDA/native operator and assigned expanded 
 
 You must close all operator+variant rows with real implementation, build, install, runtime, numerical parity, and performance evidence. A row is not closed because a JSON report says it is closed; a row is closed only when the project public API executes the selected target-platform custom-op path and measured results prove it. Performance evidence must come from independently measured baseline and target-custom executions with positive measured iteration counts; copied `baseline_seconds == custom_seconds`, `measure_iterations=0`, self-baselines, diagnostic-only baselines, or placeholder `speedup_vs_baseline=1.0` are blocking defects.
 
+## Non-Negotiable Completion Contract
+
+- INCOMPLETE is the state you are assigned to repair, not an exit strategy. Do not return early because the assigned scope is large, unfamiliar, missing scaffolding, or currently lacks reports.
+- Before any non-`FULL_PASS` final JSON, you must perform concrete project-local implementation work: create or modify NPU host code, kernel/device code, adapter/bridge code, build/install scripts, report producers, and validation code needed by the assigned units.
+- Missing build helpers, missing CMake files, absent adapters, absent OPP source, absent report producers, or missing evidence schemas are assigned implementation work. Repair or create them in the target project instead of listing them as blockers without code-producing attempts.
+- Keep splitting assigned units into smaller implementation slices inside this same session until the assigned units pass the strict final gate, or until you have real modified files plus build/runtime/parity/performance attempts for every remaining unit. A response with `status=INCOMPLETE`, `modified_files=[]`, and `implemented_units=[]` is not acceptable.
+
 ## Required Workflow
 
 1. Re-read the Phase 1 operator inventory, Phase 3 validation script, runtime artifacts, source CUDA files, bindings, wrappers, autograd paths, launch sites, setup/build files, and tests.
@@ -88,7 +95,7 @@ You must close all operator+variant rows with real implementation, build, instal
 - If a single operator requires multiple background agents (e.g., one for source discovery, one for implementation, one for testing), dispatch them as a pipeline. But different operators must be dispatched as parallel independent workstreams.
 - Do the investigation yourself with direct file reads, searches, shell commands, builds, and the project validation command.
 - If more research is needed, perform it inline in this same session and summarize the exact findings before editing.
-- If the remaining work is too large for this call, return `INCOMPLETE` with the unresolved operators/variants and blockers instead of starting a nested task.
+- Do not stop because the remaining work is large. Split assigned units into smaller implementation slices inside this same session, repair the project-local NPU sources/build/adapter/report producers, run validation after each slice, and continue. `INCOMPLETE` may only be returned after concrete source/build changes and validation attempts are recorded in `modified_files`, `commands_run`, `toolchain_or_kernel_attempts`, and `remaining_units`.
 
 ## Hard Rejections
 
@@ -105,7 +112,7 @@ You must not return success if any of these are true:
 - Any expanded variant remains unimplemented, untested, unmeasured, or only mapped to a family-level implementation without variant-specific evidence.
 - Any row is counted as `FULL_PASS` only when the ledger closes every in-scope row with real implementation, runtime, parity, performance, and final-gate evidence. Hardware/toolkit limitation is a repair signal, not a success signal.
 
-If a real implementation cannot be completed in this call, return `INCOMPLETE` with the exact remaining operators, variants, and blockers. Do not claim `FULL_PASS`.
+Do not return `INCOMPLETE` merely because the real implementation is not completed yet; continue implementing the assigned NPU operators/variants. If an unavoidable hard external outage remains after code-producing attempts, return `INCOMPLETE` only with non-empty `modified_files`, exact commands, concrete toolchain/kernel attempts, validation output, and remaining assigned units. Do not claim `FULL_PASS`.
 
 ## Evidence Schema Requirements
 
@@ -126,7 +133,7 @@ Return one JSON object only:
 
 ```json
 {
-  "status": "FULL_PASS or INCOMPLETE or FAILED",
+  "status": "FULL_PASS or INCOMPLETE or FAILED - INCOMPLETE requires concrete code-producing attempts",
   "modified_files": ["files actually changed across all parallel agents"],
   "commands_run": ["commands run by all agents"],
   "implemented_units": ["unit identities truly implemented"],

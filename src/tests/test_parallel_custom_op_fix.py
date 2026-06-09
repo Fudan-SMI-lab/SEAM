@@ -725,6 +725,59 @@ def test_parallel_fix_incomplete_group_result_merges_to_partial(tmp_path: Path) 
     assert result["status"] == "partial"
 
 
+def test_parallel_fix_reprompts_empty_incomplete_group_before_merging(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    sent_prompts: list[str] = []
+    responses = iter([
+        json.dumps({"status": "INCOMPLETE", "modified_files": [], "implemented_units": [], "remaining_units": ["unit_a"]}),
+        json.dumps({"status": "success", "modified_files": ["npu/unit_a.cpp"], "implemented_units": ["unit_a"]}),
+    ])
+
+    def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
+        requested_units = list(cast(list[str], target_units or []))
+        return cast(dict[str, object], {
+            "strict_pass_count": 0,
+            "remaining_count": len(requested_units),
+            "remaining_units": requested_units,
+            "parallelization_groups": [{"units": requested_units}] if requested_units else [],
+        })
+
+    def _send_group(**kwargs):
+        sent_prompts.append(str(kwargs["prompt_text"]))
+        return next(responses)
+
+    with (
+        patch("core.workflow_executor.custom_op_final_gate_unit_ledger", side_effect=_ledger),
+        patch.object(executor, "_write_repair_runtime_artifacts", return_value=("/tmp/re.md", "/tmp/card.md")),
+        patch.object(executor, "_write_operator_repair_context_artifact", return_value="/tmp/ctx.md"),
+        patch.object(executor, "_custom_op_phase1_phase3_repair_scope", return_value=""),
+        patch.object(executor, "_resolve_constraint_summary", return_value=""),
+        patch.object(executor, "_inject_llm_baseline_context"),
+        patch.object(executor, "_append_explicit_runtime_skill_markdown", return_value=("initial prompt", "")),
+        patch.object(executor, "_send_sub_workflow_llm_command", side_effect=_send_group),
+        patch.object(executor, "_resolve_sub_workflow_llm_timeout", return_value=600),
+    ):
+        result = executor._execute_parallel_custom_op_fix(
+            phase_id="fix_operator",
+            mini=_fix_operator_mini(),
+            state=_custom_op_state(["unit_a"]),
+            step_outputs={"script_stderr": "some error", "error_analysis": {"category": "operator"}},
+            loop_vars={"project_dir": str(project_dir)},
+        )
+
+    assert result is not None
+    assert result["status"] == "success"
+    assert result["modified_files"] == ["npu/unit_a.cpp"]
+    parallel_results = cast(list[dict[str, object]], result["_parallel_results"])
+    assert parallel_results[0]["_incomplete_continuation_attempts"] == 1
+    assert len(sent_prompts) == 2
+    assert "INCOMPLETE is the problem to repair" in sent_prompts[1]
+    assert "Do not return another INCOMPLETE/FAILED response with modified_files=[]" in sent_prompts[1]
+    assert "unit_a" in sent_prompts[1]
+
+
 def test_parallel_fix_caps_worker_count_while_dispatching_all_groups(tmp_path: Path) -> None:
     project_dir = tmp_path / "test_project"
     project_dir.mkdir()

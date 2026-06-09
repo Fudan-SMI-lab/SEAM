@@ -150,6 +150,7 @@ RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "compaction response is incomplete",
 }
 CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT = 100
+CUSTOM_OP_INCOMPLETE_GROUP_CONTINUE_ATTEMPTS_DEFAULT = 2
 
 # ── Parallel custom-op fix configuration ───────────────────────────────
 _CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT = 10
@@ -427,7 +428,8 @@ def _variant_dispatch_context(phase3_contract: dict[str, object] | None) -> dict
     return {
         "parallel_dispatch_guidance": (
             f"Parallel repair dispatch: {len(unit_ids)} operator variant units discovered. "
-            "Each repair session handles a subset. Focus on your assigned units only."
+            "Each repair session handles a subset. Focus on your assigned units only. "
+            "Do not return early with INCOMPLETE; keep implementing the assigned NPU custom-op variants until validation evidence exists."
         ),
         "assigned_units": ", ".join(unit_ids),
         "assigned_unit_count": str(len(unit_ids)),
@@ -1806,6 +1808,72 @@ class WorkflowExecutor:
         return "full_pass" in text and ("pass" in text or "success" in text)
 
     @staticmethod
+    def _has_nonempty_string_list(value: object) -> bool:
+        return isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value)
+
+    @classmethod
+    def _custom_op_group_output_needs_continuation(cls, phase_output: dict[str, Any]) -> bool:
+        status = str(phase_output.get("status") or "").strip().lower().replace("-", "_").replace(" ", "_")
+        success_statuses = {"success", "succeeded", "pass", "passed", "full_pass"}
+        if status in success_statuses:
+            return False
+        if cls._has_nonempty_string_list(phase_output.get("modified_files")):
+            return False
+        if cls._has_nonempty_string_list(phase_output.get("implemented_units")):
+            return False
+        assigned_units = phase_output.get("_assigned_units")
+        remaining_units = phase_output.get("remaining_units")
+        return cls._has_nonempty_string_list(assigned_units) or cls._has_nonempty_string_list(remaining_units)
+
+    def _custom_op_incomplete_group_continue_attempts(self) -> int:
+        raw_value = self.framework_config.get("custom_op_incomplete_group_continue_attempts")
+        if raw_value is None:
+            return CUSTOM_OP_INCOMPLETE_GROUP_CONTINUE_ATTEMPTS_DEFAULT
+        try:
+            return max(0, int(raw_value))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid custom_op_incomplete_group_continue_attempts=%r; using default %s",
+                raw_value,
+                CUSTOM_OP_INCOMPLETE_GROUP_CONTINUE_ATTEMPTS_DEFAULT,
+            )
+            return CUSTOM_OP_INCOMPLETE_GROUP_CONTINUE_ATTEMPTS_DEFAULT
+
+    @staticmethod
+    def _build_custom_op_group_continuation_prompt(
+        *,
+        assigned_units: list[str],
+        previous_output: dict[str, Any],
+        attempt: int,
+        max_attempts: int,
+        entry_script: str,
+    ) -> str:
+        try:
+            previous_json = json.dumps(previous_output, ensure_ascii=False, default=str, indent=2)
+        except TypeError:
+            previous_json = str(previous_output)
+        if len(previous_json) > 6000:
+            previous_json = previous_json[:6000] + "..."
+        unit_lines = "\n".join(f"- {unit}" for unit in assigned_units)
+        return (
+            "Your previous custom-op repair response was not accepted because it returned "
+            "no concrete assigned-unit progress. INCOMPLETE is the problem to repair, "
+            "not a valid shortcut response.\n\n"
+            f"Continuation attempt {attempt}/{max_attempts}. Continue in this same session and implement the assigned "
+            "NPU custom-op operators/variants. Do not return another INCOMPLETE/FAILED response with "
+            "modified_files=[] or implemented_units=[].\n\n"
+            "Assigned units remain:\n"
+            f"{unit_lines}\n\n"
+            "Required next actions:\n"
+            "1. Create or modify project-local NPU host/kernel/adapter/build/report producer files for the assigned units.\n"
+            "2. If build scaffolding, CMake helpers, adapters, OPP sources, or report producers are missing, repair or create those project files instead of reporting them as blockers.\n"
+            f"3. Run the validation command after the code-producing attempt: {entry_script}.\n"
+            "4. Return JSON only after recording concrete modified_files, commands_run, toolchain_or_kernel_attempts, and remaining_units.\n\n"
+            "Previous response summary:\n"
+            f"```json\n{previous_json}\n```"
+        )
+
+    @staticmethod
     def _prompt_template_for_llm_phase(
         *,
         phase_id: str,
@@ -2000,7 +2068,8 @@ class WorkflowExecutor:
                 "parallel_dispatch_guidance": (
                     f"Group {group_idx + 1}/{len(groups)}: You are assigned {len(group_units)} specific operators. "
                     "Use background tasks to dispatch each operator to a parallel agent for simultaneous repair. "
-                    "After all complete, merge results and run the entry script for final validation."
+                    "Do not let workers return only analysis or INCOMPLETE; each stream must implement real NPU host/kernel/adapter/build/report changes for its assigned unit. "
+                    "After all implementation streams complete, merge results and run the entry script for final validation."
                 ),
             }
             if strict_acceptance:
@@ -2013,40 +2082,86 @@ class WorkflowExecutor:
             )
             return prompt_text
 
+        def _parse_group_response(raw: str, group_idx: int, group_units: list[str]) -> dict[str, Any]:
+            parsed = extract_json_response(raw)
+            group_label = f"group-{group_idx + 1}"
+            self._raise_for_session_error_output(parsed, f"{phase_id}_{group_label}")
+            if isinstance(parsed, dict):
+                output = cast(dict[str, Any], parsed)
+            else:
+                output: dict[str, Any] = {}
+            if not output:
+                output = {"raw_response": raw, "status": "raw_only"}
+            output["_parallel_group"] = group_label
+            output["_assigned_units"] = group_units
+            return output
+
+        max_continue_attempts = self._custom_op_incomplete_group_continue_attempts()
+
+        def _run_group_repair(
+            group_idx: int,
+            group_units: list[str],
+            group_agent_id: str,
+            session_id: str,
+            prompt: str,
+        ) -> dict[str, Any]:
+            raw = self._send_sub_workflow_llm_command(
+                phase_id=f"{phase_id}_group{group_idx + 1}",
+                agent_id=group_agent_id,
+                session_id=session_id,
+                prompt_text=prompt,
+                timeout=timeout,
+            )
+            output = _parse_group_response(raw, group_idx, group_units)
+            attempt = 0
+            while (
+                has_custom_op_contract
+                and attempt < max_continue_attempts
+                and self._custom_op_group_output_needs_continuation(output)
+            ):
+                attempt += 1
+                logger.warning(
+                    "Parallel custom_op fix group-%s returned no-progress status=%r; sending continuation %s/%s",
+                    group_idx + 1,
+                    output.get("status"),
+                    attempt,
+                    max_continue_attempts,
+                )
+                continuation_prompt = self._build_custom_op_group_continuation_prompt(
+                    assigned_units=group_units,
+                    previous_output=output,
+                    attempt=attempt,
+                    max_attempts=max_continue_attempts,
+                    entry_script=entry_script_str,
+                )
+                raw = self._send_sub_workflow_llm_command(
+                    phase_id=f"{phase_id}_group{group_idx + 1}_continue{attempt}",
+                    agent_id=group_agent_id,
+                    session_id=session_id,
+                    prompt_text=continuation_prompt,
+                    timeout=timeout,
+                )
+                output = _parse_group_response(raw, group_idx, group_units)
+                output["_incomplete_continuation_attempts"] = attempt
+            return output
+
         results: list[tuple[int, dict[str, Any]]] = []
         max_workers = min(len(groups), _CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures: dict[concurrent.futures.Future[str], int] = {}
+            futures: dict[concurrent.futures.Future[dict[str, Any]], int] = {}
             for idx, group_units in enumerate(groups):
                 prompt = _build_group_prompt(group_units, idx)
                 group_agent_id = f"{agent_id}_group{idx + 1}"
                 sid = self.session_mgr.get_or_create(
                     role=group_agent_id, lifecycle="persistent"
                 )
-                future = pool.submit(
-                    self._send_sub_workflow_llm_command,
-                    phase_id=f"{phase_id}_group{idx + 1}",
-                    agent_id=group_agent_id,
-                    session_id=sid,
-                    prompt_text=prompt,
-                    timeout=timeout,
-                )
+                future = pool.submit(_run_group_repair, idx, group_units, group_agent_id, sid, prompt)
                 futures[future] = idx
             for future in concurrent.futures.as_completed(futures):
                 idx = futures[future]
                 group_label = f"group-{idx + 1}"
                 try:
-                    raw = future.result()
-                    parsed = extract_json_response(raw)
-                    self._raise_for_session_error_output(parsed, f"{phase_id}_{group_label}")
-                    if isinstance(parsed, dict):
-                        output = cast(dict[str, Any], parsed)
-                    else:
-                        output: dict[str, Any] = {}
-                    if not output:
-                        output = {"raw_response": raw, "status": "raw_only"}
-                    output["_parallel_group"] = group_label
-                    output["_assigned_units"] = groups[idx]
+                    output = future.result()
                     results.append((idx, output))
                 except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
                     logger.warning("Parallel fix %s: LLM call failed — %s", group_label, exc)

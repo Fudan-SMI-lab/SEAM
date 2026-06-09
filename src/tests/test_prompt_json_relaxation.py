@@ -252,3 +252,15 @@ def test_extract_json_response_uses_last_valid_fenced_json():
     assert result["python_path"] == "/opt/conda/bin/python3.10"
     assert result["installed_packages"] == ["torch==2.8.0+metax3.5.3.9"]
     assert result["vendor_stack"]["api_mode"] == "cuda_compatible"
+
+
+def test_custom_op_repair_prompts_require_persistent_npu_implementation():
+    variant_prompt = (PROMPTS_DIR / "repair_custom_op_variant_service.md").read_text(encoding="utf-8")
+    operator_prompt = (PROMPTS_DIR / "repair_operator_fixer_npu.md").read_text(encoding="utf-8")
+
+    assert "If the remaining work is too large for this call" not in variant_prompt
+    assert "INCOMPLETE is the state you are assigned to repair, not an exit strategy" in variant_prompt
+    assert "concrete project-local implementation work" in variant_prompt
+    assert "modified_files=[]" in variant_prompt
+    assert "INCOMPLETE 是需要解决的目标状态，不是提前返回理由" in operator_prompt
+    assert "禁止无代码修改地返回 INCOMPLETE" in operator_prompt
