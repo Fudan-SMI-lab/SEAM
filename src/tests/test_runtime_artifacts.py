@@ -143,6 +143,58 @@ def test_operator_repair_context_lists_expanded_variants_as_missing_report_scope
     assert "Unit 3: generic_kernel:shape=small:precision=fp32" in text
 
 
+def test_operator_repair_context_scopes_assigned_units_and_unique_path(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    reports_dir = project_dir / "migration_reports"
+    reports_dir.mkdir(parents=True)
+    _ = (reports_dir / "operator_inventory.json").write_text(
+        json.dumps({
+            "rows": [
+                {"unit_identity": "op_alpha:dtype=float", "status": "discovered"},
+                {"unit_identity": "op_alpha:dtype=half", "status": "discovered"},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    _ = (reports_dir / "migration_manifest.json").write_text('{"rows": []}', encoding="utf-8")
+    _ = (reports_dir / "custom_op_final_gate.json").write_text(
+        json.dumps({
+            "rows": [
+                {"unit_identity": "op_alpha:dtype=float"},
+                {"unit_identity": "op_alpha:dtype=half"},
+            ],
+            "source_inventory": {"entries": []},
+        }),
+        encoding="utf-8",
+    )
+    phase3_contract: dict[str, object] = {
+        "entry_script_kind": "custom_op_full_validation",
+        "reports_dir": str(reports_dir),
+        "expanded_variant_inventory": {
+            "variant_axes_detected": True,
+            "unit_identities": ["op_alpha:dtype=float", "op_alpha:dtype=half"],
+            "expanded_operator_instances_count": 2,
+        },
+    }
+
+    context_path = write_operator_repair_context_artifact(
+        artifact_dir=str(tmp_path / ".sm-artifacts" / "run"),
+        project_dir=str(project_dir),
+        entry_script="python validate_custom_ops_full.py",
+        phase3_contract=phase3_contract,
+        assigned_units=["op_alpha:dtype=float"],
+        context_suffix="group1",
+    )
+
+    text = Path(context_path).read_text(encoding="utf-8")
+    assert context_path.endswith("_group1.md")
+    assert "Assigned Unit 1: op_alpha:dtype=float" in text
+    assert "Phase3 Unit" not in text
+    assert "Variant 1: op_alpha:dtype=float" in text
+    assert "Remaining Unit Identities: op_alpha:dtype=float" in text
+    assert "op_alpha:dtype=half" not in text
+
+
 def test_scaffold_or_refresh_custom_op_canonical_reports_fail_closed_for_full_variant_scope(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     units = [f"variant_route:dtype={'double' if i >= 30 else 'float'}:variant={i}" for i in range(60)]

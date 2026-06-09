@@ -8,18 +8,25 @@
 8. - 如果 analyze_error 报告的问题是 **entry script 输出缺少证据字段**（如 `cpu_baseline`、`npu_custom`、`project_api_invoked`、`custom_op_route_executed`、`public_api_invoked` 等布尔标志），则**必须修改 entry script 源码**（从 `{entry_script}` 命令提取脚本文件名，如 `python validate.py` → 修改 `validate.py`）来生成这些字段。**严禁只修改输出文件**（如 `migration_reports/*.json`），因为输出文件会在下轮运行时被 entry script 重新生成覆盖。
 9. - 验证时使用 `{entry_script}` 命令重新运行（该命令即为 entry script 的执行方式），确认源码修改生效且输出文件自动包含所需字段。
 10. {parallel_dispatch_guidance}
-11. 
-12. ## Output Format
-13. Return a JSON code block with this shape:
-14. 
-15. ```json
-16. {
-17.   "modified_files": [],
-18.   "summary": "what changed and why",
-19.   "agent_diagnostics": {
-20.     "native_path_validated": true,
-21.     "final_gate_schema_preserved": true,
-22.     "validated_with_entry_script": true
-23.   }
-24. }
-25. ```
+11.
+12. ## Assigned Operator Scope
+13. Assigned unit count: {assigned_unit_count}
+14. Assigned units: {assigned_units}
+15. Only repair, validate, and report on the assigned units above. Do not claim closure for other global custom-op units unless they are listed in this assigned scope or share source files with an assigned unit and are required to avoid a source conflict.
+16. Current assigned-scope progress:
+17. {operator_repair_progress_block}
+18.
+19. ## Output Format
+20. Return a JSON code block with this shape:
+21.
+22. ```json
+23. {
+24.   "modified_files": [],
+25.   "summary": "what changed and why",
+26.   "agent_diagnostics": {
+27.     "native_path_validated": true,
+28.     "final_gate_schema_preserved": true,
+29.     "validated_with_entry_script": true
+30.   }
+31. }
+32. ```

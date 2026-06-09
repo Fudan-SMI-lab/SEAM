@@ -92,11 +92,13 @@ def write_operator_repair_context_artifact(
     phase3_contract: dict[str, object] | None = None,
     phase1_analysis: dict[str, object] | None = None,
     assigned_units: list[str] | None = None,
+    context_suffix: str | None = None,
 ) -> str:
     runtime_dir = Path(artifact_dir) / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     project_name = sanitize_project_name(project_dir)
-    context_path = runtime_dir / f"operatorRepairContext_{project_name}.md"
+    suffix = f"_{_safe_context_suffix(context_suffix)}" if context_suffix else ""
+    context_path = runtime_dir / f"operatorRepairContext_{project_name}{suffix}.md"
     contract = dict(phase3_contract or {})
 
     _ = context_path.write_text(
@@ -186,6 +188,7 @@ def _operator_repair_context_markdown(
 
     expanded_variant_units = _expanded_variant_units_from_contract(contract)
     phase3_units = _phase3_contract_operator_units(contract)
+    scoped_assigned_units = _dedupe_assigned_units(assigned_units or [])
     expanded_variant_count = _expanded_variant_count_from_contract(contract, expanded_variant_units)
     total_count = _best_effort_total_count(inventory, manifest, gate)
     units = _operator_units(inventory, manifest, gate)
@@ -218,8 +221,19 @@ def _operator_repair_context_markdown(
         warnings.append(
             "Current migration_reports do not cover every Phase 3 operator identity; continue repair from the Phase 3 operator scope."
         )
+    if scoped_assigned_units:
+        expanded_variant_units = _filter_unit_list_for_assignment(expanded_variant_units, scoped_assigned_units)
+        phase3_units = _filter_unit_list_for_assignment(phase3_units, scoped_assigned_units)
+        units = _filter_unit_list_for_assignment(units, scoped_assigned_units)
+        if fallback_needed or not units:
+            units = list(scoped_assigned_units)
+        total_count = len(units)
+        unit_source = f"{unit_source} (assigned-unit scoped)"
+        inventory_source = f"{inventory_source} (assigned-unit scoped)"
     progress = _progress_summary(gate)
     ledger_target_units = expanded_variant_units or phase3_units or _operator_unit_identities(inventory, manifest, gate)
+    if scoped_assigned_units:
+        ledger_target_units = _filter_unit_list_for_assignment(ledger_target_units, scoped_assigned_units) or list(scoped_assigned_units)
     ledger = custom_op_final_gate_unit_ledger(
         _object_dict(gate) or {},
         target_units=ledger_target_units,
@@ -251,7 +265,7 @@ def _operator_repair_context_markdown(
         f"- Reports Dir: {reports_dir}",
         "",
         "## Phase 1 Discovery Summary",
-        *_phase1_discovery_lines(phase1_analysis),
+        *_phase1_discovery_lines(phase1_analysis, assigned_units=scoped_assigned_units),
         "",
         "## Phase 3 Validation Contract Summary",
         f"- Run Command: {contract.get('run_command', entry_script or '(not provided)')}",
@@ -312,10 +326,9 @@ def _operator_repair_context_markdown(
     else:
         lines.extend(["## Parallelizable Operator Units", "- No per-operator units found in reports; inspect the discovered inventory paths before editing.", ""])
 
-    if assigned_units:
-        assigned_units_str = ", ".join(assigned_units)
+    if scoped_assigned_units:
         lines.append("## Currently Assigned Units (This Repair Session)")
-        for index, unit in enumerate(assigned_units, start=1):
+        for index, unit in enumerate(scoped_assigned_units, start=1):
             lines.append(f"- Assigned Unit {index}: {unit}")
         lines.append("")
 
@@ -334,9 +347,9 @@ def _operator_repair_context_markdown(
         "- Do not execute docs/cuda_custom_op_skill_test_prompt.md as a workplan; this artifact is the bounded repair context.",
         "",
     ])
-    if assigned_units:
-        assigned_units_str = ", ".join(assigned_units)
-        lines.append(f"- This repair session is scoped to {len(assigned_units)} unit(s): {assigned_units_str}. Do not modify units outside this scope even if they appear in the ledger.")
+    if scoped_assigned_units:
+        assigned_units_str = ", ".join(scoped_assigned_units)
+        lines.append(f"- This repair session is scoped to {len(scoped_assigned_units)} unit(s): {assigned_units_str}. Do not modify units outside this scope even if they appear in the ledger.")
     lines.extend([
         "## Warnings",
     ])
@@ -345,7 +358,7 @@ def _operator_repair_context_markdown(
     return "\n".join(lines)
 
 
-def _phase1_discovery_lines(phase1_analysis: dict[str, object]) -> list[str]:
+def _phase1_discovery_lines(phase1_analysis: dict[str, object], assigned_units: list[str] | None = None) -> list[str]:
     if not phase1_analysis:
         return ["- Phase 1 project analysis was not provided in this repair context."]
     lines: list[str] = []
@@ -374,6 +387,10 @@ def _phase1_discovery_lines(phase1_analysis: dict[str, object]) -> list[str]:
             value = surface_dict.get(key)
             if isinstance(value, list) and value:
                 values = cast(list[object], value)
+                if assigned_units and key in {"fine_grained_operator_units", "discovered_operator_names", "native_operator_symbols"}:
+                    values = [item for item in values if str(item).strip() in set(assigned_units)]
+                    if not values:
+                        continue
                 sample = ", ".join(str(item) for item in values[:20])
                 lines.append(f"- custom_op_surface.{key}: count={len(values)} sample={sample}")
         axes = surface_dict.get("variant_axes")
@@ -383,7 +400,9 @@ def _phase1_discovery_lines(phase1_analysis: dict[str, object]) -> list[str]:
         if isinstance(variants, list) and variants:
             variant_items = cast(list[object], variants)
             unit_ids: list[str] = []
-            for item in variant_items[:50]:
+            assigned_set = set(assigned_units or [])
+            scoped_variant_items = [item for item in variant_items if _entry_matches_assigned_unit(item, assigned_set)] if assigned_set else variant_items
+            for item in scoped_variant_items[:50]:
                 if isinstance(item, dict):
                     item_dict = cast(dict[str, object], item)
                     unit_identity = item_dict.get("unit_identity")
@@ -392,11 +411,50 @@ def _phase1_discovery_lines(phase1_analysis: dict[str, object]) -> list[str]:
                         continue
                     item = item_dict
                 unit_ids.append(str(item)[:200])
-            lines.append(f"- custom_op_surface.expanded_operator_variants: count={len(variant_items)}")
+            lines.append(f"- custom_op_surface.expanded_operator_variants: count={len(scoped_variant_items)}")
             lines.extend(f"  - {unit_id}" for unit_id in unit_ids)
     if not lines:
         lines.append("- Phase 1 analysis is present but has no custom-op discovery summary fields.")
     return lines
+
+
+def _safe_context_suffix(value: str | None) -> str:
+    cleaned = "" if value is None else "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value.strip())
+    return cleaned[:80] or "scoped"
+
+
+def _dedupe_assigned_units(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        cleaned = str(value).strip()
+        if cleaned and cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
+def _filter_unit_list_for_assignment(units: list[str], assigned_units: list[str]) -> list[str]:
+    assigned_set = set(assigned_units)
+    return [unit for unit in units if _unit_text_matches_assigned(unit, assigned_set)]
+
+
+def _unit_text_matches_assigned(unit_text: str, assigned_set: set[str]) -> bool:
+    stripped = str(unit_text).strip()
+    if stripped in assigned_set:
+        return True
+    return any(f"name={unit}" in stripped or f"unit_identity={unit}" in stripped for unit in assigned_set)
+
+
+def _entry_matches_assigned_unit(entry: object, assigned_set: set[str]) -> bool:
+    if not assigned_set:
+        return True
+    if isinstance(entry, dict):
+        entry_dict = cast(dict[str, object], entry)
+        for key in ("unit_identity", "name", "operator", "op_name", "symbol"):
+            value = entry_dict.get(key)
+            if isinstance(value, str) and value.strip() in assigned_set:
+                return True
+        return False
+    return str(entry).strip() in assigned_set
 
 
 def safe_project_reports_dir(project_path: Path) -> Path:

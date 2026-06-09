@@ -441,6 +441,42 @@ def test_custom_op_ledger_groups_variants_by_explicit_base_unit_identity() -> No
     assert {"acoustic:forward_cuda:ndim=1:dtype=float"} in grouped_units
 
 
+def test_custom_op_ledger_groups_variant_surface_by_family_but_not_plain_category() -> None:
+    variant_surface: Mapping[object, object] = {
+        "expanded_operator_variants": [
+            {"unit_identity": "op_alpha:dtype=float", "category": "pointwise"},
+            {"unit_identity": "op_alpha:dtype=half", "category": "pointwise"},
+        ],
+    }
+    variant_ledger = custom_op_final_gate_unit_ledger(
+        {},
+        target_units=["op_alpha:dtype=float", "op_alpha:dtype=half"],
+        custom_op_surface=variant_surface,
+    )
+
+    variant_groups = cast(list[dict[str, object]], variant_ledger["parallelization_groups"])
+    assert {"op_alpha:dtype=float", "op_alpha:dtype=half"} in [
+        set(cast(list[str], group["units"])) for group in variant_groups
+    ]
+
+    plain_gate: Mapping[object, object] = {
+        "rows": [
+            {"unit_identity": "plain_op_a", "category": "pointwise"},
+            {"unit_identity": "plain_op_b", "category": "pointwise"},
+        ]
+    }
+    plain_ledger = custom_op_final_gate_unit_ledger(
+        plain_gate,
+        target_units=["plain_op_a", "plain_op_b"],
+    )
+
+    plain_groups = cast(list[dict[str, object]], plain_ledger["parallelization_groups"])
+    assert [set(cast(list[str], group["units"])) for group in plain_groups] == [
+        {"plain_op_a"},
+        {"plain_op_b"},
+    ]
+
+
 def test_custom_op_ledger_groups_variants_by_stripping_key_value_axis_segments() -> None:
     target_units = [
         "acoustic:backward_cuda:ndim=1:dtype=float:accuracy=2:storage_utils=2",

@@ -495,6 +495,37 @@ def test_parallel_fix_returns_none_when_no_groups_and_no_target_units() -> None:
         assert result is None  # fallback to single fix_operator
 
 
+def test_parallel_fix_does_not_fallback_to_all_targets_when_ledger_has_no_remaining(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    sent_prompts: list[str] = []
+
+    def _empty_current_ledger(*args, **kwargs):
+        return cast(dict[str, object], {
+            "strict_pass_count": 0,
+            "remaining_count": 0,
+            "remaining_units": [],
+            "parallelization_groups": [],
+        })
+
+    with (
+        patch("core.workflow_executor.custom_op_final_gate_unit_ledger", side_effect=_empty_current_ledger),
+        patch.object(executor, "_send_sub_workflow_llm_command", side_effect=lambda **kw: sent_prompts.append(str(kw.get("prompt_text"))) or "{}"),
+        patch.object(executor, "_resolve_sub_workflow_llm_timeout", return_value=600),
+    ):
+        result = executor._execute_parallel_custom_op_fix(
+            phase_id="fix_operator",
+            mini=_fix_operator_mini(),
+            state=_custom_op_state(["unit_a", "unit_b", "unit_c"]),
+            step_outputs={"script_stderr": "", "error_analysis": {}},
+            loop_vars={"project_dir": str(project_dir)},
+        )
+
+    assert result is None
+    assert sent_prompts == []
+
+
 def test_parallel_fix_returns_none_when_no_groups_and_no_gate(tmp_path: Path) -> None:
     """Returns None when both gate-derived and fallback groups are empty."""
     project_dir = tmp_path / "test_project"
@@ -557,7 +588,7 @@ def test_invalid_phase35_custom_op_surface_is_not_forwarded_to_ledger(tmp_path: 
         _ledger,
     )
 
-    assert result is not None
+    assert result is None
     assert seen_surfaces[0] is None
 
 
@@ -584,8 +615,114 @@ def test_valid_phase35_custom_op_surface_is_forwarded_to_ledger(tmp_path: Path) 
         _ledger,
     )
 
-    assert result is not None
+    assert result is None
     assert seen_surfaces[0] is surface
+
+
+def test_parallel_fix_group_prompt_context_is_scoped_to_assigned_units(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    captured_ctx: list[dict[str, str]] = []
+    context_calls: list[dict[str, object]] = []
+    scope_calls: list[list[str] | None] = []
+
+    def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
+        requested_units = list(cast(list[str], target_units or []))
+        if requested_units == ["unit_a", "unit_b"]:
+            return cast(dict[str, object], {
+                "strict_pass_count": 0,
+                "remaining_count": 2,
+                "remaining_units": requested_units,
+                "parallelization_groups": [{"units": ["unit_a"]}, {"units": ["unit_b"]}],
+            })
+        return cast(dict[str, object], {
+            "strict_pass_count": 0,
+            "remaining_count": len(requested_units),
+            "remaining_units": requested_units,
+            "parallelization_groups": [{"units": requested_units}] if requested_units else [],
+        })
+
+    def _context_artifact(**kwargs):
+        context_calls.append(kwargs)
+        assigned = cast(list[str], kwargs["assigned_units"])
+        return f"/tmp/ctx_{assigned[0]}.md"
+
+    def _repair_scope(_contract, assigned_units=None):
+        scope_calls.append(cast(list[str] | None, assigned_units))
+        return "scope=" + ",".join(cast(list[str], assigned_units or []))
+
+    def _capture_prompt(_template, ctx):
+        captured_ctx.append(cast(dict[str, str], ctx))
+        return "## Prompt"
+
+    executor.prompt_loader.load_prompt = _capture_prompt
+
+    with (
+        patch("core.workflow_executor.custom_op_final_gate_unit_ledger", side_effect=_ledger),
+        patch.object(executor, "_write_repair_runtime_artifacts", return_value=("/tmp/re.md", "/tmp/card.md")),
+        patch.object(executor, "_write_operator_repair_context_artifact", side_effect=_context_artifact),
+        patch.object(executor, "_custom_op_phase1_phase3_repair_scope", side_effect=_repair_scope),
+        patch.object(executor, "_resolve_constraint_summary", return_value=""),
+        patch.object(executor, "_inject_llm_baseline_context"),
+        patch.object(executor, "_append_explicit_runtime_skill_markdown", return_value=("prompt", "")),
+        patch.object(executor, "_send_sub_workflow_llm_command", return_value=json.dumps({"status": "success", "modified_files": []})),
+        patch.object(executor, "_resolve_sub_workflow_llm_timeout", return_value=600),
+    ):
+        result = executor._execute_parallel_custom_op_fix(
+            phase_id="fix_operator",
+            mini=_fix_operator_mini(),
+            state=_custom_op_state(["unit_a", "unit_b"]),
+            step_outputs={"script_stderr": "some error", "error_analysis": {"category": "operator"}},
+            loop_vars={"project_dir": str(project_dir)},
+        )
+
+    assert result is not None
+    assert [call["assigned_units"] for call in context_calls] == [["unit_a"], ["unit_b"]]
+    assert [call["context_suffix"] for call in context_calls] == ["group1", "group2"]
+    assert scope_calls == [["unit_a"], ["unit_b"]]
+    assert captured_ctx[0]["assigned_units"] == "unit_a"
+    assert captured_ctx[0]["phase1_phase3_repair_scope"] == "scope=unit_a"
+    assert "/tmp/ctx_unit_a.md" in captured_ctx[0]["operator_custom_op_guidance"]
+    assert "unit_b" not in captured_ctx[0]["assigned_units"]
+    assert captured_ctx[1]["assigned_units"] == "unit_b"
+
+
+def test_parallel_fix_incomplete_group_result_merges_to_partial(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+
+    def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
+        requested_units = list(cast(list[str], target_units or []))
+        return cast(dict[str, object], {
+            "strict_pass_count": 0,
+            "remaining_count": len(requested_units),
+            "remaining_units": requested_units,
+            "parallelization_groups": [{"units": requested_units}] if requested_units else [],
+        })
+
+    with (
+        patch("core.workflow_executor.custom_op_final_gate_unit_ledger", side_effect=_ledger),
+        patch.object(executor, "_write_repair_runtime_artifacts", return_value=("/tmp/re.md", "/tmp/card.md")),
+        patch.object(executor, "_write_operator_repair_context_artifact", return_value="/tmp/ctx.md"),
+        patch.object(executor, "_custom_op_phase1_phase3_repair_scope", return_value=""),
+        patch.object(executor, "_resolve_constraint_summary", return_value=""),
+        patch.object(executor, "_inject_llm_baseline_context"),
+        patch.object(executor, "_append_explicit_runtime_skill_markdown", return_value=("prompt", "")),
+        patch.object(executor, "_send_sub_workflow_llm_command", return_value=json.dumps({"status": "INCOMPLETE", "modified_files": []})),
+        patch.object(executor, "_resolve_sub_workflow_llm_timeout", return_value=600),
+    ):
+        result = executor._execute_parallel_custom_op_fix(
+            phase_id="fix_operator",
+            mini=_fix_operator_mini(),
+            state=_custom_op_state(["unit_a"]),
+            step_outputs={"script_stderr": "some error", "error_analysis": {"category": "operator"}},
+            loop_vars={"project_dir": str(project_dir)},
+        )
+
+    assert result is not None
+    assert result["status"] == "partial"
 
 
 def test_parallel_fix_caps_worker_count_while_dispatching_all_groups(tmp_path: Path) -> None:

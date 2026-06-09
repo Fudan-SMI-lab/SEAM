@@ -173,6 +173,43 @@ def _coalesce_custom_op_parallel_groups(groups: list[list[str]], max_group_count
     return coalesced
 
 
+def _scope_custom_op_contract_object(value: object, assigned_units: list[str]) -> object:
+    assigned_set = {unit for unit in assigned_units if unit}
+    if not assigned_set:
+        return value
+    if isinstance(value, dict):
+        scoped: dict[str, object] = {}
+        for key, item in cast(dict[str, object], value).items():
+            if isinstance(item, list):
+                filtered = [entry for entry in item if _custom_op_scope_entry_matches(entry, assigned_set)]
+                scoped[key] = filtered if filtered or _custom_op_scope_key_is_unit_list(str(key)) else item
+            else:
+                scoped[key] = _scope_custom_op_contract_object(item, assigned_units)
+        return scoped
+    if isinstance(value, list):
+        return [entry for entry in cast(list[object], value) if _custom_op_scope_entry_matches(entry, assigned_set)]
+    return value
+
+
+def _custom_op_scope_key_is_unit_list(key: str) -> bool:
+    lowered = key.lower()
+    return any(token in lowered for token in ("unit", "variant", "operator"))
+
+
+def _custom_op_scope_entry_matches(entry: object, assigned_set: set[str]) -> bool:
+    if isinstance(entry, dict):
+        entry_map = cast(dict[str, object], entry)
+        for key in ("unit_identity", "base_unit_identity", "name", "operator", "op_name", "symbol"):
+            value = entry_map.get(key)
+            if isinstance(value, str) and value.strip() in assigned_set:
+                return True
+        text = json.dumps(entry_map, ensure_ascii=False, default=str)
+        return any(unit in text for unit in assigned_set)
+    if isinstance(entry, str):
+        return entry.strip() in assigned_set
+    return False
+
+
 def _is_custom_op_migration_route(state: dict[str, Any]) -> bool:
     """Check Phase 1 migration_route for custom-op routes (relaxed trigger).
 
@@ -1854,13 +1891,6 @@ class WorkflowExecutor:
             if isinstance(remaining, list) and remaining:
                 for unit in cast(list[object], remaining):
                     groups.append([str(unit)])
-        if not groups and target_units:
-            fixer_count = _CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT
-            fixer_count = min(fixer_count, len(target_units))
-            chunk_size = max(1, (len(target_units) + fixer_count - 1) // fixer_count)
-            for i in range(0, len(target_units), chunk_size):
-                groups.append(list(target_units[i : i + chunk_size]))
-
         if groups:
             groups = _coalesce_custom_op_parallel_groups(groups, _CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT)
 
@@ -1876,10 +1906,6 @@ class WorkflowExecutor:
             state=state,
         )
 
-        # ── Write shared runtime / operator-context artifacts once ─────
-        # Mirrors _build_active_repair_prompt_context for the non-parallel
-        # fix_operator path.  Artifacts are identical across all groups so
-        # we write them once outside the closure.
         contract_dict = cast(dict[str, object], contract) if isinstance(contract, dict) and contract else {}
         entry_script_str = str(contract_dict.get("entry_script_path", loop_vars.get("entry_script", "") if loop_vars else ""))
         script_stderr = str(step_outputs.get("script_stderr", ""))
@@ -1895,30 +1921,13 @@ class WorkflowExecutor:
             repair_role=agent_id,
             experience_action_cards=step_outputs.get("experience_action_cards", []),
         )
-        if _operator_repair_has_custom_op_contract(contract_dict):
-            operator_context_path = self._write_operator_repair_context_artifact(
-                project_dir=project_dir,
-                entry_script=entry_script_str,
-                phase3_contract=contract_dict,
-            )
-            repair_scope = self._custom_op_phase1_phase3_repair_scope(contract_dict)
-            custom_op_guidance = _operator_custom_op_guidance(
-                operator_context_path,
-                project_dir=project_dir,
-                entry_script=entry_script_str,
-                platform_policy=self.platform_policy,
-            )
+        has_custom_op_contract = _operator_repair_has_custom_op_contract(contract_dict)
+        if has_custom_op_contract:
             strict_acceptance = (
                 "For active custom-op contracts, success requires current project-local migration reports "
                 "and strict custom_op_final_gate FULL_PASS; agent text alone is not accepted."
             )
         else:
-            repair_scope = ""
-            custom_op_guidance = _operator_generic_guidance(
-                project_dir=project_dir,
-                entry_script=entry_script_str,
-                platform_policy=self.platform_policy,
-            )
             strict_acceptance = ""
 
         def _build_group_prompt(group_units: list[str], group_idx: int) -> str:
@@ -1928,6 +1937,7 @@ class WorkflowExecutor:
                 gate_data,
                 target_units=group_units,
                 project_root=project_dir,
+                custom_op_surface=custom_op_surface,
             )
             scoped_progress_lines = [
                 "Current strict custom-op final-gate progress (YOUR ASSIGNED UNITS ONLY)",
@@ -1943,6 +1953,31 @@ class WorkflowExecutor:
                     + ", ".join(str(u) for u in remaining_items[:50])
                 )
             scoped_progress_block = "\n".join(scoped_progress_lines)
+            if has_custom_op_contract:
+                operator_context_path = self._write_operator_repair_context_artifact(
+                    project_dir=project_dir,
+                    entry_script=entry_script_str,
+                    phase3_contract=contract_dict,
+                    assigned_units=group_units,
+                    context_suffix=f"group{group_idx + 1}",
+                )
+                repair_scope = self._custom_op_phase1_phase3_repair_scope(
+                    contract_dict,
+                    assigned_units=group_units,
+                )
+                custom_op_guidance = _operator_custom_op_guidance(
+                    operator_context_path,
+                    project_dir=project_dir,
+                    entry_script=entry_script_str,
+                    platform_policy=self.platform_policy,
+                )
+            else:
+                repair_scope = ""
+                custom_op_guidance = _operator_generic_guidance(
+                    project_dir=project_dir,
+                    entry_script=entry_script_str,
+                    platform_policy=self.platform_policy,
+                )
 
             input_ctx: dict[str, str] = {
                 "phase_name": phase_id,
@@ -2024,7 +2059,8 @@ class WorkflowExecutor:
         all_summaries: list[str] = []
         all_success = True
         for out in sorted_outputs:
-            if out.get("status") in ("failed", "raw_only"):
+            status = str(out.get("status", "")).strip().lower()
+            if status not in {"success", "succeeded", "pass", "passed", "full_pass", "full-pass", "full pass"}:
                 all_success = False
             modified = out.get("modified_files")
             if isinstance(modified, list):
@@ -2485,11 +2521,21 @@ class WorkflowExecutor:
             return str(ph.get("constraint_summary", ""))
         return ""
 
-    def _custom_op_phase1_phase3_repair_scope(self, phase3_contract: dict[str, object] | None) -> str:
+    def _custom_op_phase1_phase3_repair_scope(
+        self,
+        phase3_contract: dict[str, object] | None,
+        assigned_units: list[str] | None = None,
+    ) -> str:
         phase1 = self.state.get("phase_1_project_analysis") if isinstance(self.state, dict) else None
+        phase1_scope = phase1 if isinstance(phase1, dict) else {}
+        phase3_scope = phase3_contract if isinstance(phase3_contract, dict) else {}
+        if assigned_units:
+            phase1_scope = _scope_custom_op_contract_object(phase1_scope, assigned_units)
+            phase3_scope = _scope_custom_op_contract_object(phase3_scope, assigned_units)
         scope = {
-            "phase_1_project_analysis": phase1 if isinstance(phase1, dict) else {},
-            "phase_3_entry_script": phase3_contract if isinstance(phase3_contract, dict) else {},
+            "assigned_units": assigned_units or [],
+            "phase_1_project_analysis": phase1_scope,
+            "phase_3_entry_script": phase3_scope,
         }
         return json.dumps(scope, indent=2, ensure_ascii=False, default=str)
 
@@ -5193,12 +5239,16 @@ class WorkflowExecutor:
         project_dir: str,
         entry_script: str,
         phase3_contract: dict[str, object] | None,
+        assigned_units: list[str] | None = None,
+        context_suffix: str | None = None,
     ) -> str:
         return write_operator_repair_context_artifact(
             artifact_dir=str(self.artifact_store.artifact_dir),
             project_dir=project_dir,
             entry_script=entry_script,
             phase3_contract=phase3_contract,
+            assigned_units=assigned_units,
+            context_suffix=context_suffix,
         )
 
     def _mini_phase(self, phase_dict: dict[str, Any]) -> PhaseDefinition:

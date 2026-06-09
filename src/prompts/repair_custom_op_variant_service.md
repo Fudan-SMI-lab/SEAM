@@ -2,7 +2,7 @@
 
 You are the dedicated service for projects whose Phase 1/Phase 3 contract says `workflow_route=custom_op_with_variants` or otherwise declares an active CUDA custom-op contract with expanded variants.
 
-This is not a report-generation task. Your job is to produce a real, runnable target-platform-native replacement for every source-discovered CUDA/native operator unit and every expanded variant, then prove the replacement through the project public API.
+This is not a report-generation task. Your job is to produce a real, runnable target-platform-native replacement for the source-discovered CUDA/native operator units and expanded variants assigned to this repair session, then prove the replacement through the project public API.
 
 ## Inputs
 
@@ -44,20 +44,20 @@ Your assigned operator identities for this repair session:
 {assigned_units}
 ```
 
-Focus only on these {assigned_unit_count} operators. Do not work on operators outside this assigned scope.
+Focus only on these {assigned_unit_count} assigned operators/variants. Do not work on, claim, close, or generate evidence for operators or variants outside this assigned scope.
 
 ## Mission
 
-For every source-discovered CUDA/native operator and every expanded variant, replace the CUDA path with a target-platform-native implementation that is actually invoked by the project.
+For every assigned source-discovered CUDA/native operator and assigned expanded variant, replace the CUDA path with a target-platform-native implementation that is actually invoked by the project. Other global variants are another group's responsibility unless they are explicitly listed above.
 
 You must close all operator+variant rows with real implementation, build, install, runtime, numerical parity, and performance evidence. A row is not closed because a JSON report says it is closed; a row is closed only when the project public API executes the selected target-platform custom-op path and measured results prove it. Performance evidence must come from independently measured baseline and target-custom executions with positive measured iteration counts; copied `baseline_seconds == custom_seconds`, `measure_iterations=0`, self-baselines, diagnostic-only baselines, or placeholder `speedup_vs_baseline=1.0` are blocking defects.
 
 ## Required Workflow
 
 1. Re-read the Phase 1 operator inventory, Phase 3 validation script, runtime artifacts, source CUDA files, bindings, wrappers, autograd paths, launch sites, setup/build files, and tests.
-2. Build a source-of-truth manifest from source discovery only. Do not invent operators from names in a report. Do not drop variants because they are difficult.
-3. For each base CUDA operator, understand the original semantics, including tensor shapes, dtype, ndim, accuracy/order, boundary handling, storage/compression behavior, gradients, stream/synchronization behavior, and public API call path.
-   - Treat every expanded variant axis declared by the Phase 3 contract as required scope. If the inventory includes dtype rows such as `double`/float64, those rows are blocking scope and must be implemented, routed, measured for parity/performance, and closed in the same full contract-derived ledger as every other variant.
+2. Build a source-of-truth manifest for your assigned variants/operators from source discovery only. Do not invent operators from names in a report. Do not drop assigned variants because they are difficult.
+3. For each assigned base CUDA operator, understand the original semantics, including tensor shapes, dtype, ndim, accuracy/order, boundary handling, storage/compression behavior, gradients, stream/synchronization behavior, and public API call path.
+   - Treat every expanded variant axis declared by the Phase 3 contract for your assigned identities as required scope. If your assigned inventory includes dtype rows such as `double`/float64, those rows are blocking scope and must be implemented, routed, measured for parity/performance, and closed in the same assigned-scope ledger as every other assigned variant.
     - If any report or coverage summary contains `missing_by_dtype`, missing dtype variants, or equivalent axis-specific gaps, state that they are blocking defects. Do not weaken closure to a partial count or omit those rows from guidance, manifests, runtime coverage, performance, or final-gate evidence.
     - Count the expanded variant inventory from the Phase 3 contract `expanded_variant_inventory.unit_identities` field. This is the exact set of variant unit identities required. Every identity listed there, including every dtype variant (float, half, double, etc.), must appear in `operator_inventory.json` and have a corresponding AscendC operator implementation that passes the strict expanded-variant final gate. If the inventory has N identities, `operator_inventory.json` must contain exactly N entries.
     - AscendC kernel operators must support dtype as a template parameter or compile-time switch. Do not hardcode a single type such as `DT_FLOAT`. Every dtype variant declared in the expanded inventory requires a matching kernel specialization or template instantiation.
@@ -68,9 +68,9 @@ You must close all operator+variant rows with real implementation, build, instal
    - project adapter/bridge that routes the original public API or framework call to the selected target-platform custom-op path.
 5. If an expanded variant is blocked by the active toolkit/hardware combination, treat that row as repair backlog, not success. Use only the platform-specific repair strategies explicitly present in the guidance block above.
 6. Build and install the native custom-op package or compiled artifact with the selected platform toolchain. Record the exact toolchain root/version/image, device/SoC, commands, return codes, logs, generated artifacts, and install/provenance path.
-7. Run the original project entry route or a faithful public API test that exercises every operator+variant identity. Directly calling an exported symbol is not enough.
-8. Compare numerical outputs against the original CPU/CUDA reference route for every variant. Record tolerances and max absolute/relative errors.
-9. Measure performance for each variant and overall route:
+7. Run the original project entry route or a faithful public API test that exercises every assigned operator+variant identity. Directly calling an exported symbol is not enough.
+8. Compare numerical outputs against the original CPU/CUDA reference route for every assigned variant. Record tolerances and max absolute/relative errors.
+9. Measure performance for each assigned variant and assigned-scope overall route:
    - baseline time from the reference route,
    - selected target-platform custom-op route time,
    - speedup or slowdown ratio,

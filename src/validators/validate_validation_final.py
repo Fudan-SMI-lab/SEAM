@@ -819,7 +819,7 @@ def _build_custom_op_dispatch_family_index(
                     continue
                 variant_map = cast(Mapping[object, object], variant)
                 unit_id = str(variant_map.get("unit_identity", "")).strip()
-                family_key = _dispatch_family_key_from_metadata(variant_map)
+                family_key = _dispatch_family_key_from_metadata(variant_map, allow_variant_family_fields=True)
                 if unit_id and family_key:
                     family_by_unit[unit_id] = family_key
 
@@ -829,7 +829,7 @@ def _build_custom_op_dispatch_family_index(
         row_pair = rows_by_name.get(unit)
         if row_pair is not None:
             _index, row = row_pair
-            family_key = _dispatch_family_key_from_metadata(row)
+            family_key = _dispatch_family_key_from_metadata(row, allow_variant_family_fields=False)
             if family_key:
                 family_by_unit[unit] = family_key
                 continue
@@ -846,18 +846,26 @@ def _build_custom_op_dispatch_family_index(
     return {key: units for key, units in family_to_units.items() if len(units) >= 2}
 
 
-def _dispatch_family_key_from_metadata(metadata: Mapping[object, object]) -> str:
-    for field_name in (
+def _dispatch_family_key_from_metadata(
+    metadata: Mapping[object, object],
+    *,
+    allow_variant_family_fields: bool,
+) -> str:
+    field_names = [
         "base_unit_identity",
         "base_operator_identity",
         "base_operator",
-        "operator_family",
-        "custom_op_family",
-        "family",
-        "operator_category",
-        "custom_op_category",
-        "category",
-    ):
+    ]
+    if allow_variant_family_fields:
+        field_names.extend([
+            "operator_family",
+            "custom_op_family",
+            "family",
+            "operator_category",
+            "custom_op_category",
+            "category",
+        ])
+    for field_name in field_names:
         value = metadata.get(field_name)
         if isinstance(value, str) and value.strip():
             return _strip_key_value_axis_segments(value.strip())
