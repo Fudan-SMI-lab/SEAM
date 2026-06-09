@@ -253,7 +253,7 @@ def _operator_custom_op_guidance(
         "- performance_evidence: object/dict with baseline_seconds > 0, custom_seconds > 0, baseline_device (string), custom_device (string), project_api_invoked=true",
     ])
     if perf_mode == "full":
-        schema_checklist += ", speedup_vs_baseline > 0"
+        schema_checklist += ", speedup_vs_baseline > 0 (computed as baseline_seconds / custom_seconds from real measured timings; for HARDWARE_LIMITATION rows where the target platform kernel is a no-op or restricted, STILL write the actual measured speedup ratio—never zero it; document the hardware limitation separately in measurement_note)"
     schema_checklist += (
         "\n- no_fallback_no_zero_call_no_builtin_contamination: object/dict with "
         "fallback_detected=false, zero_call_detected=false, builtin_contamination_detected=false, "

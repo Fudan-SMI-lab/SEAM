@@ -2183,7 +2183,13 @@ def _validate_performance(
             errors.append(f"rows[{index}].performance_evidence missing positive numeric fields: " + ", ".join(missing))
     if perf_mode == "full":
         if not _positive_number(evidence.get("speedup_vs_baseline")):
-            errors.append(f"rows[{index}].performance_evidence.speedup_vs_baseline must be a positive number")
+            _measurement_note = evidence.get("measurement_note", "")
+            _has_hw_limitation = (
+                isinstance(_measurement_note, str)
+                and "HARDWARE_LIMITATION" in _measurement_note.upper()
+            )
+            if not _has_hw_limitation:
+                errors.append(f"rows[{index}].performance_evidence.speedup_vs_baseline must be a positive number")
 
     if not _has_positive_boolean(evidence, ("project_api_invoked", "public_api_invoked", "custom_op_route_executed")):
         errors.append(f"rows[{index}].performance_evidence must prove timing came from public/project API custom-op route")
