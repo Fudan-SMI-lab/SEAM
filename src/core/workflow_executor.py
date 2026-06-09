@@ -2163,7 +2163,7 @@ class WorkflowExecutor:
             if isinstance(ph3, dict):
                 input_ctx.setdefault("entry_script_path",
                                      ph3.get("entry_script_path", "(not available)"))
-            # Compute total_count / remaining_count for Batch Validation in Phase 3.5 prompt.
+            # Compute total operator variant count for Phase 3.5 prompt context.
             # Count expanded operator variants from all known inventory fields.
             total_variants = 0
             if isinstance(ph3, dict):
@@ -2172,10 +2172,7 @@ class WorkflowExecutor:
                     val = ph3.get(field)
                     if isinstance(val, (list, dict)):
                         total_variants += len(val)
-            # Default to 0 if nothing found (batch validation skipped for ≤50).
             input_ctx.setdefault("total_count", str(total_variants) if total_variants else "0")
-            remaining = max(0, total_variants - 20)
-            input_ctx.setdefault("remaining_count", str(remaining) if total_variants else "0")
         if "phase_3_entry_script" in pid or "phase_3" in pid:
             ph35 = state.get("phase_35_static_validate", {})
             if isinstance(ph35, dict) and ph35.get("validation_passed") is False:
