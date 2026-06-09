@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import time
 from typing import Any
 
 
@@ -24,6 +26,68 @@ class ArtifactStore:
 
         os.makedirs(self.raw_dir, exist_ok=True)
         os.makedirs(self.validated_dir, exist_ok=True)
+
+
+    def save_shell_attempt_artifacts(
+        self,
+        phase_id: str,
+        *,
+        command: str,
+        cwd: str | None,
+        backend_workdir: str | None,
+        exit_code: int,
+        duration: float,
+        stdout: str | None = None,
+        stderr: str | None = None,
+        stdout_source_path: str | None = None,
+        stderr_source_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist complete stdout/stderr and metadata for a shell attempt."""
+        artifact_dir = os.path.abspath(os.path.join(self.artifact_dir, "shell_attempts"))
+        os.makedirs(artifact_dir, exist_ok=True)
+        safe_phase = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in phase_id)
+        existing = [
+            name for name in os.listdir(artifact_dir)
+            if name.startswith(f"{safe_phase}_attempt") and name.endswith(".meta.json")
+        ]
+        attempt = len(existing) + 1
+        prefix = os.path.join(artifact_dir, f"{safe_phase}_attempt{attempt:04d}")
+        stdout_path = os.path.abspath(prefix + ".stdout.log")
+        stderr_path = os.path.abspath(prefix + ".stderr.log")
+        meta_path = os.path.abspath(prefix + ".meta.json")
+
+        if stdout_source_path:
+            shutil.copyfile(stdout_source_path, stdout_path)
+        else:
+            with open(stdout_path, "w", encoding="utf-8") as handle:
+                handle.write(stdout or "")
+        if stderr_source_path:
+            shutil.copyfile(stderr_source_path, stderr_path)
+        else:
+            with open(stderr_path, "w", encoding="utf-8") as handle:
+                handle.write(stderr or "")
+
+        metadata: dict[str, Any] = {
+            "phase_id": phase_id,
+            "attempt": attempt,
+            "command": command,
+            "cwd": cwd or "",
+            "backend_workdir": backend_workdir or "",
+            "exit_code": exit_code,
+            "duration": duration,
+            "stdout_path": stdout_path,
+            "stderr_path": stderr_path,
+            "meta_path": meta_path,
+            "stdout_bytes": os.path.getsize(stdout_path),
+            "stderr_bytes": os.path.getsize(stderr_path),
+            "stdout_complete": True,
+            "stderr_complete": True,
+            "complete": True,
+            "timestamp": time.time(),
+        }
+        with open(meta_path, "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2)
+        return metadata
 
     def save_phase_output(self, phase_id: str, data: dict[str, Any], attempt: int = 0) -> str:
         key = phase_id.removeprefix("phase_")

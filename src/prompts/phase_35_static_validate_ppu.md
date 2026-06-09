@@ -28,6 +28,12 @@ The `previous_outputs` block below contains **only** the `phase_3_entry_script` 
 
 If Phase 3 includes `entry_script_kind: custom_op_full_validation`, validate the selected script against the source-discovery contract embedded in `previous_outputs`.
 
+## Serving-Backed Entry Gate
+- Treat self-hosted/local inference services, vLLM, SGLang, Ollama, OpenAI-compatible local APIs, localhost endpoints, `/v1/chat/completions`, and equivalent service/client modes as serving-backed validation surfaces.
+- Reject a selected command that is only a client call and depends on an unmanaged, manually pre-started service.
+- Accept a selected entry script or documented launcher when it owns server lifecycle, readiness polling, client validation, log capture, and cleanup inside the framework-managed runtime.
+- Preserve the user constraint boundary: user constraints may express simple intent; this phase audits whether the selected Phase 3 execution contract is complete and runnable.
+
 ## Important Notes
 
 - Training loops with epoch limits (e.g., `for epoch in range(epochs):`) are **acceptable** — they will eventually exit.

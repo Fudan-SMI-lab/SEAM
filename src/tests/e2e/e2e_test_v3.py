@@ -553,6 +553,7 @@ def run_e2e_v3(
                     observer,  # observer.send_command logs command + response automatically
                     prompt_loader,
                     project_context=project_ctx,
+                    user_constraints=user_constraints,
                     output_dir=output_dir / "artifacts",
                     telemetry=observer,  # selector-specific events via record_event
                 )

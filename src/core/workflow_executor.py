@@ -70,6 +70,15 @@ from rule_strategies import create_migrator_resolved, resolve_rule_migration_str
 
 logger = logging.getLogger(__name__)
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
+_FAILURE_EVIDENCE_MAX_CHARS = 8_000
+_FAILURE_OUTPUT_MAX_CHARS = 4_500
+_FAILURE_RESULT_MAX_CHARS = 1_500
+_FAILURE_DIAGNOSTIC_MAX_LINES = 80
+_FAILURE_DIAGNOSTIC_PATTERN = re.compile(
+    r"(traceback|exception|error|failed|failure|fatal|assert|timeout|timed out|"
+    r"returncode|exit code|missing|not found|no such file|segmentation)",
+    re.IGNORECASE,
+)
 
 SUB_WORKFLOW_REPAIR_PHASE_IDS = {
     "fix_dependency",
@@ -1686,12 +1695,13 @@ class WorkflowExecutor:
             error_analysis = state.get("error_analysis", {}) if isinstance(state, dict) else {}
         if not isinstance(error_analysis, dict):
             error_analysis = {}
-        script_stderr = step_outputs.get("script_stderr", "")
         entry_script = loop_vars.get("entry_script", "")
+        failure_evidence = self._build_failure_evidence(step_outputs, entry_script=entry_script)
         env_ctx = self._build_env_context(state)
         env_ctx_str = json.dumps(env_ctx, ensure_ascii=False) if env_ctx else "(No environment context available)"
-        artifact_base = self.artifact_store.artifact_dir
+        artifact_base = os.path.abspath(str(self.artifact_store.artifact_dir))
         raw_files = self._list_attempt_files()
+        latest_artifacts = self._latest_shell_attempt_artifacts()
         constraint = self._resolve_constraint_summary(state)
         hist_summary = self._format_history_summary(loop_history)
 
@@ -1715,7 +1725,7 @@ class WorkflowExecutor:
                 runtime_error_path, runtime_card_path = self._write_repair_runtime_artifacts(
                     project_dir=self.project_dir,
                     entry_script=entry_script,
-                    error_text=script_stderr,
+                    error_text=failure_evidence,
                     category=str(error_analysis.get("category", "unknown")),
                     root_cause=str(error_analysis.get("root_cause", "")),
                     suggested_fix=str(error_analysis.get("suggested_fix", "")),
@@ -1759,7 +1769,7 @@ class WorkflowExecutor:
                             platform_policy=self.platform_policy,
                         )
             input_ctx.update({
-                "error_text": script_stderr,
+                "error_text": failure_evidence,
                 "category": str(error_analysis.get("category", "unknown")),
                 "root_cause": str(error_analysis.get("root_cause", "")),
                 "suggested_fix": str(error_analysis.get("suggested_fix", "")),
@@ -1770,6 +1780,7 @@ class WorkflowExecutor:
                 "env_context": env_ctx_str,
                 "artifact_base_path": artifact_base,
                 "raw_attempt_files": raw_files,
+                **latest_artifacts,
                 "constraint_summary": constraint,
                 "selected_experiences": json.dumps(
                     step_outputs.get("selected_experiences", []), ensure_ascii=False
@@ -1788,7 +1799,7 @@ class WorkflowExecutor:
                 runtime_error_path, runtime_card_path = self._write_repair_runtime_artifacts(
                     project_dir=self.project_dir,
                     entry_script=entry_script,
-                    error_text=script_stderr,
+                    error_text=failure_evidence,
                     category=str(imp_plan.get("category", "quality_improvement")),
                     root_cause=str(imp_plan.get("suggested_direction", "")),
                     suggested_fix=str(imp_plan.get("suggested_direction", "")),
@@ -1832,7 +1843,7 @@ class WorkflowExecutor:
                     )
                     input_ctx["final_gate_validator_contract_summary"] = _final_gate_validator_contract_summary()
             input_ctx.update({
-                "error_text": script_stderr,
+                "error_text": failure_evidence,
                 "category": str(imp_plan.get("category", "quality_improvement")),
                 "root_cause": str(imp_plan.get("suggested_direction", "")),
                 "suggested_fix": str(imp_plan.get("suggested_direction", "")),
@@ -1845,6 +1856,7 @@ class WorkflowExecutor:
                 "env_context": env_ctx_str,
                 "artifact_base_path": artifact_base,
                 "raw_attempt_files": raw_files,
+                **latest_artifacts,
                 "experience_usage_report_schema": self._experience_usage_report_schema_text(),
             })
 
@@ -1865,7 +1877,7 @@ class WorkflowExecutor:
                 "failed_phase": "phase_5_validation",
                 "entry_script": entry_script,
                 "entry_script_contract": self._serialize_entry_script_contract(state),
-                "failure_log": script_stderr,
+                "failure_log": failure_evidence,
                 "previous_outputs": self._format_error_analyzer_history(
                     loop_history, step_outputs, state
                 ),
@@ -1873,6 +1885,7 @@ class WorkflowExecutor:
                 "env_context": env_ctx_str,
                 "artifact_base_path": artifact_base,
                 "raw_attempt_files": raw_files,
+                **latest_artifacts,
                 "constraint_summary": constraint,
                 "repair_role_descriptions": self._available_repair_role_descriptions_text(),
             })
@@ -2120,13 +2133,98 @@ class WorkflowExecutor:
         return "(no artifact available)"
 
     def _list_attempt_files(self) -> str:
-        raw_dir = self.artifact_store.raw_dir
-        if not os.path.isdir(raw_dir):
-            return "[]"
-        files = [f for f in os.listdir(raw_dir)
-                 if ("phase_5_validation_attempt" in f or "phase_run_entry_script_attempt" in f)
-                 and f.endswith(".json")]
-        return json.dumps(files)
+        attempts = self._shell_attempt_artifact_records()
+        raw_dir = getattr(self.artifact_store, "raw_dir", "")
+        if os.path.isdir(raw_dir):
+            for filename in sorted(os.listdir(raw_dir)):
+                if (
+                    ("phase_5_validation_attempt" in filename or "phase_run_entry_script_attempt" in filename)
+                    and filename.endswith(".json")
+                ):
+                    path = os.path.abspath(os.path.join(raw_dir, filename))
+                    attempts.append({"kind": "legacy_attempt_json", "path": path, "meta_path": path})
+        return json.dumps(attempts, ensure_ascii=False, indent=2)
+
+    def _shell_attempt_artifact_records(self) -> list[dict[str, Any]]:
+        artifact_dir = getattr(self.artifact_store, "artifact_dir", "")
+        shell_dir = os.path.join(artifact_dir, "shell_attempts") if artifact_dir else ""
+        if not os.path.isdir(shell_dir):
+            return []
+
+        records: list[dict[str, Any]] = []
+        for filename in sorted(os.listdir(shell_dir)):
+            if not filename.endswith(".meta.json"):
+                continue
+            meta_path = os.path.abspath(os.path.join(shell_dir, filename))
+            try:
+                with open(meta_path, "r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                records.append({"kind": "shell_attempt", "meta_path": meta_path})
+                continue
+            if not isinstance(metadata, dict):
+                records.append({"kind": "shell_attempt", "meta_path": meta_path})
+                continue
+            record = {str(key): value for key, value in metadata.items()}
+            record["kind"] = "shell_attempt"
+            record["meta_path"] = meta_path
+            for key in ("stdout_path", "stderr_path"):
+                if record.get(key):
+                    record[key] = os.path.abspath(str(record[key]))
+            records.append(record)
+        records.sort(key=lambda item: str(item.get("meta_path", "")))
+        return records
+
+    def _latest_shell_attempt_artifacts(self) -> dict[str, str]:
+        records = [record for record in self._shell_attempt_artifact_records() if record.get("kind") == "shell_attempt"]
+        if not records:
+            missing = "(no complete shell attempt artifact available)"
+            return {
+                "latest_complete_stdout_artifact_path": missing,
+                "latest_complete_stderr_artifact_path": missing,
+                "latest_complete_meta_artifact_path": missing,
+            }
+        latest = records[-1]
+        return {
+            "latest_complete_stdout_artifact_path": str(latest.get("stdout_path") or "(no complete stdout artifact available)"),
+            "latest_complete_stderr_artifact_path": str(latest.get("stderr_path") or "(no complete stderr artifact available)"),
+            "latest_complete_meta_artifact_path": str(latest.get("meta_path") or "(no complete metadata artifact available)"),
+        }
+
+    def _persist_shell_attempt_artifacts(
+        self,
+        *,
+        phase_id: str,
+        command: str,
+        cwd: str,
+        backend_workdir: str | None,
+        exit_code: int,
+        duration: float,
+        stdout: str | None = None,
+        stderr: str | None = None,
+        stdout_source_path: str | None = None,
+        stderr_source_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        writer = getattr(self.artifact_store, "save_shell_attempt_artifacts", None)
+        if not callable(writer) or hasattr(writer, "mock_calls"):
+            return None
+        try:
+            metadata = writer(
+                phase_id,
+                command=command,
+                cwd=cwd,
+                backend_workdir=backend_workdir,
+                exit_code=exit_code,
+                duration=duration,
+                stdout=stdout,
+                stderr=stderr,
+                stdout_source_path=stdout_source_path,
+                stderr_source_path=stderr_source_path,
+            )
+        except Exception as exc:
+            logger.warning("Shell attempt artifact save failed for %s: %s", phase_id, exc)
+            return None
+        return metadata if isinstance(metadata, dict) else None
 
     def _normalize_llm_output(
         self,
@@ -2419,12 +2517,32 @@ class WorkflowExecutor:
             "duration": round(duration, 3),
             "command": str(cmd),
         }
+        artifact_metadata = None
+        if entry_script_command:
+            artifact_metadata = self._persist_shell_attempt_artifacts(
+                phase_id=phase.id,
+                command=str(cmd),
+                cwd=cwd,
+                backend_workdir=_get_exec_ctx(self.exec_backend, command=run_cmd, cwd=cwd, env=run_env).get("container_workdir"),
+                exit_code=exit_code,
+                duration=captured["duration"],
+                stdout=stdout,
+                stderr=stderr,
+            )
+            if artifact_metadata:
+                captured["artifacts"] = artifact_metadata
 
         if loop_state is not None:
             loop_state["script_exit_code"] = exit_code
             loop_state["script_stdout"] = stdout
             loop_state["script_stderr"] = stderr
             loop_state["script_duration"] = captured["duration"]
+            loop_state["script_command"] = captured["command"]
+            if artifact_metadata:
+                loop_state["latest_shell_attempt_artifacts"] = artifact_metadata
+                loop_state["latest_complete_stdout_artifact_path"] = artifact_metadata.get("stdout_path", "")
+                loop_state["latest_complete_stderr_artifact_path"] = artifact_metadata.get("stderr_path", "")
+                loop_state["latest_complete_meta_artifact_path"] = artifact_metadata.get("meta_path", "")
 
         on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
         if exit_code != 0 and on_failure != "break":
@@ -2461,6 +2579,7 @@ class WorkflowExecutor:
             run_cmd = str(cmd)
 
         out_path = err_path = None
+        artifact_metadata: dict[str, Any] | None = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", suffix=".out", delete=False) as out_f, \
                  tempfile.NamedTemporaryFile(mode="w", suffix=".err", delete=False) as err_f:
@@ -2495,6 +2614,19 @@ class WorkflowExecutor:
             stderr = str(exc)
 
         finally:
+            if entry_script_command and "exit_code" in locals():
+                artifact_metadata = self._persist_shell_attempt_artifacts(
+                    phase_id=phase.id,
+                    command=str(cmd),
+                    cwd=cwd,
+                    backend_workdir=cwd,
+                    exit_code=exit_code,
+                    duration=round(duration, 3),
+                    stdout_source_path=out_path if out_path and os.path.exists(out_path) else None,
+                    stderr_source_path=err_path if err_path and os.path.exists(err_path) else None,
+                    stdout=stdout if "stdout" in locals() else "",
+                    stderr=stderr if "stderr" in locals() else "",
+                )
             for p in (out_path, err_path):
                 if p and os.path.exists(p):
                     try:
@@ -2509,12 +2641,20 @@ class WorkflowExecutor:
             "duration": round(duration, 3),
             "command": str(cmd),
         }
+        if artifact_metadata:
+            captured["artifacts"] = artifact_metadata
 
         if loop_state is not None:
             loop_state["script_exit_code"] = exit_code
             loop_state["script_stdout"] = stdout
             loop_state["script_stderr"] = stderr
             loop_state["script_duration"] = captured["duration"]
+            loop_state["script_command"] = captured["command"]
+            if artifact_metadata:
+                loop_state["latest_shell_attempt_artifacts"] = artifact_metadata
+                loop_state["latest_complete_stdout_artifact_path"] = artifact_metadata.get("stdout_path", "")
+                loop_state["latest_complete_stderr_artifact_path"] = artifact_metadata.get("stderr_path", "")
+                loop_state["latest_complete_meta_artifact_path"] = artifact_metadata.get("meta_path", "")
 
         on_failure = phase.on_failure if hasattr(phase, "on_failure") else "continue"
         if exit_code != 0 and on_failure != "break":
@@ -2541,6 +2681,162 @@ class WorkflowExecutor:
         except (OSError, IOError):
             return ""
 
+    @classmethod
+    def _build_failure_evidence(
+        cls,
+        outputs: Mapping[str, Any] | None,
+        *,
+        entry_script: object = None,
+    ) -> str:
+        data: Mapping[str, Any] = outputs if isinstance(outputs, Mapping) else {}
+        run_output = data.get("run_entry_script")
+        nested: Mapping[str, Any] = run_output if isinstance(run_output, Mapping) else {}
+
+        command = cls._first_non_empty_text(
+            data.get("script_command"), nested.get("command"), entry_script,
+        )
+        exit_code = cls._first_present(
+            data.get("script_exit_code"), nested.get("exit_code"), data.get("exit_code"),
+        )
+        duration = cls._first_present(
+            data.get("script_duration"), nested.get("duration"), data.get("duration"),
+        )
+        stderr = cls._first_non_empty_text(
+            data.get("script_stderr"), nested.get("script_stderr"), nested.get("stderr"),
+        )
+        stdout = cls._first_non_empty_text(
+            data.get("script_stdout"), nested.get("script_stdout"), nested.get("stdout"),
+        )
+        fallback_error = cls._first_non_empty_text(data.get("last_error"), data.get("error"))
+
+        lines = ["## Failure Evidence", "", "### Command Metadata"]
+        metadata = [
+            ("Command", command or "(not available)"),
+            ("Exit Code", str(exit_code) if exit_code is not None else "(not available)"),
+            ("Duration Seconds", str(duration) if duration is not None else "(not available)"),
+        ]
+        lines.extend(f"- {name}: {value}" for name, value in metadata)
+
+        if stderr:
+            source_label = "stderr tail"
+            excerpt = cls._bounded_tail(stderr, _FAILURE_OUTPUT_MAX_CHARS)
+        elif stdout:
+            diagnostics = cls._stdout_diagnostic_excerpt(stdout)
+            if diagnostics:
+                source_label = "stdout diagnostic excerpt"
+                excerpt = diagnostics
+            else:
+                source_label = "stdout tail"
+                excerpt = cls._bounded_tail(stdout, _FAILURE_OUTPUT_MAX_CHARS)
+        elif fallback_error:
+            source_label = "last error"
+            excerpt = cls._bounded_tail(fallback_error, _FAILURE_OUTPUT_MAX_CHARS)
+        else:
+            source_label = "no captured output"
+            excerpt = "(No stderr/stdout output captured.)"
+
+        lines.extend([
+            "",
+            f"### Output Evidence ({source_label})",
+            "```",
+            excerpt,
+            "```",
+        ])
+
+        result_summary = cls._failure_result_summary(data)
+        if result_summary:
+            lines.extend([
+                "",
+                "### Result Metadata",
+                "```json",
+                cls._bounded_tail(
+                    json.dumps(result_summary, ensure_ascii=False, indent=2, default=str),
+                    _FAILURE_RESULT_MAX_CHARS,
+                ),
+                "```",
+            ])
+
+        return cls._bounded_tail("\n".join(lines).strip(), _FAILURE_EVIDENCE_MAX_CHARS)
+
+    @staticmethod
+    def _first_present(*values: object) -> object | None:
+        for value in values:
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _first_non_empty_text(*values: object) -> str:
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, bytes):
+                text = value.decode("utf-8", errors="replace")
+            else:
+                text = str(value)
+            if text.strip():
+                return text
+        return ""
+
+    @staticmethod
+    def _bounded_tail(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return f"[truncated to last {max_chars} chars]\n{text[-max_chars:]}"
+
+    @classmethod
+    def _stdout_diagnostic_excerpt(cls, stdout: str) -> str:
+        matches = [
+            line.rstrip()
+            for line in stdout.splitlines()
+            if _FAILURE_DIAGNOSTIC_PATTERN.search(line)
+        ]
+        if not matches:
+            return ""
+        excerpt = "\n".join(matches[-_FAILURE_DIAGNOSTIC_MAX_LINES:])
+        return cls._bounded_tail(excerpt, _FAILURE_OUTPUT_MAX_CHARS)
+
+    @classmethod
+    def _failure_result_summary(cls, outputs: Mapping[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        for key, value in outputs.items():
+            if key in {
+                "script_stdout",
+                "script_stderr",
+                "script_command",
+                "run_entry_script",
+                "last_error",
+            }:
+                continue
+            if not isinstance(value, Mapping):
+                continue
+            if not any(field in value for field in ("errors", "summary", "passed", "path", "artifact_path", "report_path", "status")):
+                continue
+            sanitized = cls._sanitize_result_value(value, depth=2)
+            if sanitized:
+                summary[str(key)] = sanitized
+        return summary
+
+    @classmethod
+    def _sanitize_result_value(cls, value: object, *, depth: int) -> object:
+        if depth < 0:
+            return "..."
+        if isinstance(value, Mapping):
+            clean: dict[str, object] = {}
+            for key, child in value.items():
+                key_text = str(key)
+                if key_text in {"stdout", "stderr", "script_stdout", "script_stderr", "raw_response"}:
+                    continue
+                clean[key_text] = cls._sanitize_result_value(child, depth=depth - 1)
+            return clean
+        if isinstance(value, list):
+            return [cls._sanitize_result_value(item, depth=depth - 1) for item in value[:5]]
+        if isinstance(value, str):
+            return cls._bounded_tail(value, 500)
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)
+
     # ── Builtin phase ───────────────────────────────────────────────────
 
     def _execute_builtin_phase(
@@ -2560,7 +2856,7 @@ class WorkflowExecutor:
         if operation == "stagnation_check":
             error_output = ""
             if loop_state:
-                error_output = loop_state.get("script_stderr", "") or loop_state.get("last_error", "")
+                error_output = self._build_failure_evidence(loop_state)
             error_sig = self._normalize_error_signature(error_output)
             if loop_state:
                 loop_state["last_error_signature"] = error_sig
@@ -2778,7 +3074,7 @@ class WorkflowExecutor:
         review_ctx = {
             "project_dir": self.project_dir,
             "repair_history": self._format_loop_history(loop_history),
-            "attempt_log_content": loop_state.get("script_stderr", "") or loop_state.get("script_stdout", ""),
+            "attempt_log_content": self._build_failure_evidence(loop_state),
             "execution_duration": str(loop_state.get("script_duration", "not available")),
             "review_reject_count": loop_state.get("review_reject_count", 0),
             "iteration": loop_state.get("iteration", 0),
@@ -2973,6 +3269,9 @@ class WorkflowExecutor:
         loop_state["max_entry_script_revisions"] = max_entry_script_revisions
         loop_state["entry_script_revision_count"] = 0
         loop_state["entry_script_revision_requests"] = []
+        loop_state["max_environment_resets"] = self._max_environment_resets_per_phase()
+        loop_state["environment_reset_count"] = 0
+        loop_state["environment_reset_requests"] = []
 
         # 4. Iterate
         final_status = "success"
@@ -3003,7 +3302,24 @@ class WorkflowExecutor:
             fixer_outputs = self._collect_fixer_outputs(step_outputs)
             repair_phase_executed = any(pid in step_outputs for pid in SUB_WORKFLOW_REPAIR_PHASE_ORDER)
             entry_script_revision_only = bool(step_outputs.get("entry_script_revision_applied")) and not repair_phase_executed
+            environment_reset_only = bool(step_outputs.get("environment_reset_applied")) and not repair_phase_executed
             if entry_script_revision_only:
+                loop_state["stagnation_count"] = 0
+                iteration -= 1
+                loop_state["iteration"] = iteration
+                continue
+
+            if environment_reset_only:
+                reset_result = step_outputs.get("environment_action_result")
+                history_entry = {
+                    "iteration": iteration,
+                    "status": "environment_reset",
+                    "duration": round(iter_duration, 3),
+                    "step_outputs_summary": {k: type(v).__name__ for k, v in step_outputs.items()},
+                }
+                if isinstance(reset_result, dict):
+                    history_entry["environment_action"] = reset_result
+                loop_history.append(history_entry)
                 loop_state["stagnation_count"] = 0
                 iteration -= 1
                 loop_state["iteration"] = iteration
@@ -3047,7 +3363,7 @@ class WorkflowExecutor:
 
             # 4c. Stagnation check (builtin)
             error_sig = self._normalize_error_signature(
-                loop_state.get("script_stderr", "") or loop_state.get("last_error", "")
+                self._build_failure_evidence(loop_state)
             )
             if self._check_stagnation(error_sig, loop_state, stagnation_threshold):
                 final_status = "stagnation"
@@ -3621,6 +3937,15 @@ class WorkflowExecutor:
                         if action_result.get("applied"):
                             step_outputs["entry_script_revision_applied"] = True
                             phase_status = "entry_script_revised"
+                    environment_result = self._maybe_recreate_execution_environment(
+                        phase_output, step_outputs, loop_state or {}
+                    )
+                    if environment_result is not None:
+                        step_outputs["environment_action_result"] = environment_result
+                        if environment_result.get("applied"):
+                            step_outputs["environment_reset_applied"] = True
+                            phase_status = "environment_reset"
+                            break
 
             # Early exit on failure with break
             if phase_status == "failure":
@@ -3648,6 +3973,106 @@ class WorkflowExecutor:
             return max(0, int(str(raw)))
         except (TypeError, ValueError):
             return 2
+
+    def _max_environment_resets_per_phase(self) -> int:
+        raw = (self.workflow.globals or {}).get("max_environment_resets_per_phase")
+        if raw is None:
+            raw = self.framework_config.get("max_environment_resets_per_phase")
+        if raw is None:
+            env_cfg = self.framework_config.get("environment")
+            if isinstance(env_cfg, dict):
+                raw = env_cfg.get("max_resets_per_phase")
+        if raw is None:
+            return 1
+        try:
+            return max(0, int(str(raw)))
+        except (TypeError, ValueError):
+            return 1
+
+    def _maybe_recreate_execution_environment(
+        self,
+        error_analysis: dict[str, Any],
+        step_outputs: dict[str, Any],
+        loop_state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        action = error_analysis.get("environment_action")
+        if not isinstance(action, dict):
+            return None
+
+        normalized = self._normalize_environment_action(action)
+        if not normalized["needed"]:
+            return {**normalized, "applied": False, "blocked_reason": "not_needed"}
+
+        current_iteration = loop_state.get("iteration", 0)
+        if not isinstance(current_iteration, int):
+            current_iteration = 0
+        request = {
+            "iteration": current_iteration + 1,
+            "action": normalized["action"],
+            "reason": normalized["reason"],
+            "scope": normalized["scope"],
+            "applied": False,
+        }
+        requests = loop_state.setdefault("environment_reset_requests", [])
+        if isinstance(requests, list):
+            requests.append(request)
+
+        if normalized["action"] != "recreate_execution_environment":
+            request["blocked_reason"] = "invalid_action"
+            return {**normalized, "applied": False, "blocked_reason": "invalid_action"}
+
+        reset_count = int(str(loop_state.get("environment_reset_count", 0) or 0))
+        max_resets = int(str(loop_state.get("max_environment_resets", self._max_environment_resets_per_phase()) or 0))
+        if reset_count >= max_resets:
+            request["blocked_reason"] = "max_environment_resets_exceeded"
+            return {
+                **normalized,
+                "applied": False,
+                "blocked_reason": "max_environment_resets_exceeded",
+                "reset_count": reset_count,
+                "max_resets": max_resets,
+            }
+
+        if not isinstance(self.exec_backend, ContainerBackend):
+            request["blocked_reason"] = "unsupported_backend"
+            return {**normalized, "applied": False, "blocked_reason": "unsupported_backend"}
+
+        try:
+            reset_metadata = self.exec_backend.recreate_execution_environment(
+                reason=normalized["reason"]
+            )
+            self._container_env_probe = self.exec_backend.probe_environment()
+        except Exception as exc:
+            request["blocked_reason"] = str(exc)
+            return {**normalized, "applied": False, "blocked_reason": str(exc)}
+
+        loop_state["environment_reset_count"] = reset_count + 1
+        request["applied"] = True
+        request["reset_number"] = reset_count + 1
+        request["reset_metadata"] = reset_metadata
+        result = {
+            **normalized,
+            "applied": True,
+            "reset_number": reset_count + 1,
+            "max_resets": max_resets,
+            "reset_metadata": reset_metadata,
+        }
+        history = loop_state.setdefault("environment_reset_history", [])
+        if isinstance(history, list):
+            history.append(result)
+        step_outputs["environment_action"] = normalized
+        return result
+
+    @staticmethod
+    def _normalize_environment_action(action: dict[str, Any]) -> dict[str, Any]:
+        needed = WorkflowExecutor._coerce_entry_script_action_needed(action.get("needed"))
+        raw_action = str(action.get("action", "none") or "none").strip().lower()
+        return {
+            "needed": needed,
+            "action": raw_action,
+            "reason": str(action.get("reason", "") or "").strip(),
+            "scope": str(action.get("scope", "") or "").strip(),
+        }
 
     def _maybe_apply_entry_script_action(
         self,
@@ -4474,12 +4899,9 @@ class WorkflowExecutor:
                 result["dependencies"] = ", ".join(deps) if isinstance(deps, list) else str(deps)
 
         if step_outputs and isinstance(step_outputs, dict):
-            stderr = step_outputs.get("script_stderr", "")
-            shell_out = step_outputs.get("run_entry_script", {})
-            if not stderr and isinstance(shell_out, dict):
-                stderr = shell_out.get("script_stderr", "") or shell_out.get("stderr", "")
-            if stderr:
-                result["error_stderr"] = str(stderr)[:5000]
+            failure_evidence = self._build_failure_evidence(step_outputs)
+            if failure_evidence:
+                result["error_stderr"] = failure_evidence[:5000]
 
         # Include previous iteration's error_analysis for Phase 5 context
         prev_analysis = state.get("error_analysis", {})

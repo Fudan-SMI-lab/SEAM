@@ -28,6 +28,9 @@ If backend mode is `container`, work only in the framework target container and 
 ## Context Files
 - Runtime error artifact: {runtime_error_artifact_path}
 - Runtime card artifact: {runtime_card_artifact_path}
+- Latest complete stdout artifact: {latest_complete_stdout_artifact_path}
+- Latest complete stderr artifact: {latest_complete_stderr_artifact_path}
+- Latest complete meta artifact: {latest_complete_meta_artifact_path}
 - Project directory: {project_dir}
 - Entry script: {entry_script}
 
@@ -40,7 +43,8 @@ If backend mode is `container`, work only in the framework target container and 
 3. Preserve the custom-op final-gate evidence schema exactly, including `opp_custom_op_artifact_evidence`, adapter evidence, parity evidence, integration evidence, same-run runtime coverage, performance evidence, and no-fallback flags.
 4. Ensure every final-gate row has runtime coverage count greater than zero and explicit `fallback_detected=false`, `zero_call_detected=false`, `builtin_contamination_detected=false`, `baseline_only_detected=false`, and `stub_detected=false`.
 5. If `performance_validation` is `presence_only`, timing evidence must still exist; speedup positivity is not required.
-6. Validate with the framework-provided command and a timeout.
+6. Inspect complete stdout/stderr artifacts when present, then after each in-scope native/custom-op, compiler, shared-object, or final-gate evidence fix, run `actual_execution_command` with a timeout. If the next complete artifacts show another operator fixer failure, fix and rerun.
+7. If the next complete artifacts show only an out-of-scope dependency, environment, runtime-library, or Python-level source failure, stop and write the handoff role and reason in `summary`.
 
 ## Hard Rules
 - Do not create marker-only, fake, stub, dummy, report-only, or Python-only evidence artifacts.

@@ -70,11 +70,16 @@ Artifact base directory: {artifact_base_path}
 Raw execution log files from previous validation attempts:
 {raw_attempt_files}
 
+Latest complete stdout artifact: {latest_complete_stdout_artifact_path}
+Latest complete stderr artifact: {latest_complete_stderr_artifact_path}
+Latest complete metadata artifact: {latest_complete_meta_artifact_path}
+
 Each JSON file contains: `stdout`, `stderr`, `error`, `classification` (with
 category/root_cause/suggested_fix), `fix_attempt` (with response text and
 modified_files).
 
 When analyzing error patterns:
+- Before classifying the root cause, inspect the complete stdout/stderr artifacts when present. If they are absent, state that complete execution evidence is unavailable and classify from the bounded `failure_log` only.
 - Read the relevant JSON files from the paths above to understand the full
   stdout/stderr of previous attempts.
 - Pay special attention to the FIRST exception in each traceback (not just
@@ -120,6 +125,7 @@ the codebase and understand their own scope limitations.
 6. Decide whether the Phase 3 `run_command` itself is wrong for the contract. If so, request a bounded entry-script command revision. Still select a repair role when source, dependency, operator, or report edits are also needed.
 7. Propose the minimum corrective action that lets the workflow continue, prioritizing PPU-native solutions.
 8. If the failure is package or installation related, recommend PPU vendor index, PTG/t-head artifactory, or offline PPU wheelhouse first. Public PyPI installs can contaminate the PPU environment.
+9. If prior repairs contaminated the framework-created image container base environment, set `environment_action.needed=true` with `action="recreate_execution_environment"`. Never run docker/podman lifecycle commands yourself.
 
 ## Hard Rules
 - Do not restate the full failure log — quote only short fragments when necessary as evidence.
@@ -132,6 +138,7 @@ the codebase and understand their own scope limitations.
 - Do not use `entry_script_action` to weaken required reports, checks, or custom-op evidence.
 - When no entry-script revision is needed, set `entry_script_action.needed=false` and `entry_script_action.action="none"`.
 - When a revision is needed, set `entry_script_action.needed=true`, use `action` `regenerate` or `modify`, and provide a non-empty replacement `run_command`.
+- When no environment reset is needed, set `environment_action.needed=false` and `environment_action.action="none"`.
 
 ## Output Format
 First, provide your reasoning and diagnosis in free text. Then, at the end of your response, append a JSON code block with exactly these keys:
@@ -148,6 +155,12 @@ First, provide your reasoning and diagnosis in free text. Then, at the end of yo
     "reason": "",
     "entry_script_path": "",
     "run_command": ""
+  },
+  "environment_action": {
+    "needed": false,
+    "action": "none",
+    "reason": "",
+    "scope": ""
   }
 }
 ```

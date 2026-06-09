@@ -18,3 +18,8 @@ This workflow uses a container execution backend for Phase 5 validation.
 不要直接在宿主机上运行 `{entry_script}`，该脚本需要在容器环境中执行。
 如果需要在容器内手动验证，请使用：
 `{actual_execution_command}`
+
+## Repair Loop
+- Inspect `latest_complete_stdout_artifact_path`, `latest_complete_stderr_artifact_path`, and `latest_complete_meta_artifact_path` when populated; prefer complete stdout/stderr over truncated summaries.
+- After each in-scope native/custom-op, compiler, shared-object, or final-gate evidence fix, run `actual_execution_command` with a timeout. If the next complete artifacts show another operator fixer failure, fix and rerun.
+- If the next complete artifacts show only an out-of-scope dependency, environment, runtime-library, or Python-level source failure, stop and write the handoff role and reason in `summary`.

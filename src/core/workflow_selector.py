@@ -125,6 +125,7 @@ def resolve_workflow_from_selector(
     prompt_loader: Any,
     *,
     project_context: dict[str, Any] | None = None,
+    user_constraints: str = "",
     output_dir: str | Path = ".",
     telemetry: Any = None,
 ) -> Path:
@@ -138,6 +139,9 @@ def resolve_workflow_from_selector(
         project_context: Lightweight dictionary describing the project (paths,
                          language hints, framework hints, etc.).  Not a full
                          source dump.
+        user_constraints: Raw user-provided constraints to expose to the
+                          selector prompt. No preprocessing or summarization is
+                          performed.
         output_dir: Directory where the materialized merged workflow YAML
                     is written.  A ``resolved_workflows/`` subdirectory
                     is created inside *output_dir*.
@@ -197,6 +201,7 @@ def resolve_workflow_from_selector(
         fallback=effective_fallback,
         selector_path=selector_path,
         selector_config=selector_cfg,
+        user_constraints=user_constraints,
         telemetry=telemetry,
     )
 
@@ -388,6 +393,7 @@ def _select_workflow_via_agent(
     fallback: str | None,
     selector_path: str,
     selector_config: dict[str, Any] | None = None,
+    user_constraints: str = "",
     telemetry: Any = None,
 ) -> Path:
     """Ask an agent to pick a candidate; fall back when output is invalid.
@@ -423,6 +429,7 @@ def _select_workflow_via_agent(
             "selector_name": selector_name,
             "candidate_workflows": candidates_text,
             "project_context": project_summary,
+            "user_constraints": user_constraints or "",
         },
     )
 

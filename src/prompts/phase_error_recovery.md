@@ -55,11 +55,16 @@ Artifact base directory: {artifact_base_path}
 Raw execution log files from previous validation attempts:
 {raw_attempt_files}
 
+Latest complete stdout artifact: {latest_complete_stdout_artifact_path}
+Latest complete stderr artifact: {latest_complete_stderr_artifact_path}
+Latest complete metadata artifact: {latest_complete_meta_artifact_path}
+
 Each JSON file contains: `stdout`, `stderr`, `error`, `classification` (with
 category/root_cause/suggested_fix), `fix_attempt` (with response text and
 modified_files).
 
 When analyzing error patterns:
+- Before classifying the root cause, inspect the complete stdout/stderr artifacts when present. If they are absent, state that complete execution evidence is unavailable and classify from the bounded `failure_log` only.
 - Read the relevant JSON files from the paths above to understand the full
   stdout/stderr of previous attempts.
 - Pay special attention to the FIRST exception in each traceback (not just

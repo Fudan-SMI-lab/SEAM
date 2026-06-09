@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tests.e2e.e2e_test_v3 import _build_project_context, _format_selector_result_log
+from tests.e2e import e2e_test_v3
 
 
 class TestBuildProjectContext:
@@ -162,6 +163,13 @@ class TestSelectorIntegrationFlow:
         assert loaded["experience"]["enabled"] is True
         assert loaded["globals"]["review_gate_enabled"] is True
         assert loaded["globals"]["max_repair_iterations"] == 5
+
+    def test_run_e2e_v3_selector_call_passes_user_constraints(self) -> None:
+        import inspect
+
+        source = inspect.getsource(e2e_test_v3.run_e2e_v3)
+        assert "resolve_workflow_from_selector(" in source
+        assert "user_constraints=user_constraints" in source
 
 
 class TestSmokeSelectorYaml:

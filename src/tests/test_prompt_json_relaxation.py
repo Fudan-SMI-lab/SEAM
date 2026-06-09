@@ -18,6 +18,23 @@ PHASE_PROMPT_FILES = [
     "phase_6_report.md",
 ]
 
+PHASE3_ENTRY_PROMPT_FILES = [
+    "phase_3_entry_script.md",
+    "phase_3_entry_script_ppu.md",
+    "phase_3_entry_script_ppu_normal_entry_057.md",
+    "phase_3_entry_script_ppu_container_baseaware.md",
+    "phase_3_entry_script_ppu_container_baseaware_entryfix.md",
+    "phase_3_entry_script_musa_container_baseaware_entryfix.md",
+    "phase_3_entry_script_musa_container_baseaware_entryfix_normal.md",
+]
+
+ENTRY_SCRIPT_CHILD_OUTPUT_GUIDANCE = (
+    "If a generated/wrapper script launches child processes, it must drain and capture child stdout/stderr before exiting"
+)
+ENTRY_SCRIPT_FAILURE_SUMMARY_GUIDANCE = (
+    "On failure, generated/wrapper scripts must print a concise diagnostic summary to stderr"
+)
+
 OLD_CONSTRAINT = "must be valid JSON only, with no markdown fence"
 NEW_CONSTRAINT = "reason freely"
 
@@ -106,6 +123,20 @@ def test_phase3_and_phase5_prompts_require_complete_performance_report_closure()
     assert "covers every manifest/source-inventory unit" in phase5
     assert "overall_baseline_seconds" in phase5
     assert "overall_all_units_replaced" in phase5
+
+
+def test_phase3_prompts_require_generic_child_output_failure_summaries():
+    for filename in PHASE3_ENTRY_PROMPT_FILES:
+        content = (PROMPTS_DIR / filename).read_text()
+        assert ENTRY_SCRIPT_CHILD_OUTPUT_GUIDANCE in content, f"{filename} missing child output drain guidance"
+        assert ENTRY_SCRIPT_FAILURE_SUMMARY_GUIDANCE in content, f"{filename} missing stderr failure summary guidance"
+
+    new_guidance = ENTRY_SCRIPT_CHILD_OUTPUT_GUIDANCE + ENTRY_SCRIPT_FAILURE_SUMMARY_GUIDANCE
+    forbidden_terms = (
+        "GLM-OCR", "MinerU", "Deepwave", "vLLM", "SGLang", "MUSA", "PPU", "NPU", "Ascend",
+    )
+    for term in forbidden_terms:
+        assert term not in new_guidance
 
 
 def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline_rules():

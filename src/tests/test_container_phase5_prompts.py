@@ -39,6 +39,40 @@ PHASE5_ORIGINAL_PROMPTS = frozenset({
     "phase_review_improvement",
 })
 
+CONTAINER_ANALYZER_PROMPTS = frozenset({
+    "phase_error_recovery_container",
+    "phase_error_recovery_container_musa",
+    "phase_error_recovery_container_ppu",
+})
+
+REPAIR_SELF_VERIFICATION_PROMPTS = frozenset({
+    "repair_code_adapter_container",
+    "repair_code_adapter_container_musa",
+    "repair_code_adapter_container_ppu",
+    "repair_dependency_fixer_container",
+    "repair_dependency_fixer_container_musa",
+    "repair_dependency_fixer_container_ppu",
+    "repair_final_gate_report_fixer_container",
+    "repair_final_gate_report_fixer_container_musa",
+    "repair_operator_fixer_container",
+    "repair_operator_fixer_container_musa",
+    "repair_operator_fixer_container_ppu",
+})
+
+REPAIR_SCOPE_MARKERS = {
+    "repair_code_adapter_container": "Python-level source",
+    "repair_code_adapter_container_musa": "Python-level source",
+    "repair_code_adapter_container_ppu": "Python-level source",
+    "repair_dependency_fixer_container": "dependency/environment/runtime-library",
+    "repair_dependency_fixer_container_musa": "dependency/environment/runtime-library",
+    "repair_dependency_fixer_container_ppu": "dependency/environment/runtime-library",
+    "repair_final_gate_report_fixer_container": "report schema/aggregation",
+    "repair_final_gate_report_fixer_container_musa": "report schema/aggregation",
+    "repair_operator_fixer_container": "native/custom-op",
+    "repair_operator_fixer_container_musa": "native/custom-op",
+    "repair_operator_fixer_container_ppu": "native/custom-op",
+}
+
 # ── Original prompt files unchanged ─────────────────────────────────────
 
 
@@ -93,6 +127,23 @@ class TestContainerPromptsExist:
             assert "{entry_script}" in content, f"{name} should have {{entry_script}} placeholder"
         # Review/improvement prompts don't need {entry_script} — context injected from review gate
 
+
+    def test_musa_error_recovery_prompt_exposes_complete_shell_artifacts(self):
+        content = (PROMPTS_DIR / "phase_error_recovery_container_musa.md").read_text(encoding="utf-8")
+        assert "latest_complete_stdout_artifact_path" in content
+        assert "latest_complete_stderr_artifact_path" in content
+        assert "latest_complete_meta_artifact_path" in content
+        assert "inspect the complete stdout/stderr artifacts when present" in content
+        assert "complete execution evidence is unavailable" in content
+
+    @pytest.mark.parametrize("name", sorted(CONTAINER_ANALYZER_PROMPTS))
+    def test_container_analyzer_prompts_include_environment_action_schema(self, name):
+        content = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+        assert "environment_action" in content
+        assert "recreate_execution_environment" in content
+        assert "needed" in content
+        assert "scope" in content
+
     def test_container_prompts_instruct_container_validation(self):
         for name in PHASE5_CONTAINER_PROMPTS:
             content = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
@@ -101,6 +152,19 @@ class TestContainerPromptsExist:
             assert any(w in lower for w in ["container", "actual_execution_command"]), (
                 f"Container prompt {name} should reference container execution"
             )
+
+    @pytest.mark.parametrize("name", sorted(REPAIR_SELF_VERIFICATION_PROMPTS))
+    def test_repair_prompts_have_concise_actual_command_loop(self, name):
+        content = (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+        assert "latest_complete_stdout_artifact_path" in content
+        assert "latest_complete_stderr_artifact_path" in content
+        assert "latest_complete_meta_artifact_path" in content
+        assert "complete stdout/stderr" in content
+        assert "run `actual_execution_command`" in content
+        assert "next complete artifacts" in content
+        assert "out-of-scope" in content
+        assert "handoff role and reason" in content
+        assert REPAIR_SCOPE_MARKERS[name] in content
 
 
 # ── Workflow YAML prompt references ─────────────────────────────────────
@@ -554,4 +618,3 @@ class TestCommandDescriptionAccuracy:
         assert "exec -i" in rendered or "docker exec" in rendered
         assert ".venv/bin/python" in rendered
         assert "run_test.py" in rendered
-

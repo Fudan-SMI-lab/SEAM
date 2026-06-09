@@ -54,6 +54,15 @@ the PRIMARY evidence for platform selection:
 
 {project_context}
 
+## User-Provided Constraints (for awareness)
+
+{user_constraints}
+
+Use these raw user-provided constraints only as an additional reference signal
+when refining selection among candidate workflows compatible with the same currently detected platform/environment. They must not override, replace, or
+infer platform/environment selection. Actual platform/environment selection must
+remain based on current real device/environment discovery.
+
 ## Candidate Workflows
 
 {candidate_workflows}
@@ -67,6 +76,7 @@ workflow that best matches:
 
 - **Discovered device / accelerator platform** (PRIMARY): Which of the above device-discovery probes succeeded? Match the discovered platform to the candidate workflows' target accelerators.
 - **Framework alignment** (SECONDARY): Does the project use PyTorch, TensorFlow, JAX, or other frameworks? Use this to narrow between workflows for the same discovered platform.
+- **User-provided constraints** (REFINEMENT ONLY): Use constraints only to refine among candidates compatible with the same currently detected platform/environment; never use constraints to choose or infer the platform/environment.
 - **Project complexity and migration scope**: Choose simpler workflows for small projects, and more comprehensive workflows when the inspected project structure and available context indicate broader migration needs.
 
 ## Hard Rules
@@ -74,6 +84,7 @@ workflow that best matches:
 - Select **exactly one** workflow from the candidate list above.
 - Your selection MUST match one of the listed workflows verbatim (by path).
 - Do NOT modify, combine, or invent workflow names.
+- User-provided constraints MUST NOT override current real device/environment discovery for platform/environment selection.
 - If device discovery fails to identify a platform, or no candidate matches the
   discovered platform, prefer the most versatile / general-purpose workflow.
 - If insufficient project context is available, still base your decision on

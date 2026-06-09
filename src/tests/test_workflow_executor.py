@@ -19,7 +19,7 @@ from core.types import (
     ExperienceConfig,
 )
 from core.workflow_executor import WorkflowExecutor
-from core.execution_backend import ContainerBackend
+from core.execution_backend import ContainerBackend, ExecResult
 from core.artifact_store import ArtifactStore
 from core.experience_store import ExperienceStore
 from core.telemetry_bridge import TelemetryBridge
@@ -425,7 +425,8 @@ def test_experience_query_context_uses_direct_script_stderr(tmp_path: Path):
         loop_history=[],
     )
 
-    assert query_ctx["error_stderr"] == "direct failure text"
+    assert "Output Evidence (stderr tail)" in query_ctx["error_stderr"]
+    assert "direct failure text" in query_ctx["error_stderr"]
 
 
 def test_experience_query_context_preserves_nested_run_entry_script_stderr(tmp_path: Path):
@@ -447,8 +448,256 @@ def test_experience_query_context_preserves_nested_run_entry_script_stderr(tmp_p
         loop_history=[],
     )
 
-    assert query_ctx["error_stderr"] == "nested failure text"
+    assert "Output Evidence (stderr tail)" in query_ctx["error_stderr"]
+    assert "nested failure text" in query_ctx["error_stderr"]
 
+
+def test_failure_evidence_prefers_stderr_over_stdout(executor: WorkflowExecutor):
+    evidence = executor._build_failure_evidence(
+        {
+            "script_command": "python fail.py",
+            "script_exit_code": 7,
+            "script_duration": 1.25,
+            "script_stderr": "stderr failure details",
+            "script_stdout": "stdout diagnostic that should not be used",
+        }
+    )
+
+    assert "Command: python fail.py" in evidence
+    assert "Exit Code: 7" in evidence
+    assert "Duration Seconds: 1.25" in evidence
+    assert "Output Evidence (stderr tail)" in evidence
+    assert "stderr failure details" in evidence
+    assert "stdout diagnostic that should not be used" not in evidence
+
+
+def test_failure_evidence_falls_back_to_stdout_diagnostics(executor: WorkflowExecutor):
+    evidence = executor._build_failure_evidence(
+        {
+            "script_command": "python stdout_only.py",
+            "script_exit_code": 1,
+            "script_duration": 0.4,
+            "script_stderr": "",
+            "script_stdout": "progress line\nRuntimeError: child failed on stdout\nmore logs",
+        }
+    )
+
+    assert "Command: python stdout_only.py" in evidence
+    assert "Exit Code: 1" in evidence
+    assert "Output Evidence (stdout diagnostic excerpt)" in evidence
+    assert "RuntimeError: child failed on stdout" in evidence
+
+
+def test_failure_evidence_bounds_stdout_and_omits_full_output(executor: WorkflowExecutor):
+    long_stdout = "prefix\n" + ("noise-line\n" * 2_000) + "RuntimeError: final concise failure\n"
+
+    evidence = executor._build_failure_evidence(
+        {
+            "script_exit_code": 1,
+            "script_stderr": "",
+            "script_stdout": long_stdout,
+        }
+    )
+
+    assert len(evidence) < 6_500
+    assert "RuntimeError: final concise failure" in evidence
+    assert evidence.count("noise-line") < 20
+
+
+def test_failure_evidence_no_user_output_remains_sane(executor: WorkflowExecutor):
+    evidence = executor._build_failure_evidence(
+        {"script_command": "python silent.py", "script_exit_code": 1, "script_duration": 0.01}
+    )
+
+    assert "Command: python silent.py" in evidence
+    assert "Exit Code: 1" in evidence
+    assert "Output Evidence (no captured output)" in evidence
+    assert "No stderr/stdout output captured" in evidence
+
+
+def test_analyzer_failure_log_uses_stdout_when_stderr_empty(tmp_path: Path):
+    executor = _executor_for_experience_context(tmp_path)
+    input_ctx: dict[str, object] = {}
+
+    executor._inject_sub_workflow_context(
+        input_ctx,
+        "analyze_error",
+        step_outputs={
+            "script_command": "python run_entry.py",
+            "script_exit_code": 2,
+            "script_duration": 3.5,
+            "script_stderr": "",
+            "script_stdout": "setup done\nRuntimeError: stdout-only failure\n",
+        },
+        loop_vars={"entry_script": "python run_entry.py"},
+        state={},
+        loop_history=[],
+    )
+
+    failure_log = str(input_ctx["failure_log"])
+    assert "Command: python run_entry.py" in failure_log
+    assert "Exit Code: 2" in failure_log
+    assert "RuntimeError: stdout-only failure" in failure_log
+
+
+def test_fixer_runtime_artifact_uses_stdout_when_stderr_empty(tmp_path: Path):
+    executor = _executor_for_experience_context(tmp_path)
+    input_ctx: dict[str, object] = {}
+
+    executor._inject_sub_workflow_context(
+        input_ctx,
+        "fix_dependency",
+        step_outputs={
+            "script_command": "python run_entry.py",
+            "script_exit_code": 2,
+            "script_stderr": "",
+            "script_stdout": "download ok\nException: dependency failed on stdout\n",
+            "error_analysis": {
+                "category": "dependency",
+                "root_cause": "missing package",
+                "suggested_fix": "install dependency",
+                "repair_role": "dependency_fixer",
+            },
+        },
+        loop_vars={"entry_script": "python run_entry.py"},
+        state={},
+        loop_history=[],
+    )
+
+    runtime_error_path = Path(str(input_ctx["runtime_error_artifact_path"]))
+    runtime_error = runtime_error_path.read_text(encoding="utf-8")
+    assert "Exception: dependency failed on stdout" in runtime_error
+    assert "Exit Code: 2" in runtime_error
+
+
+
+def test_phase5_entry_shell_persists_complete_stderr_artifact_and_prompt_paths(tmp_path: Path):
+    marker = "IMPORTANT_ROOT_CAUSE_BEFORE_TAIL"
+    script = tmp_path / "long_stderr.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.stderr.write('{marker}\\n')\n"
+        "sys.stderr.write('noise-line\\n' * 20000)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    workflow = WorkflowDefinition(name="full-shell-artifacts", version="1.0", phases=[], terminals=[])
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        artifact_store,
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    phase = PhaseDefinition(
+        id="run_entry_script",
+        name="Run Entry",
+        prompt_template="",
+        output_schema={},
+        type="shell",
+        on_failure="continue",
+    )
+    setattr(phase, "command", "${loop_vars.entry_script}")
+    step_outputs: dict[str, object] = {}
+
+    status, output = executor._execute_shell_phase(
+        phase,
+        state={},
+        context={},
+        loop_vars={"entry_script": f"{sys.executable} {script.name}"},
+        loop_state=step_outputs,
+    )
+
+    assert status == "success"
+    assert output["exit_code"] == 3
+    artifacts = output["artifacts"]
+    stderr_path = Path(artifacts["stderr_path"])
+    stdout_path = Path(artifacts["stdout_path"])
+    meta_path = Path(artifacts["meta_path"])
+    assert stderr_path.is_absolute()
+    assert stdout_path.is_absolute()
+    assert meta_path.is_absolute()
+    assert marker in stderr_path.read_text(encoding="utf-8")
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert metadata["command"].endswith(script.name)
+    assert metadata["cwd"] == str(tmp_path)
+    assert metadata["exit_code"] == 3
+    assert metadata["complete"] is True
+    assert metadata["stderr_complete"] is True
+    assert metadata["stderr_bytes"] == stderr_path.stat().st_size
+
+    input_ctx: dict[str, object] = {}
+    executor._inject_sub_workflow_context(
+        input_ctx,
+        "analyze_error",
+        step_outputs=step_outputs,
+        loop_vars={"entry_script": f"{sys.executable} {script.name}"},
+        state={},
+        loop_history=[],
+    )
+
+    failure_log = str(input_ctx["failure_log"])
+    assert "Output Evidence (stderr tail)" in failure_log
+    assert marker not in failure_log
+    assert input_ctx["latest_complete_stderr_artifact_path"] == str(stderr_path)
+    assert input_ctx["latest_complete_stdout_artifact_path"] == str(stdout_path)
+    assert input_ctx["latest_complete_meta_artifact_path"] == str(meta_path)
+    raw_attempt_files = json.loads(str(input_ctx["raw_attempt_files"]))
+    assert raw_attempt_files[0]["stderr_path"] == str(stderr_path)
+    assert raw_attempt_files[0]["stdout_path"] == str(stdout_path)
+    assert raw_attempt_files[0]["meta_path"] == str(meta_path)
+
+
+def test_fixer_context_includes_latest_complete_shell_artifact_paths(tmp_path: Path):
+    workflow = WorkflowDefinition(name="fixer-shell-artifacts", version="1.0", phases=[], terminals=[])
+    artifact_store = ArtifactStore(str(tmp_path), "testrun")
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        artifact_store,
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    artifacts = artifact_store.save_shell_attempt_artifacts(
+        "run_entry_script",
+        command="python validate.py",
+        cwd=str(tmp_path),
+        backend_workdir=str(tmp_path),
+        exit_code=1,
+        duration=0.25,
+        stdout="setup ok\n",
+        stderr="RuntimeError: full artifact failure\n",
+    )
+    input_ctx: dict[str, object] = {}
+
+    executor._inject_sub_workflow_context(
+        input_ctx,
+        "fix_dependency",
+        step_outputs={
+            "script_command": "python validate.py",
+            "script_exit_code": 1,
+            "script_stderr": "RuntimeError: bounded summary",
+            "error_analysis": {
+                "category": "dependency",
+                "root_cause": "missing runtime package",
+                "suggested_fix": "install compatible dependency",
+                "repair_role": "dependency_fixer",
+            },
+        },
+        loop_vars={"entry_script": "python validate.py"},
+        state={},
+        loop_history=[],
+    )
+
+    assert input_ctx["latest_complete_stdout_artifact_path"] == artifacts["stdout_path"]
+    assert input_ctx["latest_complete_stderr_artifact_path"] == artifacts["stderr_path"]
+    assert input_ctx["latest_complete_meta_artifact_path"] == artifacts["meta_path"]
+    assert Path(str(input_ctx["latest_complete_stderr_artifact_path"])).is_absolute()
 
 def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
     """Generic workflow name infers generic_accelerator policy."""
@@ -1785,6 +2034,325 @@ def test_phase5_entry_script_action_allows_env_prefix_command() -> None:
     assert result["applied"] is True
     assert state["phase_3_entry_script"]["run_command"] == "MPLBACKEND=Agg python3 new.py"
     assert loop_vars["entry_script"] == "MPLBACKEND=Agg python3 new.py"
+
+
+def test_analyzer_environment_reset_skips_fixer_and_reruns_validation(tmp_path: Path) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+        phases=[
+            {
+                "id": "run_entry_script",
+                "type": "shell",
+                "command": "${loop_vars.entry_script}",
+                "on_failure": "continue",
+            },
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "condition": "$.script_exit_code != 0",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "condition": "$.script_exit_code != 0",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {"code_adapter": "fix_code"},
+            },
+            {
+                "id": "fix_code",
+                "condition": "$.script_exit_code != 0",
+                "type": "llm",
+                "prompt_template": "fix_prompt",
+                "agent": "code_adapter",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="environment_reset_loop",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "code_adapter": {"role": "code_adapter", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.return_value = json.dumps({
+        "repair_role": "code_adapter",
+        "category": "environment",
+        "root_cause": "base container package pollution",
+        "suggested_fix": "reset the framework-owned image container",
+        "environment_action": {
+            "needed": True,
+            "action": "recreate_execution_environment",
+            "reason": "vendor torch polluted",
+            "scope": "execution_environment",
+        },
+    })
+    prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
+    cfg = ExecutionBackendConfig.from_dict(
+        {"mode": "container", "source": "image", "image": "test:latest"}
+    )
+    backend = ContainerBackend(cfg)
+    backend._container_id = "old-cid"
+    backend.run = MagicMock(side_effect=[
+        ExecResult(exit_code=1, stdout="", stderr="polluted torch", duration=0.1),
+        ExecResult(exit_code=0, stdout="ok", stderr="", duration=0.1),
+    ])
+    backend.recreate_execution_environment = MagicMock(return_value={
+        "old_container_id": "old-cid",
+        "new_container_id": "new-cid",
+        "source": "image",
+        "image": "test:latest",
+        "reason": "vendor torch polluted",
+        "preserved_notes": [],
+        "lost_notes": [],
+    })
+    backend.probe_environment = MagicMock(return_value={"status": "ok", "container_id": "new-cid"})
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        exec_backend=backend,
+    )
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}"},
+        ),
+        state={"phase_3_entry_script": {"run_command": "python validate.py"}},
+        context={},
+    )
+
+    assert result["status"] == "success"
+    assert backend.run.call_count == 2
+    backend.recreate_execution_environment.assert_called_once_with(reason="vendor torch polluted")
+    backend.probe_environment.assert_called_once()
+    assert session_mgr.send_command.call_count == 1
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:error_analyzer"]
+    assert result["loop_state"]["environment_reset_count"] == 1
+    assert result["loop_history"][0]["status"] == "environment_reset"
+    assert result["loop_history"][0]["environment_action"]["applied"] is True
+    assert "fix_code" not in result["loop_state"]
+    assert result["loop_state"]["script_exit_code"] == 0
+
+
+def test_analyzer_environment_reset_refreshes_prompt_execution_context(tmp_path: Path) -> None:
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=1,
+        phases=[
+            {
+                "id": "run_entry_script",
+                "type": "shell",
+                "command": "${loop_vars.entry_script}",
+                "on_failure": "continue",
+            },
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "condition": "$.script_exit_code != 0",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "condition": "$.script_exit_code != 0",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {"code_adapter": "fix_code"},
+            },
+            {
+                "id": "fix_code",
+                "condition": "$.script_exit_code != 0",
+                "type": "llm",
+                "prompt_template": "fix_prompt",
+                "agent": "code_adapter",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="environment_reset_refresh_context",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "code_adapter": {"role": "code_adapter", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    session_mgr = MagicMock()
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    captured_contexts: list[dict[str, object]] = []
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    session_mgr.send_command.side_effect = [
+        json.dumps({
+            "repair_role": "code_adapter",
+            "category": "environment",
+            "root_cause": "framework-created container environment drifted",
+            "suggested_fix": "recreate the execution environment",
+            "environment_action": {
+                "needed": True,
+                "action": "recreate_execution_environment",
+                "reason": "reset requested by analyzer",
+                "scope": "execution_environment",
+            },
+        }),
+        json.dumps({
+            "repair_role": "unknown_role",
+            "category": "validation",
+            "root_cause": "validation still fails after reset",
+            "suggested_fix": "stop after proving refreshed prompt context",
+            "environment_action": {"needed": False, "action": "none", "reason": "", "scope": ""},
+        }),
+    ]
+
+    def load_prompt(template: str, ctx: dict[str, object]) -> str:
+        if template == "analyze_prompt":
+            captured_contexts.append(dict(ctx))
+        return template
+
+    prompt_loader.load_prompt.side_effect = load_prompt
+    cfg = ExecutionBackendConfig.from_dict(
+        {"mode": "container", "source": "image", "image": "test:latest"}
+    )
+    backend = ContainerBackend(cfg)
+    backend.set_project_dir(str(tmp_path))
+    backend._container_id = "old-cid"
+    backend.run = MagicMock(side_effect=[
+        ExecResult(exit_code=1, stdout="", stderr="first validation failure", duration=0.1),
+        ExecResult(exit_code=1, stdout="", stderr="second validation failure", duration=0.1),
+    ])
+
+    def recreate_environment(reason: str = "") -> dict[str, object]:
+        backend._container_id = "new-cid"
+        return {
+            "old_container_id": "old-cid",
+            "new_container_id": "new-cid",
+            "source": "image",
+            "image": "test:latest",
+            "reason": reason,
+            "preserved_notes": [],
+            "lost_notes": [],
+        }
+
+    backend.recreate_execution_environment = MagicMock(side_effect=recreate_environment)
+    backend.probe_environment = MagicMock(return_value={"status": "ok", "container_id": "new-cid"})
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        exec_backend=backend,
+    )
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}"},
+        ),
+        state={"phase_3_entry_script": {"run_command": "python validate.py"}},
+        context={},
+    )
+
+    assert result["status"] == "failure"
+    assert backend.run.call_count == 2
+    backend.recreate_execution_environment.assert_called_once_with(reason="reset requested by analyzer")
+    assert len(captured_contexts) == 2
+    first_context, second_context = captured_contexts
+    assert first_context["container_name_or_id"] == "old-cid"
+    assert "old-cid" in str(first_context["actual_execution_command"])
+    assert second_context["container_name_or_id"] == "new-cid"
+    assert "new-cid" in str(second_context["actual_execution_command"])
+    assert "old-cid" not in str(second_context["actual_execution_command"])
+
+
+def test_environment_reset_cap_blocks_second_reset_request(tmp_path: Path) -> None:
+    workflow = WorkflowDefinition(
+        name="environment_reset_cap",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        globals={"max_environment_resets_per_phase": 1},
+    )
+    cfg = ExecutionBackendConfig.from_dict(
+        {"mode": "container", "source": "image", "image": "test:latest"}
+    )
+    backend = ContainerBackend(cfg)
+    backend._container_id = "new-cid"
+    backend.recreate_execution_environment = MagicMock()
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        exec_backend=backend,
+    )
+    loop_state = {
+        "environment_reset_count": 1,
+        "max_environment_resets": 1,
+        "environment_reset_requests": [],
+    }
+
+    result = executor._maybe_recreate_execution_environment(
+        {
+            "environment_action": {
+                "needed": True,
+                "action": "recreate_execution_environment",
+                "reason": "still polluted",
+                "scope": "execution_environment",
+            }
+        },
+        {},
+        loop_state,
+    )
+
+    assert result is not None
+    assert result["applied"] is False
+    assert result["blocked_reason"] == "max_environment_resets_exceeded"
+    backend.recreate_execution_environment.assert_not_called()
 
 
 def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validated(tmp_path: Path) -> None:

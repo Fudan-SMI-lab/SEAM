@@ -1153,12 +1153,26 @@ def test_orchestrator_resolves_selector_before_load_workflow(
     monkeypatch.setattr("core.orchestrator.PhaseRunner", FakePhaseRunner)
     monkeypatch.setattr("core.orchestrator.RepairLoopEngine", FakeRepairLoopEngine)
     monkeypatch.setattr("core.orchestrator.create_migrator_resolved", lambda **kw: FakeMigrator())
+    selector_call: dict[str, object] = {}
+
+    def fake_resolve_workflow_from_selector(
+        selector_path: str,
+        session_mgr: object,
+        prompt_loader: object,
+        project_context: dict[str, object] | None = None,
+        user_constraints: str = "",
+        output_dir: str = ".",
+        **kwargs: object,
+    ) -> Path:
+        selector_call["user_constraints"] = user_constraints
+        return wf_a
+
     monkeypatch.setattr("core.orchestrator.resolve_workflow_from_selector",
-                        lambda selector_path, session_mgr, prompt_loader, project_context=None, output_dir=".": wf_a)
+                        fake_resolve_workflow_from_selector)
 
     session_mgr = MockSessionManager()
     orchestrator = Orchestrator(session_mgr=session_mgr, project_dir="/tmp/testproj", workflow_path=str(selector))
-    result = orchestrator.run_workflow("/tmp/testproj")
+    result = orchestrator.run_workflow("/tmp/testproj", user_constraints="Prefer compact compatible workflow")
 
     assert result["success"] is True
     assert captured_workflow_path == [str(wf_a)]
@@ -1166,6 +1180,7 @@ def test_orchestrator_resolves_selector_before_load_workflow(
     assert len(selector_journals) == 1
     assert selector_journals[0]["details"]["selector_path"] == str(selector)
     assert selector_journals[0]["details"]["resolved_workflow_path"] == str(wf_a)
+    assert selector_call["user_constraints"] == "Prefer compact compatible workflow"
 
 
 def test_orchestrator_passes_through_normal_workflow(

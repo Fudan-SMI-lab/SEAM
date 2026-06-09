@@ -62,6 +62,14 @@ class PromptLoader:
         if not str(context.get("constraint_summary", "")).strip():
             template = re.sub(r",\s*\{constraint_summary\},\s*", ", ", template)
 
+        artifact_defaults = {
+            "latest_complete_stdout_artifact_path": "(no complete stdout artifact available)",
+            "latest_complete_stderr_artifact_path": "(no complete stderr artifact available)",
+            "latest_complete_meta_artifact_path": "(no complete metadata artifact available)",
+        }
+        if any(key not in context for key in artifact_defaults):
+            context = {**artifact_defaults, **context}
+
         # Default repair_role_descriptions to the three basic roles when not provided
         if "repair_role_descriptions" not in context:
             context = dict(context)
@@ -78,7 +86,9 @@ class PromptLoader:
                 "- `repair_role`: One of `dependency_fixer`, `code_adapter`, `operator_fixer`.\n"
                 "- `entry_script_action.needed`: `true` only to replace the Phase 3 `run_command`, `false` otherwise.\n"
                 "- `entry_script_action.action`: `\"none\"`, `\"regenerate\"`, or `\"modify\"`.\n"
-                "- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`. Source edits belong to repair agents."
+                "- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`. Source edits belong to repair agents.\n"
+                "- `environment_action.needed`: `true` only when a framework-created image container must be recreated before repair.\n"
+                "- `environment_action.action`: `\"none\"` or `\"recreate_execution_environment\"`; never run docker/podman yourself."
             )
 
         placeholders: list[str] = re.findall(r"\{(\w+)\}", template)

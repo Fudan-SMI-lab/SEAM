@@ -43,6 +43,9 @@ If backend mode is `container`, work inside the framework target container only 
 ## Reference Artifacts
 - Runtime error artifact: {runtime_error_artifact_path}
 - Runtime card artifact: {runtime_card_artifact_path}
+- Latest complete stdout artifact: {latest_complete_stdout_artifact_path}
+- Latest complete stderr artifact: {latest_complete_stderr_artifact_path}
+- Latest complete meta artifact: {latest_complete_meta_artifact_path}
 
 ## Required Actions
 1. Inspect target runtime base Python first: interpreter path, `torch`, `torch.cuda`, `torch_musa`, `torch.musa`, `torch_maca`, SDK path, compiler, runtime libraries, package locations, and package versions.
@@ -54,8 +57,9 @@ If backend mode is `container`, work inside the framework target container only 
 7. Validate with `actual_execution_command` or the local equivalent described by the framework, using a timeout.
 8. Treat Phase 2, prior outputs, runtime cards, and probe facts as hints only. Verify dependency and environment facts yourself inside the target runtime before installing or changing anything.
 9. Do dependency-closure repair within your scope: inspect project manifests/imports and the current traceback, identify related missing or incompatible environment dependencies, and safely resolve the verified set together instead of returning after only the first missing import.
-10. After each in-scope dependency/environment fix, run `actual_execution_command`. If the next failure is still a dependency/environment issue and can be fixed without replacing vendor runtime packages, continue fixing before your final response.
-11. In `summary`, include what you checked, which hints were verified or rejected, what packages/env settings changed, how vendor runtime was preserved, any remaining issue, and whether the remaining issue is in scope or should be handed off.
+10. Inspect complete stdout/stderr artifacts when present, then after each in-scope dependency/environment/runtime-library fix, run `actual_execution_command` with a timeout. If the next complete artifacts show another dependency fixer failure, continue fixing before your final response.
+11. If the next complete artifacts show only an out-of-scope Python-level, native/custom-op, compiler, shared-object, or final-gate evidence failure, stop and write the handoff role and reason in `summary`.
+12. In `summary`, include what you checked, which hints were verified or rejected, what packages/env settings changed, how vendor runtime was preserved, any remaining issue, and whether the remaining issue is in scope or should be handed off.
 
 ## Hard Rules
 - Do not install CPU-only torch or replace vendor accelerator packages.

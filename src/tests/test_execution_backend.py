@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -1334,6 +1335,91 @@ class TestContainerBackendLivenessRevalidation:
         call2 = mock_run.call_args_list[1][0][0]
         assert "exec" in call2
         assert "c1" in call2
+
+
+class TestContainerBackendEnvironmentReset:
+    @patch("subprocess.run")
+    def test_image_reset_updates_container_id_and_reuses_config(self, mock_run):
+        inspect_payload = [{
+            "Name": "/seam-migration-123",
+            "Config": {"Image": "test:latest", "WorkingDir": ""},
+            "Mounts": [{"Source": "/tmp/proj", "Destination": "/workspace"}],
+        }]
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(inspect_payload), stderr=""),
+            MagicMock(returncode=0, stdout="old stopped\n", stderr=""),
+            MagicMock(returncode=0, stdout="old removed\n", stderr=""),
+            MagicMock(returncode=0, stdout="new-cid\n", stderr=""),
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "image",
+                "image": "test:latest",
+                "devices": ["/dev/accel"],
+                "volumes": ["/cache:/cache:rw"],
+                "env_vars": {"FOO": "bar"},
+                "network_mode": "host",
+                "runtime_flags": ["--ipc=host"],
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+        backend._initialized = True
+
+        metadata = backend.recreate_execution_environment(reason="vendor torch polluted")
+
+        assert backend._container_id == "new-cid"
+        assert metadata["old_container_id"] == "old-cid"
+        assert metadata["new_container_id"] == "new-cid"
+        assert metadata["source"] == "image"
+        assert metadata["image"] == "test:latest"
+        assert "package installs" in " ".join(metadata["lost_notes"])
+        create_call = mock_run.call_args_list[-1][0][0]
+        assert create_call[:3] == ["docker", "run", "-d"]
+        assert "test:latest" in create_call
+        assert "/tmp/proj:/workspace:rw" in create_call
+        assert "/dev/accel" in create_call
+        assert "/cache:/cache:rw" in create_call
+        assert "FOO=bar" in create_call
+        assert "host" in create_call
+        assert "--ipc=host" in create_call
+
+    @patch("subprocess.run")
+    def test_existing_container_reset_is_rejected(self, mock_run):
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "user-container",
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "user-container"
+
+        with pytest.raises(RuntimeError, match="source=image"):
+            backend.recreate_execution_environment(reason="should not reset user container")
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_image_reset_rejects_unowned_container_name(self, mock_run):
+        inspect_payload = [{
+            "Name": "/user-owned",
+            "Config": {"Image": "test:latest"},
+            "Mounts": [{"Source": "/tmp/proj", "Destination": "/workspace"}],
+        }]
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(inspect_payload), stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "source": "image", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+
+        with pytest.raises(RuntimeError, match="does not match framework prefix"):
+            backend.recreate_execution_environment(reason="bad owner")
+        assert mock_run.call_count == 1
 
 
 # ── ContainerBackend: probe_environment ────────────────────────────────

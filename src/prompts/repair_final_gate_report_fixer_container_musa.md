@@ -30,6 +30,9 @@ If backend mode is `container`, work only in the framework target container and 
 ## Context Files
 - Runtime error artifact: {runtime_error_artifact_path}
 - Runtime card artifact: {runtime_card_artifact_path}
+- Latest complete stdout artifact: {latest_complete_stdout_artifact_path}
+- Latest complete stderr artifact: {latest_complete_stderr_artifact_path}
+- Latest complete meta artifact: {latest_complete_meta_artifact_path}
 - Project directory: {project_dir}
 - Entry script: {entry_script}
 
@@ -45,7 +48,7 @@ If backend mode is `container`, work only in the framework target container and 
    - `rows` is a non-empty list whose length equals `manifest_entries`
    - `source_inventory` has `discovery_complete: true`, `discovery_sources_checked`, `out_of_scope_source_groups`, and entries matching all manifest rows
    - `performance_report` is an object with `complete: true`, `unit_count == manifest_entries`, and per-unit entries matching all manifest rows
-4. Re-run the entry script to verify the fix.
+4. Inspect complete stdout/stderr artifacts when present, then after each in-scope report schema/aggregation fix, run `actual_execution_command` with a timeout. If the next complete artifacts show another report fixer failure, fix and rerun.
 5. After the fix, **validate with the command below**. Copy its exact output — do NOT guess, simulate, or paraphrase validator results. Run it repeatedly until ALL errors are resolved:
 
 ```
@@ -59,6 +62,7 @@ If backend mode is `container`, work only in the framework target container and 
 - Do NOT replace vendor torch/runtime packages to force a build.
 - Preserve existing evidence-level content (rows, opp_custom_op_artifact_evidence, etc.) — do NOT fabricate, modify, or remove evidence fields. If evidence-level errors remain after schema/aggregation repair, report them in your summary as operator blockers requiring `operator_fixer`. Do NOT claim evidence is valid unless it has already been validated.
 - Treat the validator command as read-only. Do NOT modify framework, validator, prompt, or workflow files.
+- If the next complete artifacts show only out-of-scope evidence-level, native/custom-op, compiler, shared-object, dependency, environment, or Python-level source failure, stop and write the handoff role and reason in `summary`.
 
 ## Validator Contract
 {final_gate_validator_contract_summary}

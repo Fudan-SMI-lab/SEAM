@@ -137,6 +137,7 @@ class Orchestrator:
                     self.session_mgr,
                     prompt_loader,
                     project_context=project_ctx,
+                    user_constraints=user_constraints,
                     output_dir=artifact_store.base_dir,
                 )
                 self._journal(
