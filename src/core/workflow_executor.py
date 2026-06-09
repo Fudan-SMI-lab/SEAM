@@ -45,6 +45,7 @@ from core.custom_op_opp_preflight import ensure_opp_source_evidence, format_cust
 from core.custom_op_variants import (
     EXPANDED_VARIANT_CONTRACT_FIELDS,
     apply_expanded_variant_contract,
+    build_variant_placeholder_content,
     ensure_strict_expanded_variant_validation_script,
     ensure_strict_non_variant_custom_op_validation_script,
     expanded_variant_contract_from_outputs,
@@ -2173,6 +2174,14 @@ class WorkflowExecutor:
                     if isinstance(val, (list, dict)):
                         total_variants += len(val)
             input_ctx.setdefault("total_count", str(total_variants) if total_variants else "0")
+            # Inject variant_placeholder with actual variant axis data from framework
+            ph1 = state.get("phase_1_project_analysis")
+            ph3_map = cast(Mapping[str, Any], ph3) if isinstance(ph3, dict) else None
+            ph1_map = cast(Mapping[str, Any], ph1) if isinstance(ph1, dict) else None
+            input_ctx.setdefault(
+                "variant_placeholder",
+                build_variant_placeholder_content(ph3_map, ph1_map),
+            )
         if "phase_3_entry_script" in pid or "phase_3" in pid:
             ph35 = state.get("phase_35_static_validate", {})
             if isinstance(ph35, dict) and ph35.get("validation_passed") is False:

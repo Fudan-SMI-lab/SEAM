@@ -6,7 +6,7 @@ import os
 import re
 import shlex
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
@@ -22,6 +22,7 @@ from core.assisted_verification import (
 from core.custom_op_opp_preflight import has_custom_op_contract, has_explicit_no_custom_op_contract
 from core.custom_op_variants import (
     apply_expanded_variant_contract,
+    build_variant_placeholder_content,
     ensure_strict_expanded_variant_validation_script,
     ensure_strict_non_variant_custom_op_validation_script,
     expanded_variant_contract_from_outputs,
@@ -1309,6 +1310,16 @@ class PhaseRunner:
             prompt_ctx["previous_outputs"] = self._serialize_context(filtered)
             entry_script = self._lookup_previous_output(filtered, "phase_3_entry_script", "entry_script_path")
             prompt_ctx["entry_script_path"] = str(entry_script) if entry_script else "(not available)"
+            # Inject variant_placeholder with actual variant axis data from framework
+            ph3 = filtered.get("phase_3_entry_script") if isinstance(filtered, dict) else None
+            ph1 = previous_output_map.get("phase_1_project_analysis") if isinstance(previous_output_map, dict) else None
+            prompt_ctx.setdefault(
+                "variant_placeholder",
+                build_variant_placeholder_content(
+                    cast(Mapping[object, object], ph3) if isinstance(ph3, dict) else None,
+                    cast(Mapping[object, object], ph1) if isinstance(ph1, dict) else None,
+                ),
+            )
         for k, v in self._container_context.items():
             _ = prompt_ctx.setdefault(k, v)
         for k, v in _get_exec_ctx(None).items():

@@ -3579,6 +3579,78 @@ def _ensure_custom_op_phase3_contract_defaults(target: dict[str, object]) -> Non
     _ = target.setdefault("runtime_entry_script_revision_allowed", True)
 
 
+def build_variant_placeholder_content(phase3_contract: Mapping[object, object] | None = None, phase1_analysis: Mapping[object, object] | None = None) -> str:
+    """Build the ``variant_placeholder`` context value for Phase 3.5 static validation prompts.
+
+    Extracts detected variant axes from the Phase 3 entry script contract (authoritative) or
+    Phase 1 project analysis (fallback), and formats them as concise guidance text the LLM
+    can use when constructing ``expanded_operator_variants`` and ``variant_axis_coverage``.
+
+    Args:
+        phase3_contract: Phase 3 entry script output dict (may be ``None``).
+        phase1_analysis: Phase 1 project analysis output dict (may be ``None``).
+
+    Returns:
+        A string suitable for substituting ``{variant_placeholder}`` in NPU variant prompt templates.
+    """
+    axes: dict[str, list[str]] | None = None
+    base_unit_count: int = 0
+
+    # ── Authoritative source: Phase 3 entry script contract ──────────────
+    if phase3_contract is not None:
+        # variant_axis_coverage.axes is the canonical axes description
+        axis_coverage = phase3_contract.get("variant_axis_coverage")
+        if isinstance(axis_coverage, Mapping):
+            axes_raw = cast(Mapping[object, object], axis_coverage).get("axes")
+            if isinstance(axes_raw, Mapping):
+                axes = {
+                    str(k): [str(v) for v in cast(list[object], val) if isinstance(v, str)]
+                    for k, val in cast(Mapping[object, object], axes_raw).items()
+                    if isinstance(val, list)
+                }
+        # Count base units from fine-grained evidence
+        evidence = phase3_contract.get("fine_grained_operator_unit_evidence")
+        if isinstance(evidence, list):
+            base_unit_count = len(cast(list[object], evidence))
+
+    # ── Fallback: Phase 1 project analysis (custom_op_surface) ───────────
+    if axes is None and phase1_analysis is not None:
+        surface = phase1_analysis.get("custom_op_surface")
+        if isinstance(surface, Mapping):
+            surface_map = cast(Mapping[object, object], surface)
+            if surface_map.get("variant_axes_detected") is True:
+                axes_raw = surface_map.get("variant_axes")
+                if isinstance(axes_raw, Mapping):
+                    axes = {
+                        str(k): [str(v) for v in cast(list[object], val) if isinstance(v, str)]
+                        for k, val in cast(Mapping[object, object], axes_raw).items()
+                        if isinstance(val, list)
+                    }
+            # Also count base units for the product computation
+            evidence = surface_map.get("fine_grained_operator_unit_evidence")
+            if isinstance(evidence, list):
+                base_unit_count = max(base_unit_count, len(cast(list[object], evidence)))
+
+    # ── Format output ────────────────────────────────────────────────────
+    if axes:
+        product_count = 1
+        for vals in axes.values():
+            product_count *= len(vals) if vals else 1
+        expected = base_unit_count * product_count if base_unit_count > 0 else product_count
+        return (
+            f"Framework-detected variant axes: {json.dumps(axes, ensure_ascii=False)}. "
+            f"Base units from fine_grained_operator_unit_evidence: {base_unit_count}, "
+            f"expected expanded variants: {expected} "
+            f"({base_unit_count} base_units × {product_count} axis combinations). "
+            f"Use these exact axes for the Cartesian product in expanded_operator_variants."
+        )
+
+    return (
+        "(No framework-detected variant axes — set variant_axes_detected: false "
+        "and skip variant expansion.)"
+    )
+
+
 def _append_required_variant_checks(target: dict[str, object]) -> None:
     checks = target.get("required_checks")
     if not isinstance(checks, list):
