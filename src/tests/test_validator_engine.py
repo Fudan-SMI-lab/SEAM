@@ -404,6 +404,58 @@ def test_custom_op_ledger_groups_non_variant_units_by_direct_surface_evidence() 
     assert {"unit_c"} in grouped_units
 
 
+def test_custom_op_ledger_groups_variants_by_explicit_base_unit_identity() -> None:
+    surface: Mapping[object, object] = {
+        "expanded_operator_variants": [
+            {
+                "unit_identity": "acoustic:backward_cuda:ndim=1:dtype=float",
+                "base_unit_identity": "acoustic:backward_cuda",
+            },
+            {
+                "unit_identity": "acoustic:backward_cuda:ndim=2:dtype=float",
+                "base_unit_identity": "acoustic:backward_cuda",
+            },
+            {
+                "unit_identity": "acoustic:forward_cuda:ndim=1:dtype=float",
+                "base_unit_identity": "acoustic:forward_cuda",
+            },
+        ],
+    }
+
+    ledger = custom_op_final_gate_unit_ledger(
+        {},
+        target_units=[
+            "acoustic:backward_cuda:ndim=1:dtype=float",
+            "acoustic:backward_cuda:ndim=2:dtype=float",
+            "acoustic:forward_cuda:ndim=1:dtype=float",
+        ],
+        custom_op_surface=surface,
+    )
+
+    groups = cast(list[dict[str, object]], ledger["parallelization_groups"])
+    grouped_units = [set(cast(list[str], group["units"])) for group in groups]
+    assert {
+        "acoustic:backward_cuda:ndim=1:dtype=float",
+        "acoustic:backward_cuda:ndim=2:dtype=float",
+    } in grouped_units
+    assert {"acoustic:forward_cuda:ndim=1:dtype=float"} in grouped_units
+
+
+def test_custom_op_ledger_groups_variants_by_stripping_key_value_axis_segments() -> None:
+    target_units = [
+        "acoustic:backward_cuda:ndim=1:dtype=float:accuracy=2:storage_utils=2",
+        "acoustic:backward_cuda:ndim=2:dtype=float:accuracy=2:storage_utils=2",
+        "acoustic:forward_cuda:ndim=1:dtype=float:accuracy=2:storage_utils=2",
+    ]
+
+    ledger = custom_op_final_gate_unit_ledger({}, target_units=target_units)
+
+    groups = cast(list[dict[str, object]], ledger["parallelization_groups"])
+    grouped_units = [set(cast(list[str], group["units"])) for group in groups]
+    assert {target_units[0], target_units[1]} in grouped_units
+    assert {target_units[2]} in grouped_units
+
+
 def test_project_analysis_accepts_custom_op_surface_without_fine_grained_units() -> None:
     """Phase 1 validator no longer checks fine_grained_operator_units — that is Phase 3.5's responsibility.
     The relaxed validator only checks the 10 detection-level fields in CUSTOM_OP_SURFACE_FIELDS."""

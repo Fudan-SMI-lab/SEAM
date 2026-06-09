@@ -592,18 +592,20 @@ def test_parallel_fix_caps_worker_count_while_dispatching_all_groups(tmp_path: P
     project_dir = tmp_path / "test_project"
     project_dir.mkdir()
     executor = _make_parallel_executor(project_dir, tmp_path)
+    units = [f"unit_{idx}" for idx in range(12)]
     _RecordingThreadPoolExecutor.created_max_workers = []
     _RecordingThreadPoolExecutor.submitted_count = 0
 
     def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
-        if target_units == ["unit_a", "unit_b", "unit_c", "unit_d", "unit_e"]:
-            groups = [{"units": [unit]} for unit in cast(list[str], target_units)]
+        requested_units = list(cast(list[str], target_units or []))
+        if requested_units == units:
+            groups = [{"units": [unit]} for unit in requested_units]
         else:
             groups = []
         return cast(dict[str, object], {
             "strict_pass_count": 0,
-            "remaining_count": len(target_units or []),
-            "remaining_units": list(target_units or []),
+            "remaining_count": len(requested_units),
+            "remaining_units": requested_units,
             "parallelization_groups": groups,
         })
 
@@ -611,11 +613,54 @@ def test_parallel_fix_caps_worker_count_while_dispatching_all_groups(tmp_path: P
         result = _run_parallel_fix_with_mocked_llm(
             executor,
             project_dir,
-            _custom_op_state(["unit_a", "unit_b", "unit_c", "unit_d", "unit_e"]),
+            _custom_op_state(units),
             _ledger,
         )
 
     assert result is not None
-    assert result["_parallel_group_count"] == 5
-    assert _RecordingThreadPoolExecutor.created_max_workers == [3]
-    assert _RecordingThreadPoolExecutor.submitted_count == 5
+    assert result["_parallel_group_count"] == 10
+    assert _RecordingThreadPoolExecutor.created_max_workers == [10]
+    assert _RecordingThreadPoolExecutor.submitted_count == 10
+
+
+def test_parallel_fix_coalesces_more_than_ten_groups_without_losing_units(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    units = [f"unit_{idx}" for idx in range(12)]
+    _RecordingThreadPoolExecutor.created_max_workers = []
+    _RecordingThreadPoolExecutor.submitted_count = 0
+
+    def _ledger(_gate_data, *, target_units=None, project_root=None, custom_op_surface=None):
+        requested_units = list(cast(list[str], target_units or []))
+        if requested_units == units:
+            groups = [{"units": [unit]} for unit in requested_units]
+        else:
+            groups = []
+        return cast(dict[str, object], {
+            "strict_pass_count": 0,
+            "remaining_count": len(requested_units),
+            "remaining_units": requested_units,
+            "parallelization_groups": groups,
+        })
+
+    with patch("core.workflow_executor.concurrent.futures.ThreadPoolExecutor", _RecordingThreadPoolExecutor):
+        result = _run_parallel_fix_with_mocked_llm(
+            executor,
+            project_dir,
+            _custom_op_state(units),
+            _ledger,
+        )
+
+    assert result is not None
+    assert result["_parallel_group_count"] == 10
+    assert _RecordingThreadPoolExecutor.created_max_workers == [10]
+    assert _RecordingThreadPoolExecutor.submitted_count == 10
+    parallel_results = cast(list[dict[str, object]], result["_parallel_results"])
+    assigned_units = [
+        str(unit)
+        for item in parallel_results
+        for unit in cast(list[object], item["_assigned_units"])
+    ]
+    assert sorted(assigned_units) == sorted(units)
+    assert len(assigned_units) == len(set(assigned_units))

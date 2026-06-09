@@ -738,7 +738,15 @@ def _build_parallelization_groups(
                 path_to_units[p] = set()
             path_to_units[p].add(unit)
 
-    # Find connected components (units that share at least one path).
+    family_to_units = _build_custom_op_dispatch_family_index(
+        remaining_units, rows_by_name, custom_op_surface
+    )
+    unit_to_family: dict[str, str] = {}
+    for family_key, family_units in family_to_units.items():
+        for family_unit in family_units:
+            unit_to_family[family_unit] = family_key
+
+    # Find connected components (units that share at least one path or operator family).
     visited: set[str] = set()
     components: list[list[str]] = []
 
@@ -751,11 +759,16 @@ def _build_parallelization_groups(
         while queue:
             u = queue.pop(0)
             component.append(u)
+            neighbors: set[str] = set()
             for p in unit_paths.get(u, set()):
-                for neighbor in path_to_units.get(p, set()):
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
+                neighbors.update(path_to_units.get(p, set()))
+            family_key = unit_to_family.get(u)
+            if family_key:
+                neighbors.update(family_to_units.get(family_key, set()))
+            for neighbor in neighbors:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
         components.append(component)
 
     # Build result group dicts.
@@ -786,6 +799,74 @@ def _build_parallelization_groups(
 
     summary = f"{len(groups)} groups ({shared_kernel_count} shared-kernel, {independent_count} independent)"
     return groups, summary
+
+
+def _build_custom_op_dispatch_family_index(
+    remaining_units: list[str],
+    rows_by_name: dict[str, tuple[int, Mapping[object, object]]],
+    custom_op_surface: Mapping[object, object] | None,
+) -> dict[str, set[str]]:
+    family_by_unit: dict[str, str] = {}
+
+    if custom_op_surface is not None:
+        variants = custom_op_surface.get("expanded_operator_variants")
+        if isinstance(variants, Mapping):
+            variant_map = cast(Mapping[object, object], variants)
+            variants = variant_map.get("variants") or variant_map.get("expanded_operator_variants")
+        if isinstance(variants, list):
+            for variant in cast(list[object], variants):
+                if not isinstance(variant, Mapping):
+                    continue
+                variant_map = cast(Mapping[object, object], variant)
+                unit_id = str(variant_map.get("unit_identity", "")).strip()
+                family_key = _dispatch_family_key_from_metadata(variant_map)
+                if unit_id and family_key:
+                    family_by_unit[unit_id] = family_key
+
+    for unit in remaining_units:
+        if unit in family_by_unit:
+            continue
+        row_pair = rows_by_name.get(unit)
+        if row_pair is not None:
+            _index, row = row_pair
+            family_key = _dispatch_family_key_from_metadata(row)
+            if family_key:
+                family_by_unit[unit] = family_key
+                continue
+        family_key = _strip_key_value_axis_segments(unit)
+        if family_key and family_key != unit:
+            family_by_unit[unit] = family_key
+
+    family_to_units: dict[str, set[str]] = {}
+    remaining_set = set(remaining_units)
+    for unit, family_key in family_by_unit.items():
+        if unit not in remaining_set:
+            continue
+        family_to_units.setdefault(family_key, set()).add(unit)
+    return {key: units for key, units in family_to_units.items() if len(units) >= 2}
+
+
+def _dispatch_family_key_from_metadata(metadata: Mapping[object, object]) -> str:
+    for field_name in (
+        "base_unit_identity",
+        "base_operator_identity",
+        "base_operator",
+        "operator_family",
+        "custom_op_family",
+        "family",
+        "operator_category",
+        "custom_op_category",
+        "category",
+    ):
+        value = metadata.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return _strip_key_value_axis_segments(value.strip())
+    return ""
+
+
+def _strip_key_value_axis_segments(unit_identity: str) -> str:
+    parts = [part for part in unit_identity.split(":") if part and "=" not in part]
+    return ":".join(parts).strip()
 
 
 def _populate_unit_paths_from_contract_surface(

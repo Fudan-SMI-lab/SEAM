@@ -152,7 +152,25 @@ RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
 CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT = 100
 
 # ── Parallel custom-op fix configuration ───────────────────────────────
-_CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT = 3
+_CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT = 10
+
+
+def _coalesce_custom_op_parallel_groups(groups: list[list[str]], max_group_count: int) -> list[list[str]]:
+    if max_group_count <= 0 or len(groups) <= max_group_count:
+        return groups
+    base_size = len(groups) // max_group_count
+    remainder = len(groups) % max_group_count
+    coalesced: list[list[str]] = []
+    start = 0
+    for bucket_index in range(max_group_count):
+        group_count = base_size + (1 if bucket_index < remainder else 0)
+        bucket: list[str] = []
+        for group in groups[start : start + group_count]:
+            bucket.extend(group)
+        start += group_count
+        if bucket:
+            coalesced.append(bucket)
+    return coalesced
 
 
 def _is_custom_op_migration_route(state: dict[str, Any]) -> bool:
@@ -1842,6 +1860,9 @@ class WorkflowExecutor:
             chunk_size = max(1, (len(target_units) + fixer_count - 1) // fixer_count)
             for i in range(0, len(target_units), chunk_size):
                 groups.append(list(target_units[i : i + chunk_size]))
+
+        if groups:
+            groups = _coalesce_custom_op_parallel_groups(groups, _CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT)
 
         if not groups:
             logger.warning("Parallel custom_op fix: no groups to dispatch — falling back to single fix_operator")
