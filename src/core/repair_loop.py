@@ -358,8 +358,8 @@ def _operator_routing_override_enabled(config: ConfigDict | None) -> bool:
     2. ``framework.custom_op_operator_routing_override_enabled`` as a nested key
        (framework config form).
 
-    When explicitly ``True``, the routing override is active.
-    When absent or explicitly ``False``, the override is disabled by default.
+    When any is explicitly ``True``, the routing override is active.
+    When absent or explicitly ``False``, the override is skipped (default).
 
     Accepts string values: ``"false"``, ``"0"``, ``"no"`` → False;
     ``"true"``, ``"1"``, ``"yes"`` → True.
