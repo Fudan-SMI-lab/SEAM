@@ -917,16 +917,16 @@ def test_parallel_fix_caps_worker_count_while_dispatching_all_groups(tmp_path: P
         )
 
     assert result is not None
-    assert result["_parallel_group_count"] == 10
-    assert _RecordingThreadPoolExecutor.created_max_workers == [10]
-    assert _RecordingThreadPoolExecutor.submitted_count == 10
+    assert result["_parallel_group_count"] == 12
+    assert _RecordingThreadPoolExecutor.created_max_workers == [12]
+    assert _RecordingThreadPoolExecutor.submitted_count == 12
 
 
 def test_parallel_fix_coalesces_more_than_ten_groups_without_losing_units(tmp_path: Path) -> None:
     project_dir = tmp_path / "test_project"
     project_dir.mkdir()
     executor = _make_parallel_executor(project_dir, tmp_path)
-    units = [f"unit_{idx}" for idx in range(12)]
+    units = [f"unit_{idx}" for idx in range(30)]
     _RecordingThreadPoolExecutor.created_max_workers = []
     _RecordingThreadPoolExecutor.submitted_count = 0
 
@@ -952,9 +952,9 @@ def test_parallel_fix_coalesces_more_than_ten_groups_without_losing_units(tmp_pa
         )
 
     assert result is not None
-    assert result["_parallel_group_count"] == 10
-    assert _RecordingThreadPoolExecutor.created_max_workers == [10]
-    assert _RecordingThreadPoolExecutor.submitted_count == 10
+    assert result["_parallel_group_count"] == 20
+    assert _RecordingThreadPoolExecutor.created_max_workers == [20]
+    assert _RecordingThreadPoolExecutor.submitted_count == 20
     parallel_results = cast(list[dict[str, object]], result["_parallel_results"])
     assigned_units = [
         str(unit)

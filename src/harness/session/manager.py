@@ -21,7 +21,7 @@ logger = logging.getLogger("harness.session.manager")
 
 RUNNING_TOKENS = {"running", "queued", "processing", "thinking", "in_progress", "active", "busy", "retry", "compacting", "tool-calls"}
 COMPACTION_TOKENS = {"compaction", "summary"}
-HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
+HARD_HTTP_STATUSES = {401, 403, 502, 503, 504}  # 500 is transient, not hard — let retry path handle it
 FALLBACK_AGENT_NAME = "Sisyphus"
 _DEFAULT_HTTP_TIMEOUT = object()
 DEFAULT_SESSION_WAIT_TIMEOUT: float | None = 3600.0
@@ -872,10 +872,10 @@ class MigrationSessionManager:
             candidates.append(message)
         if not candidates:
             return None
-        for message in candidates:
+        for message in reversed(candidates):
             if extract_json_response(self._extract_message_text(message)):
                 return message
-        return candidates[0]
+        return candidates[-1]
 
     def _session_used_forbidden_nested_tool(self, session_id: str) -> str:
         resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 200})
@@ -1000,13 +1000,6 @@ class MigrationSessionManager:
             except queue.Empty:
                 if nested_task_guard:
                     self._raise_if_forbidden_nested_tool_used(session_id, True)
-                recovered = self._completed_latest_response_payload(
-                    session_id,
-                    previous_text=previous_text,
-                    command_text=command_text,
-                )
-                if recovered is not None:
-                    return {"ok": True, "data": recovered}
                 # Check if session disappeared due to server restart
                 # (throttled: only re-queries every 30 s per session)
                 if self._check_session_gone(session_id):
@@ -1276,8 +1269,9 @@ class MigrationSessionManager:
             detail = resp.get("details") or resp.get("error") or "request failed"
             if status in {401, 403}:
                 raise SessionAuthError(f"POST /session/{session_id}/message unauthorized: {detail}")
-            if isinstance(status, int) and status >= 500:
+            if isinstance(status, int) and status > 500:
                 raise SessionServerError(f"POST /session/{session_id}/message failed: {detail}")
+            # status == 500 is a transient server error — treat as transport error for retry
             raise SessionTransportError(f"POST /session/{session_id}/message failed: {detail}")
         data = resp.get("data") or {}
         if not isinstance(data, dict):
@@ -1303,9 +1297,10 @@ class MigrationSessionManager:
             return text
 
         self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
-        if not self.wait_for_idle(session_id, timeout_s=effective_timeout, interval_s=1.0):
-            self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
-            raise TimeoutError("Session still running or has incomplete todos")
+        if finish not in {"stop", "success"}:
+            if not self.wait_for_idle(session_id, timeout_s=effective_timeout, interval_s=1.0):
+                self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
+                raise TimeoutError("Session still running or has incomplete todos")
 
         self._raise_if_forbidden_nested_tool_used(session_id, nested_task_guard)
         return text

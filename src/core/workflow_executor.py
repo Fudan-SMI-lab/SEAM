@@ -153,7 +153,7 @@ CUSTOM_OP_OPERATOR_STAGNATION_THRESHOLD_DEFAULT = 100
 CUSTOM_OP_INCOMPLETE_GROUP_CONTINUE_ATTEMPTS_DEFAULT = 2
 
 # ── Parallel custom-op fix configuration ───────────────────────────────
-_CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT = 10
+_CUSTOM_OP_PARALLEL_FIXER_COUNT_DEFAULT = 20
 
 
 def _coalesce_custom_op_parallel_groups(groups: list[list[str]], max_group_count: int) -> list[list[str]]:
@@ -1815,15 +1815,15 @@ class WorkflowExecutor:
     def _custom_op_group_output_needs_continuation(cls, phase_output: dict[str, Any]) -> bool:
         status = str(phase_output.get("status") or "").strip().lower().replace("-", "_").replace(" ", "_")
         success_statuses = {"success", "succeeded", "pass", "passed", "full_pass"}
+        has_evidence = cls._has_nonempty_string_list(phase_output.get("modified_files")) or cls._has_nonempty_string_list(phase_output.get("implemented_units"))
+        if has_evidence:
+            return False
         if status in success_statuses:
-            return False
-        if cls._has_nonempty_string_list(phase_output.get("modified_files")):
-            return False
-        if cls._has_nonempty_string_list(phase_output.get("implemented_units")):
-            return False
-        assigned_units = phase_output.get("_assigned_units")
-        remaining_units = phase_output.get("remaining_units")
-        return cls._has_nonempty_string_list(assigned_units) or cls._has_nonempty_string_list(remaining_units)
+            # "success" claimed with no evidence → needs continuation
+            assigned_units = phase_output.get("_assigned_units")
+            remaining_units = phase_output.get("remaining_units")
+            return cls._has_nonempty_string_list(assigned_units) or cls._has_nonempty_string_list(remaining_units)
+        return True
 
     def _custom_op_incomplete_group_continue_attempts(self) -> int:
         raw_value = self.framework_config.get("custom_op_incomplete_group_continue_attempts")
@@ -2087,9 +2087,11 @@ class WorkflowExecutor:
                 "active_custom_op_full_repair_requirements": custom_op_guidance,
                 "parallel_dispatch_guidance": (
                     f"Group {group_idx + 1}/{len(groups)}: You are assigned {len(group_units)} specific operators. "
-                    "Use background tasks to dispatch each operator to a parallel agent for simultaneous repair. "
-                    "Do not let workers return only analysis or INCOMPLETE; each stream must implement real target-platform host/kernel/adapter/build/report changes for its assigned unit. "
-                    "After all implementation streams complete, merge results and run the entry script for final validation."
+                    "Work through assigned units one at a time in this session — do NOT use background-task dispatch or fire-and-forget. "
+                    "For each unit: read source files, implement real selected-platform host/kernel/adapter/build/report changes, "
+                    "run the entry script, verify, then proceed to the next unit. "
+                    "Complete ALL assigned units before returning. "
+                    "INCOMPLETE is a blocking defect, not an exit strategy — only return after concrete source/build changes AND validation evidence exist for every assigned unit."
                 ),
             }
             if strict_acceptance:

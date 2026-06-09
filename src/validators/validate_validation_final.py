@@ -746,7 +746,32 @@ def _build_parallelization_groups(
         for family_unit in family_units:
             unit_to_family[family_unit] = family_key
 
+    # Detect whether source paths are reliable for source-based merging.
+    # When every unit reports the same placeholder/template path (e.g.
+    # op_template.cpp), source-based edges merge all units into one giant
+    # component regardless of operator family — defeating parallelism.
+    # Heuristic: if there are fewer than 4 unique source paths across all
+    # remaining units AND far fewer paths than units, treat source paths
+    # as unreliable and fall back to family-only grouping.
+    _all_source_paths: set[str] = set()
+    for paths in unit_paths.values():
+        _all_source_paths.update(paths)
+    _source_paths_reliable = bool(
+        len(_all_source_paths) >= 4
+        or (len(_all_source_paths) >= 2 and len(_all_source_paths) >= len(remaining_units))
+    )
+    if not _source_paths_reliable and len(remaining_units) > 2:
+        import warnings
+        warnings.warn(
+            f"custom_op parallelization: {len(remaining_units)} remaining units share "
+            f"only {len(_all_source_paths)} unique source paths — source-based merging "
+            f"unreliable; falling back to operator-family-only grouping "
+            f"({len(family_to_units)} families)",
+        )
+
     # Find connected components (units that share at least one path or operator family).
+    # When source paths are unreliable (template paths), skip source-path edges
+    # so that only operator-family edges drive grouping.
     visited: set[str] = set()
     components: list[list[str]] = []
 
@@ -760,8 +785,9 @@ def _build_parallelization_groups(
             u = queue.pop(0)
             component.append(u)
             neighbors: set[str] = set()
-            for p in unit_paths.get(u, set()):
-                neighbors.update(path_to_units.get(p, set()))
+            if _source_paths_reliable:
+                for p in unit_paths.get(u, set()):
+                    neighbors.update(path_to_units.get(p, set()))
             family_key = unit_to_family.get(u)
             if family_key:
                 neighbors.update(family_to_units.get(family_key, set()))
@@ -773,7 +799,7 @@ def _build_parallelization_groups(
 
     # Build result group dicts.
     groups: list[dict[str, object]] = []
-    shared_kernel_count = 0
+    shared_family_count = 0
     independent_count = 0
 
     for group_id, group_units in enumerate(components):
@@ -783,11 +809,11 @@ def _build_parallelization_groups(
             independent_count += 1
         else:
             is_independent = False
-            shared_kernel_count += 1
+            shared_family_count += 1
             group_set = set(group_units)
             shared_sources = sorted(
                 p for p, u_set in path_to_units.items()
-                if len(u_set & group_set) >= 2
+                if _source_paths_reliable and len(u_set & group_set) >= 2
             )
 
         groups.append({
@@ -797,7 +823,10 @@ def _build_parallelization_groups(
             "is_independent": is_independent,
         })
 
-    summary = f"{len(groups)} groups ({shared_kernel_count} shared-kernel, {independent_count} independent)"
+    if _source_paths_reliable:
+        summary = f"{len(groups)} groups ({shared_family_count} shared-kernel, {independent_count} independent)"
+    else:
+        summary = f"{len(groups)} groups ({shared_family_count} shared-family, {independent_count} independent)"
     return groups, summary
 
 
