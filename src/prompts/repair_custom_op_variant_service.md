@@ -55,8 +55,8 @@ You must close all operator+variant rows with real implementation, build, instal
 ## Non-Negotiable Completion Contract
 
 - INCOMPLETE is the state you are assigned to repair, not an exit strategy. Do not return early because the assigned scope is large, unfamiliar, missing scaffolding, or currently lacks reports.
-- Before any non-`FULL_PASS` final JSON, you must perform concrete project-local implementation work: create or modify NPU host code, kernel/device code, adapter/bridge code, build/install scripts, report producers, and validation code needed by the assigned units.
-- Missing build helpers, missing CMake files, absent adapters, absent OPP source, absent report producers, or missing evidence schemas are assigned implementation work. Repair or create them in the target project instead of listing them as blockers without code-producing attempts.
+- Before any non-`FULL_PASS` final JSON, you must perform concrete project-local implementation work: create or modify selected target-platform host code, kernel/device code, adapter/bridge code, build/install scripts, report producers, and validation code needed by the assigned units.
+- Missing build helpers, missing CMake files, absent adapters, absent native source, absent report producers, or missing evidence schemas are assigned implementation work. Repair or create them in the target project instead of listing them as blockers without code-producing attempts.
 - Keep splitting assigned units into smaller implementation slices inside this same session until the assigned units pass the strict final gate, or until you have real modified files plus build/runtime/parity/performance attempts for every remaining unit. A response with `status=INCOMPLETE`, `modified_files=[]`, and `implemented_units=[]` is not acceptable.
 
 ## Required Workflow
@@ -66,8 +66,8 @@ You must close all operator+variant rows with real implementation, build, instal
 3. For each assigned base CUDA operator, understand the original semantics, including tensor shapes, dtype, ndim, accuracy/order, boundary handling, storage/compression behavior, gradients, stream/synchronization behavior, and public API call path.
    - Treat every expanded variant axis declared by the Phase 3 contract for your assigned identities as required scope. If your assigned inventory includes dtype rows such as `double`/float64, those rows are blocking scope and must be implemented, routed, measured for parity/performance, and closed in the same assigned-scope ledger as every other assigned variant.
     - If any report or coverage summary contains `missing_by_dtype`, missing dtype variants, or equivalent axis-specific gaps, state that they are blocking defects. Do not weaken closure to a partial count or omit those rows from guidance, manifests, runtime coverage, performance, or final-gate evidence.
-    - Count the expanded variant inventory from the Phase 3 contract `expanded_variant_inventory.unit_identities` field. This is the exact set of variant unit identities required. Every identity listed there, including every dtype variant (float, half, double, etc.), must appear in `operator_inventory.json` and have a corresponding AscendC operator implementation that passes the strict expanded-variant final gate. If the inventory has N identities, `operator_inventory.json` must contain exactly N entries.
-    - AscendC kernel operators must support dtype as a template parameter or compile-time switch. Do not hardcode a single type such as `DT_FLOAT`. Every dtype variant declared in the expanded inventory requires a matching kernel specialization or template instantiation.
+    - Count the expanded variant inventory from the Phase 3 contract `expanded_variant_inventory.unit_identities` field. This is the exact set of variant unit identities required. Every identity listed there, including every dtype variant (float, half, double, etc.), must appear in `operator_inventory.json` and have a corresponding platform-native operator implementation that passes the strict expanded-variant final gate. If the inventory has N identities, `operator_inventory.json` must contain exactly N entries.
+    - Platform-native kernel operators must support dtype as a template parameter, compile-time switch, or equivalent selected-platform specialization. Do not hardcode a single type such as `DT_FLOAT`. Every dtype variant declared in the expanded inventory requires a matching kernel specialization or template instantiation.
 4. Implement real selected-platform native sources and artifacts according to the bounded operator repair context and custom-op guidance block above:
    - host-side shape, dtype, dispatch, registration, and tiling logic where the selected platform requires it.
    - kernel/device code that reads inputs and writes outputs; no placeholder/no-op bodies.
@@ -95,7 +95,7 @@ You must close all operator+variant rows with real implementation, build, instal
 - If a single operator requires multiple background agents (e.g., one for source discovery, one for implementation, one for testing), dispatch them as a pipeline. But different operators must be dispatched as parallel independent workstreams.
 - Do the investigation yourself with direct file reads, searches, shell commands, builds, and the project validation command.
 - If more research is needed, perform it inline in this same session and summarize the exact findings before editing.
-- Do not stop because the remaining work is large. Split assigned units into smaller implementation slices inside this same session, repair the project-local NPU sources/build/adapter/report producers, run validation after each slice, and continue. `INCOMPLETE` may only be returned after concrete source/build changes and validation attempts are recorded in `modified_files`, `commands_run`, `toolchain_or_kernel_attempts`, and `remaining_units`.
+- Do not stop because the remaining work is large. Split assigned units into smaller implementation slices inside this same session, repair the project-local target-platform sources/build/adapter/report producers, run validation after each slice, and continue. `INCOMPLETE` may only be returned after concrete source/build changes and validation attempts are recorded in `modified_files`, `commands_run`, `toolchain_or_kernel_attempts`, and `remaining_units`.
 
 ## Hard Rejections
 
@@ -105,14 +105,14 @@ You must not return success if any of these are true:
 - Any host tiling/infer-shape function is a trivial `return 0` without real shape/tiling work.
 - The runtime artifact is only an x86/host `.so` exporting `int op(void) { return 0; }` symbols.
 - performance numbers are constants, formulas, fabricated ratios, report-only values, or not measured from the public API route.
-- Parity values are hard-coded, all-zero by construction, not computed, or not tied to the actual Ascend custom-op execution.
+- Parity values are hard-coded, all-zero by construction, not computed, or not tied to the actual selected target-platform custom-op execution.
 - Runtime coverage is represented as `true`, a counter in JSON, or a direct symbol call rather than observed public API execution.
 - Reports predate the current validation command, exceed strict gate size limits, or cannot pass `validate_custom_op_final_gate`.
-- The implementation relies on CPU fallback, CUDA fallback, ATen-only replacement, `NpuExtension`/`CppExtension` only, Python shim only, monkeypatching, fake artifacts, generated headers without compiled kernels, or report-only evidence.
+- The implementation relies on CPU fallback, CUDA fallback, ATen-only replacement, target-platform-incompatible extension-only scaffolding, Python shim only, monkeypatching, fake artifacts, generated headers without compiled kernels, or report-only evidence.
 - Any expanded variant remains unimplemented, untested, unmeasured, or only mapped to a family-level implementation without variant-specific evidence.
 - Any row is counted as `FULL_PASS` only when the ledger closes every in-scope row with real implementation, runtime, parity, performance, and final-gate evidence. Hardware/toolkit limitation is a repair signal, not a success signal.
 
-Do not return `INCOMPLETE` merely because the real implementation is not completed yet; continue implementing the assigned NPU operators/variants. If an unavoidable hard external outage remains after code-producing attempts, return `INCOMPLETE` only with non-empty `modified_files`, exact commands, concrete toolchain/kernel attempts, validation output, and remaining assigned units. Do not claim `FULL_PASS`.
+Do not return `INCOMPLETE` merely because the real implementation is not completed yet; continue implementing the assigned selected target-platform operators/variants. If an unavoidable hard external outage remains after code-producing attempts, return `INCOMPLETE` only with non-empty `modified_files`, exact commands, concrete toolchain/kernel attempts, validation output, and remaining assigned units. Do not claim `FULL_PASS`.
 
 ## Evidence Schema Requirements
 
@@ -122,8 +122,8 @@ Each row in `migration_reports/custom_op_final_gate.json` must contain machine-c
 - `opp_custom_op_artifact_evidence` object with `project_local=true` or `in_project=true`, `path` or `project_relative_path`, `built/present/loaded/verified=true`, native compiled artifact path, runtime loaded artifact path, platform-native source paths, generated metadata when required, build log, install log, and selected-platform producer proof.
 - `adapter_evidence` object with `imported/loaded/linked/adapter_callable=true` or equivalent accepted fields.
 - `integration_e2e_evidence` object with `project_api_invoked=true` or `public_api_invoked=true`, plus `native_custom_op_route_executed=true` or `opp_kernel_executed=true`.
-- `public_api_route_evidence` or `framework_integration_route_evidence` with `same_run=true`, custom call count > 0, public/framework entry invocation proof, native OPP execution proof, and matching `unit_identity`.
-- `same_run_runtime_coverage` object with `same_run=true`, project/public API route proof, native custom-op/OPP execution proof, and positive custom call count.
+- `public_api_route_evidence` or `framework_integration_route_evidence` with `same_run=true`, custom call count > 0, public/framework entry invocation proof, native compiled custom-op execution proof, and matching `unit_identity`.
+- `same_run_runtime_coverage` object with `same_run=true`, project/public API route proof, native compiled custom-op execution proof, and positive custom call count.
 - `performance_evidence` object with positive `baseline_seconds`, `custom_seconds`, `speedup_vs_baseline`, public/project API timing proof, CPU/reference baseline proof, and selected-platform native custom-op route proof.
 - `no_fallback_no_zero_call_no_builtin_contamination` object proving no fallback, no zero-call, no builtin-only, no ATen-only, no CPU/CUDA route, and no synthetic/report-only contamination.
 

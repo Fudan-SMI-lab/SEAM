@@ -108,6 +108,7 @@ def test_constraint_summary_ppu_already_neutral() -> None:
 
 MUSA_ENTRYFIX_PROMPT = PROMPTS_DIR / "phase_3_entry_script_musa_container_baseaware_entryfix.md"
 MUSA_NORMAL_PROMPT = PROMPTS_DIR / "phase_3_entry_script_musa_container_baseaware_entryfix_normal.md"
+MUSA_ENV_DETECT_PROMPT = PROMPTS_DIR / "phase_0_env_detect_musa.md"
 
 
 def _read_prompt(path: Path) -> str:
@@ -229,6 +230,13 @@ def test_musa_custom_op_prompt_contains_musa_custom_op_schema() -> None:
     assert "positive MUSA/custom timing" in text, "Missing MUSA/custom timing value"
 
 
+def test_musa_phase0_prompt_outputs_validator_compatible_musa_detected() -> None:
+    text = _read_prompt(MUSA_ENV_DETECT_PROMPT)
+    output_json = _extract_output_format_json(text)
+    assert '"musa_detected"' in output_json
+    assert '"accelerator_detected"' in output_json
+
+
 # ── MUSA normal prompt assertions ────────────────────────────────────────────
 
 
@@ -306,6 +314,11 @@ def test_musa_normal_prompt_has_must_not_include_section() -> None:
     text = _read_prompt(MUSA_NORMAL_PROMPT)
     assert "MUST NOT INCLUDE" in text, "Missing MUST NOT INCLUDE section"
     assert "Do NOT output" in text, "Missing explicit output prohibition"
+
+
+def test_musa_normal_prompt_allows_runtime_entry_revision_contract() -> None:
+    text = _read_prompt(MUSA_NORMAL_PROMPT)
+    assert '"runtime_entry_script_revision_allowed"' in _extract_output_format_json(text)
 
 
 def test_musa_normal_prompt_contains_base_aware_sections() -> None:

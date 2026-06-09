@@ -1559,7 +1559,7 @@ def _validate_generated_opp_inventory_closure(
 
     row_names = _extract_row_names(row_items)
     if not row_names:
-        errors.append("generated OPP inventory closure requires manifest rows to identify every custom op")
+        errors.append("generated native artifact inventory closure requires manifest rows to identify every custom op")
         return
 
     row_generated_tokens: set[str] = set()
@@ -1574,7 +1574,7 @@ def _validate_generated_opp_inventory_closure(
     )
     if missing_generated:
         errors.append(
-            "generated OPP inventory contains project-local generated operators not covered by final gate rows: "
+            "generated native artifact inventory contains project-local generated operators not covered by final gate rows: "
             + _format_limited_list(missing_generated)
         )
 
@@ -1588,7 +1588,7 @@ def _validate_generated_opp_inventory_closure(
     mismatched = [name for name, value in counts.items() if value is not None and value < expected_count]
     if mismatched:
         errors.append(
-            "custom-op final gate counts must cover all generated OPP operator entries discovered on disk "
+            "custom-op final gate counts must cover all generated native operator entries discovered on disk "
             +
             f"({expected_count}): "
             + ", ".join(mismatched)
@@ -2036,7 +2036,7 @@ def _validate_single_route_evidence(
     if _mapping_reports_failure(evidence) or _mapping_is_disallowed_surrogate(evidence):
         errors.append(f"{label} must be real passing evidence, not report/synthetic/mock/benchmark-only")
     if _has_negative_route_signal(evidence, platform_policy):
-        errors.append(f"{label} must not be direct-only, builtin-only, fallback, zero-call, baseline-only, stub, ATen-only, or Python-shim evidence")
+        errors.append(f"{label} must not be direct-only, builtin-only, fallback, zero-call, baseline-only, stub, host-framework-extension-only, or Python-shim evidence")
     if evidence.get("same_run") is not True:
         errors.append(f"{label} must prove same_run=true")
     custom_call_count = _extract_custom_call_count(evidence)
@@ -2053,7 +2053,7 @@ def _validate_single_route_evidence(
             "native_custom_op_executed",
         ),
     ):
-        errors.append(f"{label} must prove native custom-op/OPP execution")
+        errors.append(f"{label} must prove native compiled custom-op execution")
     if field_name == "public_api_route_evidence":
         if not _has_positive_boolean(
             evidence,
@@ -2472,7 +2472,7 @@ def _validate_strict_native_producer_evidence(
     extension_only_tokens = _extension_only_tokens(platform_policy)
     if _text_has_any_token(f"{producer_text}\n{build_log_text}", extension_only_tokens):
         errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence must be strict native producer evidence, not NpuExtension/CppExtension/ATen/libtorch-only native-extension evidence"
+            f"rows[{index}].opp_custom_op_artifact_evidence must be strict native producer evidence, not source-platform or host-only native-extension metadata"
         )
 
     op_host_paths = [path for path in _path_candidates_from_fields(evidence, _OP_HOST_SOURCE_FIELDS) if _is_op_host_source_path(path)]
@@ -2483,22 +2483,22 @@ def _validate_strict_native_producer_evidence(
     if not op_host_paths:
         errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include an op_host source path")
     if not op_kernel_paths:
-        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include an op_kernel/AscendC source path")
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include a platform-native kernel source path")
     if not build_script_paths:
-        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include CMakeLists.txt, build.sh, or equivalent OPP build script path")
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include CMakeLists.txt, build.sh, or equivalent platform-native build script path")
     if not _has_install_provenance(evidence):
-        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include OPP install/provenance evidence")
+        errors.append(f"rows[{index}].opp_custom_op_artifact_evidence must include target-platform install/provenance evidence")
     missing_generated_categories = _missing_generated_opp_categories(generated_artifact_categories)
     if missing_generated_categories:
         errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence must include generated OPP artifact categories: "
+            f"rows[{index}].opp_custom_op_artifact_evidence must include generated target-platform artifact categories: "
             + ", ".join(missing_generated_categories)
             + "; a path that merely looks like /opp/ is not enough"
         )
 
     if build_log_path is not None and not _build_log_is_strict_opp(build_log_text, platform_policy):
         errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence.build_provenance.log_path must show a CANN/OPP build-install flow with op_host/op_kernel producer artifacts"
+            f"rows[{index}].opp_custom_op_artifact_evidence.build_provenance.log_path must show a target-platform build-install flow with native producer artifacts"
         )
 
     if project_root is None:
@@ -2506,8 +2506,8 @@ def _validate_strict_native_producer_evidence(
 
     _validate_existing_source_paths(project_root, op_host_paths, f"rows[{index}].opp_custom_op_artifact_evidence.op_host source", errors)
     _validate_existing_source_paths(project_root, op_kernel_paths, f"rows[{index}].opp_custom_op_artifact_evidence.op_kernel source", errors)
-    _validate_existing_paths(project_root, build_script_paths, f"rows[{index}].opp_custom_op_artifact_evidence OPP build script", errors)
-    _validate_existing_paths(project_root, generated_artifact_paths, f"rows[{index}].opp_custom_op_artifact_evidence generated OPP artifact", errors)
+    _validate_existing_paths(project_root, build_script_paths, f"rows[{index}].opp_custom_op_artifact_evidence platform-native build script", errors)
+    _validate_existing_paths(project_root, generated_artifact_paths, f"rows[{index}].opp_custom_op_artifact_evidence generated target-platform artifact", errors)
     _validate_existing_install_paths(project_root, evidence, f"rows[{index}].opp_custom_op_artifact_evidence install/provenance", errors)
 
     source_text = "\n".join(
@@ -2516,7 +2516,7 @@ def _validate_strict_native_producer_evidence(
     )
     if _text_has_any_token(source_text, extension_only_tokens):
         errors.append(
-            f"rows[{index}].opp_custom_op_artifact_evidence op_host/op_kernel sources must not be ATen/torch extension sources"
+            f"rows[{index}].opp_custom_op_artifact_evidence native producer sources must not be host-only framework extension sources"
         )
 
 
@@ -3159,7 +3159,7 @@ def _validate_baseline_and_custom_device_proof(
         errors.append(f"{label} must prove timings include a target-device custom-op path")
     if require_strict_native_producer:
         if _has_self_or_same_route_baseline(evidence, platform_policy):
-            errors.append(f"{label} must not use self-baseline, same-route, or same-NPU placeholder timings; compare baseline runtime against target native custom-op runtime")
+            errors.append(f"{label} must not use self-baseline, same-route, or same-target placeholder timings; compare baseline runtime against target native custom-op runtime")
         _validate_independent_performance_measurement(
             evidence, label, errors, require_strict_native_producer
         )

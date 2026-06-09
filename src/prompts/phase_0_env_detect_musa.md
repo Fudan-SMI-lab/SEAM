@@ -42,6 +42,7 @@ Return one JSON object with this shape:
 ```json
 {
   "platform": "musa",
+  "musa_detected": true,
   "accelerator_detected": true,
   "observed_vendor": "maca_metax",
   "api_mode": "cuda_compatible",

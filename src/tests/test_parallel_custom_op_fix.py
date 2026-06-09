@@ -53,6 +53,7 @@ def _make_workflow():
     wf = MagicMock()
     wf.name = "generic_migration"
     wf.target_platform = None
+    wf.globals = {}
     return wf
 
 
@@ -66,6 +67,7 @@ def _make_parallel_executor(project_dir: Path, output_dir: str | Path) -> Workfl
         project_dir=str(project_dir), output_dir=str(output_dir),
     )
     executor.platform_policy = MagicMock()
+    executor.platform_policy.id = "npu_ascend"
     return executor
 
 
@@ -78,8 +80,30 @@ def _fix_operator_mini() -> PhaseDefinition:
     )
 
 
+def _make_prompt_executor(platform_id: str = "npu_ascend", workflow_globals: dict[str, object] | None = None) -> WorkflowExecutor:
+    workflow = _make_workflow()
+    workflow.globals = workflow_globals or {}
+    executor = WorkflowExecutor(
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=".",
+        output_dir=".",
+    )
+    executor.platform_policy = MagicMock()
+    executor.platform_policy.id = platform_id
+    return executor
+
+
+def _variant_route_state() -> dict[str, object]:
+    return {"phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS}}
+
+
 def _custom_op_state(target_units: list[str], phase35: dict[str, object] | None = None) -> dict[str, object]:
     state: dict[str, object] = {
+        "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
         "phase_3_entry_script": {
             "entry_script_path": "python train.py",
             "entry_script_kind": "custom_op_full_validation",
@@ -128,10 +152,11 @@ def test_prompt_template_for_llm_phase_custom_op_no_variants_uses_default() -> N
     state: dict[str, object] = {
         "phase_1_project_analysis": {"migration_route": CUSTOM_OP},
     }
-    result = WorkflowExecutor._prompt_template_for_llm_phase(
+    executor = _make_prompt_executor()
+    result = executor._prompt_template_for_llm_phase(
         phase_id="fix_operator",
         default_template="repair_operator_fixer_npu",
-        state=state,  # type: ignore[arg-type]
+        state=state,
     )
     assert result == "repair_operator_fixer_npu"
 
@@ -141,10 +166,11 @@ def test_prompt_template_for_llm_phase_custom_op_with_variants_returns_variant_s
     state: dict[str, object] = {
         "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
     }
-    result = WorkflowExecutor._prompt_template_for_llm_phase(
+    executor = _make_prompt_executor()
+    result = executor._prompt_template_for_llm_phase(
         phase_id="fix_operator",
         default_template="repair_operator_fixer_npu",
-        state=state,  # type: ignore[arg-type]
+        state=state,
     )
     assert result == "repair_custom_op_variant_service"
 
@@ -154,12 +180,47 @@ def test_prompt_template_for_llm_phase_non_fix_operator_returns_default() -> Non
     state: dict[str, object] = {
         "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
     }
-    result = WorkflowExecutor._prompt_template_for_llm_phase(
+    executor = _make_prompt_executor()
+    result = executor._prompt_template_for_llm_phase(
         phase_id="fix_dependency",
         default_template="repair_dependency_fixer_npu",
-        state=state,  # type: ignore[arg-type]
+        state=state,
     )
     assert result == "repair_dependency_fixer_npu"
+
+
+@pytest.mark.parametrize(
+    ("platform_id", "default_template"),
+    [
+        ("ppu_cuda_compatible", "repair_operator_fixer_container_ppu"),
+        ("musa_muxi", "repair_operator_fixer_container_musa"),
+    ],
+)
+def test_prompt_template_for_llm_phase_non_npu_variants_use_platform_default(
+    platform_id: str,
+    default_template: str,
+) -> None:
+    executor = _make_prompt_executor(platform_id=platform_id)
+
+    result = executor._prompt_template_for_llm_phase(
+        phase_id="fix_operator",
+        default_template=default_template,
+        state=_variant_route_state(),
+    )
+
+    assert result == default_template
+
+
+def test_prompt_template_for_llm_phase_route_disabled_uses_default() -> None:
+    executor = _make_prompt_executor(workflow_globals={"custom_op_route_enabled": False})
+
+    result = executor._prompt_template_for_llm_phase(
+        phase_id="fix_operator",
+        default_template="repair_operator_fixer_npu",
+        state=_variant_route_state(),
+    )
+
+    assert result == "repair_operator_fixer_npu"
 
 
 # ── Session isolation ───────────────────────────────────────────────────
@@ -189,6 +250,7 @@ def test_parallel_fix_creates_unique_sessions_per_group() -> None:
         )
 
         executor.platform_policy = MagicMock()
+        executor.platform_policy.id = "npu_ascend"
         executor.platform_policy.custom_op_evidence.positive_boolean_fields = ["npu_custom"]
         executor.platform_policy.custom_op_evidence.target_device_values = ["npu", "ascend"]
         executor.platform_policy.custom_op_evidence.performance_baseline_device_values = ["cpu", "torch_cpu"]
@@ -242,6 +304,7 @@ def test_parallel_fix_creates_unique_sessions_per_group() -> None:
                     agent="operator_fixer",
                 ),
                 state={
+                    "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
                     "phase_3_entry_script": {
                         "entry_script_path": "python train.py",
                         "entry_script_kind": "custom_op_full_validation",
@@ -302,6 +365,7 @@ def test_build_group_prompt_scopes_progress_to_assigned_units_only(tmp_path: Pat
     )
 
     executor.platform_policy = MagicMock()
+    executor.platform_policy.id = "npu_ascend"
     executor.platform_policy.custom_op_evidence.positive_boolean_fields = ["npu_custom"]
     executor.platform_policy.custom_op_evidence.target_device_values = ["npu", "ascend"]
     executor.platform_policy.custom_op_evidence.performance_baseline_device_values = ["cpu"]
@@ -344,6 +408,7 @@ def test_build_group_prompt_scopes_progress_to_assigned_units_only(tmp_path: Pat
                 agent="operator_fixer",
             ),
             state={
+                "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
                 "phase_3_entry_script": {
                     "entry_script_path": "python train.py",
                     "entry_script_kind": "custom_op_full_validation",
@@ -394,6 +459,7 @@ def test_parallel_fix_includes_group_label_in_output() -> None:
             project_dir=str(project_dir), output_dir=tmp,
         )
         executor.platform_policy = MagicMock()
+        executor.platform_policy.id = "npu_ascend"
 
         def _fake_ledger(*args, **kwargs):
             return cast(dict[str, object], {
@@ -426,6 +492,7 @@ def test_parallel_fix_includes_group_label_in_output() -> None:
                     agent="operator_fixer",
                 ),
                 state={
+                    "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
                     "phase_3_entry_script": {
                         "entry_script_path": "python train.py",
                         "entry_script_kind": "custom_op_full_validation",
@@ -466,6 +533,7 @@ def test_parallel_fix_returns_none_when_no_groups_and_no_target_units() -> None:
             project_dir=str(project_dir), output_dir=tmp,
         )
         executor.platform_policy = MagicMock()
+        executor.platform_policy.id = "npu_ascend"
 
         def _empty_ledger(*args, **kwargs):
             return cast(dict[str, object], {"strict_pass_count": 0, "remaining_count": 0})
@@ -483,6 +551,7 @@ def test_parallel_fix_returns_none_when_no_groups_and_no_target_units() -> None:
                     agent="operator_fixer",
                 ),
                 state={
+                    "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
                     "phase_3_entry_script": {
                         "entry_script_path": "python train.py",
                         "entry_script_kind": "custom_op_full_validation",
@@ -542,6 +611,7 @@ def test_parallel_fix_returns_none_when_no_groups_and_no_gate(tmp_path: Path) ->
         project_dir=str(project_dir), output_dir=str(tmp_path),
     )
     executor.platform_policy = MagicMock()
+    executor.platform_policy.id = "npu_ascend"
 
     def _ledger_no_groups_no_remaining(*args, **kwargs):
         return cast(dict[str, object], {"strict_pass_count": 0, "remaining_count": 0})
@@ -564,6 +634,45 @@ def test_parallel_fix_returns_none_when_no_groups_and_no_gate(tmp_path: Path) ->
         )
 
     assert result is None
+
+
+def test_parallel_fix_returns_none_for_non_npu_without_ledger(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    executor.platform_policy = MagicMock()
+    executor.platform_policy.id = "musa_muxi"
+
+    with patch("core.workflow_executor.custom_op_final_gate_unit_ledger") as ledger:
+        result = executor._execute_parallel_custom_op_fix(
+            phase_id="fix_operator",
+            mini=_fix_operator_mini(),
+            state=_custom_op_state(["unit_a"]),
+            step_outputs={},
+            loop_vars={"project_dir": str(project_dir)},
+        )
+
+    assert result is None
+    ledger.assert_not_called()
+
+
+def test_parallel_fix_returns_none_when_route_disabled_without_ledger(tmp_path: Path) -> None:
+    project_dir = tmp_path / "test_project"
+    project_dir.mkdir()
+    executor = _make_parallel_executor(project_dir, tmp_path)
+    executor.workflow.globals = {"disable_custom_op_contract_injection": True}
+
+    with patch("core.workflow_executor.custom_op_final_gate_unit_ledger") as ledger:
+        result = executor._execute_parallel_custom_op_fix(
+            phase_id="fix_operator",
+            mini=_fix_operator_mini(),
+            state=_custom_op_state(["unit_a"]),
+            step_outputs={},
+            loop_vars={"project_dir": str(project_dir)},
+        )
+
+    assert result is None
+    ledger.assert_not_called()
 
 
 def test_invalid_phase35_custom_op_surface_is_not_forwarded_to_ledger(tmp_path: Path) -> None:

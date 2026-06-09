@@ -245,7 +245,7 @@ def _operator_custom_op_guidance(
     schema_checklist = "\n".join([
         "",
         "Final-gate evidence object schema (every in-scope row MUST satisfy):",
-        f"- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, project_relative_path, runtime_loaded_module_file, op_host/op_kernel concrete project-relative source paths, opp_build_script or CMakeLists.txt path, install/provenance path, generated OPP artifact paths, build_provenance={{command, log_path}}; for {native_name} this log must describe a real {native_framework} build/install flow and must not be stale CUDAExtension/NpuExtension/ATen/libtorch-only metadata",
+        f"- opp_custom_op_artifact_evidence: object/dict with project_local=true, built/loaded booleans, project_relative_path, runtime_loaded_module_file, platform-native host/kernel concrete project-relative source paths, build script or CMakeLists.txt path, install/provenance path, generated target-platform artifact paths, build_provenance={{command, log_path}}; for {native_name} this log must describe a real {native_framework} build/install flow and must not be stale source-platform or host-only native-extension metadata",
         "- adapter_evidence: object/dict with imported=true, passed=true",
         "- parity_evidence: object/dict with verified=true, passed=true",
         "- integration_e2e_evidence: object/dict with project_api_invoked=true, custom_op_route_executed=true, native_custom_op_route_executed=true",

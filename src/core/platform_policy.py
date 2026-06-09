@@ -475,7 +475,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="musa_muxi",
         display_name="MUXI MUSA",
         custom_op_evidence=CustomOpEvidenceConfig(
-            target_device_values=["musa", "muxi", "musa_gpu", "maca", "metax", "mxgpu", "torch_maca"],
+            target_device_values=["musa", "muxi", "musa_gpu", "maca", "metax", "mxgpu", "torch_musa", "torch_maca"],
             positive_boolean_fields=[
                 "musa_custom", "custom_musa", "musa_custom_invoked",
                 "maca_custom", "custom_maca", "maca_custom_invoked", "metax_custom_invoked",

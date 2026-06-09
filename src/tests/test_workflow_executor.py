@@ -4,7 +4,7 @@ import json
 import pytest
 import tempfile
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 from pathlib import Path
 from typing import cast
 
@@ -26,6 +26,7 @@ from core.prompt_loader import PromptLoader
 from core.config import load_workflow
 from core.validator_engine import ValidatorEngine
 from core.platform_policy import TargetPlatformConfig
+from core.routes import CUSTOM_OP_WITH_VARIANTS
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 
@@ -3744,6 +3745,8 @@ def test_improvement_block_passes_loop_vars_to_parallel_custom_op_fix(tmp_path: 
         project_dir=str(tmp_path),
         output_dir=str(tmp_path),
     )
+    executor.platform_policy = MagicMock()
+    executor.platform_policy.id = "npu_ascend"
     loop_vars = {"project_dir": str(tmp_path), "entry_script": "python validate.py"}
     captured: dict[str, object] = {}
 
@@ -3751,9 +3754,58 @@ def test_improvement_block_passes_loop_vars_to_parallel_custom_op_fix(tmp_path: 
         captured["loop_vars"] = kwargs["loop_vars"]
         return {"status": "success"}
 
+    with patch.object(executor, "_execute_parallel_custom_op_fix", side_effect=_parallel_fix):
+        executor._execute_improvement_block(
+            {
+                "phases": [
+                    {
+                        "id": "fix_operator",
+                        "type": "llm",
+                        "prompt_template": "repair_operator_fixer_npu",
+                        "agent": "operator_fixer",
+                    }
+                ]
+            },
+            {
+                "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
+                "phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"},
+            },
+            {},
+            {},
+            loop_vars=loop_vars,
+        )
+
+    assert captured["loop_vars"] is loop_vars
+
+
+def test_improvement_block_route_disabled_does_not_parallel_custom_op_fix(tmp_path: Path) -> None:
+    workflow = WorkflowDefinition(
+        name="improvement-route-disabled",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={"operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"}},
+        globals={"custom_op_route_enabled": False},
+    )
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.return_value = "operator-session"
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = '{"status":"success"}'
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        MagicMock(),
+        prompt_loader,
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+    executor.platform_policy = MagicMock()
+    executor.platform_policy.id = "npu_ascend"
+
     with (
-        patch("core.workflow_executor._is_custom_op_migration_route", return_value=True),
-        patch.object(executor, "_execute_parallel_custom_op_fix", side_effect=_parallel_fix),
+        patch.object(executor, "_execute_parallel_custom_op_fix") as parallel_fix,
+        patch.object(executor, "_send_sub_workflow_llm_command", return_value='{"status":"success"}'),
     ):
         executor._execute_improvement_block(
             {
@@ -3766,13 +3818,17 @@ def test_improvement_block_passes_loop_vars_to_parallel_custom_op_fix(tmp_path: 
                     }
                 ]
             },
-            {"phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"}},
+            {
+                "phase_1_project_analysis": {"migration_route": CUSTOM_OP_WITH_VARIANTS},
+                "phase_3_entry_script": {"entry_script_kind": "custom_op_full_validation"},
+            },
             {},
             {},
-            loop_vars=loop_vars,
+            loop_vars={"project_dir": str(tmp_path), "entry_script": "python validate.py"},
         )
 
-    assert captured["loop_vars"] is loop_vars
+    parallel_fix.assert_not_called()
+    prompt_loader.load_prompt.assert_called_with("repair_operator_fixer_npu", ANY)
 
 
 def test_missing_experience_usage_fields_normalize_to_empty(tmp_path: Path):
@@ -5731,9 +5787,9 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
         "operator_inventory_schema",
         "performance_report_schema",
         "validation_obligations",
-        "runtime_entry_script_revision_allowed",
     ):
         assert field not in normalized
+    assert normalized["runtime_entry_script_revision_allowed"] is True
     assert validate_entry_script(normalized)["passed"] is True
 
 

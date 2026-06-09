@@ -147,9 +147,13 @@ class TestPPUPromptContent:
     def test_operator_fixer_ppu_wraps_custom_op_guidance(self):
         content = (PROMPTS_DIR / "repair_operator_fixer_container_ppu.md").read_text(encoding="utf-8")
         assert "PPU" in content
-        assert "AscendC" not in content or "NOT follow AscendC" in content, (
-            "operator_fixer PPU must not affirmatively follow AscendC guidance"
-        )
+        for term in ("Ascend", "AscendC", "CANN", "NPU", "torch_npu"):
+            assert term not in content
+
+    def test_phase_3_ppu_container_prompt_uses_ppu_kernel_wording(self):
+        content = (PROMPTS_DIR / "phase_3_entry_script_ppu_container_baseaware_entryfix.md").read_text(encoding="utf-8")
+        assert "CUDA-compatible or PPU kernel functions per row" in content
+        assert "CUDA/Ascend kernel functions per row" not in content
 
     def test_container_ppu_prompts_have_execution_context(self):
         for name in PPU_CONTAINER_PHASE5_PROMPTS:

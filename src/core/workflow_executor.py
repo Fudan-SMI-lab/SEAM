@@ -429,7 +429,7 @@ def _variant_dispatch_context(phase3_contract: dict[str, object] | None) -> dict
         "parallel_dispatch_guidance": (
             f"Parallel repair dispatch: {len(unit_ids)} operator variant units discovered. "
             "Each repair session handles a subset. Focus on your assigned units only. "
-            "Do not return early with INCOMPLETE; keep implementing the assigned NPU custom-op variants until validation evidence exists."
+            "Do not return early with INCOMPLETE; keep implementing the assigned target-platform custom-op variants until validation evidence exists."
         ),
         "assigned_units": ", ".join(unit_ids),
         "assigned_unit_count": str(len(unit_ids)),
@@ -1860,12 +1860,12 @@ class WorkflowExecutor:
             "no concrete assigned-unit progress. INCOMPLETE is the problem to repair, "
             "not a valid shortcut response.\n\n"
             f"Continuation attempt {attempt}/{max_attempts}. Continue in this same session and implement the assigned "
-            "NPU custom-op operators/variants. Do not return another INCOMPLETE/FAILED response with "
+            "target-platform custom-op operators/variants. Do not return another INCOMPLETE/FAILED response with "
             "modified_files=[] or implemented_units=[].\n\n"
             "Assigned units remain:\n"
             f"{unit_lines}\n\n"
             "Required next actions:\n"
-            "1. Create or modify project-local NPU host/kernel/adapter/build/report producer files for the assigned units.\n"
+            "1. Create or modify project-local target-platform host/kernel/adapter/build/report producer files for the assigned units.\n"
             "2. If build scaffolding, CMake helpers, adapters, OPP sources, or report producers are missing, repair or create those project files instead of reporting them as blockers.\n"
             f"3. Run the validation command after the code-producing attempt: {entry_script}.\n"
             "4. Return JSON only after recording concrete modified_files, commands_run, toolchain_or_kernel_attempts, and remaining_units.\n\n"
@@ -1873,22 +1873,40 @@ class WorkflowExecutor:
             f"```json\n{previous_json}\n```"
         )
 
-    @staticmethod
     def _prompt_template_for_llm_phase(
+        self,
         *,
         phase_id: str,
         default_template: str,
         state: dict[str, Any],
     ) -> str:
         if phase_id in {"fix_operator", "imp_fix_operator"}:
-            ph1 = state.get("phase_1_project_analysis")
-            route = ph1.get("migration_route") if isinstance(ph1, dict) else None
-            if route == CUSTOM_OP_WITH_VARIANTS:
+            if self._is_npu_active_custom_op_route(
+                state,
+                allowed_routes={CUSTOM_OP_WITH_VARIANTS},
+            ):
                 return "repair_custom_op_variant_service"
             # CUSTOM_OP (no variants) falls through to default_template
             # (repair_operator_fixer_npu.md), which also supports scoping
             # via _execute_parallel_custom_op_fix.
         return default_template
+
+    def _is_npu_active_custom_op_route(
+        self,
+        state: dict[str, Any],
+        *,
+        allowed_routes: set[str] | frozenset[str] = frozenset({CUSTOM_OP, CUSTOM_OP_WITH_VARIANTS}),
+    ) -> bool:
+        if self.platform_policy.id != "npu_ascend":
+            return False
+        workflow_globals = getattr(self.workflow, "globals", {})
+        if isinstance(workflow_globals, Mapping) and self._custom_op_route_disabled(workflow_globals):
+            return False
+        ph1 = state.get("phase_1_project_analysis")
+        if not isinstance(ph1, dict):
+            return False
+        route = ph1.get("migration_route")
+        return isinstance(route, str) and route in allowed_routes
 
     def _execute_parallel_custom_op_fix(
         self,
@@ -1899,6 +1917,8 @@ class WorkflowExecutor:
         step_outputs: dict[str, Any],
         loop_vars: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
+        if not self._is_npu_active_custom_op_route(state):
+            return None
         project_dir = (
             (str(loop_vars["project_dir"]) if loop_vars and loop_vars.get("project_dir") else None)
             or self.project_dir
@@ -2068,7 +2088,7 @@ class WorkflowExecutor:
                 "parallel_dispatch_guidance": (
                     f"Group {group_idx + 1}/{len(groups)}: You are assigned {len(group_units)} specific operators. "
                     "Use background tasks to dispatch each operator to a parallel agent for simultaneous repair. "
-                    "Do not let workers return only analysis or INCOMPLETE; each stream must implement real NPU host/kernel/adapter/build/report changes for its assigned unit. "
+                    "Do not let workers return only analysis or INCOMPLETE; each stream must implement real target-platform host/kernel/adapter/build/report changes for its assigned unit. "
                     "After all implementation streams complete, merge results and run the entry script for final validation."
                 ),
             }
@@ -2996,6 +3016,8 @@ class WorkflowExecutor:
     def _strip_custom_op_contract_fields(output: dict[str, Any]) -> dict[str, Any]:
         stripped = dict(output)
         for field in CUSTOM_OP_CONTRACT_KEYS:
+            if field == "runtime_entry_script_revision_allowed":
+                continue
             stripped.pop(field, None)
         return stripped
 
@@ -4314,7 +4336,7 @@ class WorkflowExecutor:
 
             try:
                 if ptype == "llm":
-                    if pid in {"fix_operator", "imp_fix_operator"} and _is_custom_op_migration_route(state):
+                    if pid in {"fix_operator", "imp_fix_operator"} and self._is_npu_active_custom_op_route(state):
                         mini = self._mini_phase(imp_phase)
                         parallel_result = self._execute_parallel_custom_op_fix(
                             phase_id=pid,
@@ -4398,7 +4420,7 @@ class WorkflowExecutor:
                                     self._inject_sub_workflow_context(
                                         mini_ctx, str(rest.get("id") or ""), step_outputs, effective_loop_vars, state, [],
                                     )
-                                    if next_id in {"fix_operator", "imp_fix_operator"} and _is_custom_op_migration_route(state):
+                                    if next_id in {"fix_operator", "imp_fix_operator"} and self._is_npu_active_custom_op_route(state):
                                         parallel_result = self._execute_parallel_custom_op_fix(
                                             phase_id=next_id,
                                             mini=rest_mini,
@@ -4539,7 +4561,7 @@ class WorkflowExecutor:
                     )
                 elif phase_type == "llm":
                     # ── Parallel custom-op fix: intercept operator_fixer dispatch ──
-                    if phase_id in {"fix_operator", "imp_fix_operator"} and _is_custom_op_migration_route(state):
+                    if phase_id in {"fix_operator", "imp_fix_operator"} and self._is_npu_active_custom_op_route(state):
                         mini = self._mini_phase(sub_phase)
                         parallel_result = self._execute_parallel_custom_op_fix(
                             phase_id=phase_id,

@@ -1542,6 +1542,8 @@ class PhaseRunner:
     def _strip_custom_op_contract_fields(output: JsonObject) -> JsonObject:
         stripped = dict(output)
         for field in CUSTOM_OP_CONTRACT_KEYS:
+            if field == "runtime_entry_script_revision_allowed":
+                continue
             _ = stripped.pop(field, None)
         return stripped
 

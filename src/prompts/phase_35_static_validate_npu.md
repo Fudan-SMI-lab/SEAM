@@ -97,7 +97,7 @@ For passing custom-op outputs, include `custom_op_static_required: true` plus th
 
 ## Large Operator Inventories
 
-When Phase 3 contains an `expanded_variant_inventory` with many operator variants, analyze all variants — validate as many as possible within the context window. Do NOT batch-skip variants or assume remaining variants follow the same pattern. If the total variant count is too large to fit in a single analysis pass, validate as many as you can and note which ones were analyzed. Any variants not covered by this static pass will be caught by Phase 5's `custom_op_final_gate` validation at runtime.
+When Phase 3 contains an `expanded_variant_inventory` with many operator variants, analyze all variants — validate as many as possible within the context window. Do NOT batch-skip variants or assume remaining variants follow the same pattern. If the total variant count is too large to fit in a single analysis pass, validate as many as you can and note which ones were analyzed. Any variants not covered by this static pass will be caught by later `custom_op_final_gate` validation at runtime.
 
 ## Important Notes
 

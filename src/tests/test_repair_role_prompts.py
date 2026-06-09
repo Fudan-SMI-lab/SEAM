@@ -27,6 +27,9 @@ COMMON_CONTEXT = {
     "workspace_root": "/workspace",
     "operator_custom_op_guidance": "4. This is a generic operator-incompatibility repair.\n5. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证, 只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics。",
     "parallel_dispatch_guidance": "",
+    "assigned_unit_count": "all",
+    "assigned_units": "(No assigned operators)",
+    "operator_repair_progress_block": "No scoped custom-op progress.",
 }
 
 
@@ -315,7 +318,8 @@ def test_normal_entry_prompts_exist() -> None:
 def test_custom_op_variant_service_prompt_keeps_strict_variant_scope_clauses() -> None:
     prompt = (PROMPTS_DIR / "repair_custom_op_variant_service.md").read_text(encoding="utf-8")
 
-    assert "Treat every expanded variant axis declared by the Phase 3 contract as required scope" in prompt
+    assert "Treat every expanded variant axis declared by the Phase 3 contract" in prompt
+    assert "as required scope" in prompt
     assert "missing_by_dtype" in prompt
     assert "blocking defects" in prompt
     assert "HARDWARE_LIMITATION_ACCEPTED" not in prompt
@@ -330,6 +334,11 @@ def test_custom_op_variant_service_prompt_keeps_strict_variant_scope_clauses() -
     assert '"closed_pass_entries": 1' in prompt
     assert '"closed_pass_entries": 0' not in prompt
     assert "inventory_count`, `manifest_entries`, and `closed_pass_entries` must be equal" in prompt
+    assert "NPU" not in prompt
+    assert "NpuExtension" not in prompt
+    assert "Ascend" not in prompt
+    assert "AscendC" not in prompt
+    assert "CANN" not in prompt
 
 
 def test_variant_repair_strategy_is_strict_policy_only_in_dynamic_guidance() -> None:
@@ -361,4 +370,6 @@ def test_variant_repair_strategy_is_strict_policy_only_in_dynamic_guidance() -> 
         assert "HARDWARE_LIMITATION_ACCEPTED" not in text
         assert "alternate observed/allowlisted CANN" not in text
         assert "real Ascend target-platform kernel" not in text
+        assert "NpuExtension" not in text
+        assert "CUDAExtension" not in text
         assert "/usr/local/Ascend" not in text

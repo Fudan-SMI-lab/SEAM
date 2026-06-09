@@ -4,11 +4,9 @@
 4. 直接修改目标项目文件并运行验证；不要启动后台检索/后台 agents 后提前返回，不要把 modified_files: []、调研计划、等待后台结果或"下一步再修"当作本轮修复结果。
 5. ## PPU Operator Custom-Op Guidance
    This project may include custom CUDA operators. For PPU migration:
-   - Do NOT follow AscendC/CANN porting guidance unless the project explicitly requires Ascend/NPU support.
    - PPU environments execute CUDA operators through CUDA-compatible APIs; the operator code may work as-is on PPU.
    - If the operator uses NVIDIA-specific features not available on PPU, report the specific kernel/function and escalate — do NOT attempt blind rewrites.
    {operator_custom_op_guidance}
-   **PPU NOTE**: The guidance above (if present) may reference Ascend/CANN toolchains. Only follow those references if the project explicitly targets Ascend hardware in addition to PPU. Otherwise, treat them as informational context about the operator's original design intent.
 6. ## Container Execution Context
 
 This workflow uses a container execution backend for Phase 5 validation.

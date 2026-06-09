@@ -57,6 +57,7 @@ class TestBuiltinPresets:
     def test_musa_muxi_preset_accepts_maca_tokens(self):
         p = BUILTIN_PRESETS["musa_muxi"]
         assert "musa" in p.custom_op_evidence.target_device_values
+        assert "torch_musa" in p.custom_op_evidence.target_device_values
         assert "maca" in p.custom_op_evidence.target_device_values
         assert "maca" in p.custom_op_evidence.native_build_log_tokens
         assert "maca_custom_op_built" in p.custom_op_evidence.native_artifact_fields

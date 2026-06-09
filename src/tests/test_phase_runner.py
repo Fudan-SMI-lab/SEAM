@@ -1774,9 +1774,9 @@ def test_phase_runner_custom_op_route_disabled_strips_agent_contract() -> None:
         "operator_inventory_schema",
         "performance_report_schema",
         "validation_obligations",
-        "runtime_entry_script_revision_allowed",
     ):
         assert field not in normalized
+    assert normalized["runtime_entry_script_revision_allowed"] is True
     validation = runner.validator.validate("entry_script", normalized)
     assert validation.passed is True
 

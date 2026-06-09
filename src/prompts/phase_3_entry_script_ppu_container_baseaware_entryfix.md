@@ -97,7 +97,7 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
     "unit_identity": "stable per-unit identity used consistently by source_inventory, manifest rows, and final gate rows",
     "variant_or_signature": "project-specific variant, signature, dtype/shape mode, or other discriminator discovered from source",
     "native_operator_symbols": "native/exported symbols per row",
-    "kernel_functions": "CUDA/Ascend kernel functions per row",
+    "kernel_functions": "CUDA-compatible or PPU kernel functions per row",
     "kernel_launch_sites": "source locations or launch wrappers that call the kernels for this unit",
     "public_entry_mapping": "public Python/API/autograd entry points that route to this unit",
     "source_evidence": "source file/function evidence per row",
