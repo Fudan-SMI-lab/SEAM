@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
 import fnmatch
@@ -455,6 +456,7 @@ def validate_custom_op_final_gate(
     platform_policy: PlatformPolicy | None = None,
 ) -> ValidationDict:
     errors: list[str] = []
+    warnings: list[str] = []
     resolved_project_root = _resolve_existing_project_root(project_root, errors)
 
     custom_op_detected = data.get("custom_op_detected")
@@ -467,7 +469,7 @@ def validate_custom_op_final_gate(
             and (isinstance(manifest_entries_val, int) and manifest_entries_val == 0)
             and (isinstance(closed_pass_entries_val, int) and closed_pass_entries_val == 0)
         ):
-            return {"passed": True, "errors": [], "warnings": []}
+            return {"passed": True, "errors": [], "warnings": warnings}
 
     inventory_count = _int_field(data, "inventory_count", errors)
     manifest_entries = _int_field(data, "manifest_entries", errors)
@@ -520,7 +522,7 @@ def validate_custom_op_final_gate(
                 platform_policy,
                 require_strict_native_producer,
             )
-        _validate_source_inventory_completeness(data_mapping, row_items, errors)
+            _validate_source_inventory_completeness(data_mapping, row_items, errors)
         perf_mode = get_performance_validation_mode(platform_policy)
         if perf_mode != "disabled":
             _validate_performance_report_completeness(
@@ -531,6 +533,7 @@ def validate_custom_op_final_gate(
                 platform_policy,
                 require_strict_native_producer,
             )
+        _validate_performance_plausibility(row_items, errors, warnings, platform_policy)
         _validate_required_manifest_units(
             row_items,
             inventory_count,
@@ -560,7 +563,7 @@ def validate_custom_op_final_gate(
                 errors,
             )
 
-    return {"passed": not errors, "errors": errors, "warnings": []}
+    return {"passed": not errors, "errors": errors, "warnings": warnings}
 
 
 def custom_op_final_gate_unit_ledger(
@@ -3426,3 +3429,334 @@ def _has_negative_contamination_signal(value: object) -> bool:
         return True
     perf_value = evidence.get("speedup_vs_baseline")
     return isinstance(perf_value, (int, float)) and not isinstance(perf_value, bool) and perf_value < 0
+
+
+# ── Universal performance plausibility checks ──────────────────────────────
+# These five statistical invariants detect LLM-fabricated performance data
+# without any operator-specific hardcoding.  They work by analysing the
+# structure of unit_identity and evidence fields to find patterns that are
+# statistically impossible for real measured data.
+
+# Recognised parameter fields (checked dynamically — missing keys are
+# silently skipped so the checks work across arbitrary operator domains).
+_PERF_PARAM_KEYS: tuple[str, ...] = (
+    "ndim", "accuracy", "dtype", "batch_size", "seq_len",
+    "hidden_dim", "channels", "kernel_size", "stride",
+)
+
+
+def _extract_variant_groups(
+    row_items: list[object],
+) -> dict[str, list[dict[object, object]]]:
+    """Parse gate rows into variant groups keyed by operator-family:kernel.
+
+    Each ``unit_identity`` is split on ``:``; the first two segments form
+    the group key (e.g. ``"acoustic:backward_cuda"``).  Rows whose
+    unit_identity does not contain at least two colon-delimited tokens are
+    silently skipped.
+
+    Returns ``{group_key: [row_dict, ...]}`` where every row_dict has a
+    ``_perf_params`` key containing ``{param_name: value}`` for the
+    recognised parameter keys.
+    """
+    groups: dict[str, list[dict[object, object]]] = defaultdict(list)
+    for row_obj in row_items:
+        if not isinstance(row_obj, dict):
+            continue
+        row = cast(dict[object, object], row_obj)
+        identity = row.get("unit_identity")
+        if not isinstance(identity, str) or not identity.strip():
+            continue
+        parts = identity.strip().split(":")
+        if len(parts) < 2:
+            continue
+        group_key = f"{parts[0]}:{parts[1]}"
+        # Extract recognised param values from row-level evidence.
+        # Precedence: nested evidence dict, then row-level fields.
+        params: dict[str, object] = {}
+        evidence = row.get("performance_evidence")
+        if isinstance(evidence, Mapping):
+            ev = cast(Mapping[object, object], evidence)
+            for key in _PERF_PARAM_KEYS:
+                val = ev.get(key)
+                if val is not None:
+                    params[key] = val
+        for key in _PERF_PARAM_KEYS:
+            if key not in params:
+                val = row.get(key)
+                if val is not None:
+                    params[key] = val
+        row["_perf_params"] = params
+        groups[group_key].append(row)
+    return dict(groups)
+
+
+def _get_speedup(row: Mapping[object, object]) -> float | None:
+    """Extract speedup_vs_baseline from a gate row."""
+    evidence = row.get("performance_evidence")
+    if isinstance(evidence, Mapping):
+        ev = cast(Mapping[object, object], evidence)
+        val = ev.get("speedup_vs_baseline")
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+    val = row.get("speedup_vs_baseline")
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return float(val)
+    return None
+
+
+def _param_signature(
+    params: Mapping[object, object],
+    exclude_keys: tuple[str, ...] = (),
+) -> tuple[tuple[str, object], ...]:
+    """Deterministic sortable signature of parameter key-value pairs."""
+    return tuple(
+        (cast(str, k), params[k])
+        for k in sorted(params.keys(), key=str)
+        if k not in exclude_keys
+    )
+
+
+def _validate_performance_plausibility(
+    row_items: list[object],
+    errors: list[str],
+    warnings: list[str],
+    _platform_policy: PlatformPolicy | None = None,
+) -> None:
+    """Run cross-entry statistical plausibility checks on gate rows.
+
+    Called once after per-row validation completes so the full dataset is
+    available for cross-entry comparison.
+
+    Checks are universal — they derive group keys from unit_identity and
+    parameter names from the evidence dict itself, so they work across
+    arbitrary custom-op and custom-op+variant projects.
+    """
+    groups = _extract_variant_groups(row_items)
+    if not groups:
+        return
+
+    _check_zero_variance(groups, errors)
+    _check_parametric_insensitivity(groups, errors)
+    _check_cross_group_collision(groups, errors)
+    _check_dtype_insensitivity(groups, errors)
+    _check_magnitude_sanity(groups, warnings)
+
+
+def _check_zero_variance(
+    groups: dict[str, list[dict[object, object]]],
+    errors: list[str],
+) -> None:
+    """Detect when all speedups within a group are identical.
+
+    Real measured performance always has natural variance across parameter
+    combinations (different ndim / accuracy / dtype lead to different
+    speedups).  If every entry in a group reports the exact same speedup,
+    the data is almost certainly fabricated.
+    """
+    for group_key, variants in sorted(groups.items()):
+        speedups: list[float] = []
+        for row in variants:
+            sp = _get_speedup(row)
+            if sp is not None:
+                speedups.append(sp)
+        if len(speedups) < 2:
+            continue
+        unique = set(speedups)
+        if len(unique) == 1:
+            errors.append(
+                f"PERFORMANCE_PLAUSIBILITY: zero variance in group "
+                f"'{group_key}' — all {len(speedups)} entries report "
+                f"identical speedup {speedups[0]}; real measurements "
+                f"would show natural variance across parameters"
+            )
+
+
+def _check_parametric_insensitivity(
+    groups: dict[str, list[dict[object, object]]],
+    errors: list[str],
+) -> None:
+    """Detect when speedup is unchanged across parameter variations.
+
+    Within a variant group, different ndim / accuracy combinations should
+    produce different speedups.  If the same speedup appears across all
+    parameter combinations, the data is parametric-insensitive — a hallmark
+    of fabrication.
+    """
+    for group_key, variants in sorted(groups.items()):
+        # Map of param_signature -> speedup (excluding dtype so we check
+        # dtype-insensitivity separately).
+        sig_speedup: dict[tuple[tuple[str, object], ...], float] = {}
+        for row in variants:
+            params = row.get("_perf_params", {})
+            if not isinstance(params, Mapping):
+                continue
+            pm = cast(Mapping[object, object], params)
+            sp = _get_speedup(row)
+            if sp is None:
+                continue
+            sig = _param_signature(pm, exclude_keys=("dtype",))
+            if not sig:
+                continue
+            if sig in sig_speedup:
+                if sig_speedup[sig] != sp:
+                    sig_speedup[sig] = -1.0  # sentinel = mixed values
+            else:
+                sig_speedup[sig] = sp
+
+        # Remove mixed sentinels from consideration.
+        clean = {
+            sig: sp for sig, sp in sig_speedup.items()
+            if sp != -1.0
+        }
+        unique_sigs = list(clean.keys())
+        if len(unique_sigs) < 2:
+            continue
+        distinct_speeds = {clean[sig] for sig in unique_sigs}
+        if len(distinct_speeds) == 1:
+            sp_val = next(iter(distinct_speeds))
+            errors.append(
+                f"PERFORMANCE_PLAUSIBILITY: parametric insensitivity in "
+                f"'{group_key}' — speedup {sp_val} is unchanged across "
+                f"{len(unique_sigs)} distinct parameter combinations; "
+                f"real measurements would vary with ndim/accuracy"
+            )
+
+
+def _check_cross_group_collision(
+    groups: dict[str, list[dict[object, object]]],
+    errors: list[str],
+) -> None:
+    """Detect copy-paste across unrelated operator families.
+
+    Different operator families (e.g. acoustic vs elastic) should never
+    share identical speedup values at the same parameter settings.  If
+    they do, one family's data was copy-pasted from another.
+    """
+    # Build a map of (param_sig, speedup) -> set of group_keys.
+    collision_map: dict[
+        tuple[tuple[str, object], ...],
+        dict[float, set[str]],
+    ] = defaultdict(lambda: defaultdict(set))
+    for group_key, variants in groups.items():
+        for row in variants:
+            params = row.get("_perf_params", {})
+            if not isinstance(params, Mapping):
+                continue
+            pm = cast(Mapping[object, object], params)
+            sp = _get_speedup(row)
+            if sp is None:
+                continue
+            sig = _param_signature(pm)
+            if not sig:
+                continue
+            collision_map[sig][sp].add(group_key)
+
+    for sig, sp_groups in sorted(collision_map.items()):
+        for sp_val, group_set in sp_groups.items():
+            if len(group_set) < 2:
+                continue
+            gnames = ", ".join(sorted(group_set))
+            param_str = ", ".join(f"{k}={v}" for k, v in sig)
+            errors.append(
+                f"PERFORMANCE_PLAUSIBILITY: cross-group collision — "
+                f"speedup {sp_val} at [{param_str}] shared by unrelated "
+                f"families: {gnames}; likely copy-paste fabrication"
+            )
+
+
+def _check_dtype_insensitivity(
+    groups: dict[str, list[dict[object, object]]],
+    errors: list[str],
+) -> None:
+    """Detect identical speedup across different dtypes at same params.
+
+    float vs double should never produce the exact same speedup on real
+    hardware (memory bandwidth, register pressure, and arithmetic throughput
+    all differ).  If they do, the data is fabricated.
+    """
+    for group_key, variants in sorted(groups.items()):
+        # Group by param signature (excluding dtype) -> {dtype: speedup}
+        dtype_map: dict[
+            tuple[tuple[str, object], ...],
+            dict[object, float],
+        ] = defaultdict(dict)
+        for row in variants:
+            params = row.get("_perf_params", {})
+            if not isinstance(params, Mapping):
+                continue
+            pm = cast(Mapping[object, object], params)
+            dtype = pm.get("dtype")
+            if not isinstance(dtype, str):
+                continue
+            sp = _get_speedup(row)
+            if sp is None:
+                continue
+            sig = _param_signature(pm, exclude_keys=("dtype",))
+            if not sig:
+                continue
+            dtype_map[sig][dtype] = sp
+
+        affected: list[tuple[float, set[str]]] = []
+        for sig, dtype_speeds in dtype_map.items():
+            if len(dtype_speeds) < 2:
+                continue
+            unique_speeds = set(dtype_speeds.values())
+            if len(unique_speeds) == 1:
+                sp_val = next(iter(unique_speeds))
+                dtypes = set(str(d) for d in dtype_speeds.keys())
+                affected.append((sp_val, dtypes))
+
+        if not affected:
+            continue
+        all_dtypes: set[str] = set()
+        for _, dtypes in affected:
+            all_dtypes.update(dtypes)
+        sp_val = affected[0][0]
+        dtype_names = ", ".join(sorted(all_dtypes))
+        errors.append(
+            f"PERFORMANCE_PLAUSIBILITY: dtype insensitivity in "
+            f"'{group_key}' — speedup {sp_val} identical across "
+            f"dtypes [{dtype_names}] at {len(affected)} distinct "
+            f"parameter combinations; real hardware shows measurable "
+            f"difference between float and double"
+        )
+
+
+def _check_magnitude_sanity(
+    groups: dict[str, list[dict[object, object]]],
+    warnings: list[str],
+) -> None:
+    """Flag implausibly large speedups that lack justification.
+
+    Speedups exceeding 100x are extraordinary and require explicit
+    justification (e.g. 'kernel fusion', 'tiling', 'vectorisation').
+    Without such justification, they are likely fabricated.
+    """
+    for _group_key, variants in sorted(groups.items()):
+        for row in variants:
+            sp = _get_speedup(row)
+            if sp is None or sp <= 100.0:
+                continue
+            evidence = row.get("performance_evidence")
+            measurement_note = ""
+            if isinstance(evidence, Mapping):
+                ev = cast(Mapping[object, object], evidence)
+                note = ev.get("measurement_note", "")
+                if isinstance(note, str):
+                    measurement_note = note.strip().lower()
+            justification_keywords = (
+                "fusion", "tiling", "tile", "vector", "simd",
+                "memory coalescing", "bank conflict", "cache",
+                "shared memory", "register", "pipeline",
+            )
+            has_justification = any(
+                kw in measurement_note for kw in justification_keywords
+            )
+            if not has_justification:
+                identity = row.get("unit_identity", "unknown")
+                warnings.append(
+                    f"PERFORMANCE_PLAUSIBILITY: extraordinary speedup "
+                    f"{sp:.2f}x in '{identity}' without performance "
+                    f"justification; review for possible fabrication"
+                )

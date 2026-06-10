@@ -92,6 +92,8 @@ def validate(data: dict[str, object]) -> ValidationDict:
             issues_list.append(item)
 
     fix_plan = data.get("fix_plan")
+    if fix_plan is None:
+        fix_plan = ""
     if not isinstance(fix_plan, str):
         errors.append("fix_plan must be a string")
     else:

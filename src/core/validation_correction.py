@@ -23,7 +23,7 @@ def extract_output_format_from_prompt(prompt_text: object) -> str | None:
 
     if not blocks:
         return None
-    return "\n\n---\n\n".join(blocks)
+    return "\n\n--- or ---\n\n".join(blocks)
 
 
 def expected_output_format(output_schema: object, prompt_text: object) -> str | None:
@@ -81,10 +81,11 @@ def build_validation_correction_prompt(
         )
 
     final_contract = (
-        "\n\nYou may reason, explain, or analyze before the JSON. A single parseable JSON object is mandatory. "
+        "\n\nDO NOT include reasoning, explanation, or analysis. Produce ONLY the JSON. "
+        "A single parseable JSON object is mandatory. "
         "Do not ask the user, call the question tool, offer choices, or wait for confirmation; choose the safest correction that advances validation. "
-        "The last thing in your response must be one complete JSON object matching the expected shape. "
-        "Do not put prose, markdown, or any other text after that final JSON object. "
+        "Your entire response must be one complete JSON object matching the expected shape. "
+        "Do not put prose, markdown, or any other text before or after the JSON. "
         "Preserve previously-correct fields and only change what is needed to satisfy validation."
     )
 
