@@ -162,7 +162,7 @@ def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline
 
 
 def test_root_custom_op_skill_prompt_is_owned_by_execution_root():
-    prompt_path = EXECUTION_ROOT / "docs" / "cuda_custom_op_skill_test_prompt.md"
+    prompt_path = EXECUTION_ROOT / "docs" / "dev_examples" / "开发时思路示例文档_skill的prompt.md"
     content = prompt_path.read_text(encoding="utf-8")
 
     assert prompt_path.is_file()
