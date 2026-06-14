@@ -169,7 +169,7 @@ class Orchestrator:
             workflow=workflow,
             framework_config=fw_config,
         )
-        exec_backend = self._resolve_execution_backend(workflow, active_project_dir)
+        exec_backend = self._resolve_execution_backend(workflow, active_project_dir, user_constraints)
         container_ctx = self._preflight_and_probe(exec_backend)
         runner.set_container_context(container_ctx)
         exec_env_ctx = self._build_execution_environment_context(exec_backend, container_ctx)
@@ -609,6 +609,7 @@ class Orchestrator:
         self,
         workflow: object,
         project_dir: str,
+        user_constraints: str = "",
     ) -> object:
         """Create an execution backend from workflow config, mirroring WorkflowExecutor behavior."""
         eb_cfg = getattr(workflow, "execution_backend", None)
@@ -619,7 +620,12 @@ class Orchestrator:
 
         if eb_cfg.mode == "auto":
             eb_cfg = auto_select_backend(eb_cfg)
-            eb_cfg = self._auto_select_image(eb_cfg)
+            eb_cfg = self._auto_select_image(
+                eb_cfg,
+                workflow=workflow,
+                project_dir=project_dir,
+                user_constraints=user_constraints,
+            )
 
         if eb_cfg.mode != "container":
             return None
@@ -628,7 +634,14 @@ class Orchestrator:
         backend.set_project_dir(project_dir)
         return backend
 
-    def _auto_select_image(self, config: object) -> object:
+    def _auto_select_image(
+        self,
+        config: object,
+        *,
+        workflow: object | None = None,
+        project_dir: str = "",
+        user_constraints: str = "",
+    ) -> object:
         """Run agent image-selection for ``mode=auto`` before container creation."""
         from core.execution_backend import ContainerBackend
         from core.types import ExecutionBackendConfig as _EBC
@@ -663,7 +676,14 @@ class Orchestrator:
                 logging.getLogger(__name__).info("Auto mode: no images and no local images discovered; falling back to local")
                 return _EBC(mode="local")
 
-        selected = self._send_image_selection_prompt(candidates, is_discovered)
+        selected = self._send_image_selection_prompt(
+            candidates,
+            is_discovered,
+            config=config,
+            workflow=workflow,
+            project_dir=project_dir,
+            user_constraints=user_constraints,
+        )
         if selected and selected in candidates:
             ordered_candidates = [selected] + [img for img in candidates if img != selected]
             config = _EBC(
@@ -701,6 +721,11 @@ class Orchestrator:
         self,
         candidates: list[str],
         is_discovered: bool = False,
+        *,
+        config: object | None = None,
+        workflow: object | None = None,
+        project_dir: str = "",
+        user_constraints: str = "",
     ) -> str | None:
         """Ask the main engineer session to select an image from the list."""
         from core.prompt_loader import PromptLoader
@@ -715,7 +740,7 @@ class Orchestrator:
 
         guidance = (
             "Select the most appropriate image for running the migration workflow. "
-            "Consider image suitability for Python, PyTorch, and target hardware."
+            "Consider image suitability for the project, dependencies, and target runtime environment."
         )
         if is_discovered:
             guidance = (
@@ -733,6 +758,12 @@ class Orchestrator:
                     if is_discovered
                     else ""
                 ),
+                "project_runtime_context": self._build_image_selection_context(
+                    config,
+                    workflow=workflow,
+                    project_dir=project_dir,
+                ),
+                "user_constraints_section": self._build_image_selection_constraints_section(user_constraints),
                 "selection_guidance": guidance,
             },
         )
@@ -749,6 +780,62 @@ class Orchestrator:
             logging.getLogger(__name__).warning("Image selection prompt failed: %s", exc)
 
         return None
+
+    @staticmethod
+    def _build_image_selection_constraints_section(user_constraints: str = "") -> str:
+        constraints = str(user_constraints or "").strip()
+        if not constraints:
+            return ""
+        return (
+            "## User-Provided Constraints\n"
+            "Use these raw constraints only as refinement signals among the listed candidates:\n"
+            f"{constraints}"
+        )
+
+    @staticmethod
+    def _build_image_selection_context(
+        config: object | None = None,
+        *,
+        workflow: object | None = None,
+        project_dir: str = "",
+    ) -> str:
+        lines: list[str] = []
+        if project_dir:
+            lines.append(f"- Project directory: {project_dir}")
+        workflow_name = getattr(workflow, "name", "") if workflow is not None else ""
+        workflow_version = getattr(workflow, "version", "") if workflow is not None else ""
+        if workflow_name:
+            workflow_label = str(workflow_name)
+            if workflow_version:
+                workflow_label += f" ({workflow_version})"
+            lines.append(f"- Workflow: {workflow_label}")
+        if config is not None:
+            for label, attr in (
+                ("Execution backend mode", "mode"),
+                ("Container source", "source"),
+                ("Container runtime", "runtime"),
+                ("Container workdir", "container_workdir"),
+                ("Network mode", "network_mode"),
+            ):
+                value = getattr(config, attr, None)
+                if value:
+                    lines.append(f"- {label}: {value}")
+            env_vars = getattr(config, "env_vars", None)
+            if isinstance(env_vars, dict) and env_vars:
+                lines.append("- Configured environment keys: " + ", ".join(sorted(str(k) for k in env_vars)))
+            for label, attr in (
+                ("Required environment keys", "required_env_vars"),
+                ("Required device paths", "required_devices"),
+                ("Device mappings", "devices"),
+                ("Volume mappings", "volumes"),
+                ("Runtime flags", "runtime_flags"),
+            ):
+                value = getattr(config, attr, None)
+                if value:
+                    lines.append(f"- {label}: {json.dumps(value, ensure_ascii=False, default=str)}")
+        if not lines:
+            return ""
+        return "## Project and Runtime Context\n" + "\n".join(lines)
 
     @staticmethod
     def _preflight_and_probe(backend: object) -> dict[str, str]:

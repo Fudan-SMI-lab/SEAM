@@ -267,6 +267,33 @@ class TestDispatchRouting:
         )
         assert target is None
 
+    def test_dispatch_uses_error_analysis_repair_role_not_handoff_role(self, temp_dir):
+        wf = WorkflowDefinition(name="disp", version="1.0", phases=[], terminals=[])
+        executor = WorkflowExecutor(
+            wf, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            project_dir=temp_dir, output_dir=temp_dir,
+        )
+
+        phase = PhaseDefinition(
+            id="dispatch", name="Dispatch", prompt_template="", output_schema={},
+            type="dispatch",
+        )
+        phase.params = {
+            "route_field": "${error_analysis.repair_role}",
+            "routes": {"code_adapter": "fix_code", "generic_specialist": "fix_specialist"},
+        }
+
+        target = executor._execute_dispatch_phase(
+            phase, {}, {},
+            loop_vars={}, loop_state={},
+            step_outputs={
+                "error_analysis": {"repair_role": "code_adapter"},
+                "fix_code": {"handoff": {"role": "generic_specialist", "reason": "follow-up"}},
+            },
+        )
+
+        assert target == "fix_code"
+
 
 class TestReviewGate:
     def test_review_phase_accept(self, temp_dir):

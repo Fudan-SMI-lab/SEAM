@@ -13,6 +13,7 @@ import pytest
 
 from core.types import ExecutionBackendConfig, WorkflowDefinition, PhaseDefinition
 from core.config import load_workflow
+from core.prompt_loader import PromptLoader
 from core.execution_backend import (
     ContainerBackend,
     ContainerNotFoundError,
@@ -1928,6 +1929,59 @@ class TestAutoImageSelection:
         assert "img-a:1" in call_ctx["candidate_images"]
         assert "img-b:2" in call_ctx["candidate_images"]
         assert "img-c:3" in call_ctx["candidate_images"]
+        assert "Project and Runtime Context" in call_ctx["project_runtime_context"]
+        assert call_ctx["user_constraints_section"] == ""
+
+    @patch("subprocess.run")
+    def test_auto_select_prompt_includes_constraints_and_runtime_context(
+        self, mock_run, tmp_path,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("candidate-b")
+
+        prompt_loader = PromptLoader(ROOT / "prompts")
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "auto",
+                "images": ["candidate-a", "candidate-b"],
+                "container_workdir": "/workspace/project",
+                "env_vars": {"PROJECT_MODE": "do-not-render-value"},
+                "required_env_vars": ["RUNTIME_SETTING"],
+            }
+        )
+
+        workflow = WorkflowDefinition(
+            name="generic-selection-test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            user_constraints="Prefer a candidate with required runtime dependencies already available.",
+        )
+
+        assert executor.exec_backend is not None
+        sent_prompt = mock_session.send_command.call_args[0][1]
+        assert "## Project and Runtime Context" in sent_prompt
+        assert str(tmp_path) in sent_prompt
+        assert "generic-selection-test" in sent_prompt
+        assert "Container runtime" in sent_prompt
+        assert "PROJECT_MODE" in sent_prompt
+        assert "do-not-render-value" not in sent_prompt
+        assert "RUNTIME_SETTING" in sent_prompt
+        assert "## User-Provided Constraints" in sent_prompt
+        assert "Prefer a candidate with required runtime dependencies already available." in sent_prompt
+        assert "Before choosing, read and account for any project/runtime context" in sent_prompt
+        assert "user-provided constraints" in sent_prompt
+        assert "active refinement and ranking" in sent_prompt
+        assert "listed images only" in sent_prompt
+        assert "favor listed candidates that already provide those capabilities" in sent_prompt
+        assert "unverified installation in later phases" in sent_prompt
+        assert "User-provided constraints NEVER authorize selecting an image that is not listed." in sent_prompt
 
     @patch("subprocess.run")
     def test_auto_select_invalid_out_of_list_falls_back(

@@ -100,6 +100,14 @@ SUB_WORKFLOW_REPAIR_PHASE_ORDER = (
     "imp_fix_operator",
     "imp_fix_report",
 )
+FIXER_STRUCTURED_OUTPUT_FIELDS = {
+    "handoff",
+    "validation_result",
+    "remaining_error_summary",
+    "remaining_error_summaries",
+    "remaining_errors",
+    "remaining_blockers",
+}
 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
 SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 30000
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
@@ -459,7 +467,7 @@ class WorkflowExecutor:
                 return _EBC(mode="local")
 
         # Send selection prompt to agent
-        selected = self._send_image_selection_prompt(candidates, is_discovered)
+        selected = self._send_image_selection_prompt(candidates, is_discovered, config)
         if selected and selected in candidates:
             ordered_candidates = [selected] + [img for img in candidates if img != selected]
             config = _EBC(
@@ -495,6 +503,7 @@ class WorkflowExecutor:
         self,
         candidates: list[str],
         is_discovered: bool = False,
+        config: Any | None = None,
     ) -> str | None:
         """Ask an agent to select an image from the given list."""
         from harness.session.manager import extract_json_response as _extract
@@ -503,7 +512,7 @@ class WorkflowExecutor:
 
         guidance = (
             "Select the most appropriate image for running the migration workflow. "
-            "Consider image suitability for Python, PyTorch, and target hardware."
+            "Consider image suitability for the project, dependencies, and target runtime environment."
         )
         if is_discovered:
             guidance = (
@@ -521,6 +530,8 @@ class WorkflowExecutor:
                     if is_discovered
                     else ""
                 ),
+                "project_runtime_context": self._build_image_selection_context(config),
+                "user_constraints_section": self._build_image_selection_constraints_section(),
                 "selection_guidance": guidance,
             },
         )
@@ -549,6 +560,55 @@ class WorkflowExecutor:
             logger.warning("Image selection prompt failed: %s", exc)
 
         return None
+
+    def _build_image_selection_constraints_section(self) -> str:
+        constraints = str(self.user_constraints or "").strip()
+        if not constraints:
+            return ""
+        return (
+            "## User-Provided Constraints\n"
+            "Use these raw constraints only as refinement signals among the listed candidates:\n"
+            f"{constraints}"
+        )
+
+    def _build_image_selection_context(self, config: Any | None = None) -> str:
+        lines: list[str] = []
+        if self.project_dir:
+            lines.append(f"- Project directory: {self.project_dir}")
+        workflow_name = getattr(self.workflow, "name", "")
+        workflow_version = getattr(self.workflow, "version", "")
+        if workflow_name:
+            workflow_label = str(workflow_name)
+            if workflow_version:
+                workflow_label += f" ({workflow_version})"
+            lines.append(f"- Workflow: {workflow_label}")
+        if config is not None:
+            for label, attr in (
+                ("Execution backend mode", "mode"),
+                ("Container source", "source"),
+                ("Container runtime", "runtime"),
+                ("Container workdir", "container_workdir"),
+                ("Network mode", "network_mode"),
+            ):
+                value = getattr(config, attr, None)
+                if value:
+                    lines.append(f"- {label}: {value}")
+            env_vars = getattr(config, "env_vars", None)
+            if isinstance(env_vars, Mapping) and env_vars:
+                lines.append("- Configured environment keys: " + ", ".join(sorted(str(k) for k in env_vars)))
+            for label, attr in (
+                ("Required environment keys", "required_env_vars"),
+                ("Required device paths", "required_devices"),
+                ("Device mappings", "devices"),
+                ("Volume mappings", "volumes"),
+                ("Runtime flags", "runtime_flags"),
+            ):
+                value = getattr(config, attr, None)
+                if value:
+                    lines.append(f"- {label}: {json.dumps(value, ensure_ascii=False, default=str)}")
+        if not lines:
+            return ""
+        return "## Project and Runtime Context\n" + "\n".join(lines)
 
     def _cleanup_execution_backend(self) -> None:
         if self.exec_backend is None:
@@ -2040,7 +2100,10 @@ class WorkflowExecutor:
                             else:
                                 diags.append(str(ad))
                         if h is latest_history_entry and (
-                            meta.get("summary") or meta.get("modified_files") or meta.get("agent_diagnostics")
+                            meta.get("summary")
+                            or meta.get("modified_files")
+                            or meta.get("agent_diagnostics")
+                            or self._fixer_structured_fields(meta)
                         ):
                             fixer_details.append({
                                 "iteration": h.get("iteration", "?"),
@@ -2048,6 +2111,7 @@ class WorkflowExecutor:
                                 "summary": s,
                                 "modified_files": meta.get("modified_files", []),
                                 "agent_diagnostics": ad,
+                                "structured_fields": self._fixer_structured_fields(meta),
                             })
                 row_summary = "; ".join(summaries)[:120] if summaries else ""
                 row_diag = "; ".join(diags)[:120] if diags else ""
@@ -2088,8 +2152,53 @@ class WorkflowExecutor:
                         lines.append(f"  Agent Diagnostics: {json.dumps(diag, ensure_ascii=False)}")
                     else:
                         lines.append(f"  Agent Diagnostics: {diag}")
+                for key, value in fd.get("structured_fields", {}).items():
+                    label = key.replace("_", " ").title()
+                    lines.append(f"  {label}: {self._format_structured_fixer_value(key, value)}")
 
         return "\n".join(lines)
+
+    def _fixer_structured_fields(self, meta: dict) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in meta.items()
+            if self._is_structured_fixer_field(key) and value not in (None, "", [], {})
+        }
+
+    def _is_structured_fixer_field(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        return key in FIXER_STRUCTURED_OUTPUT_FIELDS or key.startswith("remaining_")
+
+    def _safe_structured_fixer_value(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): self._safe_structured_fixer_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._safe_structured_fixer_value(v) for v in value]
+        try:
+            json.dumps(value, ensure_ascii=False)
+            return value
+        except TypeError:
+            return str(value)
+
+    def _format_structured_fixer_value(self, key: str, value: Any) -> str:
+        if key == "handoff" and isinstance(value, dict):
+            parts = []
+            for handoff_key in ("role", "reason", "blocking"):
+                if value.get(handoff_key) not in (None, "", [], {}):
+                    parts.append(f"{handoff_key}={value[handoff_key]}")
+            if parts:
+                remaining = {
+                    str(k): v for k, v in value.items()
+                    if k not in {"role", "reason", "blocking"}
+                    and v not in (None, "", [], {})
+                }
+                if remaining:
+                    parts.append(json.dumps(remaining, ensure_ascii=False))
+                return "; ".join(parts)
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
 
     def _collect_fixer_outputs(self, step_outputs: dict) -> dict | None:
         result: dict[str, Any] = {}
@@ -2109,6 +2218,9 @@ class WorkflowExecutor:
                     entry["agent_diagnostics"] = {str(k): str(v) for k, v in ad.items()}
                 else:
                     entry["agent_diagnostics"] = str(ad)
+            for key, value in out.items():
+                if self._is_structured_fixer_field(key) and value not in (None, "", [], {}):
+                    entry[str(key)] = self._safe_structured_fixer_value(value)
             if entry:
                 result[pid] = entry
         return result if result else None

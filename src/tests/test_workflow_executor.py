@@ -3334,6 +3334,34 @@ def test_collect_fixer_outputs_returns_none_when_no_fixers():
     assert result is None
 
 
+def test_collect_fixer_outputs_preserves_structured_handoff_and_remaining_fields():
+    step_outputs = {
+        "fix_code": {
+            "summary": "Applied generic compatibility fix",
+            "handoff": {
+                "role": "generic_specialist",
+                "reason": "requires domain follow-up",
+                "blocking": True,
+            },
+            "validation_result": {"passed": False, "errors": ["still fails"]},
+            "remaining_error_summary": "One blocker remains after this fixer",
+            "remaining_blockers": [{"kind": "runtime", "detail": "missing adapter"}],
+        }
+    }
+
+    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+
+    assert result is not None
+    assert result["fix_code"]["handoff"] == {
+        "role": "generic_specialist",
+        "reason": "requires domain follow-up",
+        "blocking": True,
+    }
+    assert result["fix_code"]["validation_result"] == {"passed": False, "errors": ["still fails"]}
+    assert result["fix_code"]["remaining_error_summary"] == "One blocker remains after this fixer"
+    assert result["fix_code"]["remaining_blockers"] == [{"kind": "runtime", "detail": "missing adapter"}]
+
+
 def test_format_error_analyzer_history_renders_fixer_outputs():
     history = [
         {
@@ -3379,6 +3407,38 @@ def test_format_error_analyzer_history_renders_fixer_outputs():
     assert "requirements.txt" not in formatted
     assert "model.py" in formatted
     assert "ops/custom_ops.cpp" in formatted
+
+
+def test_format_error_analyzer_history_renders_structured_handoff_for_analyzer():
+    history = [
+        {
+            "iteration": 1,
+            "status": "failure",
+            "duration": 0.7,
+            "error_category": "runtime",
+            "repair_role": "code_adapter",
+            "fixer_outputs": {
+                "fix_code": {
+                    "summary": "Generic fixer reached a handoff point",
+                    "handoff": {
+                        "role": "generic_specialist",
+                        "reason": "needs targeted follow-up",
+                        "blocking": True,
+                    },
+                    "validation_result": {"passed": False, "errors": ["blocker remains"]},
+                    "remaining_error_summary": "The runtime blocker is still present",
+                }
+            },
+        }
+    ]
+
+    executor = WorkflowExecutor.__new__(WorkflowExecutor)
+    formatted = executor._format_error_analyzer_history(history, step_outputs={}, state={})
+
+    assert "## Previous Fixer Outputs" in formatted
+    assert "Handoff: role=generic_specialist; reason=needs targeted follow-up; blocking=True" in formatted
+    assert "Validation Result: {\"passed\": false, \"errors\": [\"blocker remains\"]}" in formatted
+    assert "Remaining Error Summary: The runtime blocker is still present" in formatted
 
 
 def test_format_history_summary_renders_fixer_outputs():
