@@ -86,6 +86,12 @@ def test_sm_adapt_workflow_yamls_have_no_phase_or_session_timeouts():
         "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml",
         "musa_muxi_vllm.yaml",
         "musa_muxi_general.yaml",
+        "npu_ascend_general.yaml",
+        "npu_ascend_vllm.yaml",
+        "ppu_custom_op.yaml",
+        "ppu_general.yaml",
+        "ppu_sglang.yaml",
+        "ppu_vllm.yaml",
     }
     for workflow_path in (PACKAGE_ROOT / "workflows").glob("*.yaml"):
         text = workflow_path.read_text(encoding="utf-8")

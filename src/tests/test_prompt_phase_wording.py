@@ -76,6 +76,7 @@ PHASE35_STATIC_PROMPTS = tuple(
 PHASE35_STATIC_PROMPT_NAMES = {
     "phase_35_static_validate.md",
     "phase_35_static_validate_musa_baseaware.md",
+    "phase_35_static_validate_npu_baseaware.md",
     "phase_35_static_validate_ppu.md",
     "phase_35_static_validate_ppu_baseaware.md",
     "phase_35_static_validate_ppu_normal_entry_057.md",
