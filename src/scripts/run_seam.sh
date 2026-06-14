@@ -48,6 +48,7 @@ Options:
   --no-review                 Disable Review Gate
   --no-keep-temp              Don't keep output project directory (default: keep)
   --agent NAME                Override auto-detected agent name
+  --output-dir DIR            Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --server-no-auto-start       Disable auto-start of OpenCode server
   --dry-run                   Validate paths without running migration
   --extra 'ARGS...'           Pass extra arguments to the E2E harness
@@ -76,9 +77,6 @@ EOF
 }
 
 # ── Forward args to run_e2e_v3.sh, translating server_type/server_url/server_conflict ──
-# run_e2e_v3.sh accepts --server-url, --workflow, --max-iter, --review, --no-review,
-# --no-keep-temp, --agent, --server-no-auto-start, --dry-run, --extra, --verbose
-
 FORWARD_ARGS=()
 HAS_SERVER_URL=false
 HAS_WORKFLOW=false
@@ -125,6 +123,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --agent)
             FORWARD_ARGS+=("--agent" "$2")
+            shift 2
+            ;;
+        --output-dir)
+            FORWARD_ARGS+=("--output-dir" "$2")
             shift 2
             ;;
         --server-no-auto-start)
