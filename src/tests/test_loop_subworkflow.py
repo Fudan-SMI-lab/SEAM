@@ -9,7 +9,7 @@ from core.workflow_executor import WorkflowExecutor
 
 
 def write_runtime_skill(root: Path, name: str, content: str | None = None) -> Path:
-    skill_dir = root / "skills" / name
+    skill_dir = root / ".memory" / "skills" / name
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
     skill_path.write_text(content or f"# {name}\n\nUse this guidance.", encoding="utf-8")
@@ -81,6 +81,10 @@ class TestLoopSubworkflow:
         assert mini.params == {"operation": "stagnation_check"}
 
     def test_loop_phase_runs_max_iterations(self, loop_workflow, temp_dir):
+        loop_workflow.sub_workflows["repair_loop"].stagnation_threshold = 99
+        loop_workflow.sub_workflows["repair_loop"].stop_conditions = [
+            {"condition": "$.script_exit_code == 0", "status": "success"},
+        ]
         session_mgr = MagicMock()
         artifact_store = MagicMock()
         prompt_loader = MagicMock()
