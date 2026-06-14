@@ -31,8 +31,14 @@ candidate_workflows:
     description: "PPU migration recommended when the project has custom CUDA operators"
   - path: "ppu_general.yaml"
     description: "PPU migration recommended for most situations, or when the project type is unclear"
-  - path: "npu_migration_v2.yaml"
-    description: "Ascend NPU migration (CUDA -> Ascend)"
+  - path: "npu_ascend_vllm.yaml"
+    description: "Ascend NPU migration recommended when the project uses vLLM, and also acceptable for normal Ascend NPU cases"
+  - path: "npu_ascend_sglang.yaml"
+    description: "Ascend NPU migration recommended when the project uses SGLang, and also acceptable for normal Ascend NPU cases"
+  - path: "npu_ascend_custom_op.yaml"
+    description: "Ascend NPU migration recommended when the project has custom CUDA operators"
+  - path: "npu_ascend_general.yaml"
+    description: "Ascend NPU migration recommended for most situations, or when the project type is unclear"
 overrides:
   execution_backend:
     mode: auto

@@ -347,6 +347,7 @@ def build_v3_summary(
 
 
 def _build_project_context(project_dir: Path) -> dict[str, object]:
+    project_dir = project_dir.resolve()
     setup_py = project_dir / "setup.py"
     setup_cfg = project_dir / "setup.cfg"
     pyproject_toml = project_dir / "pyproject.toml"

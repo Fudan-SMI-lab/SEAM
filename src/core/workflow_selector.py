@@ -651,10 +651,14 @@ def _format_project_summary(project_context: dict[str, Any]) -> str:
         return "(No project context provided — make your best guess based on workflow descriptions alone.)"
 
     # Start with a project name / path if available
-    project_name = project_context.get("project_name", project_context.get("project_path", ""))
+    project_path = project_context.get("project_path", "")
+    project_name = project_context.get("project_name", project_path)
     lines: list[str] = []
     if project_name:
         lines.append(f"**Project**: {project_name}")
+    if project_path:
+        absolute_project_path = Path(str(project_path)).expanduser().resolve()
+        lines.append(f"**Absolute Project Path**: {absolute_project_path}")
 
     # Project language / framework hints
     language = project_context.get("language", project_context.get("primary_language", ""))
