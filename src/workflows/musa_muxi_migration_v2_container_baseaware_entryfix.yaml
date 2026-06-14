@@ -83,6 +83,9 @@ agents:
   operator_fixer:
     role: "operator_fixer"
     lifecycle: "persistent"
+  final_gate_report_fixer:
+    role: "final_gate_report_fixer"
+    lifecycle: "persistent"
 
 hooks:
   workflow_start:
@@ -272,6 +275,7 @@ sub_workflows:
           dependency_fixer: fix_dependency
           code_adapter: fix_code
           operator_fixer: fix_operator
+          final_gate_report_fixer: fix_report
 
       - id: fix_dependency
         condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
@@ -290,6 +294,12 @@ sub_workflows:
         type: llm
         agent: operator_fixer
         prompt_template: "repair_operator_fixer_container_musa"
+
+      - id: fix_report
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: final_gate_report_fixer
+        prompt_template: "repair_final_gate_report_fixer_container_musa"
 
       - id: review_gate
         type: review
@@ -323,6 +333,7 @@ sub_workflows:
               dependency_fixer: imp_fix_dependency
               code_adapter: imp_fix_code
               operator_fixer: imp_fix_operator
+              final_gate_report_fixer: imp_fix_report
 
           - id: imp_fix_dependency
             condition: "$.review_verdict_status is defined or true"
@@ -341,3 +352,9 @@ sub_workflows:
             type: llm
             agent: operator_fixer
             prompt_template: "repair_operator_fixer_container_musa"
+
+          - id: imp_fix_report
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: final_gate_report_fixer
+            prompt_template: "repair_final_gate_report_fixer_container_musa"

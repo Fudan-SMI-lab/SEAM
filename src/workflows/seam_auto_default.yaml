@@ -1,0 +1,52 @@
+# SEAM Auto-Default Meta-YAML — Workflow Selector
+#
+# This is the default workflow selector for run_seam.sh.
+# The "build" agent inspects the project and runtime environment,
+# then selects the best candidate workflow for the current platform.
+#
+# Overrides enforce production-appropriate defaults:
+#   - execution_backend.mode: auto → runtime/container availability checks
+#   - experience features disabled for reproducibility
+#   - review gate disabled, max_repair_iterations: 8
+
+kind: workflow_selector
+name: "seam-auto-default"
+description: "Production auto-select workflow for SEAM multi-platform migration"
+selector:
+  agent: "build"
+candidate_workflows:
+  - path: "musa_muxi_vllm.yaml"
+    description: "MUSA/Muxi migration recommended when the project uses vLLM, and also acceptable for normal MUSA/Muxi cases"
+  - path: "musa_muxi_sglang.yaml"
+    description: "MUSA/Muxi migration recommended when the project uses SGLang"
+  - path: "musa_muxi_custom_op.yaml"
+    description: "MUSA/Muxi migration recommended when the project has custom CUDA operators"
+  - path: "musa_muxi_general.yaml"
+    description: "MUSA/Muxi migration recommended for most situations, or when the project type is unclear"
+  - path: "ppu_vllm.yaml"
+    description: "PPU migration recommended when the project uses vLLM, and also acceptable for normal PPU cases"
+  - path: "ppu_sglang.yaml"
+    description: "PPU migration recommended when the project uses SGLang"
+  - path: "ppu_custom_op.yaml"
+    description: "PPU migration recommended when the project has custom CUDA operators"
+  - path: "ppu_general.yaml"
+    description: "PPU migration recommended for most situations, or when the project type is unclear"
+  - path: "npu_ascend_vllm.yaml"
+    description: "Ascend NPU migration recommended when the project uses vLLM, and also acceptable for normal Ascend NPU cases"
+  - path: "npu_ascend_sglang.yaml"
+    description: "Ascend NPU migration recommended when the project uses SGLang, and also acceptable for normal Ascend NPU cases"
+  - path: "npu_ascend_custom_op.yaml"
+    description: "Ascend NPU migration recommended when the project has custom CUDA operators"
+  - path: "npu_ascend_general.yaml"
+    description: "Ascend NPU migration recommended for most situations, or when the project type is unclear"
+overrides:
+  execution_backend:
+    mode: auto
+  experience:
+    enabled: false
+    memory_enabled: false
+    phase7_enabled: false
+  globals:
+    max_repair_iterations: 8
+    review_gate_enabled: false
+    max_review_iterations: 2

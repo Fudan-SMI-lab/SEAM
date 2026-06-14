@@ -96,13 +96,38 @@ def is_selector_file(path: str | Path) -> bool:
     return is_selector_yaml(raw)
 
 
+def selector_resolution_metadata_path(materialized_path: str | Path) -> Path:
+    p = Path(materialized_path)
+    return p.with_name(f"{p.name}.selector.json")
+
+
+def read_selector_resolution_metadata(
+    materialized_path: str | Path,
+) -> dict[str, str] | None:
+    metadata_path = selector_resolution_metadata_path(materialized_path)
+    if not metadata_path.exists():
+        return None
+    try:
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    required = ("selector_path", "selected_path", "materialized_path")
+    if not all(isinstance(raw.get(key), str) and raw.get(key) for key in required):
+        return None
+    return {key: str(raw[key]) for key in required}
+
+
 def resolve_workflow_from_selector(
     selector_path: str,
     session_mgr: Any,
     prompt_loader: Any,
     *,
     project_context: dict[str, Any] | None = None,
+    user_constraints: str = "",
     output_dir: str | Path = ".",
+    telemetry: Any = None,
 ) -> Path:
     """Parse a selector YAML, pick a candidate, apply overrides, materialize.
 
@@ -114,9 +139,15 @@ def resolve_workflow_from_selector(
         project_context: Lightweight dictionary describing the project (paths,
                          language hints, framework hints, etc.).  Not a full
                          source dump.
+        user_constraints: Raw user-provided constraints to expose to the
+                          selector prompt. No preprocessing or summarization is
+                          performed.
         output_dir: Directory where the materialized merged workflow YAML
                     is written.  A ``resolved_workflows/`` subdirectory
                     is created inside *output_dir*.
+        telemetry: Optional observer with ``record_event(event_type, **details)``
+                   for diagnostic event recording.  Duck-typed; safe to pass
+                   None or any object without ``record_event``.
 
     Returns:
         Path to the materialized workflow YAML, ready for ``load_workflow()``.
@@ -170,6 +201,8 @@ def resolve_workflow_from_selector(
         fallback=effective_fallback,
         selector_path=selector_path,
         selector_config=selector_cfg,
+        user_constraints=user_constraints,
+        telemetry=telemetry,
     )
 
     # Load the selected workflow YAML
@@ -195,9 +228,15 @@ def resolve_workflow_from_selector(
         output_dir=Path(output_dir),
     )
 
+    _write_selector_resolution_metadata(
+        selector_path=selector_abs,
+        selected_path=selected_path,
+        materialized_path=materialized_path,
+    )
+
     logger.info(
         "Workflow selector resolved: %s → %s → %s",
-        selector_path,
+        selector_abs,
         selected_path,
         materialized_path,
     )
@@ -308,6 +347,42 @@ def _resolve_candidate_path(
     )
 
 
+def _safe_truncate(text: str, limit: int = 500) -> str:
+    """Truncate *text* to *limit* chars, appending '…' if truncated."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
+def _record_event(telemetry: Any, event_type: str, **details: object) -> None:
+    """Call ``telemetry.record_event(event_type, **details)`` if the
+    *telemetry* object supports it.  Duck-typed; no-op otherwise."""
+    recorder = getattr(telemetry, "record_event", None)
+    if callable(recorder):
+        try:
+            recorder(event_type, **details)
+        except Exception:
+            pass  # never let telemetry errors break selection
+
+
+def _write_selector_resolution_metadata(
+    *,
+    selector_path: Path,
+    selected_path: Path,
+    materialized_path: Path,
+) -> None:
+    metadata_path = selector_resolution_metadata_path(materialized_path)
+    payload = {
+        "selector_path": str(selector_path),
+        "selected_path": str(selected_path),
+        "materialized_path": str(materialized_path),
+    }
+    metadata_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def _select_workflow_via_agent(
     *,
     candidates: list[dict[str, Any]],
@@ -318,8 +393,15 @@ def _select_workflow_via_agent(
     fallback: str | None,
     selector_path: str,
     selector_config: dict[str, Any] | None = None,
+    user_constraints: str = "",
+    telemetry: Any = None,
 ) -> Path:
-    """Ask an agent to pick a candidate; fall back when output is invalid."""
+    """Ask an agent to pick a candidate; fall back when output is invalid.
+
+    If *telemetry* provides ``record_event(event_type, **details)``, key
+    selection events are recorded for diagnostics (prompt sent, response
+    received, workflow selected, exceptions, and fallback decisions).
+    """
     from harness.session.manager import extract_json_response
 
     if selector_config is None:
@@ -347,6 +429,7 @@ def _select_workflow_via_agent(
             "selector_name": selector_name,
             "candidate_workflows": candidates_text,
             "project_context": project_summary,
+            "user_constraints": user_constraints or "",
         },
     )
 
@@ -384,29 +467,77 @@ def _select_workflow_via_agent(
             )
 
     # Send prompt and parse
+    _record_event(
+        telemetry,
+        "selector_prompt_sent",
+        prompt_length=len(prompt_text),
+        selector_name=selector_name,
+        selector_agent=selector_agent or None,
+        candidate_count=len(candidates),
+    )
+
+    raw_response: str | None = None
+    agent_exception: Exception | None = None
+
     try:
         cmd_kwargs: dict[str, Any] = {"timeout": selector_timeout}
         if selector_agent:
             cmd_kwargs["agent"] = selector_agent
         raw_response = session_mgr.send_command(sid, prompt_text, **cmd_kwargs)
-        parsed = extract_json_response(raw_response)
-        selected_raw = _validate_agent_selection(parsed, candidates, selector_path)
-        if selected_raw:
-            return selected_raw
     except TypeError:
         # Fake session manager doesn't support agent kwarg.
         raw_response = session_mgr.send_command(sid, prompt_text, timeout=selector_timeout)
-        parsed = extract_json_response(raw_response)
-        selected_raw = _validate_agent_selection(parsed, candidates, selector_path)
-        if selected_raw:
-            return selected_raw
     except Exception as exc:
+        agent_exception = exc
+        _record_event(
+            telemetry,
+            "selector_agent_exception",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            selector_name=selector_name,
+        )
         logger.warning(
             "Agent workflow selection failed for '%s': %s", selector_path, exc
         )
 
+    if raw_response is not None:
+        _record_event(
+            telemetry,
+            "selector_response_received",
+            response_length=len(raw_response),
+            response_preview=_safe_truncate(raw_response, 500),
+            selector_name=selector_name,
+        )
+        parsed = extract_json_response(raw_response)
+        selected_raw = _validate_agent_selection(parsed, candidates, selector_path)
+        if selected_raw:
+            _record_event(
+                telemetry,
+                "selector_workflow_selected",
+                selected_path=str(selected_raw),
+                selector_name=selector_name,
+            )
+            logger.info(
+                "Selector '%s' agent selected workflow: %s",
+                selector_name,
+                selected_raw,
+            )
+            return selected_raw
+
     # Fallback path
-    return _resolve_fallback(fallback, candidates, selector_path)
+    fallback_reason = (
+        str(agent_exception)
+        if agent_exception
+        else "agent returned invalid or unparseable output"
+    )
+    return _resolve_fallback_with_telemetry(
+        fallback=fallback,
+        candidates=candidates,
+        selector_path=selector_path,
+        reason=fallback_reason,
+        telemetry=telemetry,
+        selector_name=selector_name,
+    )
 
 
 def _validate_agent_selection(
@@ -452,6 +583,39 @@ def _validate_agent_selection(
     return None
 
 
+def _resolve_fallback_with_telemetry(
+    *,
+    fallback: str | None,
+    candidates: list[dict[str, Any]],
+    selector_path: str,
+    reason: str,
+    telemetry: Any,
+    selector_name: str,
+) -> Path:
+    """Call ``_resolve_fallback`` with telemetry recording for the fallback decision."""
+    if not fallback:
+        _record_event(
+            telemetry,
+            "selector_no_fallback_configured",
+            selector_name=selector_name,
+            selector_path=selector_path,
+            reason=reason,
+        )
+        raise ValueError(
+            f"Agent workflow selection failed for selector '{selector_path}' and "
+            f"no 'fallback' is configured.  Either ensure the agent can respond "
+            f"correctly or set a fallback in the selector YAML."
+        )
+    _record_event(
+        telemetry,
+        "selector_fallback_triggered",
+        fallback=fallback,
+        reason=reason,
+        selector_name=selector_name,
+    )
+    return _resolve_fallback(fallback, candidates, selector_path)
+
+
 def _resolve_fallback(
     fallback: str | None,
     candidates: list[dict[str, Any]],
@@ -487,10 +651,14 @@ def _format_project_summary(project_context: dict[str, Any]) -> str:
         return "(No project context provided — make your best guess based on workflow descriptions alone.)"
 
     # Start with a project name / path if available
-    project_name = project_context.get("project_name", project_context.get("project_path", ""))
+    project_path = project_context.get("project_path", "")
+    project_name = project_context.get("project_name", project_path)
     lines: list[str] = []
     if project_name:
         lines.append(f"**Project**: {project_name}")
+    if project_path:
+        absolute_project_path = Path(str(project_path)).expanduser().resolve()
+        lines.append(f"**Absolute Project Path**: {absolute_project_path}")
 
     # Project language / framework hints
     language = project_context.get("language", project_context.get("primary_language", ""))

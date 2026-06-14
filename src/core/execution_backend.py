@@ -56,6 +56,9 @@ class ExecutionBackend(Protocol):
     def probe_environment(self) -> dict[str, Any]:
         ...
 
+    def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
+        ...
+
 
 class LocalBackend:
     """subprocess-backed implementation matching existing SEAM behaviour."""
@@ -102,6 +105,9 @@ class LocalBackend:
 
     def probe_environment(self) -> dict[str, Any]:
         return {"status": "local", "error": "probe not applicable in local mode"}
+
+    def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
+        raise RuntimeError("Execution environment reset is only supported for image-backed container backends")
 
     def get_execution_context(
         self,
@@ -218,7 +224,12 @@ class ContainerBackend:
 
     def _ensure_container(self) -> str:
         if self._container_id:
-            return self._container_id
+            if self._revalidate_container():
+                return self._container_id
+            # For source=image, _revalidate_container() cleared _container_id
+            # and _initialized; fall through to recreate.
+            # For source=existing_container, _revalidate_container() raised
+            # ContainerNotFoundError or ContainerNotRunningError.
         if self.config.source == "existing_container":
             self._check_existing_container()
             assert self._container_id is not None
@@ -226,6 +237,48 @@ class ContainerBackend:
         self._create_container_from_image()
         assert self._container_id is not None
         return self._container_id
+
+    def _revalidate_container(self) -> bool:
+        """Inspect the cached container before reuse.
+
+        Returns True if the container is running and can be reused.
+
+        For ``source=image``: if the container is missing or not running,
+        clears ``_container_id`` and ``_initialized``, then returns False
+        so ``_ensure_container()`` recreates it.
+
+        For ``source=existing_container``: raises ``ContainerNotFoundError``
+        or ``ContainerNotRunningError``.  Never attempts to recreate a
+        user-owned container.
+        """
+        cid = self._container_id
+        assert cid is not None  # guarded by caller
+        result = subprocess.run(
+            [self._runtime_cmd, "inspect", "--format", "{{.State.Status}}", cid],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            if self.config.source == "existing_container":
+                raise ContainerNotFoundError(
+                    f"Cached container '{cid}' no longer exists. {result.stderr.strip()}"
+                )
+            logger.warning("Cached container '%s' not found — will recreate", cid)
+            self._container_id = None
+            self._initialized = False
+            return False
+
+        status = result.stdout.strip()
+        if status != "running":
+            if self.config.source == "existing_container":
+                raise ContainerNotRunningError(
+                    f"Cached container '{cid}' status is '{status}', expected 'running'"
+                )
+            logger.warning("Cached container '%s' status is '%s' — will recreate", cid, status)
+            self._container_id = None
+            self._initialized = False
+            return False
+
+        return True
 
     def _create_selected_container(self, image_name: str) -> None:
         """Create a container from a specific image chosen by auto-selection.
@@ -237,6 +290,122 @@ class ContainerBackend:
         """
         self.config.image = image_name
         self._create_container_from_image()
+
+    def _inspect_container(self, container_id: str) -> dict[str, Any]:
+        result = subprocess.run(
+            [self._runtime_cmd, "inspect", container_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            raise ContainerNotFoundError(
+                f"Container '{container_id}' not found. {result.stderr.strip()}"
+            )
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Container inspect output was not valid JSON: {exc}") from exc
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0]
+        if isinstance(data, dict):
+            return data
+        raise RuntimeError("Container inspect output did not describe a container")
+
+    def _verify_framework_owned_image_container(self, container_id: str) -> dict[str, Any]:
+        inspect_data = self._inspect_container(container_id)
+        name = str(inspect_data.get("Name") or "").lstrip("/")
+        prefix = str(self.config.container_name_prefix or "")
+        if prefix and name and not name.startswith(f"{prefix}-"):
+            raise RuntimeError(
+                f"Refusing to reset container '{container_id}': name '{name}' does not match framework prefix '{prefix}-'"
+            )
+
+        config_data = inspect_data.get("Config") if isinstance(inspect_data.get("Config"), dict) else {}
+        inspected_image = str(config_data.get("Image") or "")
+        candidates = set(self._resolve_candidate_images())
+        if inspected_image and candidates and inspected_image not in candidates:
+            raise RuntimeError(
+                f"Refusing to reset container '{container_id}': image '{inspected_image}' is not one of configured images"
+            )
+
+        if self._host_project_dir:
+            expected_source = str(Path(self._host_project_dir).resolve())
+            expected_dest = str(self.config.container_workdir).rstrip("/")
+            mounts = inspect_data.get("Mounts") if isinstance(inspect_data.get("Mounts"), list) else []
+            matching_mount = False
+            for mount in mounts:
+                if not isinstance(mount, dict):
+                    continue
+                source = str(mount.get("Source") or "")
+                destination = str(mount.get("Destination") or "").rstrip("/")
+                try:
+                    source = str(Path(source).resolve()) if source else source
+                except OSError:
+                    pass
+                if source == expected_source and destination == expected_dest:
+                    matching_mount = True
+                    break
+            if mounts and not matching_mount:
+                raise RuntimeError(
+                    f"Refusing to reset container '{container_id}': expected project mount {expected_source}:{expected_dest} not found"
+                )
+
+        working_dir = str(config_data.get("WorkingDir") or "")
+        if working_dir and working_dir.rstrip("/") != str(self.config.container_workdir).rstrip("/"):
+            raise RuntimeError(
+                f"Refusing to reset container '{container_id}': workdir '{working_dir}' does not match '{self.config.container_workdir}'"
+            )
+        return inspect_data
+
+    def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
+        if self.config.source != "image":
+            raise RuntimeError("Execution environment reset is only supported for source=image containers")
+        old_container_id = self._container_id
+        if not old_container_id:
+            raise RuntimeError("Execution environment reset requires an existing framework-created container id")
+
+        inspect_data = self._verify_framework_owned_image_container(old_container_id)
+        config_data = inspect_data.get("Config") if isinstance(inspect_data.get("Config"), dict) else {}
+        image = str(config_data.get("Image") or self.config.image or "")
+
+        stop_result = subprocess.run(
+            [self._runtime_cmd, "stop", old_container_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        if stop_result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to stop container '{old_container_id}' before reset: {stop_result.stderr.strip()}"
+            )
+        rm_result = subprocess.run(
+            [self._runtime_cmd, "rm", old_container_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        if rm_result.returncode != 0:
+            rm_err = rm_result.stderr.strip()
+            if not (self.config.cleanup and ("No such" in rm_err or "not found" in rm_err.lower())):
+                raise RuntimeError(
+                    f"Failed to remove container '{old_container_id}' before reset: {rm_err}"
+                )
+
+        self._container_id = None
+        self._initialized = False
+        self._create_container_from_image()
+        assert self._container_id is not None
+        return {
+            "old_container_id": old_container_id,
+            "new_container_id": self._container_id,
+            "source": self.config.source,
+            "image": image or self.config.image or "",
+            "reason": reason,
+            "preserved_notes": [
+                "host project directory remains mounted into the recreated container",
+                "entry script command and workflow state are preserved by the executor",
+                "configured devices, env vars, network mode, runtime flags, and volumes are reused",
+            ],
+            "lost_notes": [
+                "in-container package installs and edits outside mounted volumes are discarded",
+                "process state from the old container is discarded",
+            ],
+        }
 
     def _do_create_container(self, image_name: str) -> None:
         """Create a single container from a specific image name."""
@@ -262,7 +431,12 @@ class ContainerBackend:
 
         cmd.extend([image_name, "tail", "-f", "/dev/null"])
 
-        logger.info("Container create: %s", " ".join(cmd[:6]))
+        logger.info(
+            "Container create attempt: runtime=%s name=%s image=%s",
+            self._runtime_cmd,
+            cname,
+            image_name,
+        )
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
             raise RuntimeError(

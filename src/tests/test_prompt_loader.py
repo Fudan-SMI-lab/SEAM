@@ -166,6 +166,35 @@ def test_empty_user_constraints_strip_phase_sections():
     assert "{user_constraints}" not in phase_1_5_empty
 
 
+def test_workflow_select_user_constraints_section_is_optional():
+    loader = PromptLoader()
+
+    populated = loader.load_prompt(
+        "workflow_select",
+        context={
+            "project_context": "Project: /tmp/project",
+            "candidate_workflows": "1. workflow.yaml",
+            "user_constraints": "Prefer the smallest compatible workflow.",
+        },
+    )
+    assert "User-Provided Constraints (for awareness)" in populated
+    assert "Prefer the smallest compatible workflow." in populated
+    assert "same currently detected platform/environment" in populated
+
+    empty = loader.load_prompt(
+        "workflow_select",
+        context={
+            "project_context": "Project: /tmp/project",
+            "candidate_workflows": "1. workflow.yaml",
+            "user_constraints": "",
+        },
+    )
+    assert "User-Provided Constraints (for awareness)" not in empty
+    assert "Prefer the smallest compatible workflow." not in empty
+    assert "{user_constraints}" not in empty
+    assert "## Candidate Workflows" in empty
+
+
 def test_default_prompts_dir():
     loader = PromptLoader()
     assert "prompts" in str(loader.prompts_dir)

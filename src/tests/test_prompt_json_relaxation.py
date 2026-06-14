@@ -18,6 +18,23 @@ PHASE_PROMPT_FILES = [
     "phase_6_report.md",
 ]
 
+PHASE3_ENTRY_PROMPT_FILES = [
+    "phase_3_entry_script.md",
+    "phase_3_entry_script_ppu.md",
+    "phase_3_entry_script_ppu_normal_entry_057.md",
+    "phase_3_entry_script_ppu_container_baseaware.md",
+    "phase_3_entry_script_ppu_container_baseaware_entryfix.md",
+    "phase_3_entry_script_musa_container_baseaware_entryfix.md",
+    "phase_3_entry_script_musa_container_baseaware_entryfix_normal.md",
+]
+
+ENTRY_SCRIPT_CHILD_OUTPUT_GUIDANCE = (
+    "If a generated/wrapper script launches child processes, it must drain and capture child stdout/stderr before exiting"
+)
+ENTRY_SCRIPT_FAILURE_SUMMARY_GUIDANCE = (
+    "On failure, generated/wrapper scripts must print a concise diagnostic summary to stderr"
+)
+
 OLD_CONSTRAINT = "must be valid JSON only, with no markdown fence"
 NEW_CONSTRAINT = "reason freely"
 
@@ -108,6 +125,20 @@ def test_phase3_and_phase5_prompts_require_complete_performance_report_closure()
     assert "overall_all_units_replaced" in phase5
 
 
+def test_phase3_prompts_require_generic_child_output_failure_summaries():
+    for filename in PHASE3_ENTRY_PROMPT_FILES:
+        content = (PROMPTS_DIR / filename).read_text()
+        assert ENTRY_SCRIPT_CHILD_OUTPUT_GUIDANCE in content, f"{filename} missing child output drain guidance"
+        assert ENTRY_SCRIPT_FAILURE_SUMMARY_GUIDANCE in content, f"{filename} missing stderr failure summary guidance"
+
+    new_guidance = ENTRY_SCRIPT_CHILD_OUTPUT_GUIDANCE + ENTRY_SCRIPT_FAILURE_SUMMARY_GUIDANCE
+    forbidden_terms = (
+        "GLM-OCR", "MinerU", "Deepwave", "vLLM", "SGLang", "MUSA", "PPU", "NPU", "Ascend",
+    )
+    for term in forbidden_terms:
+        assert term not in new_guidance
+
+
 def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline_rules():
     expectations = {
         "phase_error_recovery.md": ("{workspace_root}/docs/cuda_custom_op_skill_test_prompt.md", "第2、3、5、6点要求"),
@@ -131,7 +162,7 @@ def test_repair_prompts_use_portable_skill_prompt_references_without_full_inline
 
 
 def test_root_custom_op_skill_prompt_is_owned_by_execution_root():
-    prompt_path = EXECUTION_ROOT / "docs" / "cuda_custom_op_skill_test_prompt.md"
+    prompt_path = EXECUTION_ROOT / "docs" / "dev_examples" / "开发时思路示例文档_skill的prompt.md"
     content = prompt_path.read_text(encoding="utf-8")
 
     assert prompt_path.is_file()

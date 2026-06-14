@@ -55,7 +55,9 @@ Stop and report `operator_fixer` if the issue is native `.so`, compiler, kernel,
 - Only modify files directly related to the failure.
 
 ## Verification
-Run the framework-provided command with a timeout. If it succeeds, summarize accelerator evidence. If the next failure is out of scope, stop and report the correct role.
+- Inspect `latest_complete_stdout_artifact_path`, `latest_complete_stderr_artifact_path`, and `latest_complete_meta_artifact_path` when populated; prefer complete stdout/stderr over truncated summaries.
+- After each in-scope Python-level source or launch-logic fix, run `actual_execution_command` with a timeout. If the next complete artifacts show another code-adapter failure, fix and rerun.
+- If the next complete artifacts show only an out-of-scope dependency, environment, native, compiler, shared-object, or final-gate evidence failure, stop and report the handoff role and reason.
 
 ## Output Format
 Return a JSON code block with this shape:

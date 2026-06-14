@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import json
 import os
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -11,6 +13,7 @@ import pytest
 
 from core.types import ExecutionBackendConfig, WorkflowDefinition, PhaseDefinition
 from core.config import load_workflow
+from core.prompt_loader import PromptLoader
 from core.execution_backend import (
     ContainerBackend,
     ContainerNotFoundError,
@@ -304,9 +307,10 @@ class TestContainerBackendImage:
 
     @patch("subprocess.run")
     def test_exec_command_string(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="ok\n", stderr="", stdout_bytes=b""
-        )
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="ok\n", stderr=""),
+        ]
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
@@ -316,7 +320,7 @@ class TestContainerBackendImage:
         result = backend.run("echo hello")
         assert result.exit_code == 0
         assert result.stdout == "ok\n"
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_run.call_args_list[1][0][0]
         assert "docker" == cmd[0]
         assert "exec" == cmd[1]
         assert "-i" in cmd
@@ -926,7 +930,6 @@ class TestWorkflowExecutorCleanup:
             backend.cleanup()  # should log warning, not raise
 
     def test_backend_cleanup_logged_warning_on_failure(self, tmp_path: Path, caplog):
-        import logging
         caplog.set_level(logging.ERROR, logger="core.workflow_executor")
 
         mock_backend = MagicMock()
@@ -1016,7 +1019,10 @@ class TestContainerBackendHostPathRewriting:
 
     @patch("subprocess.run")
     def test_run_list_command_rewrites_host_paths(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="ok\n", stderr=""),
+        ]
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "x", "container_workdir": "/workspace"}
         )
@@ -1026,7 +1032,7 @@ class TestContainerBackendHostPathRewriting:
         backend.set_project_dir("/tmp/proj")
 
         _ = backend.run(["python", "/tmp/proj/smoke_validate.py"])
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_run.call_args_list[1][0][0]
 
         assert "docker" == cmd[0]
         assert "exec" == cmd[1]
@@ -1147,7 +1153,10 @@ class TestContainerBackendPreflight:
 
     @patch("subprocess.run")
     def test_preflight_is_idempotent(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="cid-idem\n", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="cid-idem\n", stderr=""),
+            MagicMock(returncode=0, stdout="running\n", stderr=""),
+        ]
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
@@ -1155,7 +1164,7 @@ class TestContainerBackendPreflight:
         backend.set_project_dir("/tmp/proj")
         backend.preflight()
         backend.preflight()
-        # Should only call subprocess.run once (for initial creation)
+        # Should only call subprocess.run once for creation, once for inspect
         create_calls = [
             c for c in mock_run.call_args_list
             if "run" in c[0][0] and "-d" in c[0][0]
@@ -1172,6 +1181,7 @@ class TestContainerBackendPreflight:
         backend.set_project_dir("/tmp/proj")
         backend.preflight()
         mock_run.reset_mock()
+        mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
         _ = backend.run("echo test")
         # No second container creation
         create_calls = [
@@ -1192,6 +1202,225 @@ class TestContainerBackendPreflight:
         backend.set_project_dir("/tmp/proj")
         with pytest.raises(RuntimeError, match="Failed to create container"):
             backend.preflight()
+
+
+# ── ContainerBackend: cached container liveness revalidation ───────────
+
+
+class TestContainerBackendLivenessRevalidation:
+    @patch("subprocess.run")
+    def test_cached_image_container_running_no_recreate(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "c1"
+        backend._initialized = True
+
+        cid = backend._ensure_container()
+        assert cid == "c1"
+        assert backend._container_id == "c1"
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert "inspect" in call_args
+        assert "c1" in call_args
+
+    @patch("subprocess.run")
+    def test_cached_image_container_exited_recreates(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="exited\n", stderr=""),
+            MagicMock(returncode=0, stdout="new-cid\n", stderr=""),
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+        backend._initialized = True
+
+        cid = backend._ensure_container()
+        assert cid == "new-cid"
+        assert mock_run.call_count == 2
+        # First call: inspect exited container
+        inspect_call = mock_run.call_args_list[0][0][0]
+        assert "inspect" in inspect_call
+        assert "old-cid" in inspect_call
+        # Second call: docker run -d to recreate
+        create_call = mock_run.call_args_list[1][0][0]
+        assert "run" in create_call
+        assert "-d" in create_call
+
+    @patch("subprocess.run")
+    def test_cached_image_container_missing_recreates(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout="", stderr="No such container"),
+            MagicMock(returncode=0, stdout="fresh-cid\n", stderr=""),
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "ghost-cid"
+        backend._initialized = True
+
+        cid = backend._ensure_container()
+        assert cid == "fresh-cid"
+        assert mock_run.call_count == 2
+        # After recreate, old state is cleared
+        assert backend._container_id == "fresh-cid"
+        assert backend._initialized is True
+
+    @patch("subprocess.run")
+    def test_cached_existing_not_found_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="No such container"
+        )
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "my-dev-01",
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "my-dev-01"
+        backend._initialized = True
+
+        with pytest.raises(ContainerNotFoundError, match="my-dev-01"):
+            backend._ensure_container()
+
+    @patch("subprocess.run")
+    def test_cached_existing_exited_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="exited\n", stderr=""
+        )
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "my-dev-01",
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "my-dev-01"
+        backend._initialized = True
+
+        with pytest.raises(ContainerNotRunningError, match="exited"):
+            backend._ensure_container()
+
+    @patch("subprocess.run")
+    def test_run_revalidates_then_execs(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="running\n", stderr=""),   # inspect
+            MagicMock(returncode=0, stdout="hello\n", stderr=""),      # exec
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "c1"
+        backend._initialized = True
+
+        result = backend.run("echo hello")
+        assert result.exit_code == 0
+        assert result.stdout == "hello\n"
+        assert mock_run.call_count == 2
+        # First call: inspect
+        call1 = mock_run.call_args_list[0][0][0]
+        assert "inspect" in call1
+        assert "c1" in call1
+        # Second call: exec
+        call2 = mock_run.call_args_list[1][0][0]
+        assert "exec" in call2
+        assert "c1" in call2
+
+
+class TestContainerBackendEnvironmentReset:
+    @patch("subprocess.run")
+    def test_image_reset_updates_container_id_and_reuses_config(self, mock_run):
+        inspect_payload = [{
+            "Name": "/seam-migration-123",
+            "Config": {"Image": "test:latest", "WorkingDir": ""},
+            "Mounts": [{"Source": "/tmp/proj", "Destination": "/workspace"}],
+        }]
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(inspect_payload), stderr=""),
+            MagicMock(returncode=0, stdout="old stopped\n", stderr=""),
+            MagicMock(returncode=0, stdout="old removed\n", stderr=""),
+            MagicMock(returncode=0, stdout="new-cid\n", stderr=""),
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "image",
+                "image": "test:latest",
+                "devices": ["/dev/accel"],
+                "volumes": ["/cache:/cache:rw"],
+                "env_vars": {"FOO": "bar"},
+                "network_mode": "host",
+                "runtime_flags": ["--ipc=host"],
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+        backend._initialized = True
+
+        metadata = backend.recreate_execution_environment(reason="vendor torch polluted")
+
+        assert backend._container_id == "new-cid"
+        assert metadata["old_container_id"] == "old-cid"
+        assert metadata["new_container_id"] == "new-cid"
+        assert metadata["source"] == "image"
+        assert metadata["image"] == "test:latest"
+        assert "package installs" in " ".join(metadata["lost_notes"])
+        create_call = mock_run.call_args_list[-1][0][0]
+        assert create_call[:3] == ["docker", "run", "-d"]
+        assert "test:latest" in create_call
+        assert "/tmp/proj:/workspace:rw" in create_call
+        assert "/dev/accel" in create_call
+        assert "/cache:/cache:rw" in create_call
+        assert "FOO=bar" in create_call
+        assert "host" in create_call
+        assert "--ipc=host" in create_call
+
+    @patch("subprocess.run")
+    def test_existing_container_reset_is_rejected(self, mock_run):
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "user-container",
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "user-container"
+
+        with pytest.raises(RuntimeError, match="source=image"):
+            backend.recreate_execution_environment(reason="should not reset user container")
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_image_reset_rejects_unowned_container_name(self, mock_run):
+        inspect_payload = [{
+            "Name": "/user-owned",
+            "Config": {"Image": "test:latest"},
+            "Mounts": [{"Source": "/tmp/proj", "Destination": "/workspace"}],
+        }]
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(inspect_payload), stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "source": "image", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+
+        with pytest.raises(RuntimeError, match="does not match framework prefix"):
+            backend.recreate_execution_environment(reason="bad owner")
+        assert mock_run.call_count == 1
 
 
 # ── ContainerBackend: probe_environment ────────────────────────────────
@@ -1463,6 +1692,38 @@ class TestCandidateImageResolution:
 
 class TestSequentialCreateFallback:
     @patch("subprocess.run")
+    def test_logs_each_candidate_image_before_create(self, mock_run, caplog):
+        def side_effect(*args, **kwargs):
+            cmd = args[0]
+            if "first:1" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="pull failed")
+            return MagicMock(returncode=0, stdout="cid-2\n", stderr="")
+
+        caplog.set_level(logging.INFO, logger="core.execution_backend")
+        mock_run.side_effect = side_effect
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["first:1", "second:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+
+        backend._create_container_from_image()
+
+        messages = [record.message for record in caplog.records]
+        assert any(
+            "Container create attempt: runtime=docker" in msg
+            and " name=" in msg
+            and "image=first:1" in msg
+            for msg in messages
+        )
+        assert any(
+            "Container create attempt: runtime=docker" in msg
+            and " name=" in msg
+            and "image=second:2" in msg
+            for msg in messages
+        )
+
+    @patch("subprocess.run")
     def test_first_image_succeeds(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
         cfg = ExecutionBackendConfig.from_dict(
@@ -1639,7 +1900,7 @@ class TestAutoImageSelection:
 
         mock_session = MagicMock()
         mock_session.get_or_create.return_value = "sel-sid"
-        mock_session.send_command.return_value = self._mock_response("img-b:2")
+        mock_session.send_command.return_value = self._mock_response("img-c:3")
 
         mock_prompt_loader = MagicMock()
         mock_prompt_loader.load_prompt.return_value = "fake prompt"
@@ -1660,13 +1921,67 @@ class TestAutoImageSelection:
 
         assert executor.exec_backend is not None
         assert isinstance(executor.exec_backend, ContainerBackend)
-        assert executor.exec_backend.config.image == "img-b:2"
+        assert executor.exec_backend.config.image == "img-c:3"
+        assert executor.exec_backend.config.images == ["img-c:3", "img-a:1", "img-b:2"]
 
         # Verify the prompt loader was called with the candidates
         call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
         assert "img-a:1" in call_ctx["candidate_images"]
         assert "img-b:2" in call_ctx["candidate_images"]
         assert "img-c:3" in call_ctx["candidate_images"]
+        assert "Project and Runtime Context" in call_ctx["project_runtime_context"]
+        assert call_ctx["user_constraints_section"] == ""
+
+    @patch("subprocess.run")
+    def test_auto_select_prompt_includes_constraints_and_runtime_context(
+        self, mock_run, tmp_path,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("candidate-b")
+
+        prompt_loader = PromptLoader(ROOT / "prompts")
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "auto",
+                "images": ["candidate-a", "candidate-b"],
+                "container_workdir": "/workspace/project",
+                "env_vars": {"PROJECT_MODE": "do-not-render-value"},
+                "required_env_vars": ["RUNTIME_SETTING"],
+            }
+        )
+
+        workflow = WorkflowDefinition(
+            name="generic-selection-test", version="1.0", phases=[], terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session, MagicMock(), prompt_loader, MagicMock(),
+            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            user_constraints="Prefer a candidate with required runtime dependencies already available.",
+        )
+
+        assert executor.exec_backend is not None
+        sent_prompt = mock_session.send_command.call_args[0][1]
+        assert "## Project and Runtime Context" in sent_prompt
+        assert str(tmp_path) in sent_prompt
+        assert "generic-selection-test" in sent_prompt
+        assert "Container runtime" in sent_prompt
+        assert "PROJECT_MODE" in sent_prompt
+        assert "do-not-render-value" not in sent_prompt
+        assert "RUNTIME_SETTING" in sent_prompt
+        assert "## User-Provided Constraints" in sent_prompt
+        assert "Prefer a candidate with required runtime dependencies already available." in sent_prompt
+        assert "Before choosing, read and account for any project/runtime context" in sent_prompt
+        assert "user-provided constraints" in sent_prompt
+        assert "active refinement and ranking" in sent_prompt
+        assert "listed images only" in sent_prompt
+        assert "favor listed candidates that already provide those capabilities" in sent_prompt
+        assert "unverified installation in later phases" in sent_prompt
+        assert "User-provided constraints NEVER authorize selecting an image that is not listed." in sent_prompt
 
     @patch("subprocess.run")
     def test_auto_select_invalid_out_of_list_falls_back(
@@ -1737,6 +2052,7 @@ class TestAutoImageSelection:
         assert executor.exec_backend is not None
         assert isinstance(executor.exec_backend, ContainerBackend)
         assert executor.exec_backend.config.image == "local-hub:v2"
+        assert executor.exec_backend.config.images == ["local-hub:v2", "local-hub:v1"]
 
     @patch("subprocess.run")
     def test_auto_no_images_no_discovered_falls_back_to_local(
@@ -1799,6 +2115,7 @@ class TestAutoImageSelection:
 
         assert executor.exec_backend is not None
         assert executor.exec_backend.config.image == "img-b:2"
+        assert executor.exec_backend.config.images == ["img-b:2", "img-a:1"]
 
         call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
         assert "img-a:1" in call_ctx["candidate_images"]

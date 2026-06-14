@@ -42,12 +42,13 @@ Options:
   --server_url URL            Server base URL. Defaults to http://127.0.0.1:4098 if unset.
   --server-conflict-action ACTION
                               Port conflict behavior: prompt, start, or error (default: prompt)
-  --workflow PATH             Custom workflow YAML path (default: src/workflows/npu_migration_v2.yaml)
+  --workflow PATH             Custom workflow YAML path (default: src/workflows/seam_auto_default.yaml)
   --max-iter N                Max Phase 5 repair iterations (default: 8)
   --review                    Enable Review Gate (default: enabled)
   --no-review                 Disable Review Gate
   --no-keep-temp              Don't keep output project directory (default: keep)
   --agent NAME                Override auto-detected agent name
+  --output-dir DIR            Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --server-no-auto-start       Disable auto-start of OpenCode server
   --dry-run                   Validate paths without running migration
   --extra 'ARGS...'           Pass extra arguments to the E2E harness
@@ -55,7 +56,7 @@ Options:
   -h, --help                  Show this help message
 
 Platform Workflows:
-  Default NPU:   src/workflows/npu_migration_v2.yaml
+  Default Auto-Selector: src/workflows/seam_auto_default.yaml
   PPU Container: src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml
   PPU Auto-mode: src/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml
 
@@ -76,9 +77,6 @@ EOF
 }
 
 # ── Forward args to run_e2e_v3.sh, translating server_type/server_url/server_conflict ──
-# run_e2e_v3.sh accepts --server-url, --workflow, --max-iter, --review, --no-review,
-# --no-keep-temp, --agent, --server-no-auto-start, --dry-run, --extra, --verbose
-
 FORWARD_ARGS=()
 HAS_SERVER_URL=false
 HAS_WORKFLOW=false
@@ -127,6 +125,10 @@ while [[ $# -gt 0 ]]; do
             FORWARD_ARGS+=("--agent" "$2")
             shift 2
             ;;
+        --output-dir)
+            FORWARD_ARGS+=("--output-dir" "$2")
+            shift 2
+            ;;
         --server-no-auto-start)
             FORWARD_ARGS+=("--server-no-auto-start")
             shift
@@ -161,7 +163,7 @@ fi
 
 # Default workflow if not provided
 if [[ "$HAS_WORKFLOW" != true ]]; then
-    FORWARD_ARGS+=("--workflow" "src/workflows/npu_migration_v2.yaml")
+    FORWARD_ARGS+=("--workflow" "src/workflows/seam_auto_default.yaml")
 fi
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -169,7 +171,7 @@ echo -e "${CYAN}║     SEAM  Public  Launcher  (src/scripts/run_seam.sh)    ║
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${GREEN}Server type:${NC} $SERVER_TYPE"
-echo -e "${GREEN}Workflow:${NC}   $([ "$HAS_WORKFLOW" = true ] && echo "${FORWARD_ARGS[*]}" || echo "src/workflows/npu_migration_v2.yaml (default)")"
+echo -e "${GREEN}Workflow:${NC}   $([ "$HAS_WORKFLOW" = true ] && echo "${FORWARD_ARGS[*]}" || echo "src/workflows/seam_auto_default.yaml (default)")"
 echo ""
 
 # Delegate to run_e2e_v3.sh

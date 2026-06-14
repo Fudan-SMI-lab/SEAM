@@ -4,7 +4,7 @@
 
 ## 核心能力
 
-- YAML 驱动工作流：阶段、agent、validator、transition、sub-workflow 和 runtime skill 都由 `workflows/` 下的 YAML 文件描述。V3 入口支持 `--workflow-path` 选择任意平台工作流。
+- YAML 驱动工作流：阶段、agent、validator、transition、sub-workflow 和 runtime skill 都由 `workflows/` 下的 YAML 文件描述。默认入口使用 `src/workflows/seam_auto_default.yaml` 自动选择平台策略。
 - 平台策略系统：`target_platform` preset（PPU、NPU、MUSA、ROCm、MLU 等）自动驱动平台专用验证 token、迁移规则和证据要求。
 - 智能修复循环：Phase 5 会运行入口命令、分类错误、路由到 `dependency_fixer` / `code_adapter` / `operator_fixer`，并在有限迭代内重试。
 - custom-op final gate：CUDA 自定义算子项目必须闭环 inventory、manifest、parity、runtime coverage、performance 和 no-fallback evidence。
@@ -45,16 +45,17 @@ cuda_projects/my_project/
 ```bash
 bash src/scripts/run_e2e_v3.sh my_project \
   --server-url http://127.0.0.1:4098 \
+  --output-dir ../output_projects \
   --max-iter 8 \
   --review \
   --verbose
 ```
 
-指定平台工作流：
+默认使用 `src/workflows/seam_auto_default.yaml` 自动选择平台策略。只有需要调试或接入自定义 workflow 时，才显式覆盖：
 
 ```bash
 bash src/scripts/run_e2e_v3.sh my_project \
-  --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml \
+  --workflow src/workflows/custom_migration.yaml \
   --server-url http://127.0.0.1:4098 \
   --max-iter 8 \
   --verbose
@@ -65,20 +66,22 @@ bash src/scripts/run_e2e_v3.sh my_project \
 ```bash
 python3.10 -m tests.e2e.e2e_test_v3 \
   --project-dir /path/to/your/cuda/project \
-  --output-dir ./output_projects \
-  --workflow-path src/workflows/ppu_migration_v2_auto_vllm018_smoke_baseaware_entryfix_keep.yaml \
+  --output-dir ../output_projects \
+  --workflow-path src/workflows/seam_auto_default.yaml \
   --server-url http://127.0.0.1:4098 \
   --max-phase5-iter 8 \
   --keep-temp-dir
 ```
+
+Direct Python entrypoint 面向高级调试和自动化集成；日常运行优先使用 V3 Shell Launcher。
 
 常用参数：
 
 | 参数 | 说明 |
 | --- | --- |
 | `--project-dir` | 待迁移项目根目录。 |
-| `--output-dir` | 迁移产物输出根目录，通常是 `./output_projects`。 |
-| `--workflow-path` / `--workflow` | 平台工作流 YAML 文件路径。V3 入口的核心参数，用于选择目标平台。 |
+| `--output-dir` | 迁移产物输出 project root。默认是 SEAM 仓库同级 `../output_projects`，可用 `MIGRATION_OUTPUT_PROJECTS_ROOT` 覆盖，也可通过参数显式指定。 |
+| `--workflow-path` / `--workflow` | workflow YAML 文件路径。默认推荐 `src/workflows/seam_auto_default.yaml` 自动选择平台策略；仅在高级调试或自定义 workflow 时覆盖。 |
 | `--max-phase5-iter` / `--max-iter` | Phase 5 修复循环最大迭代次数。 |
 | `--review-gate` / `--review` | 开启可选 review gate。 |
 | `--server-url` | OpenCode server 地址；推荐使用 `http://127.0.0.1:4098`。 |

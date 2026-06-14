@@ -15,7 +15,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.artifact_store import ArtifactStore
 from core.prompt_loader import PromptLoader
-from core.repair_loop import ClassificationDict, RepairLoopEngine, ReviewGateState, force_custom_op_operator_routing_if_needed
+from core.repair_loop import (
+    ClassificationDict,
+    RepairLoopEngine,
+    ReviewGateState,
+    _operator_routing_override_enabled,
+    force_custom_op_operator_routing_if_needed,
+)
 from core.runtime_artifacts import write_operator_repair_context_artifact
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
@@ -1686,6 +1692,7 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
         "repair_role": "code_adapter",
     })
     engine, _artifact_store = build_engine(tmp_path, session_mgr)
+    engine.config = {"custom_op_operator_routing_override_enabled": True}
     (tmp_path / "validate.py").write_text("print('ok')\n", encoding="utf-8")
 
     monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: CompletedProcess(args="", returncode=0))
@@ -1698,11 +1705,12 @@ def test_repair_loop_forces_custom_op_final_gate_evidence_to_operator_fixer(tmp_
     )))
 
     assert result["success"] is False
-    assert result["repair_session_ids"] == {"operator_fixer": "session-2"}
-    assert ("operator_fixer", "persistent") in session_mgr.get_or_create_calls
+    assert result["repair_session_ids"] == {"final_gate_report_fixer": "session-2"}
+    assert ("final_gate_report_fixer", "persistent") in session_mgr.get_or_create_calls
     assert ("code_adapter", "persistent") not in session_mgr.get_or_create_calls
+    assert ("operator_fixer", "persistent") not in session_mgr.get_or_create_calls
     assert result["error_history"][0].get("error_category") == "operator"
-    assert result["error_history"][0].get("repair_role") == "operator_fixer"
+    assert result["error_history"][0].get("repair_role") == "final_gate_report_fixer"
 
 
 def test_analyze_error_plain_import_pathing_is_not_forced_to_operator(tmp_path: Path) -> None:
@@ -1744,6 +1752,42 @@ def test_custom_op_negative_evidence_without_contract_does_not_force_operator() 
 
     assert routed["category"] == "dependency"
     assert routed["repair_role"] == "dependency_fixer"
+
+
+def test_operator_routing_override_defaults_disabled_when_absent() -> None:
+    assert _operator_routing_override_enabled(None) is False
+    assert _operator_routing_override_enabled({}) is False
+    assert _operator_routing_override_enabled({"framework": {}}) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"custom_op_operator_routing_override_enabled": True},
+        {"custom_op_operator_routing_override_enabled": "true"},
+        {"framework": {"custom_op_operator_routing_override_enabled": True}},
+        {"framework": {"custom_op_operator_routing_override_enabled": "yes"}},
+    ],
+)
+def test_operator_routing_override_explicit_true_enables(config: dict[str, object]) -> None:
+    assert _operator_routing_override_enabled(config) is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"custom_op_operator_routing_override_enabled": False},
+        {"custom_op_operator_routing_override_enabled": "false"},
+        {"framework": {"custom_op_operator_routing_override_enabled": False}},
+        {"framework": {"custom_op_operator_routing_override_enabled": "no"}},
+        {
+            "custom_op_operator_routing_override_enabled": False,
+            "framework": {"custom_op_operator_routing_override_enabled": True},
+        },
+    ],
+)
+def test_operator_routing_override_explicit_false_disables(config: dict[str, object]) -> None:
+    assert _operator_routing_override_enabled(config) is False
 
 def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     outside = tmp_path / "outside"

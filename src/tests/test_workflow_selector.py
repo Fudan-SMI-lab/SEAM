@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core.workflow_selector import (
     is_selector_yaml,
     is_selector_file,
+    read_selector_resolution_metadata,
     resolve_workflow_from_selector,
     _validate_selector_schema,
     _resolve_candidates,
@@ -563,6 +564,12 @@ class TestResolveWorkflowFromSelector:
         assert loaded["name"] == "npu"
         assert len(prompt_loader.loaded) == 1
         assert prompt_loader.loaded[0][0] == "workflow_select"
+        metadata = read_selector_resolution_metadata(result)
+        assert metadata == {
+            "selector_path": str(selector),
+            "selected_path": str(wf_a),
+            "materialized_path": str(result),
+        }
 
     def test_end_to_end_with_overrides(self, tmp_path: Path) -> None:
         """Selector with overrides should produce merged workflow."""
@@ -706,6 +713,45 @@ class TestResolveWorkflowFromSelector:
         ctx = prompt_loader.loaded[0][1]
         assert "cuda-op-project" in ctx["project_context"]
         assert "PyTorch" in ctx["project_context"]
+
+    def test_passes_raw_user_constraints_to_selector_prompt(self, tmp_path: Path) -> None:
+        wf = _write_yaml(tmp_path / "wf.yaml", _make_minimal_workflow_yaml())
+
+        selector = tmp_path / "selector.yaml"
+        _write_yaml(selector, {
+            "kind": "workflow_selector",
+            "name": "constraints-test",
+            "candidate_workflows": [{"path": str(wf)}],
+        })
+
+        raw_constraints = "Prefer the smallest compatible workflow.\nDo not add extra validation passes."
+        prompt_loader = FakePromptLoader()
+        resolve_workflow_from_selector(
+            str(selector),
+            FakeSessionManager(agent_response=json.dumps({"selected_workflow": str(wf)})),
+            prompt_loader,
+            user_constraints=raw_constraints,
+            output_dir=tmp_path / "output",
+        )
+
+        assert prompt_loader.loaded[0][1]["user_constraints"] == raw_constraints
+
+    def test_passes_empty_user_constraints_by_default(self, tmp_path: Path) -> None:
+        wf = _write_yaml(tmp_path / "wf.yaml", _make_minimal_workflow_yaml())
+        candidates = [{"path": wf, "raw_path": "wf.yaml", "description": "test"}]
+        prompt_loader = FakePromptLoader()
+
+        _select_workflow_via_agent(
+            candidates=candidates,
+            session_mgr=FakeSessionManager(agent_response=json.dumps({"selected_workflow": "wf.yaml"})),
+            prompt_loader=prompt_loader,
+            project_context={},
+            selector_name="test",
+            fallback=None,
+            selector_path="test.yaml",
+        )
+
+        assert prompt_loader.loaded[0][1]["user_constraints"] == ""
 
     def test_raises_for_non_selector_file(self, tmp_path: Path) -> None:
         """Passing a normal workflow YAML should raise."""
@@ -970,3 +1016,24 @@ class TestWorkflowSelectPromptContent:
         assert "DO NOT assume" in _prompt_text and "pytorch" in lowered, (
             "Prompt must warn against assuming platform based on PyTorch usage alone"
         )
+
+    def test_prompt_frames_user_constraints_as_same_platform_refinement(
+        self, _prompt_text: str
+    ) -> None:
+        lowered = _prompt_text.lower()
+        assert "user-provided constraints" in lowered
+        assert "same currently detected platform/environment" in lowered
+        assert "actual platform/environment selection" in lowered
+        assert "current real device/environment discovery" in lowered
+
+    def test_new_constraints_guidance_has_no_specific_platform_names(
+        self, _prompt_text: str
+    ) -> None:
+        section = _prompt_text.split("## User-Provided Constraints (for awareness)", 1)[1]
+        section = section.split("## Candidate Workflows", 1)[0]
+        forbidden_terms = [
+            "GLM-OCR", "MinerU", "Deepwave", "vLLM", "SGLang",
+            "MUSA", "PPU", "NPU", "Ascend", "custom-op",
+        ]
+        for term in forbidden_terms:
+            assert term.lower() not in section.lower()

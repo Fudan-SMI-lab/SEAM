@@ -106,7 +106,7 @@ def build_runner(base_dir: Path, session_mgr: SessionManagerLike | None = None) 
 
 
 def write_runtime_skill(root: Path, name: str, content: str) -> Path:
-    skill_dir = root / "skills" / name
+    skill_dir = root / ".memory" / "skills" / name
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
     _ = skill_path.write_text(content, encoding="utf-8")

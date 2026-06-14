@@ -310,3 +310,305 @@ def test_normal_entry_prompts_exist() -> None:
     """Sanity: all expected normal-entry prompt files exist."""
     for filename in _NORMAL_ENTRY_PROMPT_FILES:
         assert (PROMPTS_DIR / filename).exists(), f"{filename} is missing"
+
+
+def test_operator_custom_op_guidance_is_free_of_report_schema() -> None:
+    guidance = repair_loop._operator_custom_op_guidance(
+        "/tmp/test_project/.sm-artifacts/testrun/runtime/operatorRepairContext_test_project.md",
+        project_dir="/tmp/test_project",
+        entry_script="python validate_custom_ops_full.py",
+    )
+
+    assert "source_inventory structure" not in guidance
+    assert "performance_report structure" not in guidance
+    assert "Rejection rules" not in guidance
+    assert "fine-grained unit identity fields" not in guidance
+    assert "Python shim" not in guidance
+    assert "coarse/collapsed" not in guidance
+
+
+# ── final_gate_report_fixer prompt tests ────────────────────────────────
+
+_REPORT_FIXER_CONTEXT = {
+    **COMMON_CONTEXT,
+    "repair_role": "final_gate_report_fixer",
+    "execution_backend_mode": "container",
+    "actual_execution_command": "docker exec test-container python validate.py",
+    "container_name_or_id": "test-container",
+    "container_workdir": "/workspace",
+    "host_project_dir": "/tmp/test_project",
+    "container_project_dir": "/workspace",
+    "container_probe_command_prefix": "docker exec test-container",
+}
+
+_REPORT_FIXER_BANNED_PHRASES = (
+    "directly edit",
+    "directly patch",
+    "hand-edit",
+    "JSON patching",
+    "json patching",
+)
+
+
+def test_report_fixer_prompt_exists() -> None:
+    path = PROMPTS_DIR / "repair_final_gate_report_fixer_container_musa.md"
+    assert path.exists(), f"{path.name} is missing"
+    content = path.read_text(encoding="utf-8")
+    assert len(content) > 100
+
+
+def test_report_fixer_prompt_forbids_direct_json_patching() -> None:
+    content = (PROMPTS_DIR / "repair_final_gate_report_fixer_container_musa.md").read_text(encoding="utf-8")
+    lower = content.lower()
+    assert "do not directly patch" in lower or "do not directly edit" in lower
+    assert "entry script" in lower or "report aggregation" in lower
+    assert "fix the entry script" in lower or "fix the report" in lower
+
+
+def test_report_fixer_prompt_requires_validate_custom_op_final_gate_self_check() -> None:
+    content = (PROMPTS_DIR / "repair_final_gate_report_fixer_container_musa.md").read_text(encoding="utf-8")
+    assert "{final_gate_validator_command}" in content
+    assert "self-check" in content.lower() or "self check" in content.lower()
+    assert "do NOT guess" in content or "do not guess" in content.lower()
+    assert "Copy its exact output" in content or "copy exact output" in content.lower()
+
+
+def test_report_fixer_prompt_does_not_contain_operator_guidance() -> None:
+    content = (PROMPTS_DIR / "repair_final_gate_report_fixer_container_musa.md").read_text(encoding="utf-8")
+    assert "operator_custom_op_guidance" not in content
+    # "opp_custom_op_artifact_evidence" appears only in the "do NOT touch evidence-level content" warning,
+    # which is acceptable. Verify it's not present as an instruction to generate evidence.
+    evidence_block_count = content.lower().count("opp_custom_op_artifact_evidence")
+    assert evidence_block_count <= 1, "opp_custom_op_artifact_evidence should appear at most once (only in 'do NOT touch' warning)"
+
+
+def test_report_fixer_prompt_contains_required_actions() -> None:
+    content = (PROMPTS_DIR / "repair_final_gate_report_fixer_container_musa.md").read_text(encoding="utf-8")
+    assert "inventory_count == manifest_entries == closed_pass_entries" in content
+    assert "remaining_entries == 0" in content
+    assert "full_migration_status" in content
+    assert "source_inventory" in content
+    assert "performance_report" in content
+
+
+def test_generic_report_fixer_prompt_exists() -> None:
+    path = PROMPTS_DIR / "repair_final_gate_report_fixer.md"
+    assert path.exists(), f"{path.name} is missing"
+    content = path.read_text(encoding="utf-8")
+    assert "{final_gate_validator_command}" in content
+    assert "{final_gate_validator_contract_summary}" in content
+    lower = content.lower()
+    assert "do not directly" in lower
+
+
+# ── normal-way isolation: no report fixer in normal workflow ────────────
+
+
+def test_normal_repair_prompt_ids_exclude_report_fixer() -> None:
+    prompt_ids = cast(dict[str, str], getattr(repair_loop, "_REPAIR_PROMPT_IDS"))
+    assert "final_gate_report_fixer" not in prompt_ids.get("operator_fixer", "")
+    for role, pid in prompt_ids.items():
+        if role == "final_gate_report_fixer":
+            continue
+        content = (PROMPTS_DIR / f"{pid}.md").read_text(encoding="utf-8") if (PROMPTS_DIR / f"{pid}.md").exists() else ""
+        if content:
+            assert "final_gate_report_fixer" not in content, f"{pid}.md contains final_gate_report_fixer"
+            assert "fix_report" not in content.lower(), f"{pid}.md contains fix_report"
+
+
+def test_operator_fixer_prompt_has_no_report_schema_guidance() -> None:
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    prompt = _load_role_prompt(loader, "operator_fixer")
+    assert "validate_custom_op_final_gate" not in prompt
+    assert "report schema" not in prompt.lower()
+    assert "final_gate_report_fixer" not in prompt
+
+
+def test_report_fixer_container_prompt_mapping_loads_existing_file() -> None:
+    prompt_ids = cast(dict[str, str], getattr(repair_loop, "_REPAIR_PROMPT_IDS_CONTAINER"))
+    prompt_id = prompt_ids["final_gate_report_fixer"]
+    assert prompt_id == "repair_final_gate_report_fixer_container"
+
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    context = {
+        **COMMON_CONTEXT,
+        "repair_role": "final_gate_report_fixer",
+        "execution_backend_mode": "container",
+        "actual_execution_command": "docker exec test-container python validate.py",
+        "container_name_or_id": "test-container",
+        "container_workdir": "/workspace",
+        "host_project_dir": "/tmp/test_project",
+        "container_project_dir": "/workspace",
+        "container_probe_command_prefix": "docker exec test-container",
+        "final_gate_validator_command": "echo 'VALIDATOR_COMMAND'",
+        "final_gate_validator_contract_summary": "Validator contract summary here.",
+    }
+    prompt = loader.load_prompt(prompt_id, context)
+    assert len(prompt) > 50
+    assert "report schema" in prompt.lower() or "report structure" in prompt.lower()
+    assert "container" in prompt.lower()
+    assert "VALIDATOR_COMMAND" in prompt
+
+
+# ── final gate validator command injection tests ────────────────────────
+
+
+def test_generic_report_fixer_prompt_renders_command_not_placeholder() -> None:
+    """Generic report fixer prompt renders command/contract, no unresolved {final_gate_validator_command}."""
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    cmd = "cd /some/path && python3 << 'PYEOF'\nprint('hello')\nPYEOF"
+    summary = "Strict report/schema requirements on custom_op_final_gate.json."
+    context = {
+        **COMMON_CONTEXT,
+        "repair_role": "final_gate_report_fixer",
+        "final_gate_validator_command": cmd,
+        "final_gate_validator_contract_summary": summary,
+    }
+    prompt = loader.load_prompt("repair_final_gate_report_fixer", context)
+    assert "{final_gate_validator_command}" not in prompt
+    assert "{final_gate_validator_contract_summary}" not in prompt
+    assert cmd in prompt
+    assert summary in prompt
+    assert "do NOT guess" in prompt.lower() or "do not guess" in prompt.lower()
+    assert "copy its exact output" in prompt.lower()
+
+
+def test_container_report_fixer_prompt_renders_command_and_contract() -> None:
+    """Container report fixer prompt renders command/contract with container context intact."""
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    cmd = "cd /some/path && python3 << 'PYEOF'\nprint('hello')\nPYEOF"
+    summary = "Container-specific contract summary."
+    context = {
+        **COMMON_CONTEXT,
+        "repair_role": "final_gate_report_fixer",
+        "execution_backend_mode": "container",
+        "actual_execution_command": "docker exec test-container python validate.py",
+        "container_name_or_id": "test-container",
+        "container_workdir": "/workspace",
+        "host_project_dir": "/tmp/test_project",
+        "container_project_dir": "/workspace",
+        "container_probe_command_prefix": "docker exec test-container",
+        "final_gate_validator_command": cmd,
+        "final_gate_validator_contract_summary": summary,
+    }
+    prompt = loader.load_prompt("repair_final_gate_report_fixer_container", context)
+    assert "{final_gate_validator_command}" not in prompt
+    assert "{final_gate_validator_contract_summary}" not in prompt
+    assert cmd in prompt
+    assert summary in prompt
+    assert "Container Execution Context" in prompt
+
+
+def test_musa_report_fixer_prompt_renders_command_with_anti_simulation() -> None:
+    """MUSA report fixer prompt renders command with anti-simulation language and self-check."""
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    cmd = "cd /some/path && python3 << 'PYEOF'\nprint('hello')\nPYEOF"
+    summary = "MUSA-specific contract summary."
+    context = {
+        **COMMON_CONTEXT,
+        "repair_role": "final_gate_report_fixer",
+        "execution_backend_mode": "container",
+        "actual_execution_command": "docker exec test-container python validate.py",
+        "container_name_or_id": "test-container",
+        "container_workdir": "/workspace",
+        "host_project_dir": "/tmp/test_project",
+        "container_project_dir": "/workspace",
+        "container_probe_command_prefix": "docker exec test-container",
+        "execution_environment_context": "",
+        "final_gate_validator_command": cmd,
+        "final_gate_validator_contract_summary": summary,
+    }
+    prompt = loader.load_prompt("repair_final_gate_report_fixer_container_musa", context)
+    assert "{final_gate_validator_command}" not in prompt
+    assert "{final_gate_validator_contract_summary}" not in prompt
+    assert cmd in prompt
+    assert summary in prompt
+    assert "do NOT guess" in prompt
+    assert "self-check" in prompt.lower()
+    assert "validator_command_output" in prompt
+
+
+def test_non_report_fixer_prompts_exclude_validator_command() -> None:
+    """Non-report fixer prompts (operator, dependency, code) do NOT contain final_gate_validator_command."""
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    for role in ("operator_fixer", "dependency_fixer", "code_adapter"):
+        prompt = _load_role_prompt(loader, role)
+        assert "final_gate_validator_command" not in prompt, (
+            f"{role} prompt should not contain final_gate_validator_command"
+        )
+        assert "final_gate_validator_contract_summary" not in prompt, (
+            f"{role} prompt should not contain final_gate_validator_contract_summary"
+        )
+
+
+# ── repair_role_descriptions placeholder tests ─────────────────────────
+
+def test_error_recovery_prompt_renders_repair_role_descriptions() -> None:
+    """phase_error_recovery.md renders {repair_role_descriptions} placeholder with provided context."""
+    loader = PromptLoader(prompts_dir=str(PROMPTS_DIR))
+    context = {
+        **COMMON_CONTEXT,
+        "phase_name": "error_analyzer",
+        "repair_role": "error_analyzer",
+        "failed_phase": "phase_5_validation",
+        "entry_script_contract": "{}",
+        "failure_log": "some error",
+        "previous_outputs": "(no history)",
+        "artifact_base_path": "/tmp/artifacts",
+        "raw_attempt_files": "(none)",
+        "repair_role_descriptions": (
+            "## Repair Roles\n"
+            "- `dependency_fixer`: Fix packages.\n"
+            "- `code_adapter`: Fix Python code.\n"
+            "- `operator_fixer`: Fix native operators.\n"
+            "- `final_gate_report_fixer`: Fix report schema.\n"
+        ),
+    }
+    prompt = loader.load_prompt("phase_error_recovery", context)
+    assert "final_gate_report_fixer" in prompt
+    assert "Fix report schema" in prompt
+    assert "<dependency_fixer | code_adapter | operator_fixer>" not in prompt
+    assert "selected repair role from available roles below" in prompt
+
+
+def test_error_recovery_prompt_uses_generic_repair_role_description() -> None:
+    """phase_error_recovery.md uses generic 'selected repair role from available roles below' wording."""
+    content = (PROMPTS_DIR / "phase_error_recovery.md").read_text(encoding="utf-8")
+    assert "selected repair role from available roles below" in content
+    assert "<dependency_fixer | code_adapter | operator_fixer>" not in content
+
+
+def test_error_recovery_container_prompt_uses_generic_repair_role_description() -> None:
+    """phase_error_recovery_container.md uses generic wording and {repair_role_descriptions} placeholder."""
+    content = (PROMPTS_DIR / "phase_error_recovery_container.md").read_text(encoding="utf-8")
+    assert "selected repair role from available roles below" in content
+    assert "<dependency_fixer | code_adapter | operator_fixer>" not in content
+    assert "{repair_role_descriptions}" in content
+    # The old hardcoded block should NOT appear
+    assert "Fix CUDA-to-NPU code migration at the Python level" not in content
+
+
+def test_error_recovery_musa_prompt_uses_generic_repair_role_and_placeholder() -> None:
+    """phase_error_recovery_container_musa.md uses generic wording and {repair_role_descriptions}."""
+    content = (PROMPTS_DIR / "phase_error_recovery_container_musa.md").read_text(encoding="utf-8")
+    assert "selected repair role from available roles below" in content
+    assert "{repair_role_descriptions}" in content
+
+
+def test_error_recovery_ppu_prompt_uses_generic_repair_role_and_placeholder() -> None:
+    """phase_error_recovery_container_ppu.md uses generic wording and {repair_role_descriptions}."""
+    content = (PROMPTS_DIR / "phase_error_recovery_container_ppu.md").read_text(encoding="utf-8")
+    assert "selected repair role from available roles below" in content
+    assert "{repair_role_descriptions}" in content
+    # The old hardcoded PPU-specific block should NOT appear
+    assert "Fix Python-level API replacements, device placement" not in content
+
+
+def test_repair_role_descriptions_text_includes_report_fixer_when_provided() -> None:
+    """_repair_role_descriptions_text includes final_gate_report_fixer when in available_roles."""
+    text = repair_loop._repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer", "final_gate_report_fixer"})
+    assert "final_gate_report_fixer" in text
+    assert "Report schema" in text or "report aggregation" in text.lower()
+
+    text_no_report = repair_loop._repair_role_descriptions_text({"dependency_fixer", "code_adapter", "operator_fixer"})
+    assert "final_gate_report_fixer" not in text_no_report

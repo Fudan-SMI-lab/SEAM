@@ -18,6 +18,8 @@ When resolving dependencies, validate the **complete dependency closure** — no
 ## Actual Execution Command Validation
 After every fix, validate using the `actual_execution_command` provided below. Do NOT validate with `{entry_script}` directly on the host, a different interpreter, or a different container — use the exact target runtime configuration.
 
+Inspect `latest_complete_stdout_artifact_path`, `latest_complete_stderr_artifact_path`, and `latest_complete_meta_artifact_path` when populated; prefer complete stdout/stderr over truncated summaries. After each in-scope dependency/environment/runtime-library fix, run `actual_execution_command` with a timeout. If the next complete artifacts show another dependency fixer failure, continue; if they show only an out-of-scope Python-level, native/custom-op, compiler, shared-object, or final-gate evidence failure, stop and write the handoff role and reason in `summary`.
+
 ## Native/Custom-Op Handoff via Summary
 If runtime errors involve missing CUDA symbols, custom operator loading failures, or native compiled extension issues, do NOT attempt to bypass them. Report the specific failure and handoff rationale in your `summary` field so the error_analyzer and next fixer can see it.
 

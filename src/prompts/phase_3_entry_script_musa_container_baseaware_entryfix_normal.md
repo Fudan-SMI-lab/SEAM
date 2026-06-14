@@ -45,6 +45,8 @@ The entry command is executed automatically in the target runtime:
 - If the existing launcher is interactive, prefer documented non-interactive flags or environment variables. Otherwise create a wrapper that calls the real entry point with safe defaults.
 - Do not invent unsupported CLI flags.
 - If you create or select a generated/wrapper script, physically write it under `{project_dir}` before returning JSON. Never return an `entry_script_path` for a file that does not exist.
+- If a generated/wrapper script launches child processes, it must drain and capture child stdout/stderr before exiting; do not let pipes block or drop output.
+- On failure, generated/wrapper scripts must print a concise diagnostic summary to stderr that includes the child command, exit code, and the most relevant stderr or stdout tail. Long logs may be written to artifacts, but the failure summary must be visible on stderr.
 - **Verification requirement**: Before returning the final JSON, confirm the selected or created script file exists by reading its contents or listing it. Do NOT execute the full migration workload during Phase 3. You are selecting and verifying the entry script path, not running validation. Do not build, adapt, repair, or migrate the project in Phase 3.
 
 ## Execution Backend Prohibition (CRITICAL)

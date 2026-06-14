@@ -28,7 +28,7 @@ def test_migration_utils_root_is_deprecated_alias() -> None:
 
 
 def test_execution_root_is_seam_root() -> None:
-    assert execution_root().name == "SEAM-merge-main-fusion-baseline"
+    assert execution_root() == src_root().parent
     assert workspace_root() == execution_root()
 
 

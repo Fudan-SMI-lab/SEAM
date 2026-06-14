@@ -64,7 +64,8 @@ Options:
   --no-review            Disable Review Gate
   --no-keep-temp         Don't keep output project directory (default: keep)
   --agent NAME           Override auto-detected agent name
-  --workflow PATH        Path to workflow YAML file (overrides default NPU workflow)
+  --output-dir DIR       Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
+  --workflow PATH        Path to workflow YAML file (overrides default auto selector)
   --server-no-auto-start Disable auto-start of OpenCode server
   --dry-run              Validate setup without running the test
   --extra 'ARGS...'      Pass extra arguments to e2e_test_v3.py
@@ -94,6 +95,7 @@ while [[ $# -gt 0 ]]; do
         --no-review)            REVIEW_GATE=false; shift ;;
         --no-keep-temp)         KEEP_TEMP=false; shift ;;
         --agent)                EXTRA_ARGS="$EXTRA_ARGS --agent $2"; shift 2 ;;
+        --output-dir)           OUTPUT_PROJECTS_DIR="$2"; shift 2 ;;
         --workflow)             WORKFLOW_PATH="$2"; shift 2 ;;
         --server-no-auto-start)  SERVER_NO_AUTO_START=true; shift ;;
         --dry-run)              DRY_RUN=true; shift ;;

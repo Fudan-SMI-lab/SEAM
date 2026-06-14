@@ -1,5 +1,5 @@
 # <p align="center">SEAM</p>
-<p align="center">迁移CUDA代码到中国产GPU，变简单。</p>
+<p align="center">Make CUDA code migration to Chinese GPUs simple.</p>
 <p align="center">SEAM: Self-Evolving Agentic Migration for Chinese GPUs.</p>
 
 
@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="README.en.md">English</a> |
-  <a href="README.zh.md">简体中文</a> 
+  <a href="README.zh.md">简体中文</a>
 </p>
 
 
@@ -37,16 +37,21 @@ Run the commands below on your domestic GPU server or container environment to t
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM
 bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
-  --server_type opencode \
-  --server_url http://127.0.0.1:5000
+  --server_type opencode
 ```
 
+Make sure the local OpenCode Server is running first. The default address is `http://127.0.0.1:4098`; if your server uses another port, pass `--server_url` explicitly.
+
+When `--workflow` is not passed, the launcher uses `src/workflows/seam_auto_default.yaml` as the default workflow.
+
+The project-root `ADAPTATION_REQUIREMENTS.md` file is loaded automatically. For custom constraints in another file, pass `--extra '--user-constraints PATH'`.
+
 Execution Results:
-*   **Run status**: The terminal will display `E2E TEST PASSED` / `E2E PASS` or error messages upon completion. For full details, check `./e2e-reports/migration_utils/<timestamp>/summary.json`.
+*   **Run status**: The terminal will display `E2E TEST PASSED` / `E2E PASS` or error messages upon completion. For full details, check `./e2e-reports/src/<timestamp>/summary.json`.
 
-*   **Migrated project**: Outputs are saved to `./output_projects/<project_name>_<timestamp>/` by default, or the custom path specified via the `--output-dir` parameter.
+*   **Migrated project**: Outputs are saved by default under the sibling directory `../output_projects/<project_name>_<timestamp>/`. You can override the default root with `MIGRATION_OUTPUT_PROJECTS_ROOT`, or pass `--output-dir` for this run.
 
-*   **Migration report**: A folder named `.migration_reports/` will be generated inside the migrated project, containing acceptance results, performance data, custom operator migration logs and build records.
+*   **Migration report**: A folder named `migration_reports/` will be generated inside the migrated project, containing acceptance results, performance data, custom operator migration logs and build records.
 
 *   **Runtime logs**: Detailed logs are stored under `.sm-artifacts/` in the migrated project. Please share the migration report and `.sm-artifacts` folder with us for troubleshooting if errors occur.
 
@@ -72,7 +77,7 @@ SEAM adopts a YAML state machine driven multi-stage migration pipeline, collabor
 
 The full pipeline consists of 8 key phases:
 ```text
-GPU Environment Detection → Project Analysis → Dependency Preparation → Rule-based Migration → Iterative Validation & Fix → Custom Operator Resolution → Report Generation → Experience Evaluation & Refinement
+GPU Environment Detection -> Project Analysis -> Dependency Preparation -> Rule-based Migration -> Iterative Validation & Fix -> Custom Operator Resolution -> Report Generation -> Experience Evaluation & Refinement
 ```
 
 #### 3. Self-Evolution: Getting Smarter with Usage
@@ -98,16 +103,14 @@ See [SEAM Technical Introduction](docs/SEAM_Tech_Intro.zh.md) for detailed techn
 
 ### Documentation
 
-- [User Guide](docs/User_Guide.md) — Usage, configuration and feature docs
-- [FAQ](docs/FAQ.md) — Common issues and solutions
-- [Contributing](docs/CONTRIBUTING.md) — How to join development
-- [Changelog](docs/CHANGELOG.md) — Version updates and release notes
+- [User Guide](docs/User_Guide.md), usage, configuration and feature docs
+- [FAQ](docs/FAQ.md), common issues and solutions
+- [Contributing](docs/CONTRIBUTING.md), how to join development
+- [Changelog](docs/CHANGELOG.md), version updates and release notes
 
 ### Contact
 
-Feel free to reach out for any ideas or questions regarding SEAM and Chinese GPUs.
-
-Please send emails to **cfff@fudan.edu.cn**  — the official mailbox of Fudan University CFFF Platform. Our engineering team will respond to all feedback in a timely manner.
+For ideas or questions about SEAM and Chinese GPUs, please send email to **cfff@fudan.edu.cn**, the official mailbox of Fudan University CFFF Platform. Our engineering team will respond to all feedback in a timely manner.
 
 
 ---

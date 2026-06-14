@@ -45,8 +45,15 @@ Artifact base directory: {artifact_base_path}
 Raw execution log files from previous validation attempts:
 {raw_attempt_files}
 
+Latest complete stdout artifact: {latest_complete_stdout_artifact_path}
+Latest complete stderr artifact: {latest_complete_stderr_artifact_path}
+Latest complete metadata artifact: {latest_complete_meta_artifact_path}
+
+Before classifying the root cause, inspect the complete stdout/stderr artifacts when present. If they are absent, state that complete execution evidence is unavailable and classify from the bounded `failure_log` only.
+
 ## Goal
 Identify the first real exception, compare against history, and route exactly one repair role for the smallest credible root-cause fix. When repeated dependency/environment failures appear, the suggested fix should ask for verified dependency closure instead of one-package-at-a-time repair.
+If prior repairs polluted the framework-created image container base environment, request `environment_action.action="recreate_execution_environment"`; do not run docker/podman lifecycle commands yourself.
 
 ## Classification Buckets
 - `environment`: device/runtime/env vars/interpreter wrong.
@@ -68,7 +75,9 @@ Identify the first real exception, compare against history, and route exactly on
 ## Hard Rules
 - Quote only short evidence fragments; do not restate the full failure log.
 - Do not recommend repeating a fix already shown to fail in history.
-- Use `entry_script_action` only when the Phase 3 command itself is wrong; do not weaken required reports or custom-op evidence.
+- Use `entry_script_action` only to replace the Phase 3 `run_command` used by Phase 5 validation. It never edits the entry script source file. Source edits must be handled by the selected repair agent.
+- Do not use `entry_script_action` to weaken required reports, checks, or custom-op evidence.
+- Use `environment_action` only to request framework-owned image-container recreation; set it to `needed=false` otherwise.
 - End with exactly one JSON object and no other JSON.
 
 ## Output Format
@@ -77,13 +86,21 @@ Identify the first real exception, compare against history, and route exactly on
   "category": "dependency",
   "root_cause": "specific explanation",
   "suggested_fix": "concrete corrective action",
-  "repair_role": "dependency_fixer",
+  "repair_role": "<selected repair role from available roles below>",
   "entry_script_action": {
     "needed": false,
     "action": "none",
     "reason": "",
     "entry_script_path": "",
     "run_command": ""
+  },
+  "environment_action": {
+    "needed": false,
+    "action": "none",
+    "reason": "",
+    "scope": ""
   }
 }
 ```
+
+{repair_role_descriptions}

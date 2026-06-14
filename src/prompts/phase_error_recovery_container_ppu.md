@@ -70,11 +70,16 @@ Artifact base directory: {artifact_base_path}
 Raw execution log files from previous validation attempts:
 {raw_attempt_files}
 
+Latest complete stdout artifact: {latest_complete_stdout_artifact_path}
+Latest complete stderr artifact: {latest_complete_stderr_artifact_path}
+Latest complete metadata artifact: {latest_complete_meta_artifact_path}
+
 Each JSON file contains: `stdout`, `stderr`, `error`, `classification` (with
 category/root_cause/suggested_fix), `fix_attempt` (with response text and
 modified_files).
 
 When analyzing error patterns:
+- Before classifying the root cause, inspect the complete stdout/stderr artifacts when present. If they are absent, state that complete execution evidence is unavailable and classify from the bounded `failure_log` only.
 - Read the relevant JSON files from the paths above to understand the full
   stdout/stderr of previous attempts.
 - Pay special attention to the FIRST exception in each traceback (not just
@@ -117,9 +122,10 @@ the codebase and understand their own scope limitations.
    b. If the C library has `_cuda` symbols but no PPU-equivalent symbols → this is an **operator** issue. The kernel needs to be ported.
    c. Do NOT classify as "migration logic" when the real gap is at the C/kernel level.
 5. **Review Feedback Integration**: If the previous review assessment detected CPU fallback and suggested alternatives, consider classifying this as `"operator"` with `"repair_role": "operator_fixer"`.
-6. Decide whether the Phase 3 entry-script command itself is wrong for the contract. If so, request a bounded entry-script revision.
+6. Decide whether the Phase 3 `run_command` itself is wrong for the contract. If so, request a bounded entry-script command revision. Still select a repair role when source, dependency, operator, or report edits are also needed.
 7. Propose the minimum corrective action that lets the workflow continue, prioritizing PPU-native solutions.
 8. If the failure is package or installation related, recommend PPU vendor index, PTG/t-head artifactory, or offline PPU wheelhouse first. Public PyPI installs can contaminate the PPU environment.
+9. If prior repairs contaminated the framework-created image container base environment, set `environment_action.needed=true` with `action="recreate_execution_environment"`. Never run docker/podman lifecycle commands yourself.
 
 ## Hard Rules
 - Do not restate the full failure log — quote only short fragments when necessary as evidence.
@@ -128,9 +134,11 @@ the codebase and understand their own scope limitations.
 - **PPU-First**: Always suggest PPU-native fixes first. CPU fallback is the last resort.
 - Prefer deterministic fixes over broad speculative refactors.
 - Keep the response concise, operational, and directly usable by the next retry attempt.
-- Use `entry_script_action` only when the command should be regenerated or modified to satisfy the existing Phase 3 contract.
+- Use `entry_script_action` only to replace the Phase 3 `run_command` used by Phase 5 validation. It never edits the entry script source file. Source edits must be handled by the selected repair agent.
+- Do not use `entry_script_action` to weaken required reports, checks, or custom-op evidence.
 - When no entry-script revision is needed, set `entry_script_action.needed=false` and `entry_script_action.action="none"`.
 - When a revision is needed, set `entry_script_action.needed=true`, use `action` `regenerate` or `modify`, and provide a non-empty replacement `run_command`.
+- When no environment reset is needed, set `environment_action.needed=false` and `environment_action.action="none"`.
 
 ## Output Format
 First, provide your reasoning and diagnosis in free text. Then, at the end of your response, append a JSON code block with exactly these keys:
@@ -140,21 +148,24 @@ First, provide your reasoning and diagnosis in free text. Then, at the end of yo
   "category": "<bucket from Required Actions #3>",
   "root_cause": "<specific explanation>",
   "suggested_fix": "<concrete corrective action>",
-  "repair_role": "<dependency_fixer | code_adapter | operator_fixer>",
+  "repair_role": "<selected repair role from available roles below>",
   "entry_script_action": {
     "needed": false,
     "action": "none",
     "reason": "",
     "entry_script_path": "",
     "run_command": ""
+  },
+  "environment_action": {
+    "needed": false,
+    "action": "none",
+    "reason": "",
+    "scope": ""
   }
 }
 ```
 
-## Repair Role Descriptions
-- `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.
-- `code_adapter`: Fix Python-level API replacements, device placement, tensor operations. Must prioritize PPU-native solutions. If the root cause is a C library limitation, STOP and report it — do not implement CPU fallback.
-- `operator_fixer`: Fix missing/unsupported PPU operators — implement custom operators, compose alternatives from PPU-supported primitives, or port kernels to PPU-compatible implementations. ALL fixes must be PPU-native.
+{repair_role_descriptions}
 
 ## Retry Decision Rule
 - Pick a role only when a concrete fix path exists for that role.
