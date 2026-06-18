@@ -15,7 +15,9 @@ class HookManager:
     def __init__(self, workflow_hooks: dict[str, list[dict]], output_dir: str = "."):
         """
         Args:
-            workflow_hooks: {"workflow_start": [{"type": "builtin", "operation": "snapshot_project", ...}]}
+            workflow_hooks: {"workflow_start": [
+                {"type": "builtin", "operation": "snapshot_project", ...}
+            ]}
             output_dir: directory for hook outputs (snapshots, telemetry, etc.)
         """
         self._hooks = workflow_hooks
@@ -44,7 +46,9 @@ class HookManager:
                 critical = hook_cfg.critical
 
             try:
-                dispatch_params = hook_cfg if isinstance(hook_cfg, dict) else hook_cfg.params
+                dispatch_params = (
+                    hook_cfg if isinstance(hook_cfg, dict) else hook_cfg.params
+                )
                 result = self._dispatch_builtin(op_name, dispatch_params, context)
                 point_results[save_as] = result
             except Exception as e:
@@ -67,7 +71,9 @@ class HookManager:
         """Return all hook results accumulated so far."""
         return dict(self._results)
 
-    def register(self, hook_point: str, phase_id: str = "", hook_config: list[dict] | None = None) -> None:
+    def register(
+        self, hook_point: str, phase_id: str = "", hook_config: list[dict] | None = None
+    ) -> None:
         """Register additional hooks at runtime.
 
         Args:
@@ -81,7 +87,6 @@ class HookManager:
         if key not in self._hooks:
             self._hooks[key] = []
         self._hooks[key].extend(hook_config)
-
 
     # ── Dispatch ─────────────────────────────────────────────────────
 
@@ -120,14 +125,24 @@ class HookManager:
                 snapshot[str(py_file)] = {"error": str(e)}
 
         # Determine filename
-        filename = "after_snapshot.json" if "workflow_end" in str(context.get("_hook_point", "")) else "before_snapshot.json"
+        filename = (
+            "after_snapshot.json"
+            if "workflow_end" in str(context.get("_hook_point", ""))
+            else "before_snapshot.json"
+        )
         snap_path = os.path.join(self._output_dir, filename)
-        os.makedirs(os.path.dirname(snap_path) if os.path.dirname(snap_path) else ".", exist_ok=True)
+        os.makedirs(
+            os.path.dirname(snap_path) if os.path.dirname(snap_path) else ".",
+            exist_ok=True,
+        )
 
         with open(snap_path, "w", encoding="utf-8") as f:
             json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
-        return {"snapshot_path": os.path.abspath(snap_path), "file_count": len(snapshot)}
+        return {
+            "snapshot_path": os.path.abspath(snap_path),
+            "file_count": len(snapshot),
+        }
 
     def _builtin_copy_artifacts(self, params: dict, context: dict) -> dict:
         """Copy .sm-artifacts/ directory to output_dir."""
@@ -139,7 +154,11 @@ class HookManager:
         dest = Path(self._output_dir) / ".sm-artifacts"
 
         if not src.exists():
-            return {"artifacts_copied": False, "dest": str(dest), "reason": "source not found"}
+            return {
+                "artifacts_copied": False,
+                "dest": str(dest),
+                "reason": "source not found",
+            }
 
         shutil.copytree(str(src), str(dest), dirs_exist_ok=True)
         return {"artifacts_copied": True, "dest": str(dest)}
@@ -151,7 +170,9 @@ class HookManager:
             "phase_results": context.get("phase_results", {}),
         }
         path = os.path.join(self._output_dir, "summary.json")
-        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+        os.makedirs(
+            os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True
+        )
 
         with open(path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)
@@ -166,18 +187,20 @@ class HookManager:
         if bridge is not None and hasattr(bridge, "save_metrics"):
             try:
                 bridge.save_metrics()
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 pass
 
             # Try to get metrics data if available
             if hasattr(bridge, "get_metrics"):
                 try:
                     telemetry_data = bridge.get_metrics()
-                except Exception:
+                except Exception:  # pylint: disable=broad-exception-caught
                     pass
 
         path = os.path.join(self._output_dir, "telemetry.json")
-        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+        os.makedirs(
+            os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True
+        )
 
         with open(path, "w", encoding="utf-8") as f:
             json.dump(telemetry_data, f, indent=2, ensure_ascii=False)

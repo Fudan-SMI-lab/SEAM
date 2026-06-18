@@ -1,4 +1,14 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportExplicitAny=false, reportAny=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportOptionalMemberAccess=false, reportUnnecessaryIsInstance=false
+# pyright: reportMissingTypeArgument=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportExplicitAny=false
+# pyright: reportAny=false
+# pyright: reportUnannotatedClassAttribute=false
+# pyright: reportUninitializedInstanceVariable=false
+# pyright: reportOptionalMemberAccess=false
+# pyright: reportUnnecessaryIsInstance=false
 """Deterministic experience candidate classifier."""
 
 from __future__ import annotations
@@ -7,7 +17,6 @@ import hashlib
 import json
 import logging
 from typing import Any
-
 
 logger = logging.getLogger(__name__)
 
@@ -56,32 +65,66 @@ class ExperienceClassifier:
     def __init__(self, session_mgr: Any | None = None) -> None:
         self.session_mgr = session_mgr
 
-    def classify(self, candidate: dict, artifact_ctx: dict | None = None, timeout_sec: int = 300) -> dict:
+    def classify(
+        self, candidate: dict, artifact_ctx: dict | None = None, timeout_sec: int = 300
+    ) -> dict:
         base = self._deterministic_classification(candidate)
-        llm_result = self._try_llm_classification(candidate, artifact_ctx or {}, timeout_sec)
+        llm_result = self._try_llm_classification(
+            candidate, artifact_ctx or {}, timeout_sec
+        )
         if llm_result:
-            base.update({key: value for key, value in llm_result.items() if value not in (None, "", [])})
+            base.update(
+                {
+                    key: value
+                    for key, value in llm_result.items()
+                    if value not in (None, "", [])
+                }
+            )
         return self._normalize(base, candidate)
 
     def _deterministic_classification(self, candidate: dict) -> dict:
         text_fields = " ".join(
             str(candidate.get(key, ""))
-            for key in ("recommended_type", "category", "subtype", "problem_description", "rough_fix_approach", "title")
+            for key in (
+                "recommended_type",
+                "category",
+                "subtype",
+                "problem_description",
+                "rough_fix_approach",
+                "title",
+            )
         ).lower()
         tags = [str(tag).lower() for tag in self._as_list(candidate.get("tags", []))]
         combined = " ".join([text_fields, *tags])
 
-        requested_type = self._normalize_type(candidate.get("recommended_type") or candidate.get("type"))
+        requested_type = self._normalize_type(
+            candidate.get("recommended_type") or candidate.get("type")
+        )
         if requested_type:
             exp_type = requested_type
             reason = "candidate provided recommended_type/type"
-        elif self._matches_any(combined, ["prompt", "instruction", "phase prompt", "analyzer prompt"]):
+        elif self._matches_any(
+            combined, ["prompt", "instruction", "phase prompt", "analyzer prompt"]
+        ):
             exp_type = "prompt"
             reason = "candidate describes prompt or instruction improvement"
-        elif self._matches_any(combined, ["regex", "replacement", "mechanical", "rule", "pattern", "rewrite"]):
+        elif self._matches_any(
+            combined,
+            ["regex", "replacement", "mechanical", "rule", "pattern", "rewrite"],
+        ):
             exp_type = "rule"
             reason = "candidate describes a mechanical pattern replacement"
-        elif self._matches_any(combined, ["case study", "case_study", "narrative", "report", "knowledge", "document"]):
+        elif self._matches_any(
+            combined,
+            [
+                "case study",
+                "case_study",
+                "narrative",
+                "report",
+                "knowledge",
+                "document",
+            ],
+        ):
             exp_type = "document"
             reason = "candidate describes knowledge or case documentation"
         elif not self._has_actionable_skill_content(candidate):
@@ -102,7 +145,9 @@ class ExperienceClassifier:
             "trigger_fingerprint": self._fingerprint(candidate),
         }
 
-    def _try_llm_classification(self, candidate: dict, artifact_ctx: dict, timeout_sec: int) -> dict:
+    def _try_llm_classification(
+        self, candidate: dict, artifact_ctx: dict, timeout_sec: int
+    ) -> dict:
         if not self.session_mgr or not hasattr(self.session_mgr, "send_command"):
             return {}
         try:
@@ -116,7 +161,9 @@ class ExperienceClassifier:
             return {}
 
     def _build_classifier_prompt(self, candidate: dict, artifact_ctx: dict) -> str:
-        payload = json.dumps({"candidate": candidate, "artifact_context": artifact_ctx}, indent=2)
+        payload = json.dumps(
+            {"candidate": candidate, "artifact_context": artifact_ctx}, indent=2
+        )
         return (
             "You are the experience_classifier for the CUDA-to-NPU migration memory pipeline.\n"
             "Classify exactly one reusable experience candidate before solidification.\n"
@@ -125,8 +172,10 @@ class ExperienceClassifier:
             "Allowed type values: skill, document, rule, prompt.\n"
             "Allowed solidifier values: skill_solidifier, document_solidifier, "
             "rule_solidifier, prompt_solidifier.\n"
-            "Use skill only for actionable agent procedures; use document for knowledge/case narrative; "
-            "use rule for mechanical code transformations; use prompt for prompt-improvement proposals.\n"
+            "Use skill only for actionable agent procedures; "
+            "use document for knowledge/case narrative; "
+            "use rule for mechanical code transformations; "
+            "use prompt for prompt-improvement proposals.\n"
             "Do not include markdown fences or explanatory text outside JSON.\n\n"
             f"Input:\n{payload}"
         )
@@ -136,28 +185,41 @@ class ExperienceClassifier:
             return self._classifier_session_id
         mgr = self.session_mgr
         if hasattr(mgr, "get_or_create"):
-            self._classifier_session_id = mgr.get_or_create(role="experience_classifier", lifecycle="persistent")
+            self._classifier_session_id = mgr.get_or_create(
+                role="experience_classifier", lifecycle="persistent"
+            )
         elif hasattr(mgr, "_session_mgr"):
-            self._classifier_session_id = mgr._session_mgr.get_or_create(role="experience_classifier", lifecycle="persistent")
+            self._classifier_session_id = mgr._session_mgr.get_or_create(
+                role="experience_classifier", lifecycle="persistent"
+            )
         else:
             self._classifier_session_id = "experience_classifier"
         return self._classifier_session_id
 
     def _normalize(self, classification: dict, candidate: dict) -> dict:
         exp_type = self._normalize_type(classification.get("type")) or "skill"
+        conf_val = classification.get("confidence", candidate.get("confidence", 0.5))
+        conf_val = float(conf_val or 0.0)
         normalized = {
             "type": exp_type,
             "target_roles": self._as_list(classification.get("target_roles", [])),
             "target_phases": self._as_list(classification.get("target_phases", [])),
             "solidifier": classification.get("solidifier") or f"{exp_type}_solidifier",
-            "reasoning": classification.get("reasoning", "deterministic classifier fallback"),
-            "confidence": float(classification.get("confidence", candidate.get("confidence", 0.5)) or 0.0),
-            "trigger_fingerprint": classification.get("trigger_fingerprint") or self._fingerprint(candidate),
+            "reasoning": classification.get(
+                "reasoning", "deterministic classifier fallback"
+            ),
+            "confidence": conf_val,
+            "trigger_fingerprint": classification.get("trigger_fingerprint")
+            or self._fingerprint(candidate),
         }
         if not normalized["target_roles"]:
-            normalized["target_roles"] = self._target_roles(candidate, str(candidate.get("category", "")), exp_type)
+            normalized["target_roles"] = self._target_roles(
+                candidate, str(candidate.get("category", "")), exp_type
+            )
         if not normalized["target_phases"]:
-            normalized["target_phases"] = self._target_phases(candidate, str(candidate.get("category", "")), exp_type)
+            normalized["target_phases"] = self._target_phases(
+                candidate, str(candidate.get("category", "")), exp_type
+            )
         return normalized
 
     def _target_roles(self, candidate: dict, category: str, exp_type: str) -> list[str]:
@@ -169,7 +231,9 @@ class ExperienceClassifier:
             return ["main_engineer"]
         return self.ROLE_BY_CATEGORY.get(category, ["main_engineer"])
 
-    def _target_phases(self, candidate: dict, category: str, exp_type: str) -> list[str]:
+    def _target_phases(
+        self, candidate: dict, category: str, exp_type: str
+    ) -> list[str]:
         if candidate.get("target_phases"):
             return self._as_list(candidate.get("target_phases"))
         if exp_type == "rule":
@@ -185,16 +249,29 @@ class ExperienceClassifier:
         return max(0.0, min(1.0, confidence))
 
     def _fingerprint(self, candidate: dict) -> str:
-        parts = [str(candidate.get("category", "")), str(candidate.get("subtype", ""))]
-        parts.extend(sorted(str(tag) for tag in self._as_list(candidate.get("tags", []))))
+        parts = [
+            str(candidate.get("category", "")),
+            str(candidate.get("subtype", "")),
+        ]
+        parts.extend(
+            sorted(str(tag) for tag in self._as_list(candidate.get("tags", [])))
+        )
         text = "|".join(part for part in parts if part)
         if not text:
-            text = str(candidate.get("title", candidate.get("candidate_id", "experience")))
+            text = str(
+                candidate.get("title", candidate.get("candidate_id", "experience"))
+            )
         digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
         return f"{text}|{digest}"
 
     def _has_actionable_skill_content(self, candidate: dict) -> bool:
-        fields = ["rough_fix_approach", "fix_steps", "code_changes", "root_cause", "problem_description"]
+        fields = [
+            "rough_fix_approach",
+            "fix_steps",
+            "code_changes",
+            "root_cause",
+            "problem_description",
+        ]
         return any(candidate.get(field) for field in fields)
 
     def _normalize_type(self, value: Any) -> str:
@@ -226,6 +303,6 @@ class ExperienceClassifier:
         if first == -1 or last <= first:
             return {}
         try:
-            return json.loads(text[first:last + 1])
+            return json.loads(text[first : last + 1])
         except json.JSONDecodeError:
             return {}

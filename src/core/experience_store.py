@@ -1,4 +1,13 @@
-# pyright: reportMissingImports=false, reportMissingTypeArgument=false, reportArgumentType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportAny=false, reportExplicitAny=false, reportUnusedCallResult=false
+# pyright: reportMissingImports=false
+# pyright: reportMissingTypeArgument=false
+# pyright: reportArgumentType=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportUnusedCallResult=false
 import json
 import os
 from datetime import datetime, timezone
@@ -78,13 +87,17 @@ class ExperienceStore:
                     candidates.append(json.load(f))
         return candidates
 
-    def write_refined_experience(self, run_id: str, experience: dict, assets: dict) -> str:
+    def write_refined_experience(
+        self, run_id: str, experience: dict, assets: dict
+    ) -> str:
         run_dir = os.path.join(self.staging_dir, run_id)
         os.makedirs(run_dir, exist_ok=True)
         refined_dir = os.path.join(run_dir, self.refined_subdir)
         os.makedirs(refined_dir, exist_ok=True)
 
-        exp_id = experience.get("id", f"{run_id}-exp-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}")
+        exp_id = experience.get(
+            "id", f"{run_id}-exp-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        )
         experience["id"] = exp_id
         experience["run_id"] = run_id
         experience["created_at"] = datetime.now(timezone.utc).isoformat()
@@ -117,7 +130,9 @@ class ExperienceStore:
         self._rewrite_index(entries)
 
     def read_index(self) -> list[dict]:
-        return self._merge_index_entries(self._read_persisted_index(), self._local_skill_index_entries())
+        return self._merge_index_entries(
+            self._read_persisted_index(), self._local_skill_index_entries()
+        )
 
     def _read_persisted_index(self) -> list[dict]:
         if not os.path.isfile(self.index_path):
@@ -176,7 +191,8 @@ class ExperienceStore:
 
     def _local_skill_index_entries(self) -> list[dict[str, Any]]:
         entries = [
-            entry for entry in self.registry.read_catalog()
+            entry
+            for entry in self.registry.read_catalog()
             if entry.get("status") == "local" and entry.get("type") == "skill-pack"
         ]
         if entries:
@@ -184,7 +200,9 @@ class ExperienceStore:
         return self.registry.local_skill_entries()
 
     @staticmethod
-    def _merge_index_entries(entries: list[dict], additions: list[dict[str, Any]]) -> list[dict]:
+    def _merge_index_entries(
+        entries: list[dict], additions: list[dict[str, Any]]
+    ) -> list[dict]:
         seen = {str(entry.get("id", "")) for entry in entries}
         merged = list(entries)
         for entry in additions:
@@ -197,15 +215,18 @@ class ExperienceStore:
     def compact_catalog(self, dry_run: bool = True) -> dict[str, Any]:
         return self.registry.compact_catalog(dry_run=dry_run)
 
-    def cleanup_staging(self, dry_run: bool = True, archive: bool = False) -> dict[str, Any]:
+    def cleanup_staging(
+        self, dry_run: bool = True, archive: bool = False
+    ) -> dict[str, Any]:
         return self.registry.cleanup_staging(dry_run=dry_run, archive=archive)
 
     def archive_consumed(self, dry_run: bool = True) -> dict[str, Any]:
         return self.registry.archive_consumed(dry_run=dry_run)
 
-    def prune_orphans(self, dry_run: bool = True, quarantine: bool = True) -> dict[str, Any]:
+    def prune_orphans(
+        self, dry_run: bool = True, quarantine: bool = True
+    ) -> dict[str, Any]:
         return self.registry.prune_orphans(dry_run=dry_run, quarantine=quarantine)
-
 
     def _apply_legacy_usage_updates(
         self,
@@ -220,7 +241,9 @@ class ExperienceStore:
         selected = set(str(item) for item in selected_ids or [] if item)
         used = set(str(item) for item in used_ids or [] if item)
         ignored = set(str(item) for item in ignored_ids or [] if item)
-        verified_ids = set(str(item) for item in (verification or {}).get("experience_ids", []) if item)
+        verified_ids = set(
+            str(item) for item in (verification or {}).get("experience_ids", []) if item
+        )
         verification_passed = (verification or {}).get("passed")
         changed = False
 
@@ -289,10 +312,20 @@ class ExperienceStore:
 
         return result
 
-    def promote_from_staging(self, run_id: str, promotion_type: str, exp_data: dict) -> str:
-        promotion_type = self._normalize_promotion_type(promotion_type or exp_data.get("type", "skill"))
-        skill_name = exp_data.get("skill_name", exp_data.get("name", f"{run_id}-promoted"))
-        asset_contents = exp_data.get("_asset_contents", {}) if isinstance(exp_data.get("_asset_contents", {}), dict) else {}
+    def promote_from_staging(
+        self, run_id: str, promotion_type: str, exp_data: dict
+    ) -> str:
+        promotion_type = self._normalize_promotion_type(
+            promotion_type or exp_data.get("type", "skill")
+        )
+        skill_name = exp_data.get(
+            "skill_name", exp_data.get("name", f"{run_id}-promoted")
+        )
+        asset_contents = (
+            exp_data.get("_asset_contents", {})
+            if isinstance(exp_data.get("_asset_contents", {}), dict)
+            else {}
+        )
 
         if promotion_type == "skill":
             skill_dir = os.path.join(self.skills_dir, skill_name)
@@ -325,27 +358,34 @@ class ExperienceStore:
                 promoted_asset_paths.append(skill_md_path)
 
             promoted_id = f"promoted-{skill_name}"
-            self.upsert_index({
-                "id": promoted_id,
-                "type": promotion_type,
-                "category": exp_data.get("category", ""),
-                "subtype": exp_data.get("subtype", ""),
-                "title": exp_data.get("title", skill_name),
-                "tags": exp_data.get("tags", []),
-                "confidence": exp_data.get("confidence", 0.0),
-                "target_roles": exp_data.get("target_roles", []),
-                "target_phases": exp_data.get("target_phases", []),
-                "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
-                "status": "promoted",
-                "run_id": run_id,
-                "created_at": exp_data.get("promoted_at", ""),
-            })
-            self.upsert_catalog_entry(self.registry.catalog_entry_from_promotion(
-                run_id,
-                promotion_type,
-                exp_data,
-                [os.path.relpath(path, self.repo_root) for path in promoted_asset_paths],
-            ))
+            self.upsert_index(
+                {
+                    "id": promoted_id,
+                    "type": promotion_type,
+                    "category": exp_data.get("category", ""),
+                    "subtype": exp_data.get("subtype", ""),
+                    "title": exp_data.get("title", skill_name),
+                    "tags": exp_data.get("tags", []),
+                    "confidence": exp_data.get("confidence", 0.0),
+                    "target_roles": exp_data.get("target_roles", []),
+                    "target_phases": exp_data.get("target_phases", []),
+                    "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
+                    "status": "promoted",
+                    "run_id": run_id,
+                    "created_at": exp_data.get("promoted_at", ""),
+                }
+            )
+            self.upsert_catalog_entry(
+                self.registry.catalog_entry_from_promotion(
+                    run_id,
+                    promotion_type,
+                    exp_data,
+                    [
+                        os.path.relpath(path, self.repo_root)
+                        for path in promoted_asset_paths
+                    ],
+                )
+            )
 
             return data_path
 
@@ -372,27 +412,34 @@ class ExperienceStore:
                 promoted_asset_paths.append(asset_path)
 
             promoted_id = f"promoted-{item_slug}"
-            self.upsert_index({
-                "id": promoted_id,
-                "type": promotion_type,
-                "category": exp_data.get("category", ""),
-                "subtype": exp_data.get("subtype", ""),
-                "title": exp_data.get("title", skill_name),
-                "tags": exp_data.get("tags", []),
-                "confidence": exp_data.get("confidence", 0.0),
-                "target_roles": exp_data.get("target_roles", []),
-                "target_phases": exp_data.get("target_phases", []),
-                "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
-                "status": "promoted",
-                "run_id": run_id,
-                "created_at": exp_data.get("promoted_at", ""),
-            })
-            self.upsert_catalog_entry(self.registry.catalog_entry_from_promotion(
-                run_id,
-                promotion_type,
-                {**exp_data, "skill_name": item_slug, "name": item_slug},
-                [os.path.relpath(path, self.repo_root) for path in promoted_asset_paths],
-            ))
+            self.upsert_index(
+                {
+                    "id": promoted_id,
+                    "type": promotion_type,
+                    "category": exp_data.get("category", ""),
+                    "subtype": exp_data.get("subtype", ""),
+                    "title": exp_data.get("title", skill_name),
+                    "tags": exp_data.get("tags", []),
+                    "confidence": exp_data.get("confidence", 0.0),
+                    "target_roles": exp_data.get("target_roles", []),
+                    "target_phases": exp_data.get("target_phases", []),
+                    "trigger_fingerprint": exp_data.get("trigger_fingerprint", ""),
+                    "status": "promoted",
+                    "run_id": run_id,
+                    "created_at": exp_data.get("promoted_at", ""),
+                }
+            )
+            self.upsert_catalog_entry(
+                self.registry.catalog_entry_from_promotion(
+                    run_id,
+                    promotion_type,
+                    {**exp_data, "skill_name": item_slug, "name": item_slug},
+                    [
+                        os.path.relpath(path, self.repo_root)
+                        for path in promoted_asset_paths
+                    ],
+                )
+            )
 
             return file_path
 
@@ -423,7 +470,9 @@ class ExperienceStore:
 
         return similar
 
-    def _find_promoted_skill(self, category: str, skill_name: str | None = None) -> dict | None:
+    def _find_promoted_skill(
+        self, category: str, skill_name: str | None = None
+    ) -> dict | None:
         if not os.path.isdir(self.skills_dir):
             return None
 
@@ -440,7 +489,9 @@ class ExperienceStore:
                 skill_md = os.path.join(skill_dir, "SKILL.md")
                 if not os.path.isfile(skill_md):
                     continue
-                data = self._parse_meta_from_skill(open(skill_md, "r", encoding="utf-8").read())
+                data = self._parse_meta_from_skill(
+                    open(skill_md, "r", encoding="utf-8").read()
+                )
 
             if data.get("category") != category:
                 continue
@@ -459,14 +510,22 @@ class ExperienceStore:
         tags = exp.get("tags", [])
         skill_name = exp.get("skill_name", exp.get("name", None))
         title = exp.get("title", "")
-        exp_type = self._normalize_promotion_type(exp.get("type", exp.get("promotion_type", "skill")))
+        exp_type = self._normalize_promotion_type(
+            exp.get("type", exp.get("promotion_type", "skill"))
+        )
 
         index_id = f"{run_id}-exp-{skill_name or title}"
 
-        similar_staging = self._find_similar_exp_entries(category, tags, min_overlap=2, status_filter="staging")
+        similar_staging = self._find_similar_exp_entries(
+            category, tags, min_overlap=2, status_filter="staging"
+        )
         similar_staging = [e for e in similar_staging if e.get("id") != index_id]
 
-        existing_skill = self._find_promoted_skill(category, skill_name) if exp_type == "skill" else None
+        existing_skill = (
+            self._find_promoted_skill(category, skill_name)
+            if exp_type == "skill"
+            else None
+        )
 
         exists_count = 1 if existing_skill is not None else 0
         total_count = len(similar_staging) + exists_count + 1
@@ -482,7 +541,9 @@ class ExperienceStore:
         if existing_skill is not None:
             exp["id"] = index_id
             exp["run_id"] = run_id
-            result = self._merge_into_promoted_skill(existing_skill["dir"], exp, similar_staging)
+            result = self._merge_into_promoted_skill(
+                existing_skill["dir"], exp, similar_staging
+            )
             if result:
                 all_entries = self._read_persisted_index()
                 consumed_ids = [e.get("id") for e in similar_staging if e.get("id")]
@@ -537,16 +598,22 @@ class ExperienceStore:
             "rule": os.path.join(self.promotions_dir, "rules"),
             "prompt": os.path.join(self.promotions_dir, "prompt_proposals"),
         }
-        return roots.get(promotion_type, os.path.join(self.promotions_dir, promotion_type))
+        return roots.get(
+            promotion_type, os.path.join(self.promotions_dir, promotion_type)
+        )
 
     @staticmethod
     def _slug(value: str) -> str:
-        slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value)).strip("-")
+        slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value)).strip(
+            "-"
+        )
         while "--" in slug:
             slug = slug.replace("--", "-")
         return slug or "experience"
 
-    def _merge_into_promoted_skill(self, skill_path: str, new_exp: dict, staging_others: list) -> bool:
+    def _merge_into_promoted_skill(
+        self, skill_path: str, new_exp: dict, staging_others: list
+    ) -> bool:
         data_path = os.path.join(skill_path, "skill_data.json")
 
         if os.path.isfile(data_path):
@@ -724,7 +791,9 @@ class ExperienceStore:
                 f.write(json.dumps(entry) + "\n")
         os.replace(tmp_path, self.index_path)
 
-    def _mark_entries_consumed(self, entry_ids: list[str], all_entries: list[dict]) -> None:
+    def _mark_entries_consumed(
+        self, entry_ids: list[str], all_entries: list[dict]
+    ) -> None:
         id_set = set(entry_ids)
         for entry in all_entries:
             if entry.get("id") in id_set:

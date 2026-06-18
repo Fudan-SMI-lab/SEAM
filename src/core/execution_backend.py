@@ -41,23 +41,17 @@ class ExecutionBackend(Protocol):
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout: int | float | None = None,
-    ) -> ExecResult:
-        ...
+    ) -> ExecResult: ...
 
-    def is_available(self) -> bool:
-        ...
+    def is_available(self) -> bool: ...
 
-    def cleanup(self) -> None:
-        ...
+    def cleanup(self) -> None: ...
 
-    def preflight(self) -> None:
-        ...
+    def preflight(self) -> None: ...
 
-    def probe_environment(self) -> dict[str, Any]:
-        ...
+    def probe_environment(self) -> dict[str, Any]: ...
 
-    def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
-        ...
+    def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]: ...
 
 
 class LocalBackend:
@@ -76,14 +70,22 @@ class LocalBackend:
             run_env = {**__import__("os").environ, **env}
         if isinstance(command, str):
             completed = subprocess.run(
-                command, shell=True, cwd=cwd, env=run_env,
-                capture_output=True, text=True,
+                command,
+                shell=True,
+                cwd=cwd,
+                env=run_env,
+                capture_output=True,
+                text=True,
                 timeout=timeout,
             )
         else:
             completed = subprocess.run(
-                command, shell=False, cwd=cwd, env=run_env,
-                capture_output=True, text=True,
+                command,
+                shell=False,
+                cwd=cwd,
+                env=run_env,
+                capture_output=True,
+                text=True,
                 timeout=timeout,
             )
         elapsed = time.monotonic() - start
@@ -107,7 +109,10 @@ class LocalBackend:
         return {"status": "local", "error": "probe not applicable in local mode"}
 
     def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
-        raise RuntimeError("Execution environment reset is only supported for image-backed container backends")
+        raise RuntimeError(
+            "Execution environment reset is only supported for image-backed "
+            "container backends"
+        )
 
     def get_execution_context(
         self,
@@ -122,7 +127,9 @@ class LocalBackend:
         return {
             "execution_backend_mode": "local",
             "actual_execution_command": "(local execution; run entry_script directly)",
-            "container_probe_command_prefix": "(local execution; no container probe command)",
+            "container_probe_command_prefix": (
+                "(local execution; no container probe command)"
+            ),
             "container_name_or_id": "(local execution; no container)",
             "container_workdir": "(local execution; uses project cwd)",
             "host_project_dir": "(local execution; run entry_script directly)",
@@ -141,7 +148,8 @@ class ContainerBackend:
     def __init__(self, config: ExecutionBackendConfig) -> None:
         if not isinstance(config, ExecutionBackendConfig):
             raise TypeError(
-                f"ContainerBackend requires ExecutionBackendConfig, got {type(config).__name__}"
+                f"ContainerBackend requires ExecutionBackendConfig, "
+                f"got {type(config).__name__}"
             )
         self.config = config
         self._container_id: str | None = None
@@ -157,7 +165,8 @@ class ContainerBackend:
         """
         if self.config.images:
             return [
-                c for c in self.config.images
+                c
+                for c in self.config.images
                 if str(c).strip() and str(c).strip() != "None"
             ]
         if self.config.image:
@@ -173,10 +182,16 @@ class ContainerBackend:
         try:
             result = subprocess.run(
                 [self._runtime_cmd, "images", "--format", "{{.Repository}}:{{.Tag}}"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
-                logger.warning("Image listing failed (%s): %s", self._runtime_cmd, result.stderr.strip())
+                logger.warning(
+                    "Image listing failed (%s): %s",
+                    self._runtime_cmd,
+                    result.stderr.strip(),
+                )
                 return []
             images = []
             for line in result.stdout.splitlines():
@@ -197,7 +212,9 @@ class ContainerBackend:
         try:
             subprocess.run(
                 [self._runtime_cmd, "--version"],
-                capture_output=True, check=True, timeout=10,
+                capture_output=True,
+                check=True,
+                timeout=10,
             )
             return True
         except (subprocess.SubprocessError, OSError):
@@ -207,7 +224,10 @@ class ContainerBackend:
         """Create a container using normalized candidate images with sequential fallback."""
         candidates = self._resolve_candidate_images()
         if not candidates:
-            raise ValueError("execution_backend.image or execution_backend.images is required when source=image")
+            raise ValueError(
+                "execution_backend.image or execution_backend.images is required "
+                "when source=image"
+            )
         if len(candidates) == 1:
             self._do_create_container(candidates[0])
             return
@@ -218,7 +238,9 @@ class ContainerBackend:
                 return
             except RuntimeError as exc:
                 errors.append((candidate, str(exc)))
-                logger.warning("Container create failed with image %s: %s", candidate, exc)
+                logger.warning(
+                    "Container create failed with image %s: %s", candidate, exc
+                )
         detail = "; ".join(f"{img}: {err}" for img, err in errors)
         raise RuntimeError(f"All images failed: {detail}")
 
@@ -255,12 +277,15 @@ class ContainerBackend:
         assert cid is not None  # guarded by caller
         result = subprocess.run(
             [self._runtime_cmd, "inspect", "--format", "{{.State.Status}}", cid],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode != 0:
             if self.config.source == "existing_container":
                 raise ContainerNotFoundError(
-                    f"Cached container '{cid}' no longer exists. {result.stderr.strip()}"
+                    f"Cached container '{cid}' no longer exists. "
+                    f"{result.stderr.strip()}"
                 )
             logger.warning("Cached container '%s' not found — will recreate", cid)
             self._container_id = None
@@ -271,9 +296,14 @@ class ContainerBackend:
         if status != "running":
             if self.config.source == "existing_container":
                 raise ContainerNotRunningError(
-                    f"Cached container '{cid}' status is '{status}', expected 'running'"
+                    f"Cached container '{cid}' status is '{status}', "
+                    f"expected 'running'"
                 )
-            logger.warning("Cached container '%s' status is '%s' — will recreate", cid, status)
+            logger.warning(
+                "Cached container '%s' status is '%s' — will recreate",
+                cid,
+                status,
+            )
             self._container_id = None
             self._initialized = False
             return False
@@ -294,7 +324,9 @@ class ContainerBackend:
     def _inspect_container(self, container_id: str) -> dict[str, Any]:
         result = subprocess.run(
             [self._runtime_cmd, "inspect", container_id],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode != 0:
             raise ContainerNotFoundError(
@@ -303,34 +335,48 @@ class ContainerBackend:
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Container inspect output was not valid JSON: {exc}") from exc
+            raise RuntimeError(
+                f"Container inspect output was not valid JSON: {exc}"
+            ) from exc
         if isinstance(data, list) and data and isinstance(data[0], dict):
             return data[0]
         if isinstance(data, dict):
             return data
         raise RuntimeError("Container inspect output did not describe a container")
 
-    def _verify_framework_owned_image_container(self, container_id: str) -> dict[str, Any]:
+    def _verify_framework_owned_image_container(
+        self, container_id: str
+    ) -> dict[str, Any]:
         inspect_data = self._inspect_container(container_id)
         name = str(inspect_data.get("Name") or "").lstrip("/")
         prefix = str(self.config.container_name_prefix or "")
         if prefix and name and not name.startswith(f"{prefix}-"):
             raise RuntimeError(
-                f"Refusing to reset container '{container_id}': name '{name}' does not match framework prefix '{prefix}-'"
+                f"Refusing to reset container '{container_id}': name '{name}' "
+                f"does not match framework prefix '{prefix}-'"
             )
 
-        config_data = inspect_data.get("Config") if isinstance(inspect_data.get("Config"), dict) else {}
+        config_data = (
+            inspect_data.get("Config")
+            if isinstance(inspect_data.get("Config"), dict)
+            else {}
+        )
         inspected_image = str(config_data.get("Image") or "")
         candidates = set(self._resolve_candidate_images())
         if inspected_image and candidates and inspected_image not in candidates:
             raise RuntimeError(
-                f"Refusing to reset container '{container_id}': image '{inspected_image}' is not one of configured images"
+                f"Refusing to reset container '{container_id}': image "
+                f"'{inspected_image}' is not one of configured images"
             )
 
         if self._host_project_dir:
             expected_source = str(Path(self._host_project_dir).resolve())
             expected_dest = str(self.config.container_workdir).rstrip("/")
-            mounts = inspect_data.get("Mounts") if isinstance(inspect_data.get("Mounts"), list) else []
+            mounts = (
+                inspect_data.get("Mounts")
+                if isinstance(inspect_data.get("Mounts"), list)
+                else []
+            )
             matching_mount = False
             for mount in mounts:
                 if not isinstance(mount, dict):
@@ -346,44 +392,67 @@ class ContainerBackend:
                     break
             if mounts and not matching_mount:
                 raise RuntimeError(
-                    f"Refusing to reset container '{container_id}': expected project mount {expected_source}:{expected_dest} not found"
+                    f"Refusing to reset container '{container_id}': expected "
+                    f"project mount {expected_source}:{expected_dest} not found"
                 )
 
         working_dir = str(config_data.get("WorkingDir") or "")
-        if working_dir and working_dir.rstrip("/") != str(self.config.container_workdir).rstrip("/"):
+        if working_dir and working_dir.rstrip("/") != str(
+            self.config.container_workdir
+        ).rstrip("/"):
             raise RuntimeError(
-                f"Refusing to reset container '{container_id}': workdir '{working_dir}' does not match '{self.config.container_workdir}'"
+                f"Refusing to reset container '{container_id}': workdir "
+                f"'{working_dir}' does not match '{self.config.container_workdir}'"
             )
         return inspect_data
 
     def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
         if self.config.source != "image":
-            raise RuntimeError("Execution environment reset is only supported for source=image containers")
+            raise RuntimeError(
+                "Execution environment reset is only supported for source=image "
+                "containers"
+            )
         old_container_id = self._container_id
         if not old_container_id:
-            raise RuntimeError("Execution environment reset requires an existing framework-created container id")
+            raise RuntimeError(
+                "Execution environment reset requires an existing "
+                "framework-created container id"
+            )
 
         inspect_data = self._verify_framework_owned_image_container(old_container_id)
-        config_data = inspect_data.get("Config") if isinstance(inspect_data.get("Config"), dict) else {}
+        config_data = (
+            inspect_data.get("Config")
+            if isinstance(inspect_data.get("Config"), dict)
+            else {}
+        )
         image = str(config_data.get("Image") or self.config.image or "")
 
         stop_result = subprocess.run(
             [self._runtime_cmd, "stop", old_container_id],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if stop_result.returncode != 0:
             raise RuntimeError(
-                f"Failed to stop container '{old_container_id}' before reset: {stop_result.stderr.strip()}"
+                f"Failed to stop container '{old_container_id}' before reset: "
+                f"{stop_result.stderr.strip()}"
             )
         rm_result = subprocess.run(
             [self._runtime_cmd, "rm", old_container_id],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if rm_result.returncode != 0:
             rm_err = rm_result.stderr.strip()
-            if not (self.config.cleanup and ("No such" in rm_err or "not found" in rm_err.lower())):
+            if not (
+                self.config.cleanup
+                and ("No such" in rm_err or "not found" in rm_err.lower())
+            ):
                 raise RuntimeError(
-                    f"Failed to remove container '{old_container_id}' before reset: {rm_err}"
+                    f"Failed to remove container '{old_container_id}' before reset: "
+                    f"{rm_err}"
                 )
 
         self._container_id = None
@@ -398,11 +467,20 @@ class ContainerBackend:
             "reason": reason,
             "preserved_notes": [
                 "host project directory remains mounted into the recreated container",
-                "entry script command and workflow state are preserved by the executor",
-                "configured devices, env vars, network mode, runtime flags, and volumes are reused",
+                (
+                    "entry script command and workflow state are preserved by the "
+                    "executor"
+                ),
+                (
+                    "configured devices, env vars, network mode, runtime flags, and "
+                    "volumes are reused"
+                ),
             ],
             "lost_notes": [
-                "in-container package installs and edits outside mounted volumes are discarded",
+                (
+                    "in-container package installs and edits outside mounted volumes "
+                    "are discarded"
+                ),
                 "process state from the old container is discarded",
             ],
         }
@@ -439,9 +517,7 @@ class ContainerBackend:
         )
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to create container: {result.stderr.strip()}"
-            )
+            raise RuntimeError(f"Failed to create container: {result.stderr.strip()}")
         self._container_id = result.stdout.strip()
         self._initialized = True
         logger.info("Container created: %s", self._container_id)
@@ -455,7 +531,9 @@ class ContainerBackend:
 
         result = subprocess.run(
             [self._runtime_cmd, "inspect", "--format", "{{.State.Status}}", cname],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode != 0:
             raise ContainerNotFoundError(
@@ -471,17 +549,22 @@ class ContainerBackend:
             for dev in self.config.required_devices:
                 check = subprocess.run(
                     [self._runtime_cmd, "exec", cname, "test", "-e", dev],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 if check.returncode != 0:
                     logger.warning(
-                        "Required device %s not found in container %s", dev, cname
+                        "Required device %s not found in container %s",
+                        dev,
+                        cname,
                     )
 
         if self.config.required_env_vars:
             env_result = subprocess.run(
                 [self._runtime_cmd, "exec", cname, "env"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             container_env = set()
             if env_result.returncode == 0:
@@ -491,7 +574,9 @@ class ContainerBackend:
             for var in self.config.required_env_vars:
                 if var not in container_env:
                     logger.warning(
-                        "Required env var %s not found in container %s", var, cname
+                        "Required env var %s not found in container %s",
+                        var,
+                        cname,
                     )
 
         self._container_id = cname
@@ -511,8 +596,10 @@ class ContainerBackend:
         if not self._host_project_dir:
             return token
         if token.startswith(self._host_project_dir):
-            rel = token[len(self._host_project_dir):].lstrip("/")
-            return str(Path(self.config.container_workdir) / rel) if rel else self.config.container_workdir
+            rel = token[len(self._host_project_dir) :].lstrip("/")
+            if rel:
+                return str(Path(self.config.container_workdir) / rel)
+            return self.config.container_workdir
         return token
 
     def _rewrite_command_paths(self, command: str) -> str:
@@ -572,7 +659,10 @@ class ContainerBackend:
         effective_timeout = timeout or self.config.timeout
         start = time.monotonic()
         proc = subprocess.run(
-            exec_cmd, capture_output=True, text=True, timeout=effective_timeout,
+            exec_cmd,
+            capture_output=True,
+            text=True,
+            timeout=effective_timeout,
         )
         elapsed = time.monotonic() - start
         return ExecResult(
@@ -590,14 +680,16 @@ class ContainerBackend:
         try:
             subprocess.run(
                 [self._runtime_cmd, "stop", self._container_id],
-                capture_output=True, timeout=30,
+                capture_output=True,
+                timeout=30,
             )
         except Exception as exc:
             logger.warning("Container stop failed: %s", exc)
         try:
             subprocess.run(
                 [self._runtime_cmd, "rm", self._container_id],
-                capture_output=True, timeout=30,
+                capture_output=True,
+                timeout=30,
             )
         except Exception as exc:
             logger.warning("Container rm failed: %s", exc)
@@ -618,7 +710,9 @@ class ContainerBackend:
         cid = self._container_id
         if cid is None:
             if self.config.source == "existing_container":
-                cid = self.config.container_name or "(will be created on first execution)"
+                cid = self.config.container_name or (
+                    "(will be created on first execution)"
+                )
             else:
                 cid = "(will be created on first execution)"
 
@@ -679,59 +773,73 @@ class ContainerBackend:
             result["error"] = "Container not created — call preflight() first"
             return result
 
-        probe_script = """
-import json
-import os
-import platform
-import sys
+        probe_script = (
+            "import json\n"
+            "import os\n"
+            "import platform\n"
+            "import sys\n"
+            "\n"
+            "facts = {\n"
+            '    "status": "ok",\n'
+            '    "interpreter_path": sys.executable,\n'
+            '    "python_version": f"{sys.version_info.major}.'
+            f'{sys.version_info.minor}.{sys.version_info.micro}",\n'
+            '    "platform": platform.system(),\n'
+            '    "platform_machine": platform.machine(),\n'
+            '    "cwd": os.getcwd(),\n'
+            '    "env_keys": sorted(os.environ.keys()),\n'
+            "}\n"
+            "try:\n"
+            "    import torch\n"
+            '    facts["torch_version"] = torch.__version__\n'
+            '    facts["torch_cuda_available"] = getattr(torch.cuda, '
+            '"is_available", lambda: False)()\n'
+            '    facts["torch_device_count"] = getattr(torch.cuda, '
+            '"device_count", lambda: 0)()\n'
+            "except Exception:\n"
+            '    facts["torch_version"] = "not_installed"\n'
+            '    facts["torch_cuda_available"] = False\n'
+            '    facts["torch_device_count"] = 0\n'
+            "print(json.dumps(facts))\n"
+        )
 
-facts = {
-    "status": "ok",
-    "interpreter_path": sys.executable,
-    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-    "platform": platform.system(),
-    "platform_machine": platform.machine(),
-    "cwd": os.getcwd(),
-    "env_keys": sorted(os.environ.keys()),
-}
-try:
-    import torch
-    facts["torch_version"] = torch.__version__
-    facts["torch_cuda_available"] = getattr(torch.cuda, "is_available", lambda: False)()
-    facts["torch_device_count"] = getattr(torch.cuda, "device_count", lambda: 0)()
-except Exception:
-    facts["torch_version"] = "not_installed"
-    facts["torch_cuda_available"] = False
-    facts["torch_device_count"] = 0
-print(json.dumps(facts))
-""".strip()
-
-        shell_probe = """
-set -eu
-probe_python=""
-for candidate in python3 python python3.12 python3.11 python3.10 python3.9 python3.8; do
-    if command -v "$candidate" >/dev/null 2>&1; then
-        probe_python="$(command -v "$candidate")"
-        break
-    fi
-done
-if [ -z "$probe_python" ]; then
-    printf '%s\n' '{"status":"probe_failed","error":"No Python interpreter found on container PATH"}'
-    exit 0
-fi
-exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"
-""".strip()
+        shell_probe = (
+            "set -eu\n"
+            'probe_python=""\n'
+            "for candidate in python3 python python3.12 python3.11 "
+            "python3.10 python3.9 python3.8; do\n"
+            '    if command -v "$candidate" >/dev/null 2>&1; then\n'
+            '        probe_python="$(command -v "$candidate")"\n'
+            "        break\n"
+            "    fi\n"
+            "done\n"
+            'if [ -z "$probe_python" ]; then\n'
+            '    printf \'%s\\n\' \'{"status":"probe_failed",'
+            '"error":"No Python interpreter found on container PATH"}\'\n'
+            "    exit 0\n"
+            "fi\n"
+            'exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"\n'
+        )
 
         probe_cmd: list[str] = [
-            self._runtime_cmd, "exec", "-i", "--workdir",
+            self._runtime_cmd,
+            "exec",
+            "-i",
+            "--workdir",
             self.config.container_workdir,
-            "-e", f"SEAM_CONTAINER_PROBE_SCRIPT={probe_script}",
-            cid, "sh", "-lc", shell_probe,
+            "-e",
+            f"SEAM_CONTAINER_PROBE_SCRIPT={probe_script}",
+            cid,
+            "sh",
+            "-lc",
+            shell_probe,
         ]
 
         try:
             proc = subprocess.run(
-                probe_cmd, capture_output=True, text=True,
+                probe_cmd,
+                capture_output=True,
+                text=True,
                 timeout=30,
             )
             if proc.returncode == 0:
@@ -778,7 +886,9 @@ exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"
         cid = self._container_id
         if cid is None:
             if self.config.source == "existing_container":
-                cid = self.config.container_name or "(will be created on first execution)"
+                cid = self.config.container_name or (
+                    "(will be created on first execution)"
+                )
             else:
                 cid = "(will be created on first execution)"
 
@@ -805,7 +915,7 @@ exec "$probe_python" -c "$SEAM_CONTAINER_PROBE_SCRIPT"
 _LOCAL_CTX: dict[str, str] = {
     "execution_backend_mode": "local",
     "actual_execution_command": "(local execution; run entry_script directly)",
-    "container_probe_command_prefix": "(local execution; no container probe command)",
+    "container_probe_command_prefix": ("(local execution; no container probe command)"),
     "container_name_or_id": "(local execution; no container)",
     "container_workdir": "(local execution; uses project cwd)",
     "host_project_dir": "(local execution; run entry_script directly)",
@@ -840,7 +950,9 @@ def auto_select_backend(config: ExecutionBackendConfig) -> ExecutionBackendConfi
     try:
         subprocess.run(
             [runtime_cmd, "--version"],
-            capture_output=True, check=True, timeout=10,
+            capture_output=True,
+            check=True,
+            timeout=10,
         )
         return ExecutionBackendConfig(
             mode="container",
@@ -879,35 +991,61 @@ def get_execution_environment_context(
         parts.append("## Execution Environment Context")
         parts.append("")
         parts.append("- **execution_backend_mode**: container")
-        parts.append("- **Target runtime**: the target runtime phase executes inside the framework-created container.")
+        parts.append(
+            "- **Target runtime**: the target runtime phase executes inside the "
+            "framework-created container."
+        )
         host_proj = getattr(backend, "_host_project_dir", None) or "(not yet set)"
         parts.append(f"- **Host project dir**: {host_proj}")
-        container_proj = getattr(getattr(backend, "config", None), "container_workdir", "(unknown)")
+        container_proj = getattr(
+            getattr(backend, "config", None), "container_workdir", "(unknown)"
+        )
         parts.append(f"- **Container project dir**: {container_proj}")
         if probe_facts and probe_facts.get("status") == "ok":
             probe_summary = []
-            for key in ("interpreter_path", "python_version", "torch_version", "platform", "cwd"):
+            for key in (
+                "interpreter_path",
+                "python_version",
+                "torch_version",
+                "platform",
+                "cwd",
+            ):
                 if key in probe_facts:
                     probe_summary.append(f"{key}: {probe_facts[key]}")
             if probe_summary:
                 parts.append(f"- **Container probe facts**: {', '.join(probe_summary)}")
-            interp = probe_facts.get("interpreter_path", "a Python interpreter discovered on the container PATH")
-            parts.append(f"- **Probe interpreter**: the probe ran `{interp}` inside the container; this command is confirmed callable in the target runtime.")
+            interp = probe_facts.get(
+                "interpreter_path",
+                "a Python interpreter discovered on the container PATH",
+            )
+            parts.append(
+                "- **Probe interpreter**: the probe ran `{}` inside the container; "
+                "this command is confirmed callable in the target runtime.".format(
+                    interp
+                )
+            )
         elif probe_facts:
             status = probe_facts.get("status", "unknown")
             error = probe_facts.get("error", "")
             extra = f" — {error}" if error else ""
             parts.append(f"- **Container probe**: status={status}{extra}")
-        parts.append("- **Tooling note**: OpenCode file tools (read, grep, etc.) observe the host filesystem, not the container. For target-runtime execution, use paths and commands valid inside the target container environment.")
+        parts.append(
+            "- **Tooling note**: OpenCode file tools (read, grep, etc.) observe "
+            "the host filesystem, not the container. For target-runtime execution, "
+            "use paths and commands valid inside the target container environment."
+        )
         return "\n".join(parts)
 
     # LocalBackend or None
     return (
         "## Execution Environment Context\n\n"
         "- **execution_backend_mode**: local\n"
-        "- **Target runtime**: the target runtime phase executes on the host/local environment directly.\n"
-        "- **Tooling note**: OpenCode tools and the target runtime observe the same local environment.\n"
-        "  File paths, Python interpreters, and commands you see are exactly what the target runtime will use."
+        "- **Target runtime**: the target runtime phase executes on the host/local "
+        "environment directly.\n"
+        "- **Tooling note**: OpenCode tools and the target runtime observe the same "
+        "local environment.\n"
+        "  File paths, Python interpreters, and commands you see are exactly what "
+        "the target runtime will use."
     )
 
 
@@ -929,8 +1067,17 @@ def get_container_prompt_context(
     for k, v in get_execution_context(backend).items():
         ctx[k] = str(v)
     if probe_facts:
-        ctx["container_env_facts"] = json.dumps(probe_facts, ensure_ascii=False, default=str)
-        for key in ("interpreter_path", "python_version", "platform", "platform_machine", "cwd", "torch_version"):
+        ctx["container_env_facts"] = json.dumps(
+            probe_facts, ensure_ascii=False, default=str
+        )
+        for key in (
+            "interpreter_path",
+            "python_version",
+            "platform",
+            "platform_machine",
+            "cwd",
+            "torch_version",
+        ):
             if key in probe_facts:
                 ctx[f"container_{key}"] = str(probe_facts[key])
     return ctx

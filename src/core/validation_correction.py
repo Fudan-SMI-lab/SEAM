@@ -16,7 +16,9 @@ def extract_output_format_from_prompt(prompt_text: object) -> str | None:
     blocks: list[str] = []
     for section in sections:
         body = section.group("body")
-        for match in re.finditer(r"```(?:json)?\s*\n(.*?)```", body, flags=re.IGNORECASE | re.DOTALL):
+        for match in re.finditer(
+            r"```(?:json)?\s*\n(.*?)```", body, flags=re.IGNORECASE | re.DOTALL
+        ):
             block = match.group(1).strip()
             if block:
                 blocks.append(block)
@@ -71,7 +73,11 @@ def build_validation_correction_prompt(
 
     field_hint = ""
     if missing_fields:
-        field_hint = "\n\nRequired or invalid fields called out by validation: " + ", ".join(missing_fields) + "."
+        field_hint = (
+            "\n\nRequired or invalid fields called out by validation: "
+            + ", ".join(missing_fields)
+            + "."
+        )
 
     action_hint = ""
     if "existing file for custom-op contracts" in error_msg:
@@ -81,18 +87,22 @@ def build_validation_correction_prompt(
         )
 
     final_contract = (
-        "\n\nYou may reason, explain, or analyze before the JSON. A single parseable JSON object is mandatory. "
-        "The last thing in your response must be one complete JSON object matching the expected shape. "
+        "\n\nYou may reason, explain, or analyze before the JSON. "
+        "A single parseable JSON object is mandatory. "
+        "The last thing in your response must be one complete JSON object "
+        "matching the expected shape. "
         "Do not put prose, markdown, or any other text after that final JSON object. "
-        "Preserve previously-correct fields and only change what is needed to satisfy validation."
+        "Preserve previously-correct fields and only change what is needed "
+        "to satisfy validation."
     )
 
     if is_parse_failure:
         return (
             f"Your previous response{phase_label} did not contain a valid JSON object. "
-            "It may have contained prose/reasoning only, malformed JSON, or text after an incomplete JSON object."
+            "It may have contained prose/reasoning only, malformed JSON, or ",
+            "text after an incomplete JSON object."
             f"{format_block}"
-            f"{final_contract}"
+            f"{final_contract}",
         )
 
     return (

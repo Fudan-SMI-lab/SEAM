@@ -1,5 +1,13 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportPrivateUsage=false, reportUnusedCallResult=false
+# pyright: reportMissingTypeArgument=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnannotatedClassAttribute=false
+# pyright: reportPrivateUsage=false
+# pyright: reportUnusedCallResult=false
 """Batch promotion tool for staging experiences."""
+
 import json
 import os
 from collections import defaultdict
@@ -28,8 +36,14 @@ class ExperiencePromoter:
                 for e in entries:
                     result["skipped"].append(e.get("id"))
                 continue
-            promotion_type = self.store._normalize_promotion_type(entries[0].get("type", entries[0].get("promotion_type", "skill")))
-            existing = self.store._find_promoted_skill(category, name) if promotion_type == "skill" else None
+            promotion_type = self.store._normalize_promotion_type(
+                entries[0].get("type", entries[0].get("promotion_type", "skill"))
+            )
+            existing = (
+                self.store._find_promoted_skill(category, name)
+                if promotion_type == "skill"
+                else None
+            )
             if existing is not None:
                 experiences = []
                 for e in entries:
@@ -55,9 +69,7 @@ class ExperiencePromoter:
             self.store._rewrite_index(all_entries)
         return result
 
-    def _group_by_similarity(
-        self, entries: list[dict]
-    ) -> dict[tuple, list[dict]]:
+    def _group_by_similarity(self, entries: list[dict]) -> dict[tuple, list[dict]]:
         """Group entries by (category, skill_name or title)."""
         groups: dict[tuple, list[dict]] = defaultdict(list)
         for entry in entries:
@@ -76,9 +88,7 @@ class ExperiencePromoter:
         exp_id = entry.get("id")
         if not run_id or not exp_id:
             return None
-        path = os.path.join(
-            self.store.staging_dir, run_id, "refined", f"{exp_id}.json"
-        )
+        path = os.path.join(self.store.staging_dir, run_id, "refined", f"{exp_id}.json")
         if not os.path.isfile(path):
             return None
         with open(path, "r", encoding="utf-8") as f:
