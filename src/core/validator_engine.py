@@ -23,14 +23,15 @@ class ValidationDict(TypedDict):
     warnings: list[str]
 
 
-ValidatorResultValue: TypeAlias = ValidationResult | ValidationDict | bool | list[str] | tuple[str, ...]
+ValidatorResultValue: TypeAlias = (
+    ValidationResult | ValidationDict | bool | list[str] | tuple[str, ...]
+)
 
 
 class ValidatorFn(Protocol):
     """Callable signature for registered validators."""
 
-    def __call__(self, data: dict[str, object]) -> ValidatorResultValue:
-        ...
+    def __call__(self, data: dict[str, object]) -> ValidatorResultValue: ...
 
 
 class ValidatorEngine:
@@ -72,7 +73,11 @@ class ValidatorEngine:
         if isinstance(result, ValidationResult):
             errors = _normalize_messages(result.errors)
             warnings = _normalize_messages(result.warnings)
-            return ValidationResult(passed=bool(result.passed) and not errors, errors=errors, warnings=warnings)
+            return ValidationResult(
+                passed=bool(result.passed) and not errors,
+                errors=errors,
+                warnings=warnings,
+            )
 
         if isinstance(result, bool):
             errors = [] if result else [f"Validator '{name}' reported failure."]
@@ -92,7 +97,9 @@ class ValidatorEngine:
 
         return ValidationResult(
             passed=False,
-            errors=[f"Validator '{name}' returned unsupported type: {type(result).__name__}"],
+            errors=[
+                f"Validator '{name}' returned unsupported type: {type(result).__name__}"
+            ],
             warnings=[],
         )
 
@@ -103,6 +110,8 @@ def _normalize_messages(messages: object) -> list[str]:
     if isinstance(messages, str):
         return [messages]
     if isinstance(messages, (list, tuple, set)):
-        iterable_messages = cast(list[object] | tuple[object, ...] | set[object], messages)
+        iterable_messages = cast(
+            list[object] | tuple[object, ...] | set[object], messages
+        )
         return [str(message) for message in iterable_messages]
     return [str(messages)]

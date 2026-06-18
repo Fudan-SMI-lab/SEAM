@@ -19,8 +19,12 @@ class StateMachine:
                 raise ValueError(f"Duplicate phase id: {phase.id}")
             self._phases[phase.id] = phase
 
-        self._terminals: set[str] = {str(terminal) for terminal in (workflow.terminals or [])}
-        self._failure_counts: dict[str, int] = {phase_id: 0 for phase_id in self._phases}
+        self._terminals: set[str] = {
+            str(terminal) for terminal in (workflow.terminals or [])
+        }
+        self._failure_counts: dict[str, int] = {
+            phase_id: 0 for phase_id in self._phases
+        }
         self._last_errors: dict[str, str] = {}
         self._max_retry_per_phase: int = _parse_max_retry(workflow.globals)
         self._current_phase_id: str | None = workflow.phases[0].id
@@ -67,7 +71,9 @@ class StateMachine:
 
     def _require_active_phase(self, phase_id: str) -> PhaseDefinition:
         if self.is_terminal():
-            raise RuntimeError(f"State machine already reached terminal state '{self._terminal_state}'")
+            raise RuntimeError(
+                f"State machine already reached terminal state '{self._terminal_state}'"
+            )
         if phase_id != self._current_phase_id:
             raise ValueError(
                 f"Expected active phase '{self._current_phase_id}', got '{phase_id}'"
@@ -77,9 +83,13 @@ class StateMachine:
     def _resolve_transition(self, phase: PhaseDefinition, event: str) -> str:
         target = phase.transitions.get(event)
         if not target:
-            raise ValueError(f"Phase '{phase.id}' missing required transition '{event}'")
+            raise ValueError(
+                f"Phase '{phase.id}' missing required transition '{event}'"
+            )
         if target not in self._phases and target not in self._terminals:
-            raise ValueError(f"Phase '{phase.id}' transition '{event}' points to unknown target '{target}'")
+            raise ValueError(
+                f"Phase '{phase.id}' transition '{event}' points to unknown target '{target}'"
+            )
         return target
 
     def _move_to(self, target: str) -> None:
@@ -106,7 +116,9 @@ def _parse_max_retry(globals_cfg: dict[str, object] | None) -> int:
         try:
             max_retry = int(raw_value)
         except ValueError as exc:
-            raise ValueError("Workflow globals 'max_retry_per_phase' must be an integer") from exc
+            raise ValueError(
+                "Workflow globals 'max_retry_per_phase' must be an integer"
+            ) from exc
     else:
         raise ValueError("Workflow globals 'max_retry_per_phase' must be an integer")
 

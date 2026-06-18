@@ -1,5 +1,11 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false
-"""Experience dispatcher — orchestrates sequential refinement of candidates with independent timeouts."""
+# pyright: reportMissingTypeArgument=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnannotatedClassAttribute=false
+"""Experience dispatcher — orchestrates sequential refinement of candidates
+with independent timeouts."""
 
 import logging
 import os
@@ -63,8 +69,11 @@ class ExperienceDispatcher:
             try:
                 self.store.check_and_auto_promote(exp, run_id)
             except Exception as exc:
-                logger.warning("Auto-promote failed for experience %s: %s",
-                               exp.get("title", "unknown"), exc)
+                logger.warning(
+                    "Auto-promote failed for experience %s: %s",
+                    exp.get("title", "unknown"),
+                    exc,
+                )
 
         return results
 
@@ -95,7 +104,9 @@ class ExperienceDispatcher:
             elif isinstance(artifact_evidence, str):
                 content = self._read_file_safe(artifact_evidence, cid)
                 if content:
-                    evidence_parts.append(f"### {artifact_evidence}\n```\n{content}\n```")
+                    evidence_parts.append(
+                        f"### {artifact_evidence}\n```\n{content}\n```"
+                    )
 
             source_parts: list[str] = []
             involved_files = candidate.get("involved_code_files", [])
@@ -121,16 +132,26 @@ class ExperienceDispatcher:
                     if os.path.isfile(full_path):
                         try:
                             with open(full_path, "r", encoding="utf-8") as f:
-                                source_parts.append(f"### {file_path}\n```\n{f.read()[:5000]}\n```")
+                                source_parts.append(
+                                    f"### {file_path}\n```\n{f.read()[:5000]}\n```"
+                                )
                         except OSError as exc:
-                            logger.warning("Cannot read source file %s: %s", full_path, exc)
-                            source_parts.append(f"### {file_path}\n\n[Error reading file: {exc}]")
+                            logger.warning(
+                                "Cannot read source file %s: %s", full_path, exc
+                            )
+                            source_parts.append(
+                                f"### {file_path}\n\n[Error reading file: {exc}]"
+                            )
                     else:
-                        source_parts.append(f"### {file_path}\n\n[File not found: {file_path}]")
+                        source_parts.append(
+                            f"### {file_path}\n\n[File not found: {file_path}]"
+                        )
 
             contexts[cid] = {
-                "evidence": "\n\n".join(evidence_parts) or "(no artifact evidence available)",
-                "source_files": "\n\n".join(source_parts) or "(no source files available)",
+                "evidence": "\n\n".join(evidence_parts)
+                or "(no artifact evidence available)",
+                "source_files": "\n\n".join(source_parts)
+                or "(no source files available)",
             }
 
         return contexts
@@ -153,11 +174,13 @@ class ExperienceDispatcher:
         candidate_paths = []
         if path.startswith(("validated/", "raw/")) or path == "execution_journal.jsonl":
             candidate_paths.append(os.path.join(self.artifact_dir, path))
-        candidate_paths.extend([
-            os.path.join(self.artifact_dir, "validated", path),
-            os.path.join(self.artifact_dir, "raw", path),
-            os.path.join(self.artifact_dir, path),
-        ])
+        candidate_paths.extend(
+            [
+                os.path.join(self.artifact_dir, "validated", path),
+                os.path.join(self.artifact_dir, "raw", path),
+                os.path.join(self.artifact_dir, path),
+            ]
+        )
         for candidate_path in candidate_paths:
             if os.path.isfile(candidate_path):
                 try:

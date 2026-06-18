@@ -24,7 +24,9 @@ class TelemetryBridge:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._run_started = time.monotonic()
         self._run_started_iso = _utc_now()
-        self._phase_timings: dict[str, dict] = {}  # phase_id -> {started_at, ended_at, duration, status}
+        self._phase_timings: dict[str, dict] = (
+            {}
+        )  # phase_id -> {started_at, ended_at, duration, status}
         self._commands: list[dict] = []
         self._events: list[dict] = []
         self._active_phase: str | None = None
@@ -119,5 +121,7 @@ class TelemetryBridge:
             "commands": self._commands,
             "events": self._events,
         }
-        output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        output_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         return {return_key: str(output_path)}

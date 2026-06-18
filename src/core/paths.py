@@ -67,7 +67,9 @@ def project_search_roots() -> list[Path]:
     return roots
 
 
-def resolve_relative_path(path: str | Path, *, extra_roots: list[Path] | None = None) -> Path:
+def resolve_relative_path(
+    path: str | Path, *, extra_roots: list[Path] | None = None
+) -> Path:
     """Resolve a relative path from cwd, execution root, then src root."""
     candidate = Path(path)
     if candidate.is_absolute():

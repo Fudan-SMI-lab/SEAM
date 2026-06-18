@@ -10,10 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class CustomOpEvidenceConfig:
@@ -60,12 +60,21 @@ class CustomOpEvidenceConfig:
     enforcement), or ``disabled`` (skip performance validation only;
     no-fallback / source / runtime / native gates remain active)."""
 
-    performance_baseline_device_values: list[str] = field(default_factory=lambda: ["cuda", "gpu", "torch_cuda"])
+    performance_baseline_device_values: list[str] = field(
+        default_factory=lambda: ["cuda", "gpu", "torch_cuda"]
+    )
     """Accepted baseline device string values.  Configure ``["cpu", "torch_cpu"]``
     to allow CPU baselines; CPU baseline must NOT imply CPU fallback is allowed
     in the custom/migrated path."""
 
-    performance_baseline_boolean_fields: list[str] = field(default_factory=lambda: ["cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked"])
+    performance_baseline_boolean_fields: list[str] = field(
+        default_factory=lambda: [
+            "cuda_baseline",
+            "baseline_cuda",
+            "cuda_baseline_invoked",
+            "baseline_cuda_invoked",
+        ]
+    )
     """Boolean fields that prove a baseline path was exercised."""
 
 
@@ -106,10 +115,23 @@ class PlatformPolicy:
 
 _NPU_ASCEND_EVIDENCE = CustomOpEvidenceConfig(
     target_device_values=["npu", "ascend", "torch_npu"],
-    positive_boolean_fields=["npu_custom", "custom_npu", "npu_custom_invoked", "ascend_custom_invoked"],
+    positive_boolean_fields=[
+        "npu_custom",
+        "custom_npu",
+        "npu_custom_invoked",
+        "ascend_custom_invoked",
+    ],
     artifact_path_tokens=[
-        "/opp/", "/op_plugin", "ascend", "cann", "acl",
-        "aclnn", "aicpu", "ascendc", "custom_op", "torch_npu",
+        "/opp/",
+        "/op_plugin",
+        "ascend",
+        "cann",
+        "acl",
+        "aclnn",
+        "aicpu",
+        "ascendc",
+        "custom_op",
+        "torch_npu",
     ],
     native_build_log_tokens=(
         "aclrt",
@@ -181,28 +203,52 @@ _NPU_ASCEND_EVIDENCE = CustomOpEvidenceConfig(
 
 _GENERIC_EVIDENCE = CustomOpEvidenceConfig(
     target_device_values=[
-        "cuda", "gpu", "accelerator", "torch_cuda",
+        "cuda",
+        "gpu",
+        "accelerator",
+        "torch_cuda",
     ],
     positive_boolean_fields=[
-        "custom", "custom_invoked", "custom_op_invoked",
-        "custom_device_invoked", "native_custom",
+        "custom",
+        "custom_invoked",
+        "custom_op_invoked",
+        "custom_device_invoked",
+        "native_custom",
     ],
     artifact_path_tokens=[
-        "/custom_op/", "custom_op", "compiled", "extension",
-        "native_build", "/build/", "/lib/",
+        "/custom_op/",
+        "custom_op",
+        "compiled",
+        "extension",
+        "native_build",
+        "/build/",
+        "/lib/",
     ],
     native_build_log_tokens=(
-        "g++", "gcc", "nvcc", "clang", "clang++", "hipcc",
-        "-shared", "-fPIC", "cmake", "ninja", "setuptools",
-        "pip install", "build", "compile",
+        "g++",
+        "gcc",
+        "nvcc",
+        "clang",
+        "clang++",
+        "hipcc",
+        "-shared",
+        "-fPIC",
+        "cmake",
+        "ninja",
+        "setuptools",
+        "pip install",
+        "build",
+        "compile",
     ),
     native_source_tokens=(
-        "#include", "kernel", "op_", "operator",
-        "launch", "dispatch",
+        "#include",
+        "kernel",
+        "op_",
+        "operator",
+        "launch",
+        "dispatch",
     ),
-    native_binary_tokens=(
-        b"ELF",
-    ),
+    native_binary_tokens=(b"ELF",),
     native_artifact_fields=(
         "custom_op_artifact",
         "custom_op_built",
@@ -240,11 +286,24 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         display_name="PPU (CUDA-Compatible)",
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["ppu", "cuda", "gpu", "torch_cuda"],
-            positive_boolean_fields=["ppu_custom", "custom_ppu", "ppu_custom_invoked", "cuda_custom", "custom_cuda"],
+            positive_boolean_fields=[
+                "ppu_custom",
+                "custom_ppu",
+                "ppu_custom_invoked",
+                "cuda_custom",
+                "custom_cuda",
+            ],
             artifact_path_tokens=[
-                "/ppu/", "ppu_custom", "ppu_kernel", "ppu_op",
-                "ppu_plugin", "ppu_extension", "ppu_compiled",
-                "custom_op", "cuda", "cuda_extension",
+                "/ppu/",
+                "ppu_custom",
+                "ppu_kernel",
+                "ppu_op",
+                "ppu_plugin",
+                "ppu_extension",
+                "ppu_compiled",
+                "custom_op",
+                "cuda",
+                "cuda_extension",
             ],
             native_build_log_tokens=(
                 "ppu",
@@ -299,9 +358,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "must include independent PPU/CUDA-compatible binary or source evidence; "
                 "an ELF under a PPU-looking path is not sufficient"
             ),
-            custom_op_evidence_policy=(
-                "require_real_ppu_custom_op_artifacts"
-            ),
+            custom_op_evidence_policy=("require_real_ppu_custom_op_artifacts"),
         ),
         default_rule_migration_strategy="preserve_cuda_report_only",
         guidance_prefix="PPU (CUDA-Compatible)",
@@ -314,10 +371,18 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         display_name="NVIDIA CUDA",
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["cuda", "gpu", "nvidia", "torch_cuda"],
-            positive_boolean_fields=["cuda_custom", "custom_cuda", "cuda_custom_invoked"],
+            positive_boolean_fields=[
+                "cuda_custom",
+                "custom_cuda",
+                "cuda_custom_invoked",
+            ],
             artifact_path_tokens=[
-                "/cuda/", "cuda_extension", "cuda_kernel",
-                "cuda_op", "cublas", "cudnn",
+                "/cuda/",
+                "cuda_extension",
+                "cuda_kernel",
+                "cuda_op",
+                "cublas",
+                "cudnn",
             ],
             native_build_log_tokens=(
                 "nvcc",
@@ -355,9 +420,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
                 "must include independent CUDA binary or source evidence; "
                 "an ELF under a CUDA-looking path is not sufficient"
             ),
-            custom_op_evidence_policy=(
-                "require_real_cuda_custom_op_artifacts"
-            ),
+            custom_op_evidence_policy=("require_real_cuda_custom_op_artifacts"),
         ),
         guidance_prefix="NVIDIA CUDA",
         guidance_native_label="NVIDIA GPU (CUDA)",
@@ -368,15 +431,38 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         id="musa_muxi",
         display_name="MUXI MUSA",
         custom_op_evidence=CustomOpEvidenceConfig(
-            target_device_values=["musa", "muxi", "musa_gpu", "maca", "metax", "mxgpu", "torch_maca"],
+            target_device_values=[
+                "musa",
+                "muxi",
+                "musa_gpu",
+                "maca",
+                "metax",
+                "mxgpu",
+                "torch_maca",
+            ],
             positive_boolean_fields=[
-                "musa_custom", "custom_musa", "musa_custom_invoked",
-                "maca_custom", "custom_maca", "maca_custom_invoked", "metax_custom_invoked",
+                "musa_custom",
+                "custom_musa",
+                "musa_custom_invoked",
+                "maca_custom",
+                "custom_maca",
+                "maca_custom_invoked",
+                "metax_custom_invoked",
             ],
             artifact_path_tokens=[
-                "/musa/", "musa_kernel", "musa_op", "musa_plugin",
-                "muxi", "musart", "/maca/", "maca_kernel", "maca_op",
-                "maca_plugin", "maca_extension", "metax", "mxgpu",
+                "/musa/",
+                "musa_kernel",
+                "musa_op",
+                "musa_plugin",
+                "muxi",
+                "musart",
+                "/maca/",
+                "maca_kernel",
+                "maca_op",
+                "maca_plugin",
+                "maca_extension",
+                "metax",
+                "mxgpu",
             ],
             native_build_log_tokens=(
                 "musa",
@@ -428,9 +514,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             binary_source_error_message=(
                 "must include independent MUSA/MUXI/MACA binary or source evidence"
             ),
-            custom_op_evidence_policy=(
-                "require_real_musa_custom_op_artifacts"
-            ),
+            custom_op_evidence_policy=("require_real_musa_custom_op_artifacts"),
         ),
         guidance_prefix="MUXI MUSA",
         guidance_native_label="MUXI GPU (MUSA)",
@@ -442,10 +526,18 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
         display_name="AMD ROCm",
         custom_op_evidence=CustomOpEvidenceConfig(
             target_device_values=["rocm", "amd", "hip", "gpu", "torch_cuda"],
-            positive_boolean_fields=["rocm_custom", "custom_rocm", "hip_custom_invoked"],
+            positive_boolean_fields=[
+                "rocm_custom",
+                "custom_rocm",
+                "hip_custom_invoked",
+            ],
             artifact_path_tokens=[
-                "/rocm/", "hip_kernel", "hip_op", "rocblas",
-                "miopen", "hip_extension",
+                "/rocm/",
+                "hip_kernel",
+                "hip_op",
+                "rocblas",
+                "miopen",
+                "hip_extension",
             ],
             native_build_log_tokens=(
                 "hipcc",
@@ -481,9 +573,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             binary_source_error_message=(
                 "must include independent ROCm/HIP binary or source evidence"
             ),
-            custom_op_evidence_policy=(
-                "require_real_rocm_custom_op_artifacts"
-            ),
+            custom_op_evidence_policy=("require_real_rocm_custom_op_artifacts"),
         ),
         guidance_prefix="AMD ROCm",
         guidance_native_label="AMD GPU (ROCm)",
@@ -497,8 +587,13 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             target_device_values=["mlu", "cambrian", "cambricon"],
             positive_boolean_fields=["mlu_custom", "custom_mlu", "mlu_custom_invoked"],
             artifact_path_tokens=[
-                "/mlu/", "mlu_kernel", "mlu_op", "mlu_plugin",
-                "cambrian", "cnml", "cnrt",
+                "/mlu/",
+                "mlu_kernel",
+                "mlu_op",
+                "mlu_plugin",
+                "cambrian",
+                "cnml",
+                "cnrt",
             ],
             native_build_log_tokens=(
                 "cncc",
@@ -534,9 +629,7 @@ BUILTIN_PRESETS: dict[str, PlatformPolicy] = {
             binary_source_error_message=(
                 "must include independent Cambrian/MLU binary or source evidence"
             ),
-            custom_op_evidence_policy=(
-                "require_real_mlu_custom_op_artifacts"
-            ),
+            custom_op_evidence_policy=("require_real_mlu_custom_op_artifacts"),
         ),
         guidance_prefix="Cambrian MLU",
         guidance_native_label="Cambrian MLU",
@@ -587,6 +680,7 @@ LEGACY_NPU_ARTIFACT_FIELDS = _NPU_ASCEND_EVIDENCE.native_artifact_fields
 # Helpers for the YAML-driven API
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class TargetPlatformConfig:
     """Parsed ``target_platform`` block from workflow YAML."""
@@ -603,9 +697,7 @@ def parse_target_platform(raw: Any) -> TargetPlatformConfig | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ValueError(
-            f"target_platform must be a mapping, got {type(raw).__name__}"
-        )
+        raise ValueError(f"target_platform must be a mapping, got {type(raw).__name__}")
     preset = raw.get("preset")
     if not preset or not isinstance(preset, str):
         raise ValueError("target_platform.preset must be a non-empty string")
@@ -618,7 +710,9 @@ def parse_target_platform(raw: Any) -> TargetPlatformConfig | None:
     )
 
 
-def resolve_policy(target_platform: TargetPlatformConfig | None, workflow_name: str) -> PlatformPolicy:
+def resolve_policy(
+    target_platform: TargetPlatformConfig | None, workflow_name: str
+) -> PlatformPolicy:
     """Resolve the active PlatformPolicy for a workflow.
 
     1. If ``target_platform`` is provided, resolve from built-in presets.
@@ -676,34 +770,54 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> Platfor
                 ce_overrides, "artifact_path_tokens", list(ce.artifact_path_tokens)
             ),
             native_build_log_tokens=tuple(
-                _list_override(ce_overrides, "native_build_log_tokens", list(ce.native_build_log_tokens))
+                _list_override(
+                    ce_overrides,
+                    "native_build_log_tokens",
+                    list(ce.native_build_log_tokens),
+                )
             ),
             native_source_tokens=tuple(
-                _list_override(ce_overrides, "native_source_tokens", list(ce.native_source_tokens))
+                _list_override(
+                    ce_overrides, "native_source_tokens", list(ce.native_source_tokens)
+                )
             ),
             native_binary_tokens=tuple(
-                _bytes_list_override(ce_overrides, "native_binary_tokens", list(ce.native_binary_tokens))
+                _bytes_list_override(
+                    ce_overrides, "native_binary_tokens", list(ce.native_binary_tokens)
+                )
             ),
             native_artifact_fields=tuple(
-                _list_override(ce_overrides, "native_artifact_fields", list(ce.native_artifact_fields))
+                _list_override(
+                    ce_overrides,
+                    "native_artifact_fields",
+                    list(ce.native_artifact_fields),
+                )
             ),
             build_log_error_message=str(
                 ce_overrides.get("build_log_error_message", ce.build_log_error_message)
             ),
             binary_source_error_message=str(
-                ce_overrides.get("binary_source_error_message", ce.binary_source_error_message)
+                ce_overrides.get(
+                    "binary_source_error_message", ce.binary_source_error_message
+                )
             ),
             custom_op_evidence_policy=str(
-                ce_overrides.get("custom_op_evidence_policy", ce.custom_op_evidence_policy)
+                ce_overrides.get(
+                    "custom_op_evidence_policy", ce.custom_op_evidence_policy
+                )
             ),
             performance_validation=str(
                 ce_overrides.get("performance_validation", ce.performance_validation)
             ),
             performance_baseline_device_values=_list_override(
-                ce_overrides, "performance_baseline_device_values", ce.performance_baseline_device_values
+                ce_overrides,
+                "performance_baseline_device_values",
+                ce.performance_baseline_device_values,
             ),
             performance_baseline_boolean_fields=_list_override(
-                ce_overrides, "performance_baseline_boolean_fields", ce.performance_baseline_boolean_fields
+                ce_overrides,
+                "performance_baseline_boolean_fields",
+                ce.performance_baseline_boolean_fields,
             ),
         )
 
@@ -711,7 +825,11 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> Platfor
 
     return PlatformPolicy(
         id=str(overridden_id) if isinstance(overridden_id, str) else base.id,
-        display_name=str(overridden_display_name) if isinstance(overridden_display_name, str) else base.display_name,
+        display_name=(
+            str(overridden_display_name)
+            if isinstance(overridden_display_name, str)
+            else base.display_name
+        ),
         custom_op_evidence=ce,
         default_rule_migration_strategy=(
             str(overridden_strategy)
@@ -719,13 +837,21 @@ def _apply_overrides(base: PlatformPolicy, overrides: dict[str, Any]) -> Platfor
             else base.default_rule_migration_strategy
         ),
         guidance_prefix=str(overrides.get("guidance_prefix", base.guidance_prefix)),
-        guidance_native_label=str(overrides.get("guidance_native_label", base.guidance_native_label)),
-        guidance_native_framework=str(overrides.get("guidance_native_framework", base.guidance_native_framework)),
-        guidance_python_binary=str(overrides.get("guidance_python_binary", base.guidance_python_binary)),
+        guidance_native_label=str(
+            overrides.get("guidance_native_label", base.guidance_native_label)
+        ),
+        guidance_native_framework=str(
+            overrides.get("guidance_native_framework", base.guidance_native_framework)
+        ),
+        guidance_python_binary=str(
+            overrides.get("guidance_python_binary", base.guidance_python_binary)
+        ),
     )
 
 
-def _list_override(overrides: dict[str, Any], key: str, default: list[str]) -> list[str]:
+def _list_override(
+    overrides: dict[str, Any], key: str, default: list[str]
+) -> list[str]:
     """Return an override list value or the default."""
     val = overrides.get(key)
     if isinstance(val, list):
@@ -733,7 +859,9 @@ def _list_override(overrides: dict[str, Any], key: str, default: list[str]) -> l
     return default
 
 
-def _bytes_list_override(overrides: dict[str, Any], key: str, default: list[bytes]) -> list[bytes]:
+def _bytes_list_override(
+    overrides: dict[str, Any], key: str, default: list[bytes]
+) -> list[bytes]:
     """Return an override list of bytes or the default."""
     val = overrides.get(key)
     if isinstance(val, list):
@@ -750,6 +878,7 @@ def _bytes_list_override(overrides: dict[str, Any], key: str, default: list[byte
 # ---------------------------------------------------------------------------
 # Policy → validator token helpers
 # ---------------------------------------------------------------------------
+
 
 def get_artifact_path_tokens(policy: PlatformPolicy | None) -> list[str]:
     """Return artifact path tokens.  Only falls back to legacy NPU when *policy*
@@ -796,7 +925,12 @@ def get_positive_boolean_fields(policy: PlatformPolicy | None) -> list[str]:
     """Return positive boolean fields for custom-device proof.  Only falls
     back to legacy NPU when *policy* is ``None``."""
     if policy is None:
-        return ["npu_custom", "custom_npu", "npu_custom_invoked", "ascend_custom_invoked"]
+        return [
+            "npu_custom",
+            "custom_npu",
+            "npu_custom_invoked",
+            "ascend_custom_invoked",
+        ]
     return list(policy.custom_op_evidence.positive_boolean_fields)
 
 
@@ -828,5 +962,10 @@ def get_performance_baseline_boolean_fields(policy: PlatformPolicy | None) -> li
     Defaults to CUDA baseline fields when *policy* is ``None``.
     """
     if policy is None:
-        return ["cuda_baseline", "baseline_cuda", "cuda_baseline_invoked", "baseline_cuda_invoked"]
+        return [
+            "cuda_baseline",
+            "baseline_cuda",
+            "cuda_baseline_invoked",
+            "baseline_cuda_invoked",
+        ]
     return list(policy.custom_op_evidence.performance_baseline_boolean_fields)

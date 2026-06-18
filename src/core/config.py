@@ -19,7 +19,16 @@ from .types import (
     SubWorkflowDefinition,
 )
 
-VALID_PHASE_TYPES = {"llm", "shell", "builtin", "python", "review", "dispatch", "loop", "orchestration"}
+VALID_PHASE_TYPES = {
+    "llm",
+    "shell",
+    "builtin",
+    "python",
+    "review",
+    "dispatch",
+    "loop",
+    "orchestration",
+}
 VALID_RUNTIME_SKILL_MERGE = {"append", "replace", "none"}
 VALID_RUNTIME_SKILL_MISSING = {"warn", "error", "ignore"}
 
@@ -78,26 +87,38 @@ def load_workflow(path: str) -> WorkflowDefinition:
 
 # ── Internal helpers ──────────────────────────────────────────────
 
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     """Read and parse a YAML file."""
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
-        raise ValueError(f"Workflow YAML must contain a top-level mapping, got {type(data).__name__}")
+        raise ValueError(
+            f"Workflow YAML must contain a top-level mapping, "
+            f"got {type(data).__name__}"
+        )
     return data
 
 
 def _validate_top_level(raw: dict[str, Any], path: str) -> None:
     """Check that required top-level fields exist."""
-    missing = [f for f in ("name", "version", "phases", "terminals") if f not in raw or raw[f] is None]
+    missing = [
+        f
+        for f in ("name", "version", "phases", "terminals")
+        if f not in raw or raw[f] is None
+    ]
     if missing:
-        raise ValueError(f"Workflow '{path}' missing required fields: {', '.join(missing)}")
+        raise ValueError(
+            f"Workflow '{path}' missing required fields: " f"{', '.join(missing)}"
+        )
 
     if not isinstance(raw["phases"], list) or len(raw["phases"]) == 0:
         raise ValueError(f"Workflow '{path}': 'phases' must be a non-empty list")
 
     if not isinstance(raw["terminals"], (list, dict)) or len(raw["terminals"]) == 0:
-        raise ValueError(f"Workflow '{path}': 'terminals' must be a non-empty list or dict")
+        raise ValueError(
+            f"Workflow '{path}': 'terminals' must be a non-empty list or dict"
+        )
 
 
 def _parse_terminals(raw_terminals: Any) -> list[str]:
@@ -121,10 +142,14 @@ def _parse_terminals(raw_terminals: Any) -> list[str]:
         return result
     if isinstance(raw_terminals, dict):
         return [str(k) for k in raw_terminals.keys()]
-    raise ValueError(f"terminals must be a list or dict, got {type(raw_terminals).__name__}")
+    raise ValueError(
+        f"terminals must be a list or dict, " f"got {type(raw_terminals).__name__}"
+    )
 
 
-def _parse_hooks(raw_hooks: dict[str, list[dict[str, Any]]]) -> dict[str, list[HookDefinition]]:
+def _parse_hooks(
+    raw_hooks: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[HookDefinition]]:
     """Parse workflow-level hooks configuration.
 
     Expected YAML shape:
@@ -142,24 +167,37 @@ def _parse_hooks(raw_hooks: dict[str, list[dict[str, Any]]]) -> dict[str, list[H
     for hook_point, hook_list in raw_hooks.items():
         if not isinstance(hook_list, list):
             raise ValueError(
-                f"hooks.{hook_point} must be a list of hook configs, got {type(hook_list).__name__}")
+                f"hooks.{hook_point} must be a list of hook configs, "
+                f"got {type(hook_list).__name__}"
+            )
 
         parsed: list[HookDefinition] = []
         for i, raw_hook in enumerate(hook_list):
             if not isinstance(raw_hook, dict):
-                raise ValueError(f"hooks.{hook_point}[{i}] must be a mapping, got {type(raw_hook).__name__}")
+                raise ValueError(
+                    f"hooks.{hook_point}[{i}] must be a mapping, "
+                    f"got {type(raw_hook).__name__}"
+                )
 
             operation = raw_hook.get("operation")
             if not operation:
-                raise ValueError(f"hooks.{hook_point}[{i}] missing required field 'operation'")
+                raise ValueError(
+                    f"hooks.{hook_point}[{i}] missing required field 'operation'"
+                )
 
-            parsed.append(HookDefinition(
-                operation=str(operation),
-                type=str(raw_hook.get("type", "builtin")),
-                save_as=raw_hook.get("save_as"),
-                critical=bool(raw_hook.get("critical", False)),
-                params=raw_hook.get("params", {}) if isinstance(raw_hook.get("params"), dict) else {},
-            ))
+            parsed.append(
+                HookDefinition(
+                    operation=str(operation),
+                    type=str(raw_hook.get("type", "builtin")),
+                    save_as=raw_hook.get("save_as"),
+                    critical=bool(raw_hook.get("critical", False)),
+                    params=(
+                        raw_hook.get("params", {})
+                        if isinstance(raw_hook.get("params"), dict)
+                        else {}
+                    ),
+                )
+            )
         result[hook_point] = parsed
 
     return result
@@ -188,7 +226,9 @@ def _parse_string_list(value: Any, location: str) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError(f"{location} must be a list of skill names, got {type(value).__name__}")
+        raise ValueError(
+            f"{location} must be a list of skill names, " f"got {type(value).__name__}"
+        )
     result: list[str] = []
     for i, item in enumerate(value):
         if not isinstance(item, str) or not item.strip():
@@ -205,15 +245,25 @@ def _parse_runtime_skills(raw: Any, location: str) -> RuntimeSkillsConfig | None
         return RuntimeSkillsConfig(include=_parse_string_list(raw, location))
 
     if not isinstance(raw, dict):
-        raise ValueError(f"{location} must be a list or mapping, got {type(raw).__name__}")
+        raise ValueError(
+            f"{location} must be a list or mapping, " f"got {type(raw).__name__}"
+        )
 
     merge = str(raw.get("merge", "append"))
     if merge not in VALID_RUNTIME_SKILL_MERGE:
-        raise ValueError(f"{location}.merge must be one of {sorted(VALID_RUNTIME_SKILL_MERGE)}, got '{merge}'")
+        raise ValueError(
+            f"{location}.merge must be one of "
+            f"{sorted(VALID_RUNTIME_SKILL_MERGE)}, "
+            f"got '{merge}'"
+        )
 
     missing = str(raw.get("missing", "warn"))
     if missing not in VALID_RUNTIME_SKILL_MISSING:
-        raise ValueError(f"{location}.missing must be one of {sorted(VALID_RUNTIME_SKILL_MISSING)}, got '{missing}'")
+        raise ValueError(
+            f"{location}.missing must be one of "
+            f"{sorted(VALID_RUNTIME_SKILL_MISSING)}, "
+            f"got '{missing}'"
+        )
 
     return RuntimeSkillsConfig(
         include=_parse_string_list(raw.get("include", []), f"{location}.include"),
@@ -245,7 +295,13 @@ def _parse_transition_def(raw: dict[str, Any]) -> TransitionDefinition | None:
     on_stagnation = raw.get("on_stagnation")
     on_reject_exhausted = raw.get("on_reject_exhausted")
 
-    if on_success is None and on_failure is None and on_skip is None and on_stagnation is None and on_reject_exhausted is None:
+    if (
+        on_success is None
+        and on_failure is None
+        and on_skip is None
+        and on_stagnation is None
+        and on_reject_exhausted is None
+    ):
         return None
 
     return TransitionDefinition(
@@ -253,7 +309,9 @@ def _parse_transition_def(raw: dict[str, Any]) -> TransitionDefinition | None:
         on_failure=str(on_failure) if on_failure is not None else None,
         on_skip=str(on_skip) if on_skip is not None else None,
         on_stagnation=str(on_stagnation) if on_stagnation is not None else None,
-        on_reject_exhausted=str(on_reject_exhausted) if on_reject_exhausted is not None else None,
+        on_reject_exhausted=(
+            str(on_reject_exhausted) if on_reject_exhausted is not None else None
+        ),
     )
 
 
@@ -304,7 +362,9 @@ def _parse_phases(raw_phases: list[dict[str, Any]]) -> list[PhaseDefinition]:
         handler = raw.get("handler", None)
         retrieve_experience = bool(raw.get("retrieve_experience", False))
         experience_query = raw.get("experience_query", None)
-        runtime_skills = _parse_runtime_skills(raw.get("runtime_skills", None), f"phases[{pid}].runtime_skills")
+        runtime_skills = _parse_runtime_skills(
+            raw.get("runtime_skills", None), f"phases[{pid}].runtime_skills"
+        )
         params = raw.get("params", {})
         if not isinstance(params, dict):
             params = {}
@@ -366,19 +426,27 @@ def _parse_agents(raw_agents: dict[str, dict[str, Any]]) -> dict[str, dict[str, 
     for agent_id, agent_cfg in raw_agents.items():
         if not isinstance(agent_cfg, dict):
             raise ValueError(
-                f"agents.{agent_id} must be a mapping, got {type(agent_cfg).__name__}")
+                f"agents.{agent_id} must be a mapping, "
+                f"got {type(agent_cfg).__name__}"
+            )
 
         role = agent_cfg.get("role")
         if not role:
             raise ValueError(f"agents.{agent_id} missing required field 'role'")
 
         lifecycle = agent_cfg.get("lifecycle", "ephemeral")
-        runtime_skills = _parse_runtime_skills(agent_cfg.get("runtime_skills", None), f"agents.{agent_id}.runtime_skills")
+        runtime_skills = _parse_runtime_skills(
+            agent_cfg.get("runtime_skills", None), f"agents.{agent_id}.runtime_skills"
+        )
 
         parsed_cfg = {
             "role": str(role),
             "lifecycle": str(lifecycle),
-            **{k: v for k, v in agent_cfg.items() if k not in ("role", "lifecycle", "runtime_skills")},
+            **{
+                k: v
+                for k, v in agent_cfg.items()
+                if k not in ("role", "lifecycle", "runtime_skills")
+            },
         }
         if runtime_skills is not None:
             parsed_cfg["runtime_skills"] = runtime_skills
@@ -387,7 +455,9 @@ def _parse_agents(raw_agents: dict[str, dict[str, Any]]) -> dict[str, dict[str, 
     return result
 
 
-def _parse_sub_workflows(raw_sub_wfs: dict[str, dict[str, Any]]) -> dict[str, SubWorkflowDefinition]:
+def _parse_sub_workflows(
+    raw_sub_wfs: dict[str, dict[str, Any]],
+) -> dict[str, SubWorkflowDefinition]:
     """Parse sub-workflow definitions from YAML.
 
     Expected YAML shape:
@@ -414,7 +484,9 @@ def _parse_sub_workflows(raw_sub_wfs: dict[str, dict[str, Any]]) -> dict[str, Su
     for sw_id, sw_cfg in raw_sub_wfs.items():
         if not isinstance(sw_cfg, dict):
             raise ValueError(
-                f"sub_workflows.{sw_id} must be a mapping, got {type(sw_cfg).__name__}")
+                f"sub_workflows.{sw_id} must be a mapping, "
+                f"got {type(sw_cfg).__name__}"
+            )
 
         sw_id_field = sw_cfg.get("id", sw_id)
         if not sw_id_field:
@@ -459,7 +531,7 @@ def _parse_execution_backend(raw: Any) -> ExecutionBackendConfig | None:
     if isinstance(raw, dict):
         return ExecutionBackendConfig.from_dict(raw)
     raise ValueError(
-        f"execution_backend must be a mapping or absent, got {type(raw).__name__}"
+        f"execution_backend must be a mapping or absent, " f"got {type(raw).__name__}"
     )
 
 
@@ -472,7 +544,7 @@ def _parse_experience(raw: Any) -> ExperienceConfig:
         return ExperienceConfig()
     if not isinstance(raw, dict):
         raise ValueError(
-            f"experience must be a mapping or absent, got {type(raw).__name__}"
+            f"experience must be a mapping or absent, " f"got {type(raw).__name__}"
         )
     return ExperienceConfig(
         enabled=bool(raw.get("enabled", True)),
@@ -486,15 +558,14 @@ def _validate_phase_types(phases: list[PhaseDefinition]) -> None:
         if phase.type not in VALID_PHASE_TYPES:
             raise ValueError(
                 f"Phase '{phase.id}': invalid type '{phase.type}'. "
-                f"Valid types: {sorted(VALID_PHASE_TYPES)}")
+                f"Valid types: {sorted(VALID_PHASE_TYPES)}"
+            )
 
 
 def _validate_transitions(phases: list[PhaseDefinition], terminals: list[str]) -> None:
-    """Ensure every transition target references a valid phase ID or terminal.
+    """Validate transition targets reference existing phase IDs or terminals.
 
-    Validates both:
-    1. The flat `transitions` dict (e.g. {"on_success": "next"})
-    2. The new `transition` object (TransitionDefinition with on_success/on_failure/on_skip/on_stagnation/on_reject_exhausted)
+    Checks both flat `transitions` dict and `TransitionDefinition` object fields.
     """
     valid_targets = set(terminals) | {p.id for p in phases}
 
@@ -503,22 +574,34 @@ def _validate_transitions(phases: list[PhaseDefinition], terminals: list[str]) -
         if phase.transitions:
             if not isinstance(phase.transitions, dict):
                 raise ValueError(
-                    f"Phase '{phase.id}': 'transitions' must be a mapping, got {type(phase.transitions).__name__}")
+                    f"Phase '{phase.id}': 'transitions' must be a mapping, "
+                    f"got {type(phase.transitions).__name__}"
+                )
             for event, target in phase.transitions.items():
                 if target not in valid_targets:
                     raise ValueError(
-                        f"Phase '{phase.id}': transition '{event}' references unknown target '{target}'. "
-                        f"Valid targets: {sorted(valid_targets)}")
+                        f"Phase '{phase.id}': transition '{event}' "
+                        f"references unknown target '{target}'. "
+                        f"Valid targets: {sorted(valid_targets)}"
+                    )
 
         # Validate TransitionDefinition object
         if phase.transition is not None:
             td = phase.transition
-            for field_name in ("on_success", "on_failure", "on_skip", "on_stagnation", "on_reject_exhausted"):
+            for field_name in (
+                "on_success",
+                "on_failure",
+                "on_skip",
+                "on_stagnation",
+                "on_reject_exhausted",
+            ):
                 target = getattr(td, field_name, None)
                 if target is not None and target not in valid_targets:
                     raise ValueError(
-                        f"Phase '{phase.id}': transition.{field_name} references unknown target '{target}'. "
-                        f"Valid targets: {sorted(valid_targets)}")
+                        f"Phase '{phase.id}': transition.{field_name} "
+                        f"references unknown target '{target}'. "
+                        f"Valid targets: {sorted(valid_targets)}"
+                    )
 
 
 def _parse_rule_migration(raw: Any) -> dict[str, Any] | None:
@@ -535,5 +618,5 @@ def _parse_rule_migration(raw: Any) -> dict[str, Any] | None:
     if isinstance(raw, dict):
         return dict(raw)
     raise ValueError(
-        f"rule_migration must be a mapping or absent, got {type(raw).__name__}"
+        f"rule_migration must be a mapping or absent, " f"got {type(raw).__name__}"
     )

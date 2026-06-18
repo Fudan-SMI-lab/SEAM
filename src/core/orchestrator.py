@@ -14,11 +14,21 @@ from core.accelerator_context import extract_accelerator_context
 from core.artifact_store import ArtifactStore
 from core.config import load_workflow
 from core.config_loader import load_framework_config
-from core.execution_backend import get_container_prompt_context, get_execution_environment_context
-from core.phase_runner import PhaseRunner, SessionManagerLike as RunnerSessionManagerLike
+from core.execution_backend import (
+    get_container_prompt_context,
+    get_execution_environment_context,
+)
+from core.phase_runner import (
+    PhaseRunner,
+    SessionManagerLike as RunnerSessionManagerLike,
+)
 from core.platform_policy import PlatformPolicy, resolve_policy
 from core.prompt_loader import PromptLoader
-from core.repair_loop import RepairLoopEngine, SessionManagerLike as RepairSessionManagerLike, get_timeout
+from core.repair_loop import (
+    RepairLoopEngine,
+    SessionManagerLike as RepairSessionManagerLike,
+    get_timeout,
+)
 from core.workflow_selector import is_selector_file, resolve_workflow_from_selector
 from core.state_machine import StateMachine
 from core.validator_engine import ValidatorEngine
@@ -50,8 +60,7 @@ class _Phase4RunnerWithProjectDir(Protocol):
         project_dir: str,
         artifact_store: ArtifactStore,
         migrator: RuleBasedMigrator,
-    ) -> dict[str, object]:
-        ...
+    ) -> dict[str, object]: ...
 
 
 class _Phase4RunnerWithoutProjectDir(Protocol):
@@ -59,23 +68,21 @@ class _Phase4RunnerWithoutProjectDir(Protocol):
         self,
         artifact_store: ArtifactStore,
         migrator: RuleBasedMigrator,
-    ) -> dict[str, object]:
-        ...
+    ) -> dict[str, object]: ...
 
 
 class _GetOrCreateCall(Protocol):
-    def __call__(self, *, role: str, lifecycle: str) -> str:
-        ...
+    def __call__(self, *, role: str, lifecycle: str) -> str: ...
 
 
 class _SendCommandCall(Protocol):
-    def __call__(self, session_id: str, command: str, timeout: int | None = None) -> str:
-        ...
+    def __call__(
+        self, session_id: str, command: str, timeout: int | None = None
+    ) -> str: ...
 
 
 class _CleanupAllCall(Protocol):
-    def __call__(self) -> int:
-        ...
+    def __call__(self) -> int: ...
 
 
 class _SessionManagerAdapter:
@@ -88,7 +95,9 @@ class _SessionManagerAdapter:
         get_or_create = cast(_GetOrCreateCall, getattr(self.backend, "get_or_create"))
         return get_or_create(role=role, lifecycle=lifecycle)
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = None) -> str:
+    def send_command(
+        self, session_id: str, command: str, timeout: int | None = None
+    ) -> str:
         send_command = cast(_SendCommandCall, getattr(self.backend, "send_command"))
         return send_command(session_id, command, timeout=timeout)
 
@@ -105,7 +114,9 @@ class Orchestrator:
     workflow_path: str
     _fw_config: dict[str, object] | None
 
-    def __init__(self, session_mgr: SessionManager | object, project_dir: str, workflow_path: str) -> None:
+    def __init__(
+        self, session_mgr: SessionManager | object, project_dir: str, workflow_path: str
+    ) -> None:
         self.session_mgr = _SessionManagerAdapter(session_mgr)
         self.project_dir = project_dir
         self.workflow_path = workflow_path
@@ -122,7 +133,9 @@ class Orchestrator:
 
         run_id = f"run-{uuid4().hex}"
         artifact_store = ArtifactStore(active_project_dir, run_id)
-        prompt_loader = PromptLoader(str(Path(__file__).resolve().parent.parent / "prompts"))
+        prompt_loader = PromptLoader(
+            str(Path(__file__).resolve().parent.parent / "prompts")
+        )
 
         # ── Workflow Selector resolution (before load_workflow) ──────────
         try:
@@ -156,7 +169,9 @@ class Orchestrator:
         workflow = load_workflow(self.workflow_path)
         fw_config = load_framework_config(framework_config_path)
         self._fw_config = fw_config
-        runner_session_mgr = cast(RunnerSessionManagerLike, cast(object, self.session_mgr))
+        runner_session_mgr = cast(
+            RunnerSessionManagerLike, cast(object, self.session_mgr)
+        )
         repair_session_mgr = cast(RepairSessionManagerLike, self.session_mgr)
 
         validator = ValidatorEngine()
@@ -169,18 +184,26 @@ class Orchestrator:
             workflow=workflow,
             framework_config=fw_config,
         )
-        exec_backend = self._resolve_execution_backend(workflow, active_project_dir, user_constraints)
+        exec_backend = self._resolve_execution_backend(
+            workflow, active_project_dir, user_constraints
+        )
         container_ctx = self._preflight_and_probe(exec_backend)
         runner.set_container_context(container_ctx)
-        exec_env_ctx = self._build_execution_environment_context(exec_backend, container_ctx)
+        exec_env_ctx = self._build_execution_environment_context(
+            exec_backend, container_ctx
+        )
         runner.set_execution_environment_context(exec_env_ctx)
         platform_policy = resolve_policy(
             getattr(workflow, "target_platform", None),
             workflow.name,
         )
         repair_engine = RepairLoopEngine(
-            repair_session_mgr, artifact_store, prompt_loader, validator,
-            config=fw_config, exec_backend=exec_backend,
+            repair_session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            config=fw_config,
+            exec_backend=exec_backend,
             platform_policy=platform_policy,
         )
         migrator = Orchestrator._select_rule_based_migrator(platform_policy, workflow)
@@ -200,10 +223,15 @@ class Orchestrator:
             artifact_store,
             phase_id="orchestrator",
             status="workflow_loaded",
-            details={"workflow_path": self.workflow_path, "workflow_name": workflow.name},
+            details={
+                "workflow_path": self.workflow_path,
+                "workflow_name": workflow.name,
+            },
         )
 
-        sid = self.session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+        sid = self.session_mgr.get_or_create(
+            role="main_engineer", lifecycle="persistent"
+        )
         result["main_session_id"] = sid
         self._journal(
             artifact_store,
@@ -215,16 +243,24 @@ class Orchestrator:
         def _review_fn(repair_ctx: dict[str, object]) -> dict[str, object]:
             history = repair_ctx.get("history", [])
             repair_history = RepairLoopEngine.format_history_summary(
-                cast(list[dict[str, object]], history) if isinstance(history, list) else []
+                cast(list[dict[str, object]], history)
+                if isinstance(history, list)
+                else []
             )
             return runner.run_review_check(
                 review_session_id=sid,
                 session_mgr=runner_session_mgr,
                 project_dir=active_project_dir,
                 repair_history=repair_history,
-                last_artifact_path=str(repair_ctx.get("last_artifact_path", "(no artifact available)")),
-                attempt_log_content=str(repair_ctx.get("attempt_log_content", "(attempt log unavailable)")),
-                execution_duration=str(repair_ctx.get("execution_duration", "(not available)")),
+                last_artifact_path=str(
+                    repair_ctx.get("last_artifact_path", "(no artifact available)")
+                ),
+                attempt_log_content=str(
+                    repair_ctx.get("attempt_log_content", "(attempt log unavailable)")
+                ),
+                execution_duration=str(
+                    repair_ctx.get("execution_duration", "(not available)")
+                ),
             )
 
         try:
@@ -267,11 +303,17 @@ class Orchestrator:
             if constraint_summary:
                 phase_results["constraint_summary"] = constraint_summary
 
-            self._journal(artifact_store, phase_id="phase_4_rule_migration", status="started")
-            phase_4_output = self._run_phase_4(runner, active_project_dir, artifact_store, migrator)
+            self._journal(
+                artifact_store, phase_id="phase_4_rule_migration", status="started"
+            )
+            phase_4_output = self._run_phase_4(
+                runner, active_project_dir, artifact_store, migrator
+            )
             phase_results["phase_4_rule_migration"] = phase_4_output
             self._advance_success_chain(state_machine, (_PHASE_GROUPS[5],))
-            self._journal(artifact_store, phase_id="phase_4_rule_migration", status="succeeded")
+            self._journal(
+                artifact_store, phase_id="phase_4_rule_migration", status="succeeded"
+            )
 
             framework_section: dict[str, object] = {}
             fw = fw_config.get("framework", {})
@@ -283,11 +325,17 @@ class Orchestrator:
                 if isinstance(review_raw, dict):
                     review_cfg = cast(dict[str, object], review_raw)
             review_raw_enabled = review_cfg.get("enabled")
-            review_enabled = review_raw_enabled if isinstance(review_raw_enabled, bool) else False
+            review_enabled = (
+                review_raw_enabled if isinstance(review_raw_enabled, bool) else False
+            )
             review_raw_max = review_cfg.get("max_review_iterations")
             review_max_iter = review_raw_max if isinstance(review_raw_max, int) else 3
-            entry_script = self._resolve_entry_script(phase_results, artifact_store, user_command)
-            phase3_contract = self._resolve_phase3_contract(phase_results, artifact_store)
+            entry_script = self._resolve_entry_script(
+                phase_results, artifact_store, user_command
+            )
+            phase3_contract = self._resolve_phase3_contract(
+                phase_results, artifact_store
+            )
             env_context = self._build_env_context(
                 phase_0_to_1_outputs.get("phase_0_env_detect", {}),
                 phase_2_to_3_outputs.get("phase_2_venv_create", {}),
@@ -316,12 +364,18 @@ class Orchestrator:
                     status="failed",
                     details={"phase_5_output": phase_5_output},
                 )
-                raise RuntimeError("Phase 5 validation failed: " + self._serialize(phase_5_output))
+                raise RuntimeError(
+                    "Phase 5 validation failed: " + self._serialize(phase_5_output)
+                )
             self._advance_success_chain(state_machine, (_PHASE_GROUPS[6],))
-            self._journal(artifact_store, phase_id="phase_5_validation", status="succeeded")
+            self._journal(
+                artifact_store, phase_id="phase_5_validation", status="succeeded"
+            )
 
             self._journal(artifact_store, phase_id="phase_6_report", status="started")
-            phase_6_output = runner.run_phase_6(active_project_dir, artifact_store, runner_session_mgr)
+            phase_6_output = runner.run_phase_6(
+                active_project_dir, artifact_store, runner_session_mgr
+            )
             phase_results["phase_6_report"] = phase_6_output
             self._advance_success_chain(state_machine, (_PHASE_GROUPS[7],))
             self._journal(artifact_store, phase_id="phase_6_report", status="succeeded")
@@ -363,11 +417,17 @@ class Orchestrator:
         phase_4_runner = runner.run_phase_4
         phase_4_signature = inspect.signature(phase_4_runner)
         if len(phase_4_signature.parameters) == 3:
-            return cast(_Phase4RunnerWithProjectDir, phase_4_runner)(project_dir, artifact_store, migrator)
-        return cast(_Phase4RunnerWithoutProjectDir, phase_4_runner)(artifact_store, migrator)
+            return cast(_Phase4RunnerWithProjectDir, phase_4_runner)(
+                project_dir, artifact_store, migrator
+            )
+        return cast(_Phase4RunnerWithoutProjectDir, phase_4_runner)(
+            artifact_store, migrator
+        )
 
     @staticmethod
-    def _select_rule_based_migrator(platform_policy: PlatformPolicy, workflow: object | None = None) -> object:
+    def _select_rule_based_migrator(
+        platform_policy: PlatformPolicy, workflow: object | None = None
+    ) -> object:
         """Select the appropriate rule-based migrator using configuration-driven resolution.
 
         Uses the strategy resolver with precedence:
@@ -379,10 +439,16 @@ class Orchestrator:
         This keeps the legacy Orchestrator path aligned with WorkflowExecutor.
         """
         backend = Orchestrator._phase_4_backend_from_workflow(workflow)
-        workflow_rule_migration = getattr(workflow, "rule_migration", None) if workflow is not None else None
+        workflow_rule_migration = (
+            getattr(workflow, "rule_migration", None) if workflow is not None else None
+        )
         return create_migrator_resolved(
             workflow_params_backend=backend,
-            workflow_rule_migration=workflow_rule_migration if isinstance(workflow_rule_migration, dict) else None,
+            workflow_rule_migration=(
+                workflow_rule_migration
+                if isinstance(workflow_rule_migration, dict)
+                else None
+            ),
             platform_policy_strategy=platform_policy.default_rule_migration_strategy,
         )
 
@@ -392,9 +458,16 @@ class Orchestrator:
         if not isinstance(phases, list):
             return None
         for phase in phases:
-            operation = getattr(phase, "params", {}).get("operation") if isinstance(getattr(phase, "params", None), dict) else None
+            operation = (
+                getattr(phase, "params", {}).get("operation")
+                if isinstance(getattr(phase, "params", None), dict)
+                else None
+            )
             phase_operation = getattr(phase, "operation", None) or operation
-            is_rule_phase = getattr(phase, "id", "") == "phase_4_rule_migration" or phase_operation == "rule_based_migration"
+            is_rule_phase = (
+                getattr(phase, "id", "") == "phase_4_rule_migration"
+                or phase_operation == "rule_based_migration"
+            )
             params = getattr(phase, "params", None)
             if is_rule_phase and isinstance(params, dict):
                 backend = params.get("backend")
@@ -464,7 +537,9 @@ class Orchestrator:
         constraint_summary_val = phase_outputs.get("constraint_summary", "")
         if isinstance(constraint_summary_val, dict):
             constraint_summary_dict = cast(dict[str, object], constraint_summary_val)
-            constraint_summary_val = str(constraint_summary_dict.get("constraint_summary", ""))
+            constraint_summary_val = str(
+                constraint_summary_dict.get("constraint_summary", "")
+            )
 
         env_context_val = env_context or {}
         if not env_context_val:
@@ -492,14 +567,24 @@ class Orchestrator:
                 "env_context": self._serialize(env_context_val),
             },
         )
-        memo = self.session_mgr.send_command(session_id, prompt, timeout=get_timeout(getattr(self, '_fw_config', None), "session_timeout_repair"))
+        memo = self.session_mgr.send_command(
+            session_id,
+            prompt,
+            timeout=get_timeout(
+                getattr(self, "_fw_config", None), "session_timeout_repair"
+            ),
+        )
         recovery_output: JsonDict = {
             "failed_phase": failed_phase,
             "failure_log": failure_log,
             "recovery_memo": memo,
         }
-        raw_path = artifact_store.save_phase_output("phase_error_recovery", recovery_output, attempt=1)
-        canonical_path = artifact_store.mark_validated("phase_error_recovery", recovery_output)
+        raw_path = artifact_store.save_phase_output(
+            "phase_error_recovery", recovery_output, attempt=1
+        )
+        canonical_path = artifact_store.mark_validated(
+            "phase_error_recovery", recovery_output
+        )
         self._journal(
             artifact_store,
             phase_id="phase_error_recovery",
@@ -543,7 +628,9 @@ class Orchestrator:
             if isinstance(run_command, str) and run_command.strip():
                 return run_command
 
-        raise ValueError("Phase 5 requires a non-empty run_command from Phase 3 or user_command")
+        raise ValueError(
+            "Phase 5 requires a non-empty run_command from Phase 3 or user_command"
+        )
 
     def _advance_success_chain(
         self,
@@ -556,14 +643,21 @@ class Orchestrator:
                 break
             _ = state_machine.record_success(current_phase)
 
-    def _advance_to_group(self, state_machine: StateMachine, target_group: frozenset[str]) -> None:
-        while state_machine.current_phase is not None and state_machine.current_phase not in target_group:
+    def _advance_to_group(
+        self, state_machine: StateMachine, target_group: frozenset[str]
+    ) -> None:
+        while (
+            state_machine.current_phase is not None
+            and state_machine.current_phase not in target_group
+        ):
             current_phase = state_machine.current_phase
             if current_phase in _ERROR_RECOVERY_PHASES:
                 break
             _ = state_machine.record_success(current_phase)
 
-    def _force_failure_transition(self, state_machine: StateMachine, error_text: str) -> str | None:
+    def _force_failure_transition(
+        self, state_machine: StateMachine, error_text: str
+    ) -> str | None:
         current_phase = state_machine.current_phase
         if current_phase is None:
             return state_machine.current_terminal()
@@ -571,7 +665,9 @@ class Orchestrator:
         keep_retrying = True
         next_target: str | None = None
         while keep_retrying and state_machine.current_phase is not None:
-            keep_retrying, next_target = state_machine.record_failure(current_phase, error_text)
+            keep_retrying, next_target = state_machine.record_failure(
+                current_phase, error_text
+            )
         return next_target
 
     def _infer_failed_phase(self, current_phase: str | None, error_text: str) -> str:
@@ -603,7 +699,11 @@ class Orchestrator:
 
     @staticmethod
     def _serialize(value: object) -> str:
-        return value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False, default=str)
+        return (
+            value
+            if isinstance(value, str)
+            else json.dumps(value, indent=2, ensure_ascii=False, default=str)
+        )
 
     def _resolve_execution_backend(
         self,
@@ -654,7 +754,9 @@ class Orchestrator:
 
         cfg_list = getattr(config, "images", None) or []
         # Normalize: filter out None/"None" artifacts
-        candidates = [c for c in cfg_list if str(c).strip() and str(c).strip() != "None"]
+        candidates = [
+            c for c in cfg_list if str(c).strip() and str(c).strip() != "None"
+        ]
 
         if len(candidates) == 1:
             return config
@@ -665,7 +767,10 @@ class Orchestrator:
                 discovered = probe._discover_local_images()
             except Exception as exc:
                 import logging
-                logging.getLogger(__name__).warning("Auto image discovery failed: %s", exc)
+
+                logging.getLogger(__name__).warning(
+                    "Auto image discovery failed: %s", exc
+                )
                 discovered = []
 
             if discovered:
@@ -673,7 +778,10 @@ class Orchestrator:
                 is_discovered = True
             else:
                 import logging
-                logging.getLogger(__name__).info("Auto mode: no images and no local images discovered; falling back to local")
+
+                logging.getLogger(__name__).info(
+                    "Auto mode: no images and no local images discovered; falling back to local"
+                )
                 return _EBC(mode="local")
 
         selected = self._send_image_selection_prompt(
@@ -685,7 +793,9 @@ class Orchestrator:
             user_constraints=user_constraints,
         )
         if selected and selected in candidates:
-            ordered_candidates = [selected] + [img for img in candidates if img != selected]
+            ordered_candidates = [selected] + [
+                img for img in candidates if img != selected
+            ]
             config = _EBC(
                 mode=config.mode,
                 source=config.source,
@@ -706,9 +816,13 @@ class Orchestrator:
                 cleanup=config.cleanup,
             )
             import logging
-            logging.getLogger(__name__).info("Auto image selection chosen: %s", selected)
+
+            logging.getLogger(__name__).info(
+                "Auto image selection chosen: %s", selected
+            )
         else:
             import logging
+
             logging.getLogger(__name__).warning(
                 "Auto image selection returned invalid value %r; falling back to local",
                 selected,
@@ -731,22 +845,20 @@ class Orchestrator:
         from core.prompt_loader import PromptLoader
         from harness.session.manager import extract_json_response as _extract
 
-        prompts_dir = (
-            Path(__file__).resolve().parent.parent / "prompts"
-        )
+        prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
         prompt_loader = PromptLoader(prompts_dir)
 
-        candidates_text = "\n".join(f"  {i+1}. {img}" for i, img in enumerate(candidates))
+        candidates_text = "\n".join(
+            f"  {i+1}. {img}" for i, img in enumerate(candidates)
+        )
 
         guidance = (
             "Select the most appropriate image for running the migration workflow. "
-            "Consider image suitability for the project, dependencies, and target runtime environment."
+            "Consider image suitability for the project, dependencies, ",
+            "and target runtime environment.",
         )
         if is_discovered:
-            guidance = (
-                "These are the images already available on the host. "
-                + guidance
-            )
+            guidance = "These are the images already available on the host. " + guidance
 
         prompt_text = prompt_loader.load_prompt(
             "container_image_select",
@@ -763,12 +875,16 @@ class Orchestrator:
                     workflow=workflow,
                     project_dir=project_dir,
                 ),
-                "user_constraints_section": self._build_image_selection_constraints_section(user_constraints),
+                "user_constraints_section": self._build_image_selection_constraints_section(
+                    user_constraints
+                ),
                 "selection_guidance": guidance,
             },
         )
 
-        sid = self.session_mgr.get_or_create(role="main_engineer", lifecycle="persistent")
+        sid = self.session_mgr.get_or_create(
+            role="main_engineer", lifecycle="persistent"
+        )
         try:
             raw = self.session_mgr.send_command(sid, prompt_text, timeout=120)
             parsed = _extract(raw)
@@ -777,7 +893,10 @@ class Orchestrator:
                 return str(selected) if selected else None
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).warning("Image selection prompt failed: %s", exc)
+
+            logging.getLogger(__name__).warning(
+                "Image selection prompt failed: %s", exc
+            )
 
         return None
 
@@ -803,7 +922,9 @@ class Orchestrator:
         if project_dir:
             lines.append(f"- Project directory: {project_dir}")
         workflow_name = getattr(workflow, "name", "") if workflow is not None else ""
-        workflow_version = getattr(workflow, "version", "") if workflow is not None else ""
+        workflow_version = (
+            getattr(workflow, "version", "") if workflow is not None else ""
+        )
         if workflow_name:
             workflow_label = str(workflow_name)
             if workflow_version:
@@ -822,7 +943,10 @@ class Orchestrator:
                     lines.append(f"- {label}: {value}")
             env_vars = getattr(config, "env_vars", None)
             if isinstance(env_vars, dict) and env_vars:
-                lines.append("- Configured environment keys: " + ", ".join(sorted(str(k) for k in env_vars)))
+                lines.append(
+                    "- Configured environment keys: "
+                    + ", ".join(sorted(str(k) for k in env_vars))
+                )
             for label, attr in (
                 ("Required environment keys", "required_env_vars"),
                 ("Required device paths", "required_devices"),
@@ -832,7 +956,9 @@ class Orchestrator:
             ):
                 value = getattr(config, attr, None)
                 if value:
-                    lines.append(f"- {label}: {json.dumps(value, ensure_ascii=False, default=str)}")
+                    lines.append(
+                        f"- {label}: {json.dumps(value, ensure_ascii=False, default=str)}"
+                    )
         if not lines:
             return ""
         return "## Project and Runtime Context\n" + "\n".join(lines)
@@ -851,11 +977,15 @@ class Orchestrator:
         return get_container_prompt_context(backend, probe_facts)
 
     @staticmethod
-    def _build_execution_environment_context(backend: object, container_ctx: dict[str, str] | None = None) -> str:
+    def _build_execution_environment_context(
+        backend: object, container_ctx: dict[str, str] | None = None
+    ) -> str:
         from core.execution_backend import LocalBackend as _LocalBackend
+
         probe_facts: dict[str, object] | None = None
         if container_ctx and "container_env_facts" in container_ctx:
             import json
+
             try:
                 probe_facts = json.loads(container_ctx["container_env_facts"])
             except (json.JSONDecodeError, TypeError):
@@ -873,6 +1003,7 @@ class Orchestrator:
         except Exception as exc:
             # Cleanup failures are logged, never crash the workflow.
             import logging
+
             logger = logging.getLogger(__name__)
             logger.error("Execution backend cleanup failed: %s", exc)
 

@@ -13,13 +13,13 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}"), "<REDACTED_GITHUB_TOKEN>"),
     (
         re.compile(
-            r"(?i)([\"']?(?:HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)[\"']?\s*[:=]\s*[\"'])([^\"']+)([\"'])"
+            r"(?i)([\"']?(?:HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)[\"']?\s*[:=]\s*[\"'])([^\"']+)([\"'])"  # pylint: disable=line-too-long
         ),
         r"\1<REDACTED>\3",
     ),
     (
         re.compile(
-            r"(?i)\b(HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)\s*([:=])\s*([^\s\'\"`,;]+)"
+            r"(?i)\b(HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)\s*([:=])\s*([^\s\'\"`,;]+)"  # pylint: disable=line-too-long
         ),
         r"\1\2<REDACTED>",
     ),

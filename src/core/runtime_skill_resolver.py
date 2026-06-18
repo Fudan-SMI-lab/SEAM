@@ -99,7 +99,9 @@ class RuntimeSkillResolver:
                 exclude_dynamic_duplicates=phase_config.exclude_dynamic_duplicates,
             )
         if phase_config.merge != "append":
-            raise ValueError(f"Unsupported runtime skills merge policy: {phase_config.merge}")
+            raise ValueError(
+                f"Unsupported runtime skills merge policy: {phase_config.merge}"
+            )
 
         agent = self._copy_config(agent_config)
         return RuntimeSkillsConfig(
@@ -171,7 +173,14 @@ class RuntimeSkillResolver:
     def _format_skill_data(self, name: str, data: dict[str, Any]) -> str:
         title = data.get("title") or data.get("description") or name
         lines = [f"# {str(title)}", ""]
-        for key in ("when_to_use", "root_cause", "fix_steps", "steps", "antipatterns", "references"):
+        for key in (
+            "when_to_use",
+            "root_cause",
+            "fix_steps",
+            "steps",
+            "antipatterns",
+            "references",
+        ):
             if key not in data or data[key] in (None, "", []):
                 continue
             lines.append(f"## {key.replace('_', ' ').title()}")
@@ -184,7 +193,13 @@ class RuntimeSkillResolver:
         return "\n".join(lines).rstrip()
 
     def _validate_skill_name(self, name: str) -> None:
-        if not name or "/" in name or "\\" in name or name in {".", ".."} or ".." in Path(name).parts:
+        if (
+            not name
+            or "/" in name
+            or "\\" in name
+            or name in {".", ".."}
+            or ".." in Path(name).parts
+        ):
             raise ValueError(f"Invalid runtime skill name: {name!r}")
 
     def _copy_config(self, config: RuntimeSkillsConfig | None) -> RuntimeSkillsConfig:

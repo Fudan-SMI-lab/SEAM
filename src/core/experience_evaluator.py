@@ -1,4 +1,12 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportMissingParameterType=false, reportUnusedCallResult=false
+# pyright: reportMissingTypeArgument=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnannotatedClassAttribute=false
+# pyright: reportUninitializedInstanceVariable=false
+# pyright: reportMissingParameterType=false
+# pyright: reportUnusedCallResult=false
 """Experience evaluator — scans migration artifacts and produces candidate experiences."""
 
 import glob
@@ -6,7 +14,6 @@ import json
 import logging
 import os
 import re
-
 from core.experience_store import ExperienceStore
 
 logger = logging.getLogger(__name__)
@@ -25,6 +32,7 @@ _CANONICAL_PHASES = [
 ]
 
 
+# pylint: disable=too-few-public-methods
 class ExperienceEvaluator:
     """Assessment agent that scans migration artifacts and produces candidate experiences."""
 
@@ -55,7 +63,11 @@ class ExperienceEvaluator:
         context = self._build_evaluation_context(artifacts, run_id, project_source_root)
         full_prompt = self._load_prompt(context)
 
-        logger.info("Calling LLM evaluator for run_id=%s (timeout=%ds)", run_id, EVALUATOR_TIMEOUT)
+        logger.info(
+            "Calling LLM evaluator for run_id=%s (timeout=%ds)",
+            run_id,
+            EVALUATOR_TIMEOUT,
+        )
         session_id = self._get_evaluator_session()
         raw_response = self.session_mgr.send_command(
             session_id, full_prompt, timeout=EVALUATOR_TIMEOUT
@@ -74,10 +86,17 @@ class ExperienceEvaluator:
             cid = c["candidate_id"]
             self.store.write_candidate(run_id, cid, c)
 
-        logger.info("Evaluation complete for run_id=%s: %d candidates", run_id, len(candidates))
+        logger.info(
+            "Evaluation complete for run_id=%s: %d candidates", run_id, len(candidates)
+        )
         return candidates
 
-    def _normalize_candidates(self, raw_candidates: object, project_source_root: str, run_id: str) -> list[dict]:
+    def _normalize_candidates(
+        self,
+        raw_candidates: object,
+        project_source_root: str,
+        run_id: str,
+    ) -> list[dict]:
         if not isinstance(raw_candidates, list):
             return []
 
@@ -99,7 +118,10 @@ class ExperienceEvaluator:
     def _stable_candidate_id(candidate: dict, index: int, seen_ids: set[str]) -> str:
         raw_id = str(candidate.get("candidate_id") or "").strip()
         if raw_id:
-            candidate_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_id).strip("-") or f"candidate-{index:03d}"
+            candidate_id = (
+                re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_id).strip("-")
+                or f"candidate-{index:03d}"
+            )
         else:
             candidate_id = f"candidate-{index:03d}"
         if candidate_id not in seen_ids:
@@ -126,7 +148,8 @@ class ExperienceEvaluator:
             else:
                 result[key] = {}
 
-        # V2 saves as phase_run_entry_script_attempt*.json; V1 saves as phase_5_validation_attempt*.json
+        # V2 saves as phase_run_entry_script_attempt*.json; V1 saves as
+        # phase_5_validation_attempt*.json
         attempts = []
         for attempt_pattern in [
             os.path.join(raw_dir, "phase_run_entry_script_attempt*.json"),
@@ -170,7 +193,12 @@ class ExperienceEvaluator:
                     return d
         return ""
 
-    def _build_evaluation_context(self, artifacts: dict, run_id: str, project_source_root: str) -> str:
+    def _build_evaluation_context(
+        self,
+        artifacts: dict,
+        run_id: str,
+        project_source_root: str,
+    ) -> str:
         lines: list[str] = [
             f"## Run ID: {run_id}",
             f"## Project Source Root: {project_source_root or '(unknown)'}",
@@ -202,7 +230,9 @@ class ExperienceEvaluator:
         journal_lines = artifacts.get("journal_lines", [])
         if journal_lines:
             journal_text = "".join(journal_lines)[-3000:]
-            lines.append(f"\n### Execution Journal (last 3000 chars)\n```\n{journal_text}\n```")
+            lines.append(
+                f"\n### Execution Journal (last 3000 chars)\n```\n{journal_text}\n```"
+            )
 
         return "\n".join(lines)
 

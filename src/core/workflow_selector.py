@@ -274,7 +274,7 @@ def _validate_selector_schema(raw: dict[str, Any], path: str) -> None:
         if not entry_path or not isinstance(entry_path, str) or not entry_path.strip():
             raise ValueError(
                 f"Selector '{path}': candidate_workflows[{i}] missing required "
-                f"non-empty string 'path'"
+                "non-empty string 'path'"
             )
         if entry_path in seen_paths:
             raise ValueError(
@@ -361,7 +361,7 @@ def _record_event(telemetry: Any, event_type: str, **details: object) -> None:
     if callable(recorder):
         try:
             recorder(event_type, **details)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             pass  # never let telemetry errors break selection
 
 
@@ -442,7 +442,7 @@ def _select_workflow_via_agent(
     except TypeError:
         # Graceful fallback: fake session managers may not accept ``agent``.
         sid = session_mgr.get_or_create(role="workflow_selector", lifecycle="ephemeral")
-    except Exception:
+    except Exception:  # pylint: disable=broad-exception-caught
         # Graceful fallback: create_session if get_or_create missing
         create = getattr(session_mgr, "create_session", None)
         if callable(create):
@@ -603,8 +603,8 @@ def _resolve_fallback_with_telemetry(
         )
         raise ValueError(
             f"Agent workflow selection failed for selector '{selector_path}' and "
-            f"no 'fallback' is configured.  Either ensure the agent can respond "
-            f"correctly or set a fallback in the selector YAML."
+            "no 'fallback' is configured.  Either ensure the agent can respond "
+            "correctly or set a fallback in the selector YAML."
         )
     _record_event(
         telemetry,
@@ -628,8 +628,8 @@ def _resolve_fallback(
     if not fallback:
         raise ValueError(
             f"Agent workflow selection failed for selector '{selector_path}' and "
-            f"no 'fallback' is configured.  Either ensure the agent can respond "
-            f"correctly or set a fallback in the selector YAML."
+            "no 'fallback' is configured.  Either ensure the agent can respond "
+            "correctly or set a fallback in the selector YAML."
         )
 
     for c in candidates:
@@ -641,14 +641,14 @@ def _resolve_fallback(
 
     raise ValueError(
         f"Fallback '{fallback}' configured in selector '{selector_path}' "
-        f"is not among the candidate_workflows."
+        "is not among the candidate_workflows."
     )
 
 
 def _format_project_summary(project_context: dict[str, Any]) -> str:
     """Build a compact text summary of the project context."""
     if not project_context:
-        return "(No project context provided — make your best guess based on workflow descriptions alone.)"
+        return "(No project context provided — make your best guess based on workflow descriptions alone.)"  # pylint: disable=line-too-long
 
     # Start with a project name / path if available
     project_path = project_context.get("project_path", "")

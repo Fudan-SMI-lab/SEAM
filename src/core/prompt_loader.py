@@ -11,9 +11,18 @@ class PromptLoader:
     prompts_dir: Path
 
     _OPTIONAL_SECTION_PATTERNS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("constraint_summary", r"\n## Migration Constraints(?: \(from Phase 1\.5\))?\n.*?(?=\n## |\Z)"),
-        ("user_constraints", r"\n## User-Provided Constraints \(for awareness\)\n.*?(?=\n## |\Z)"),
-        ("user_constraints", r"\n## User-Provided Migration Constraints\n.*?(?=\n## |\Z)"),
+        (
+            "constraint_summary",
+            r"\n## Migration Constraints(?: \(from Phase 1\.5\))?\n.*?(?=\n## |\Z)",
+        ),
+        (
+            "user_constraints",
+            r"\n## User-Provided Constraints \(for awareness\)\n.*?(?=\n## |\Z)",
+        ),
+        (
+            "user_constraints",
+            r"\n## User-Provided Migration Constraints\n.*?(?=\n## |\Z)",
+        ),
     )
 
     def __init__(self, prompts_dir: str | Path | None = None) -> None:
@@ -47,7 +56,7 @@ class PromptLoader:
         if not prompt_path.exists():
             raise FileNotFoundError(
                 f"Prompt file not found: {prompt_path}. "
-                + f"Expected file: '{phase_id}.md' in {self.prompts_dir}"
+                f"Expected file: '{phase_id}.md' in {self.prompts_dir}"
             )
 
         template = prompt_path.read_text(encoding="utf-8")
@@ -60,12 +69,22 @@ class PromptLoader:
                 template = re.sub(pattern, "\n", template, flags=re.S)
 
         if not str(context.get("constraint_summary", "")).strip():
-            template = re.sub(r",\s*\{constraint_summary\},\s*", ", ", template)
+            template = re.sub(
+                r",\s*\{constraint_summary\},\s*",
+                ", ",
+                template,
+            )
 
         artifact_defaults = {
-            "latest_complete_stdout_artifact_path": "(no complete stdout artifact available)",
-            "latest_complete_stderr_artifact_path": "(no complete stderr artifact available)",
-            "latest_complete_meta_artifact_path": "(no complete metadata artifact available)",
+            "latest_complete_stdout_artifact_path": (
+                "(no complete stdout artifact available)"
+            ),
+            "latest_complete_stderr_artifact_path": (
+                "(no complete stderr artifact available)"
+            ),
+            "latest_complete_meta_artifact_path": (
+                "(no complete metadata artifact available)"
+            ),
         }
         if any(key not in context for key in artifact_defaults):
             context = {**artifact_defaults, **context}
@@ -75,20 +94,28 @@ class PromptLoader:
             context = dict(context)
             context["repair_role_descriptions"] = (
                 "## Repair Roles\n"
-                "- `dependency_fixer`: Fix missing/mismatched packages, install commands, version conflicts, mirror configuration.\n"
-                "- `code_adapter`: Fix Python-level API/device/tensor migration, device placement, backend strings.\n"
-                "- `operator_fixer`: Fix shared-object, native-symbol, compiler, custom-kernel, custom-op final-gate evidence-level issues.\n"
+                "- `dependency_fixer`: Fix missing/mismatched packages, install commands, "
+                "version conflicts, mirror configuration.\n"
+                "- `code_adapter`: Fix Python-level API/device/tensor migration, "
+                "device placement, backend strings.\n"
+                "- `operator_fixer`: Fix shared-object, native-symbol, compiler, "
+                "custom-kernel, custom-op final-gate evidence-level issues.\n"
                 "\n"
                 "## Output Field Semantics\n"
-                "- `category`: One of `environment`, `dependency`, `pathing`, `migration logic`, `operator`, `validation`, `unknown`.\n"
+                "- `category`: One of `environment`, `dependency`, `pathing`, "
+                "`migration logic`, `operator`, `validation`, `unknown`.\n"
                 "- `root_cause`: Specific explanation with supporting evidence.\n"
                 "- `suggested_fix`: Concrete corrective action for downstream repair agent.\n"
                 "- `repair_role`: One of `dependency_fixer`, `code_adapter`, `operator_fixer`.\n"
-                "- `entry_script_action.needed`: `true` only to replace the Phase 3 `run_command`, `false` otherwise.\n"
-                "- `entry_script_action.action`: `\"none\"`, `\"regenerate\"`, or `\"modify\"`.\n"
-                "- `entry_script_action.run_command`: The replacement command; non-empty when `needed=true`. Source edits belong to repair agents.\n"
-                "- `environment_action.needed`: `true` only when a framework-created image container must be recreated before repair.\n"
-                "- `environment_action.action`: `\"none\"` or `\"recreate_execution_environment\"`; never run docker/podman yourself."
+                "- `entry_script_action.needed`: `true` only to replace the Phase 3 "
+                "`run_command`, `false` otherwise.\n"
+                '- `entry_script_action.action`: `"none"`, `"regenerate"`, or `"modify"`.\n'
+                "- `entry_script_action.run_command`: The replacement command; non-empty when "
+                "`needed=true`. Source edits belong to repair agents.\n"
+                "- `environment_action.needed`: `true` only when a framework-created "
+                "image container must be recreated before repair.\n"
+                '- `environment_action.action`: `"none"` or '
+                '`"recreate_execution_environment"`; never run docker/podman yourself.'
             )
 
         placeholders: list[str] = re.findall(r"\{(\w+)\}", template)
@@ -97,8 +124,8 @@ class PromptLoader:
         if missing_keys:
             raise KeyError(
                 f"Missing context key(s) for prompt '{phase_id}': "
-                + f"{', '.join(missing_keys)}. "
-                + f"Provided keys: {list(context.keys())}"
+                f"{', '.join(missing_keys)}. "
+                f"Provided keys: {list(context.keys())}"
             )
 
         result = template
@@ -111,6 +138,7 @@ class PromptLoader:
         if not self.prompts_dir.exists():
             return []
         return sorted(
-            f.name for f in self.prompts_dir.iterdir()
+            f.name
+            for f in self.prompts_dir.iterdir()
             if f.is_file() and f.name.endswith(".md")
         )

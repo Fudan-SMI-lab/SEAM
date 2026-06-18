@@ -1,7 +1,6 @@
 """Core type definitions and data models for migration_utils."""
 
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TYPE_CHECKING
@@ -11,6 +10,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class RuntimeSkillsConfig:
     """Explicit runtime skill configuration declared in workflow YAML."""
 
@@ -22,6 +22,7 @@ class RuntimeSkillsConfig:
     exclude_dynamic_duplicates: bool = True
 
 
+# pylint: disable=too-few-public-methods
 class SessionLifecycle(str, Enum):
     """Lifecycle modes for OpenCode sessions."""
 
@@ -31,6 +32,7 @@ class SessionLifecycle(str, Enum):
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class SessionRecord:
     """Record of a managed OpenCode session."""
 
@@ -42,6 +44,7 @@ class SessionRecord:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class PhaseDefinition:
     """Declarative definition of a workflow phase."""
 
@@ -63,14 +66,17 @@ class PhaseDefinition:
     hooks: PhaseHooks | None = None
     transition: TransitionDefinition | None = None
     on_failure: str = "continue"
-    handler: str | None = None             # For orchestration type handler path
-    retrieve_experience: bool = False      # Enable experience retrieval for this phase
-    experience_query: dict[str, Any] | None = None   # Query configuration for experience retrieval
+    handler: str | None = None  # For orchestration type handler path
+    retrieve_experience: bool = False  # Enable experience retrieval for this phase
+    experience_query: dict[str, Any] | None = (
+        None  # Query configuration for experience retrieval
+    )
     runtime_skills: RuntimeSkillsConfig | None = None
     params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class PhaseResult:
     """Outcome of executing a single phase."""
 
@@ -79,6 +85,7 @@ class PhaseResult:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class RepairContext:
     """Tracking state for the iterative repair loop in Phase 5."""
 
@@ -90,6 +97,7 @@ class RepairContext:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class ExecutionBackendConfig:
     """Optional execution-backend configuration parsed from workflow YAML.
 
@@ -106,12 +114,12 @@ class ExecutionBackendConfig:
     ``images=[image]`` when ``images`` is not explicitly provided.
     """
 
-    mode: str = "local"                           # local | container | auto
-    source: str = "image"                         # image | existing_container
-    runtime: str = "docker"                       # docker | podman
-    image: str | None = None                      # source=image only (single, legacy)
-    images: list[str] | None = None               # source=image only (list, new)
-    container_name: str | None = None             # source=existing_container only
+    mode: str = "local"  # local | container | auto
+    source: str = "image"  # image | existing_container
+    runtime: str = "docker"  # docker | podman
+    image: str | None = None  # source=image only (single, legacy)
+    images: list[str] | None = None  # source=image only (list, new)
+    container_name: str | None = None  # source=existing_container only
     container_name_prefix: str = "seam-migration"
     devices: list[str] = field(default_factory=list)
     volumes: list[str] = field(default_factory=list)
@@ -176,7 +184,9 @@ class ExecutionBackendConfig:
         fallback_images = _normalize_image_value(raw_single)
 
         # If neither was provided, images stays None.
-        resolved_images_final: list[str] | None = resolved_images or fallback_images or None
+        resolved_images_final: list[str] | None = (
+            resolved_images or fallback_images or None
+        )
 
         return cls(
             mode=mode,
@@ -185,7 +195,9 @@ class ExecutionBackendConfig:
             image=resolved_images_final[0] if resolved_images_final else None,
             images=resolved_images_final,
             container_name=raw.get("container_name"),
-            container_name_prefix=str(raw.get("container_name_prefix", "seam-migration")),
+            container_name_prefix=str(
+                raw.get("container_name_prefix", "seam-migration")
+            ),
             devices=list(raw.get("devices", [])),
             volumes=list(raw.get("volumes", [])),
             env_vars={str(k): str(v) for k, v in raw.get("env_vars", {}).items()},
@@ -200,6 +212,7 @@ class ExecutionBackendConfig:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class ExperienceConfig:
     """Top-level experience retrieval and injection configuration."""
 
@@ -208,6 +221,7 @@ class ExperienceConfig:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class WorkflowDefinition:
     """Top-level workflow descriptor loaded from YAML."""
 
@@ -222,10 +236,15 @@ class WorkflowDefinition:
     hooks: dict[str, list[HookDefinition]] = field(default_factory=dict)
     execution_backend: ExecutionBackendConfig | None = None
     experience: ExperienceConfig = field(default_factory=ExperienceConfig)
-    target_platform: Any = None  # TargetPlatformConfig | None after platform_policy imported
-    rule_migration: dict[str, Any] | None = None  # workflow-level rule_migration strategy override
+    target_platform: Any = (
+        None  # TargetPlatformConfig | None after platform_policy imported
+    )
+    rule_migration: dict[str, Any] | None = (
+        None  # workflow-level rule_migration strategy override
+    )
 
 
+# pylint: disable=too-few-public-methods
 class PhaseType(str, Enum):
     """Enum of supported phase execution types."""
 
@@ -239,6 +258,7 @@ class PhaseType(str, Enum):
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class PhaseHooks:
     """Hook callbacks for phase lifecycle events."""
 
@@ -248,6 +268,7 @@ class PhaseHooks:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class HookResult:
     """Result of executing a single hook."""
 
@@ -257,6 +278,7 @@ class HookResult:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class HookDefinition:
     """Declarative hook configuration."""
 
@@ -268,6 +290,7 @@ class HookDefinition:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class TransitionDefinition:
     """Fine-grained transition rules for a phase outcome."""
 
@@ -279,6 +302,7 @@ class TransitionDefinition:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class SubWorkflowDefinition:
     """A sub-workflow e.g. loop body, used inside a parent workflow."""
 
@@ -294,6 +318,7 @@ class SubWorkflowDefinition:
 
 
 @dataclass
+# pylint: disable=too-few-public-methods
 class LoopState:
     """Tracking state for the iterative loop sub-workflow execution."""
 
