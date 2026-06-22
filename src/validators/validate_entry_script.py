@@ -205,7 +205,10 @@ def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> 
 
     entry_script_kind = data.get("entry_script_kind")
     if entry_script_kind != "custom_op_full_validation":
-        errors.append("entry_script_kind must be 'custom_op_full_validation' for custom-op contracts")
+        errors.append(
+            "entry_script_kind must be 'custom_op_full_validation' "
+            "for custom-op contracts"
+        )
 
     reports_dir = data.get("reports_dir")
     if not isinstance(reports_dir, str) or not reports_dir.strip():
@@ -215,14 +218,20 @@ def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> 
 
     required_report_paths = _string_list(data.get("required_report_paths"))
     if required_report_paths is None or not required_report_paths:
-        errors.append("required_report_paths must list migration report obligations for custom-op contracts")
+        errors.append(
+            "required_report_paths must list migration report obligations "
+            "for custom-op contracts"
+        )
     else:
         missing_report_tokens = [
-            token for token in REQUIRED_REPORT_TOKENS if not _contains_token(required_report_paths, token)
+            token
+            for token in REQUIRED_REPORT_TOKENS
+            if not _contains_token(required_report_paths, token)
         ]
         if missing_report_tokens:
             errors.append(
-                "required_report_paths must cover report categories: " + ", ".join(missing_report_tokens)
+                "required_report_paths must cover report categories: "
+                + ", ".join(missing_report_tokens)
             )
 
     required_checks = _string_list(data.get("required_checks"))
@@ -232,45 +241,80 @@ def _validate_custom_op_contract(data: dict[str, object], errors: list[str]) -> 
         normalized_checks = {_normalize_check(check) for check in required_checks}
         missing_checks = sorted(REQUIRED_CHECKS - normalized_checks)
         if missing_checks:
-            errors.append("required_checks missing custom-op full-validation checks: " + ", ".join(missing_checks))
+            errors.append(
+                "required_checks missing custom-op full-validation checks: "
+                + ", ".join(missing_checks)
+            )
         if _contains_partial_success_terms(required_checks):
-            errors.append("required_checks must enforce full validation, not smoke/MVP/partial-only success")
+            errors.append(
+                "required_checks must enforce full validation, "
+                "not smoke/MVP/partial-only success"
+            )
 
     inventory_schema = data.get("operator_inventory_schema")
     if not isinstance(inventory_schema, dict):
-        errors.append("operator_inventory_schema must describe semantic rows, native symbols, kernels, source evidence, and out-of-scope groups")
+        errors.append(
+            "operator_inventory_schema must describe semantic rows, "
+            "native symbols, kernels, source evidence, and out-of-scope groups"
+        )
     else:
         schema_dict = cast(dict[str, object], inventory_schema)
         normalized_schema_fields = {_normalize_check(key) for key in schema_dict}
         missing_schema_fields = sorted(REQUIRED_INVENTORY_SCHEMA_FIELDS - normalized_schema_fields)
         if missing_schema_fields:
-            errors.append("operator_inventory_schema missing required fields: " + ", ".join(missing_schema_fields))
+            errors.append(
+                "operator_inventory_schema missing required fields: "
+                + ", ".join(missing_schema_fields)
+            )
 
     discovery_sources = _string_list(data.get("operator_discovery_sources"))
     if discovery_sources is None or not discovery_sources:
-        errors.append("operator_discovery_sources must list source discovery obligations for custom-op contracts")
+        errors.append(
+            "operator_discovery_sources must list source discovery obligations "
+            "for custom-op contracts"
+        )
     else:
         normalized_sources = {_normalize_check(source) for source in discovery_sources}
         missing_sources = sorted(REQUIRED_DISCOVERY_SOURCES - normalized_sources)
         if missing_sources:
-            errors.append("operator_discovery_sources missing required sources: " + ", ".join(missing_sources))
+            errors.append(
+                "operator_discovery_sources missing required sources: "
+                + ", ".join(missing_sources)
+            )
         if "requirements_doc" in normalized_sources:
-            errors.append("operator_discovery_sources must be source-driven and must not include requirements_doc as a completion source")
+            errors.append(
+                "operator_discovery_sources must be source-driven and "
+                "must not include requirements_doc as a completion source"
+            )
 
     validation_obligations = _string_list(data.get("validation_obligations"))
     if validation_obligations is None or not validation_obligations:
-        errors.append("validation_obligations must list runtime validation obligations for custom-op contracts")
+        errors.append(
+            "validation_obligations must list runtime validation obligations "
+            "for custom-op contracts"
+        )
     else:
-        normalized_obligations = {_normalize_check(obligation) for obligation in validation_obligations}
+        normalized_obligations = {
+            _normalize_check(obligation) for obligation in validation_obligations
+        }
         missing_obligations = sorted(REQUIRED_VALIDATION_OBLIGATIONS - normalized_obligations)
         if missing_obligations:
-            errors.append("validation_obligations missing required obligations: " + ", ".join(missing_obligations))
+            errors.append(
+                "validation_obligations missing required obligations: "
+                + ", ".join(missing_obligations)
+            )
         if _contains_partial_success_terms(validation_obligations):
-            errors.append("validation_obligations must enforce full validation, not smoke/MVP/partial-only success")
+            errors.append(
+                "validation_obligations must enforce full validation, "
+                "not smoke/MVP/partial-only success"
+            )
 
     revision_allowed = data.get("phase5_entry_script_revision_allowed")
     if not isinstance(revision_allowed, bool):
-        errors.append("phase5_entry_script_revision_allowed must be a boolean for custom-op contracts")
+        errors.append(
+            "phase5_entry_script_revision_allowed must be a boolean "
+            "for custom-op contracts"
+        )
 
     _reject_partial_contract_text(data, errors)
 
@@ -297,8 +341,9 @@ def _require_existing_custom_op_entry_script(
     except (OSError, ValueError):
         pass
     error = (
-        "entry_script_path must point to an existing file for custom-op contracts under the project directory; "
-        + "create or select the full validation script before returning Phase 3 JSON"
+        "entry_script_path must point to an existing file for custom-op contracts "
+        "under the project directory; create or select the full validation script "
+        "before returning Phase 3 JSON"
     )
     errors.append(error)
 
@@ -335,37 +380,64 @@ def _reject_partial_contract_text(data: dict[str, object], errors: list[str]) ->
     values.extend(_string_list(data.get("validation_obligations")) or [])
     for value in values:
         if isinstance(value, str) and any(term in value.lower() for term in PARTIAL_SUCCESS_TERMS):
-            errors.append("custom-op contract must not describe a smoke/MVP/partial-only validation target")
+            errors.append(
+                "custom-op contract must not describe a smoke/MVP/partial-only "
+                "validation target"
+            )
             return
     for value in values:
-        if isinstance(value, str) and any(term in value.lower() for term in REPORT_ONLY_VALIDATOR_TERMS):
-            errors.append("custom-op entry script must be a full validation runner, not a report-only final evidence validator")
+        if (
+            isinstance(value, str)
+            and any(term in value.lower() for term in REPORT_ONLY_VALIDATOR_TERMS)
+        ):
+            errors.append(
+                "custom-op entry script must be a full validation runner, "
+                "not a report-only final evidence validator"
+            )
             return
 
 
-def _reject_report_only_entry_target(entry_script_path: object, run_command: object, errors: list[str]) -> None:
+def _reject_report_only_entry_target(
+    entry_script_path: object,
+    run_command: object,
+    errors: list[str],
+) -> None:
     for value in (entry_script_path, run_command):
         if not isinstance(value, str):
             continue
         normalized = value.lower().replace("\\", "/")
         if any(term in normalized for term in REPORT_ONLY_ENTRY_PATH_TERMS):
-            errors.append("entry script must not point to migration_reports/final_evidence_validate.py or another report-only evidence validator")
+            errors.append(
+                "entry script must not point to "
+                "migration_reports/final_evidence_validate.py "
+                "or another report-only evidence validator"
+            )
             return
 
 
-def _reject_benchmark_only_target(entry_script_path: object, run_command: object, errors: list[str]) -> None:
+def _reject_benchmark_only_target(
+    entry_script_path: object,
+    run_command: object,
+    errors: list[str],
+) -> None:
     for value in (entry_script_path, run_command):
         if not isinstance(value, str):
             continue
         normalized = value.lower().replace("_", "_")
         if any(term in normalized for term in BENCHMARK_ONLY_TERMS):
-            errors.append("custom-op entry script must not select a benchmark-only validation target")
+            errors.append(
+                "custom-op entry script must not select "
+                "a benchmark-only validation target"
+            )
             return
 
 
 def _reject_unsafe_run_command(run_command: str, errors: list[str]) -> None:
     if any(control in run_command for control in UNSAFE_RUN_COMMAND_CONTROLS):
-        errors.append("run_command must be a single non-interactive process command; create a wrapper script instead of using shell control syntax")
+        errors.append(
+            "run_command must be a single non-interactive process command; "
+            "create a wrapper script instead of using shell control syntax"
+        )
         return
     try:
         tokens = shlex.split(run_command)
@@ -389,10 +461,16 @@ def _reject_unsafe_run_command(run_command: str, errors: list[str]) -> None:
 
     executable = tokens[0].rsplit("/", 1)[-1]
     if executable in UNSAFE_RUN_COMMAND_EXECUTORS:
-        errors.append("run_command must not invoke a shell or shell builtin; create a wrapper script instead")
+        errors.append(
+            "run_command must not invoke a shell or shell builtin; "
+            "create a wrapper script instead"
+        )
         return
     if executable in ENV_EXECUTORS and _env_invokes_shell(tokens):
-        errors.append("run_command must not invoke a shell through env; create a wrapper script instead")
+        errors.append(
+            "run_command must not invoke a shell through env; "
+            "create a wrapper script instead"
+        )
 
 
 def _env_invokes_shell(tokens: list[str]) -> bool:

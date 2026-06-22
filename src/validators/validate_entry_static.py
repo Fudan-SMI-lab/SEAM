@@ -18,6 +18,7 @@ CUSTOM_OP_BOOLEAN_FIELDS = (
     "script_checks_no_fallback",
 )
 
+
 def validate(data: dict[str, object]) -> ValidationDict:
     """Validate Phase 3.5 static analysis output.
 
@@ -71,16 +72,28 @@ def validate(data: dict[str, object]) -> ValidationDict:
             errors.append("custom_op_static_required must be true when present")
 
         entry_script_kind = data.get("entry_script_kind")
-        if entry_script_kind is not None and entry_script_kind != "custom_op_full_validation":
-            errors.append("entry_script_kind must be 'custom_op_full_validation' when present")
+        if (
+            entry_script_kind is not None
+            and entry_script_kind != "custom_op_full_validation"
+        ):
+            errors.append(
+                "entry_script_kind must be 'custom_op_full_validation' when present"
+            )
 
         if _custom_static_required(data):
-            missing_fields = [field for field in CUSTOM_OP_BOOLEAN_FIELDS if field not in data]
+            missing_fields = [
+                field for field in CUSTOM_OP_BOOLEAN_FIELDS if field not in data
+            ]
             if missing_fields:
-                errors.append("custom-op static validation missing booleans: " + ", ".join(missing_fields))
+                errors.append(
+                    "custom-op static validation missing booleans: "
+                    + ", ".join(missing_fields)
+                )
             for field in CUSTOM_OP_BOOLEAN_FIELDS:
                 if field in data and data.get(field) is not True:
-                    errors.append(f"{field} must be true for custom-op static validation")
+                    errors.append(
+                        f"{field} must be true for custom-op static validation"
+                    )
 
     if not errors:
         if not validation_passed:

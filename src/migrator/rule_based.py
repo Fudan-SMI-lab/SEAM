@@ -5,8 +5,17 @@ import re
 import glob as glob_module
 from typing import Any  # noqa: F401
 
-# pyright: reportIndexIssue=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportExplicitAny=false, reportUnannotatedClassAttribute=false, reportUnusedVariable=false, reportAny=false, reportUnusedCallResult=false
-
+# pyright: reportIndexIssue=false
+# pyright: reportOperatorIssue=false
+# pyright: reportAttributeAccessIssue=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportExplicitAny=false
+# pyright: reportUnannotatedClassAttribute=false
+# pyright: reportUnusedVariable=false
+# pyright: reportAny=false
+# pyright: reportUnusedCallResult=false
+# pyright: reportUnusedCallResult=false
 
 class RuleBasedMigrator:
     """Migrates CUDA-specific PyTorch code to NPU (Ascend) equivalents using regex rules."""
@@ -48,7 +57,9 @@ class RuleBasedMigrator:
         torch_npu_injected = False
 
         # Rule 1 injection: add import torch_npu at top if CUDA patterns found
-        if has_cuda and not re.search(r"^import torch_npu\b|^from torch_npu\b", source_code, re.MULTILINE):
+        if has_cuda and not re.search(
+            r"^import torch_npu\b|^from torch_npu\b", source_code, re.MULTILINE
+        ):
             # Find position after existing imports or at very beginning
             lines = source_code.split("\n")
             last_import_idx = 0
@@ -116,7 +127,10 @@ class RuleBasedMigrator:
         Returns:
             Aggregate report dict with per-file results and summary.
         """
-        aggregate = {"files": {}, "summary": {"total_files": 0, "total_replacements": 0, "rules": {}}}
+        aggregate = {
+            "files": {},
+            "summary": {"total_files": 0, "total_replacements": 0, "rules": {}},
+        }
         files = glob_module.glob(os.path.join(dirpath, "**", pattern), recursive=True)
 
         for filepath in files:
@@ -137,6 +151,10 @@ class RuleBasedMigrator:
                     with open(filepath, "w", encoding="utf-8") as f:
                         f.write(new_code)
             except Exception as e:
-                aggregate["files"][filepath] = {"error": str(e), "total_replacements": 0, "rules": {}}
+                aggregate["files"][filepath] = {
+                    "error": str(e),
+                    "total_replacements": 0,
+                    "rules": {},
+                }
 
         return aggregate

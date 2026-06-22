@@ -9,12 +9,14 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
+from pathlib import Path
 from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable=wrong-import-position
 from core.artifact_store import ArtifactStore
 from core.phase_runner import PhaseRunner
 from core.prompt_loader import PromptLoader
@@ -69,19 +71,30 @@ class MockSessionManager:
             self._sessions[key] = f"{role}-{lifecycle}-session"
         return self._sessions[key]
 
-    def send_command(self, session_id: str, command: str, timeout: int | None = None, **kwargs: object) -> str:
+    def send_command(
+        self,
+        session_id: str,
+        command: str,
+        timeout: int | None = None,
+        **kwargs: object,
+    ) -> str:
         self.send_command_calls.append((session_id, command, timeout))
-        if command.startswith("# Phase 0 - Environment Detection") or command.startswith(
-            "Your previous response for phase_0_env_detect"
-        ):
-            return json.dumps({
+        if command.startswith(
+            "# Phase 0 - Environment Detection"
+        ) or command.startswith("Your previous response for phase_0_env_detect"):
+            return json.dumps(
+            {
                 "platform": "cuda",
                 "npu_detected": False,
-                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                "python_version": (
+                    f"{sys.version_info.major}.{sys.version_info.minor}."
+                    f"{sys.version_info.micro}"
+                ),
                 "cann_version": "n/a",
                 "ascendc_available": False,
                 "driver_version": "not_found",
-            })
+            }
+            )
         if command.startswith("# Phase 1 - Project Analysis") or command.startswith(
             "Your previous response for phase_1_project_analysis"
         ):
@@ -157,14 +170,20 @@ def check_server_running(base_url: str = BASE_URL, timeout: float = 3.0) -> None
     except (FileNotFoundError, subprocess.SubprocessError, OSError) as exc:
         raise SmokeTestError(f"OpenCode server is not reachable at {base_url}: {exc}") from exc
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"curl exit code {completed.returncode}"
+        detail = (
+            completed.stderr.strip()
+            or completed.stdout.strip()
+            or f"curl exit code {completed.returncode}"
+        )
         raise SmokeTestError(f"OpenCode server is not reachable at {base_url}: {detail}")
 
 
 def create_test_project(temp_root: Path) -> tuple[Path, Path]:
     project_dir = temp_root / "cuda_project"
     project_dir.mkdir(parents=True, exist_ok=True)
-    _ = (project_dir / "README.md").write_text("# CUDA sample\n\nMinimal smoke-test project.\n", encoding="utf-8")
+    _ = (project_dir / "README.md").write_text(
+        "# CUDA sample\n\nMinimal smoke-test project.\n", encoding="utf-8"
+    )
     source_file = project_dir / "train.py"
     _ = source_file.write_text(CUDA_SAMPLE, encoding="utf-8")
     return project_dir, source_file
@@ -232,7 +251,10 @@ def verify_run(
 
     journal = artifact_store.get_journal()
     for phase_id in [*expected_phase_keys, "phase_4_rule_migration", "phase_5_validation"]:
-        if not any(entry.get("phase_id") == phase_id and entry.get("status") == "succeeded" for entry in journal):
+        if not any(
+            entry.get("phase_id") == phase_id and entry.get("status") == "succeeded"
+            for entry in journal
+        ):
             raise SmokeTestError(f"Journal does not show {phase_id} as succeeded")
 
     files_migrated = phase_4_report.get("files_migrated", 0)

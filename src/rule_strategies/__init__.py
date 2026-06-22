@@ -85,7 +85,8 @@ def _instantiate_migrator(strategy_def: dict[str, Any]) -> object:
             return cls()
     except Exception as exc:
         _logger.error(
-            "Failed to instantiate migrator %s.%s: %s  Falling back to ReportOnlyRuleBasedMigrator.",
+            "Failed to instantiate migrator %s.%s: %s "
+            "Falling back to ReportOnlyRuleBasedMigrator.",
             module_name,
             class_name,
             exc,
@@ -139,7 +140,10 @@ def resolve_rule_migration_strategy(
         explicit_file = workflow_rule_migration.get("strategy_file")
         if isinstance(explicit_file, str) and explicit_file.strip():
             strategy_file = explicit_file.strip()
-            _logger.debug("Strategy resolved from workflow rule_migration.strategy_file → %s", strategy_file)
+            _logger.debug(
+                "Strategy resolved from workflow rule_migration.strategy_file → %s",
+                strategy_file,
+            )
             return strategy_file
         explicit = workflow_rule_migration.get("strategy")
         if isinstance(explicit, str) and explicit.strip():

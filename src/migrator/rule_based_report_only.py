@@ -18,7 +18,10 @@ class ReportOnlyRuleBasedMigrator:
             ("nccl_backend_literals", r"[\"']nccl[\"']"),
             ("nvidia_smi_references", r"nvidia-smi"),
             ("nvml_references", r"pynvml|py3nvml|nvml"),
-            ("cuda_extension_references", r"CUDAExtension|cpp_extension|torch\.utils\.cpp_extension"),
+            (
+                "cuda_extension_references",
+                r"CUDAExtension|cpp_extension|torch\.utils\.cpp_extension",
+            ),
         ]
 
     def migrate(self, source_code: str) -> tuple[str, dict[str, Any]]:
@@ -39,7 +42,12 @@ class ReportOnlyRuleBasedMigrator:
     def migrate_directory(self, dirpath: str, pattern: str = "*.py") -> dict[str, Any]:
         aggregate: dict[str, Any] = {
             "files": {},
-            "summary": {"total_files": 0, "total_replacements": 0, "rules": {}, "mode": "report_only"},
+            "summary": {
+                "total_files": 0,
+                "total_replacements": 0,
+                "rules": {},
+                "mode": "report_only",
+            },
         }
         files = glob_module.glob(os.path.join(dirpath, "**", pattern), recursive=True)
         for filepath in files:

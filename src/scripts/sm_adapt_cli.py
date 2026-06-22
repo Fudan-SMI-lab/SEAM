@@ -11,7 +11,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sm_adapt_cli",
         description="SM-Adapt v2: CUDA-to-NPU migration CLI",
-        epilog="Example: python sm_adapt_cli.py --project-dir /path/to/cuda-project --command 'Migrate to NPU'",
+        epilog=(
+            "Example: python sm_adapt_cli.py --project-dir /path/to/cuda-project "
+            "--command 'Migrate to NPU'"
+        ),
     )
 
     parser.add_argument(
@@ -26,7 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
         required=False,
         default=None,
         type=str,
-        help="Path to workflow YAML definition (default: workflows/npu_migration_v1.yaml relative to this script)",
+        help=(
+            "Path to workflow YAML definition "
+            "(default: workflows/npu_migration_v1.yaml relative to this script)"
+        ),
     )
 
     parser.add_argument(

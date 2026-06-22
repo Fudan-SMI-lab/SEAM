@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitOverride=false, reportUnknownMemberType=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportImplicitOverride=false
+# pyright: reportUnknownMemberType=false
 
 from typing import Any
 

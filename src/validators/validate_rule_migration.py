@@ -9,11 +9,19 @@ def validate(data: dict[str, object]) -> ValidationDict:
     errors: list[str] = []
 
     files_migrated = data.get("files_migrated")
-    if not isinstance(files_migrated, int) or isinstance(files_migrated, bool) or files_migrated < 0:
+    if (
+        not isinstance(files_migrated, int)
+        or isinstance(files_migrated, bool)
+        or files_migrated < 0
+    ):
         errors.append("files_migrated must be an integer >= 0")
 
     files_skipped = data.get("files_skipped")
-    if not isinstance(files_skipped, int) or isinstance(files_skipped, bool) or files_skipped < 0:
+    if (
+        not isinstance(files_skipped, int)
+        or isinstance(files_skipped, bool)
+        or files_skipped < 0
+    ):
         errors.append("files_skipped must be an integer >= 0")
 
     replacement_counts = data.get("replacement_counts")

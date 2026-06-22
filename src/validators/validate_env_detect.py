@@ -33,9 +33,12 @@ def validate(data: dict[str, object]) -> ValidationDict:
     elif platform_key:
         platform_detected = data.get(f"{platform_key}_detected")
         accelerator_detected = data.get("accelerator_detected")
-        if not isinstance(platform_detected, bool) and not isinstance(accelerator_detected, bool):
+        if not isinstance(platform_detected, bool) and not isinstance(
+            accelerator_detected, bool
+        ):
             errors.append(
-                f"{platform_key}_detected or accelerator_detected must be a boolean for platform={platform_key}"
+                f"{platform_key}_detected or accelerator_detected "
+                f"must be a boolean for platform={platform_key}"
             )
 
     python_version = data.get("python_version")
