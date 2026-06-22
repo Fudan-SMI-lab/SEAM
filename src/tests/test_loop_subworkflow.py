@@ -1,10 +1,16 @@
 """Tests for loop sub-workflow, review gate, and dispatch routing."""
-import pytest
 import tempfile
-from unittest.mock import MagicMock, patch
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition, SubWorkflowDefinition
+import pytest
+
+from core.types import (
+    PhaseDefinition,
+    RuntimeSkillsConfig,
+    WorkflowDefinition,
+    SubWorkflowDefinition,
+)
 from core.workflow_executor import WorkflowExecutor
 
 
@@ -76,7 +82,13 @@ class TestLoopSubworkflow:
             project_dir=temp_dir, output_dir=temp_dir,
         )
 
-        mini = executor._mini_phase({"id": "stagnation_check", "type": "builtin", "operation": "stagnation_check"})
+        mini = executor._mini_phase(
+            {
+                "id": "stagnation_check",
+                "type": "builtin",
+                "operation": "stagnation_check",
+            }
+        )
 
         assert mini.params == {"operation": "stagnation_check"}
 
@@ -346,7 +358,9 @@ class TestReviewGate:
 
         prompt_loader.load_prompt.return_value = "review template"
         session_mgr.get_or_create.return_value = "session_123"
-        session_mgr.send_command.return_value = '{"verdict": "reject", "reasoning": "cpu fallback detected"}'
+        session_mgr.send_command.return_value = (
+            '{"verdict": "reject", "reasoning": "cpu fallback detected"}'
+        )
 
         phase = PhaseDefinition(
             id="review", name="Review", prompt_template="review_prompt", output_schema={},

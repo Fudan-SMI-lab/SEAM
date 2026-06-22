@@ -98,6 +98,11 @@ class PPURuleBasedMigrator:
 
                 # PPU migrator never writes back - source is unchanged
             except Exception as e:
-                aggregate["files"][filepath] = {"error": str(e), "total_replacements": 0, "rules": {}}
+                aggregate["files"][filepath] = {
+                    "error": str(e),
+                    "total_replacements": 0,
+                    "rules": {},
+                    "rules": {},
+                }
 
         return aggregate

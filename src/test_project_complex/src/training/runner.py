@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitRelativeImport=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnusedCallResult=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportImplicitRelativeImport=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnusedCallResult=false
 
 import logging
 import random
@@ -17,6 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable=wrong-import-position
 from src.data.dataloader_factory import create_dataloaders
 from src.models.classifier import build_classifier
 from src.training.optimizer_factory import build_optimizer
@@ -43,7 +50,9 @@ def _seed_everything(seed: int) -> None:
     torch.cuda.manual_seed(42)
 
 
-def _maybe_init_distributed(project_root: Path, config: dict[str, Any], logger: logging.Logger) -> bool:
+def _maybe_init_distributed(
+    project_root: Path, config: dict[str, Any], logger: logging.Logger
+) -> bool:
     dist_config = dict(config["distributed"])
     if not bool(dist_config["enabled"]):
         return False

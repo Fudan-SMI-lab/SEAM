@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportDeprecated=false, reportUnknownMemberType=false, reportUnusedCallResult=false
+# pyright: reportAny=false
+# pyright: reportDeprecated=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnusedCallResult=false
 
 import logging
 

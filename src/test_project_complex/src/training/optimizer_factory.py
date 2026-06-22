@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportGeneralTypeIssues=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnnecessaryIsInstance=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportGeneralTypeIssues=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnnecessaryIsInstance=false
 
 from collections.abc import Iterable
 from typing import Any
