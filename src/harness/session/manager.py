@@ -30,7 +30,7 @@ RUNNING_TOKENS = {
 }
 COMPACTION_TOKENS = {"compaction", "summary"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
-FALLBACK_AGENT_NAME = "Atlas"
+FALLBACK_AGENT_NAME = "sisyphus"
 _DEFAULT_HTTP_TIMEOUT = object()
 DEFAULT_SESSION_WAIT_TIMEOUT = 30000.0
 DEFAULT_HARD_ERROR_WAIT_TIMEOUT = 300.0
@@ -163,11 +163,11 @@ class MigrationSessionManager:
     def _detect_agent(self) -> None:
         agent_names = self.available_agents
         for name in agent_names:
-            if name.lower() == "atlas":
+            if name.lower() == "sisyphus":
                 self._detected_agent = name
                 return
         for name in agent_names:
-            if "atlas" in name.lower():
+            if "sisyphus" in name.lower():
                 self._detected_agent = name
                 return
         if agent_names:
