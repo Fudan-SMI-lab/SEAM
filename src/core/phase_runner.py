@@ -434,7 +434,7 @@ class PhaseRunner:
             artifact_store: ArtifactStore for saving the output.
             project_dir: Root directory of the project.
             user_constraints: Raw user constraint text.
-            phase_1_output: Phase 1 analysis output (optional).
+            phase_1_output: Phase 1 analysis output (unused; kept for API compatibility).
 
         Returns:
             The constraint summary string.
@@ -442,17 +442,10 @@ class PhaseRunner:
         Raises:
             ValueError: If the response cannot be parsed.
         """
-        phase_1_context = (
-            self._serialize_context(phase_1_output)
-            if phase_1_output
-            else "(No phase 1 context available)"
-        )
-
         prompt = self.prompt_loader.load_prompt(
             "phase_1_5_constraint_summary",
             {
                 "project_dir": project_dir,
-                "phase_1_context": phase_1_context,
                 "user_constraints": user_constraints,
                 **self._container_context,
             },

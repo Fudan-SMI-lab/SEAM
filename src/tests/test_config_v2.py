@@ -180,6 +180,21 @@ def test_phase_on_skip_transition():
     assert "on_skip" in phases_15[0].transitions
 
 
+def test_all_constraint_summary_phases_skip_without_user_constraints():
+    """All executable workflows skip Phase 1.5 when no user constraints exist."""
+    selector_files = {"seam_auto_default.yaml", "workflow_selector_smoke.yaml"}
+    for workflow_path in sorted((PACKAGE_ROOT / "workflows").glob("*.yaml")):
+        if workflow_path.name in selector_files:
+            continue
+        wf = load_workflow(str(workflow_path))
+        phases_15 = [p for p in wf.phases if p.id == "phase_1_5_constraint_summary"]
+        if not phases_15:
+            continue
+        phase = phases_15[0]
+        assert phase.condition == "${context.USER_CONSTRAINTS} != ''", workflow_path.name
+        assert phase.transitions.get("on_skip") == phase.transitions.get("on_success"), workflow_path.name
+
+
 def test_missing_yaml_file():
     """Missing file should raise FileNotFoundError."""
     with pytest.raises(FileNotFoundError):

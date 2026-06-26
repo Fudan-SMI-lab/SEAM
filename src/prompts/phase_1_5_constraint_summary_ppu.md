@@ -1,12 +1,9 @@
 # Phase 1.5 - Migration Constraint Summary Generation (PPU)
 
-You have just completed Phase 1 project analysis for a CUDA-to-PPU migration project.
+Generate a migration constraint summary for a CUDA-to-PPU migration project.
 
 ## Project Directory
 {project_dir}
-
-## Phase 1 Analysis Results
-{phase_1_context}
 
 ## User-Provided Migration Constraints
 The user has explicitly provided the following constraints for this migration:
@@ -14,17 +11,16 @@ The user has explicitly provided the following constraints for this migration:
 {user_constraints}
 
 ## Goal
-Produce a concise, actionable list of migration rules derived from the user constraints, adapted to the specific project context you analyzed in Phase 1.
+Produce a concise, actionable list of migration rules derived from the user constraints.
 
 ## Required Actions
 1. Read each user constraint carefully and understand its intent.
-2. Cross-reference with your Phase 1 analysis (project structure, dependencies, CUDA/PPU patterns, compiled extensions).
-3. For each user constraint, derive 1-2 specific, imperative migration rules that apply to THIS project. For example:
-   - If user says "zero CPU fallback", and Phase 1 found a compiled CUDA/C++ extension used by Python → "Port every source-discovered custom-op unit to PPU-compatible code, and do not redirect PPU execution to CPU fallback paths."
+2. For each user constraint, derive 1-2 specific, imperative migration rules. For example:
+   - If user says "zero CPU fallback" → "Do not accept migrated execution paths that redirect PPU work to CPU fallback."
    - If user says "no modification of official source logic" → "Add new backend routing in backend_utils.py instead of modifying existing functions."
-4. Keep the total list under 10 items.
-5. Make each rule specific, testable, and project-aware — do NOT produce generic rules like "use PPU instead of CUDA".
-6. **PPU-aware**: The target device API is `torch.cuda`. Do NOT produce rules that say "replace torch.cuda with torch.npu". PPU exposes CUDA-compatible APIs.
+3. Keep the total list under 10 items.
+4. Make each rule specific and testable — do NOT produce generic rules like "use PPU instead of CUDA".
+5. **PPU-aware**: The target device API is `torch.cuda`. Do NOT produce rules that say "replace torch.cuda with torch.npu". PPU exposes CUDA-compatible APIs.
 
 ## Hard Rules
 - Do not dilute or remove user constraints. If a constraint is technically challenging, note the challenge but still include it as a rule.

@@ -92,6 +92,64 @@ class TestExecute:
         result = executor.execute({"PROJECT_DIR": temp_dir})
         assert isinstance(result, dict)
 
+    def test_constraint_summary_phase_skips_and_continues_without_constraints(self, temp_dir):
+        workflow = WorkflowDefinition(
+            name="constraint-skip",
+            version="1.0",
+            phases=[
+                PhaseDefinition(
+                    id="phase_1_project_analysis",
+                    name="Project Analysis",
+                    prompt_template="unused.md",
+                    output_schema={},
+                    type="builtin",
+                    params={"operation": "noop"},
+                    transitions={"on_success": "phase_1_5_constraint_summary"},
+                ),
+                PhaseDefinition(
+                    id="phase_1_5_constraint_summary",
+                    name="Constraint Summary",
+                    prompt_template="unused.md",
+                    output_schema={},
+                    type="builtin",
+                    params={"operation": "noop"},
+                    condition="${context.USER_CONSTRAINTS} != ''",
+                    transitions={
+                        "on_success": "phase_2_venv_create",
+                        "on_skip": "phase_2_venv_create",
+                    },
+                ),
+                PhaseDefinition(
+                    id="phase_2_venv_create",
+                    name="Venv",
+                    prompt_template="unused.md",
+                    output_schema={},
+                    type="builtin",
+                    params={"operation": "noop"},
+                    transitions={"on_success": "complete"},
+                ),
+            ],
+            terminals=["complete", "failed"],
+            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=temp_dir,
+            output_dir=temp_dir,
+        )
+        executor.hook_manager = MagicMock()
+
+        result = executor.execute({"PROJECT_DIR": temp_dir, "USER_CONSTRAINTS": ""})
+
+        assert result["status"] == "complete"
+        assert executor.phase_results["phase_1_5_constraint_summary"]["status"] == "skipped"
+        assert executor.phase_results["phase_1_5_constraint_summary"]["reason"] == "condition_false"
+        assert executor.phase_results["phase_2_venv_create"]["status"] == "success"
+
 
 class TestConditionEvaluation:
     def test_condition_true(self, executor):
@@ -101,6 +159,15 @@ class TestConditionEvaluation:
             context={"X": "abc"},
         )
         assert result is True
+
+    def test_embedded_template_condition_preserves_empty_string(self, executor):
+        result = executor._evaluate_condition(
+            "${context.USER_CONSTRAINTS} != ''",
+            state={},
+            context={"USER_CONSTRAINTS": ""},
+        )
+
+        assert result is False
 
     def test_condition_false(self, executor):
         result = executor._evaluate_condition(

@@ -145,18 +145,17 @@ def test_empty_user_constraints_strip_phase_sections():
         "phase_1_5_constraint_summary",
         context={
             "project_dir": "/tmp/project",
-            "phase_1_context": "analysis",
             "user_constraints": "Zero CPU fallback",
         },
     )
     assert "User-Provided Migration Constraints" in phase_1_5_populated
     assert "Zero CPU fallback" in phase_1_5_populated
+    assert "{phase_1_context}" not in phase_1_5_populated
 
     phase_1_5_empty = loader.load_prompt(
         "phase_1_5_constraint_summary",
         context={
             "project_dir": "/tmp/project",
-            "phase_1_context": "analysis",
             "user_constraints": "",
         },
     )
