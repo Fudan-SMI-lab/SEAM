@@ -174,8 +174,8 @@ def validate(data: dict[str, object]) -> ValidationDict:
             if custom_op_detected is True:
                 if surface.get("discovery_complete") is not True:
                     errors.append(
-                        "custom_op_surface.discovery_complete must be true ",
-                        "when custom_op_detected is true",
+                        "custom_op_surface.discovery_complete must be true "
+                        "when custom_op_detected is true"
                     )
                 elif cast(list[object], surface.get("unresolved_source_groups", [])):
                     errors.append(
@@ -252,8 +252,8 @@ def _validate_fine_grained_unit_evidence(
     evidence_items = cast(list[object], evidence_values)
     if not evidence_items:
         errors.append(
-            "custom_op_surface.fine_grained_operator_unit_evidence must ",
-            "contain at least one source-linked entry when custom_op_detected is true",
+            "custom_op_surface.fine_grained_operator_unit_evidence must "
+            "contain at least one source-linked entry when custom_op_detected is true"
         )
         return
 
@@ -302,8 +302,8 @@ def _validate_fine_grained_unit_evidence(
             if extra:
                 details.append("evidence without matching units: " + ", ".join(extra))
             errors.append(
-                "custom_op_surface.fine_grained_operator_unit_evidence must ",
-                "provide one source-linked entry for every ",
+                "custom_op_surface.fine_grained_operator_unit_evidence must "
+                "provide one source-linked entry for every "
                 "fine_grained_operator_unit"
-                + (" (" + "; ".join(details) + ")" if details else ""),
+                + (" (" + "; ".join(details) + ")" if details else "")
             )

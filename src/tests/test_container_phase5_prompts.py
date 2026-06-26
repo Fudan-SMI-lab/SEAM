@@ -616,5 +616,5 @@ class TestCommandDescriptionAccuracy:
         rendered = loader.load_prompt("phase_error_recovery_container", ctx)
         assert "bash -c" not in rendered
         assert "exec -i" in rendered or "docker exec" in rendered
-        assert ".venv/bin/python" in rendered
+        assert "actual_execution_command" in rendered
         assert "run_test.py" in rendered

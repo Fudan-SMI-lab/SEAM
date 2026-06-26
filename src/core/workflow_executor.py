@@ -492,8 +492,8 @@ class WorkflowExecutor:
                 is_discovered = True
             else:
                 logger.info(
-                    "Auto mode: no configured images and no local images ",
-                    "discovered; falling back to local",
+                    "Auto mode: no configured images and no local images "
+                    "discovered; falling back to local"
                 )
                 return _EBC(mode="local")
 
@@ -547,8 +547,8 @@ class WorkflowExecutor:
 
         guidance = (
             "Select the most appropriate image for running the migration workflow. "
-            "Consider image suitability for the project, dependencies, and ",
-            "target runtime environment.",
+            "Consider image suitability for the project, dependencies, and "
+            "target runtime environment."
         )
         if is_discovered:
             guidance = "These are the images already available on the host. " + guidance
@@ -1178,7 +1178,7 @@ class WorkflowExecutor:
             return query_result
 
         logger.info(
-            "[INJECT EXP %s] Skipped %d duplicate experience(s) ",
+            "[INJECT EXP %s] Skipped %d duplicate experience(s) "
             "already covered by explicit runtime skills",
             phase_id,
             skipped,
@@ -1680,7 +1680,7 @@ class WorkflowExecutor:
         timeout: int | None,
     ) -> str:
         logger.info(
-            "Sending sub-phase LLM command: phase_id=%s agent_id=%s ",
+            "Sending sub-phase LLM command: phase_id=%s agent_id=%s "
             "session_id=%s timeout=%s prompt_length=%s",
             phase_id,
             agent_id,
@@ -2319,10 +2319,8 @@ class WorkflowExecutor:
             return "(No previous repair attempts — this is the first failure)"
 
         lines = [
-            "| Iter | Status | Duration | Last Category | Last Repair Role | ",
-            "Summary | Agent Diagnostics |",
-            "|------|--------|----------|---------------|------------------|",
-            "---------|-------------------|",
+            "| Iter | Status | Duration | Last Category | Last Repair Role | Summary | Agent Diagnostics |",
+            "|------|--------|----------|---------------|------------------|---------|-------------------|",
         ]
         latest_category = "unknown"
         latest_repair_role = ""
@@ -4031,7 +4029,7 @@ class WorkflowExecutor:
                 if fixer_outputs:
                     post_repair_validation_ran = True
                     logger.info(
-                        "Last-iteration post-repair canonical rerun ",
+                        "Last-iteration post-repair canonical rerun "
                         "(validation-only) for phase '%s' (fixer: %s)",
                         phase.id,
                         list(fixer_outputs.keys()),

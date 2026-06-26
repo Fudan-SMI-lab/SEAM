@@ -82,7 +82,7 @@ Return exactly one JSON object:
 ```json
 {
   "entry_script_path": "{project_dir}/run_e2e.py",
-  "run_command": "/opt/conda/bin/python3.10 /workspace/run_e2e.py",
+  "run_command": "<phase2_python_path> /workspace/run_e2e.py",
   "phase5_entry_script_revision_allowed": true
 }
 ```
@@ -93,7 +93,7 @@ Keep the evidence schema names unchanged:
 ```json
 {
   "entry_script_path": "{project_dir}/validate_custom_ops_full.py",
-  "run_command": "/opt/conda/bin/python3.10 /workspace/validate_custom_ops_full.py",
+  "run_command": "<phase2_python_path> /workspace/validate_custom_ops_full.py",
   "entry_script_kind": "custom_op_full_validation",
   "reports_dir": "{project_dir}/migration_reports",
   "operator_discovery_sources": ["source", "bindings", "wrappers", "autograd", "aliases", "launch", "setup", "tests"],
@@ -126,6 +126,7 @@ Keep the evidence schema names unchanged:
 ```
 
 ## Field Semantics (custom-op fields)
+- In the examples above, `<phase2_python_path>` is a placeholder. Replace it with Phase 2's concrete `python_path` or a verified equivalent executable in the target runtime; never output the placeholder literally or hard-code a Python minor version unless Phase 2 selected that exact executable.
 - `entry_script_kind`: use `custom_op_full_validation` for custom-op projects; omit for normal projects.
 - `reports_dir`: target project's `migration_reports` directory for custom-op evidence. Must be a host-visible absolute path.
 - `operator_discovery_sources`: source locations the script must discover before validating; do not rely on external requirements docs for completion.

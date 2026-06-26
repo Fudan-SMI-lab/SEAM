@@ -19,6 +19,8 @@ def test_root_module_v3_entrypoint_shows_help() -> None:
     assert completed.returncode == 0, completed.stderr
     assert "--workflow-path" in completed.stdout
     assert "--project-dir" in completed.stdout
+    assert "--opencode-readiness" in completed.stdout
+    assert "--opencode-message-timeout" in completed.stdout
 
 
 def test_migration_utils_v3_module_shows_help() -> None:

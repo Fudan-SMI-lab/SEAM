@@ -854,8 +854,8 @@ class Orchestrator:
 
         guidance = (
             "Select the most appropriate image for running the migration workflow. "
-            "Consider image suitability for the project, dependencies, ",
-            "and target runtime environment.",
+            "Consider image suitability for the project, dependencies, "
+            "and target runtime environment."
         )
         if is_discovered:
             guidance = "These are the images already available on the host. " + guidance

@@ -299,7 +299,7 @@ def _operator_generic_guidance(
         f"using {native_label}-native replacements, supported {native_framework}, "
         "or local code changes. Do not add CPU fallback and do not "
         "turn this into a broader workplan.\n"
-        f"5. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证, "
+        f"5. 修改后使用框架提供的 actual_execution_command 或当前 Phase 3 run_command（{entry_script}）进行验证, "
         "只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics。"
     )
@@ -386,7 +386,7 @@ def _operator_custom_op_guidance(
             + schema_checklist
             + perf_mode_note
             + "\n"
-            f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。"
+            f"7. 修改后使用框架提供的 actual_execution_command 或当前 Phase 3 run_command（{entry_script}）进行验证。"
             "只在最终回答里输出一个 JSON 代码块, "
             "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，"
             "除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
@@ -414,7 +414,7 @@ def _operator_custom_op_guidance(
         + schema_checklist
         + perf_mode_note
         + "\n"
-        f"7. 修改后用 {project_dir}/.venv/bin/python 和 {entry_script} 进行验证。"
+        f"7. 修改后使用框架提供的 actual_execution_command 或当前 Phase 3 run_command（{entry_script}）进行验证。"
         "只在最终回答里输出一个 JSON 代码块, "
         "至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，"
         "除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"

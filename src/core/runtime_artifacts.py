@@ -266,43 +266,26 @@ def _operator_repair_context_markdown(
         lines.extend(
             [
                 "## Parallelizable Operator Units",
-                "- No per-operator units found in reports; inspect the ",
-                "discovered inventory paths before editing.",
+                "- No per-operator units found in reports; inspect the discovered inventory paths before editing.",
                 "",
             ]
         )
 
-        lines.extend(
-            [
-                "## Current Final-Gate Progress",
-                *[f"- {item}" for item in progress],
-                "",
-                "## Bounded Parallelization Guidance",
-                (
-                    "- Repair only the currently failing or assigned "
-                    "operator/custom-op units needed for the final gate."
-                ),
-                (
-                    "- Independent operator units may be split into bounded sub-tasks "
-                    "when their source files, build artifacts, and tests do not overlap."
-                ),
-                (
-                    "- Merge sub-task results before running the entry command "
-                    "and final-gate checks."
-                ),
-                (
-                    "- Treat the discovered inventory, manifest coverage ",
-                    "rows, ”,“and final gate as the source of truth; "
-                    "do not invent passes for rows that are missing from source_inventory.",
-                ),
-                (
-                    "- Do not execute cuda_custom_op_skill_test_prompt.md as a workplan; "
-                    "this artifact is the bounded repair context."
-                ),
-                "",
-                "## Warnings",
-            ]
-        )
+    lines.extend(
+        [
+            "## Current Final-Gate Progress",
+            *[f"- {item}" for item in progress],
+            "",
+            "## Bounded Parallelization Guidance",
+            "- Repair only the currently failing or assigned operator/custom-op units needed for the final gate.",
+            "- Independent operator units may be split into bounded sub-tasks when their source files, build artifacts, and tests do not overlap.",
+            "- Merge sub-task results before running the entry command and final-gate checks.",
+            "- Treat the discovered inventory, manifest coverage rows, and final gate as the source of truth; do not invent passes for rows that are missing from source_inventory.",
+            "- Do not execute cuda_custom_op_skill_test_prompt.md as a workplan; this artifact is the bounded repair context.",
+            "",
+            "## Warnings",
+        ]
+    )
     lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
     lines.append("")
     return "\n".join(lines)

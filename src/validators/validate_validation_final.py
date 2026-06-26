@@ -962,8 +962,8 @@ def _validate_performance_report_completeness(
         report = data.get("performance_report_evidence")
     if not isinstance(report, Mapping):
         errors.append(
-            "performance_report must be an object proving complete ",
-            "migration_reports/performance.json coverage",
+            "performance_report must be an object proving complete "
+            "migration_reports/performance.json coverage"
         )
         return
     report_map = cast(Mapping[object, object], report)
@@ -976,8 +976,8 @@ def _validate_performance_report_completeness(
         )
     if _mapping_is_disallowed_surrogate(report_map):
         errors.append(
-            "performance_report must not be report-only, benchmark-only, ",
-            "synthetic, mock, or manifest-only",
+            "performance_report must not be report-only, benchmark-only, "
+            "synthetic, mock, or manifest-only"
         )
     if not _has_positive_boolean(
         report_map,

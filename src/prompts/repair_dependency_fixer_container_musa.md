@@ -76,7 +76,7 @@ Return a JSON code block with this shape:
   "summary": "what changed and why",
   "agent_diagnostics": {
     "base_env_checked": true,
-    "selected_python": "/opt/conda/bin/python3.10",
+    "selected_python": "verified_target_runtime_python",
     "vendor_torch_preserved": true,
     "validated_with_actual_execution_command": true
   }

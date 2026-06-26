@@ -64,7 +64,7 @@ bash src/scripts/run_e2e_v3.sh my_project \
 ### 4. Direct Python entrypoint（V3）
 
 ```bash
-python3.10 -m tests.e2e.e2e_test_v3 \
+python3 -m tests.e2e.e2e_test_v3 \
   --project-dir /path/to/your/cuda/project \
   --output-dir ../output_projects \
   --workflow-path src/workflows/seam_auto_default.yaml \

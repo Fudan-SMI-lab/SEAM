@@ -99,10 +99,10 @@ def build_validation_correction_prompt(
     if is_parse_failure:
         return (
             f"Your previous response{phase_label} did not contain a valid JSON object. "
-            "It may have contained prose/reasoning only, malformed JSON, or ",
+            "It may have contained prose/reasoning only, malformed JSON, or "
             "text after an incomplete JSON object."
             f"{format_block}"
-            f"{final_contract}",
+            f"{final_contract}"
         )
 
     return (

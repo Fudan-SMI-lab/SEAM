@@ -102,7 +102,6 @@ class PPURuleBasedMigrator:
                     "error": str(e),
                     "total_replacements": 0,
                     "rules": {},
-                    "rules": {},
                 }
 
         return aggregate

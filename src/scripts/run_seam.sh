@@ -44,12 +44,16 @@ Options:
                               Port conflict behavior: prompt, start, or error (default: prompt)
   --workflow PATH             Custom workflow YAML path (default: src/workflows/seam_auto_default.yaml)
   --max-iter N                Max Phase 5 repair iterations (default: 8)
-  --review                    Enable Review Gate (default: enabled)
-  --no-review                 Disable Review Gate
+  --review                    Enable Review Gate (default: disabled)
+  --no-review                 Disable Review Gate (kept for compatibility)
   --no-keep-temp              Don't keep output project directory (default: keep)
   --agent NAME                Override auto-detected agent name
   --output-dir DIR            Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --server-no-auto-start       Disable auto-start of OpenCode server
+  --opencode-readiness MODE   OpenCode readiness mode: off, basic, or message (default: message)
+  --opencode-message-timeout N
+                              Timeout for model-backed OpenCode message probe
+  --opencode-diagnose-only    Run OpenCode diagnostics and exit before launching E2E
   --dry-run                   Validate paths without running migration
   --extra 'ARGS...'           Pass extra arguments to the E2E harness
   --verbose                   Enable verbose debug logging
@@ -131,6 +135,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --server-no-auto-start)
             FORWARD_ARGS+=("--server-no-auto-start")
+            shift
+            ;;
+        --opencode-readiness)
+            FORWARD_ARGS+=("--opencode-readiness" "$2")
+            shift 2
+            ;;
+        --opencode-message-timeout)
+            FORWARD_ARGS+=("--opencode-message-timeout" "$2")
+            shift 2
+            ;;
+        --opencode-diagnose-only)
+            FORWARD_ARGS+=("--opencode-diagnose-only")
             shift
             ;;
         --dry-run)

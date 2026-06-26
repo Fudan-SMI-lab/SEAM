@@ -114,29 +114,37 @@ def print_phase_finished(
     print(colorize(f"[Phase {phase_number}/{phase_total}] {label} — {status}{details}", color), flush=True)
 
 
-def check_server_running(base_url: str) -> None:
-    endpoint = f"{base_url.rstrip('/')}/agent"
-    try:
-        completed = subprocess.run(
-            ["curl", "-fsS", "-o", "/dev/null", "--max-time", "5", endpoint],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(f"OpenCode server is not reachable at {endpoint}: {exc}") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"curl exit code {completed.returncode}"
-        raise RuntimeError(f"OpenCode server is not reachable at {endpoint}: {detail}")
+def check_server_running(
+    base_url: str,
+    *,
+    readiness_mode: str = "message",
+    message_timeout: int = 120,
+) -> None:
+    if readiness_mode == "off":
+        log("OpenCode readiness check skipped (--opencode-readiness off)")
+        return
 
-    # Also verify session capability: /agent may respond but POST /session
-    # can fail with HTTP 500, leaving the server partially broken.
-    from harness.server.lifecycle import _session_probe_details
-    session_ok, session_status, session_body = _session_probe_details(base_url)
-    if not session_ok:
-        raise RuntimeError(
-            f"OpenCode server at {base_url} is reachable on /agent "
-            f"but POST /session failed with HTTP {session_status}. "
-            f"Response: {session_body[:500]}"
-        )
+    diag_script = REPO_ROOT / "scripts" / "diagnose_seam_opencode.py"
+    if not diag_script.is_file():
+        raise RuntimeError(f"OpenCode diagnostic script not found: {diag_script}")
+
+    cmd = [
+        sys.executable,
+        str(diag_script),
+        "--server-url",
+        base_url,
+        "--mode",
+        readiness_mode,
+        "--message-timeout",
+        str(message_timeout),
+    ]
+    completed = subprocess.run(cmd, capture_output=True, text=True, timeout=message_timeout + 30, check=False)
+    if completed.stdout.strip():
+        for line in completed.stdout.strip().splitlines():
+            log(f"OpenCode diagnostic: {line}")
+    if completed.returncode not in {0, 20}:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise RuntimeError(f"OpenCode readiness diagnostic failed: {detail}")
 
 
 def log_server_diagnostics(
@@ -431,6 +439,8 @@ def run_e2e_v3(
     review_gate: bool = False,
     framework_config_path: str | None = None,
     workflow_path: Path | None = None,
+    opencode_readiness: str = "message",
+    opencode_message_timeout: int = 120,
 ) -> int:
     _install_sqlite_fallback_if_needed()
 
@@ -490,8 +500,12 @@ def run_e2e_v3(
         )
         if server_proc is not None:
             log(f"Auto-started OpenCode server at {base_url}")
-        check_server_running(base_url)
-        log(f"OpenCode server reachable at {base_url}")
+        check_server_running(
+            base_url,
+            readiness_mode=opencode_readiness,
+            message_timeout=opencode_message_timeout,
+        )
+        log(f"OpenCode server ready at {base_url}")
         log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
     except Exception as exc:
         print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
@@ -748,6 +762,8 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument("--server-auto-start", action="store_true", default=True)
     _ = parser.add_argument("--server-no-auto-start", action="store_true")
     _ = parser.add_argument("--server-port", type=int, default=0)
+    _ = parser.add_argument("--opencode-readiness", choices=("off", "basic", "message"), default="message")
+    _ = parser.add_argument("--opencode-message-timeout", type=positive_int, default=120)
     _ = parser.add_argument("--verbose", action="store_true")
     _ = parser.add_argument("--workflow-path", type=Path, default=None,
                             help="Absolute or relative path to a workflow YAML file (overrides default).")
@@ -791,6 +807,8 @@ def main() -> int:
         review_gate=args.review_gate,
         framework_config_path=args.framework_config,
         workflow_path=args.workflow_path,
+        opencode_readiness=args.opencode_readiness,
+        opencode_message_timeout=args.opencode_message_timeout,
     )
 
 

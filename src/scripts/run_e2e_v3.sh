@@ -26,11 +26,16 @@ PROJECT_SEARCH_DIRS=(
 SERVER_URL="http://127.0.0.1:4098"
 MAX_ITER=8
 KEEP_TEMP=true
-REVIEW_GATE=true
+REVIEW_GATE=false
 DRY_RUN=false
 SERVER_NO_AUTO_START=false
 WORKFLOW_PATH=""
 EXTRA_ARGS=""
+SEAM_PYTHON="${PYTHON:-}"
+OPENCODE_READINESS="message"
+OPENCODE_MESSAGE_TIMEOUT=120
+OPENCODE_DIAGNOSE_ONLY=false
+PYTHON_OPENCODE_READINESS="message"
 
 # ── Color helpers ──
 RED='\033[0;31m'
@@ -60,13 +65,19 @@ Flat cuda_projects are also accepted; Phase 3 will discover an entry script.
 Options:
   --server-url URL       OpenCode server URL (default: http://127.0.0.1:4098)
   --max-iter N           Max Phase 5 repair iterations (default: 8)
-  --review               Enable Review Gate (default: enabled)
-  --no-review            Disable Review Gate
+  --review               Enable Review Gate (default: disabled)
+  --no-review            Disable Review Gate (kept for compatibility)
   --no-keep-temp         Don't keep output project directory (default: keep)
   --agent NAME           Override auto-detected agent name
   --output-dir DIR       Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --workflow PATH        Path to workflow YAML file (overrides default auto selector)
   --server-no-auto-start Disable auto-start of OpenCode server
+  --opencode-readiness MODE
+                          OpenCode readiness mode: off, basic, or message (default: message)
+  --opencode-message-timeout N
+                          Timeout for model-backed OpenCode message probe (default: 120)
+  --opencode-diagnose-only
+                          Run OpenCode diagnostics and exit before launching E2E
   --dry-run              Validate setup without running the test
   --extra 'ARGS...'      Pass extra arguments to e2e_test_v3.py
   --verbose              Enable verbose debug logging
@@ -98,6 +109,9 @@ while [[ $# -gt 0 ]]; do
         --output-dir)           OUTPUT_PROJECTS_DIR="$2"; shift 2 ;;
         --workflow)             WORKFLOW_PATH="$2"; shift 2 ;;
         --server-no-auto-start)  SERVER_NO_AUTO_START=true; shift ;;
+        --opencode-readiness)    OPENCODE_READINESS="$2"; shift 2 ;;
+        --opencode-message-timeout) OPENCODE_MESSAGE_TIMEOUT="$2"; shift 2 ;;
+        --opencode-diagnose-only) OPENCODE_DIAGNOSE_ONLY=true; shift ;;
         --dry-run)              DRY_RUN=true; shift ;;
         --verbose)              EXTRA_ARGS="$EXTRA_ARGS --verbose"; shift ;;
         --extra)                EXTRA_ARGS="$EXTRA_ARGS $2"; shift 2 ;;
@@ -116,6 +130,27 @@ if [[ -z "$PROJECT_NAME" ]]; then
     echo -e "${RED}Error: PROJECT_NAME is required.${NC}" >&2
     usage
 fi
+
+resolve_python() {
+    if [[ -n "$SEAM_PYTHON" ]]; then
+        if command -v "$SEAM_PYTHON" >/dev/null 2>&1 || [[ -x "$SEAM_PYTHON" ]]; then
+            printf '%s\n' "$SEAM_PYTHON"
+            return 0
+        fi
+        echo -e "${RED}Error: PYTHON is set to '$SEAM_PYTHON' but it is not executable.${NC}" >&2
+        exit 1
+    fi
+    for candidate in python3 python python3.12 python3.11 python3.10 python3.9 python3.8; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    echo -e "${RED}Error: no Python interpreter found. Set PYTHON=/path/to/python.${NC}" >&2
+    exit 1
+}
+
+SEAM_PYTHON="$(resolve_python)"
 
 resolve_project_dir() {
     local raw="$1"
@@ -151,6 +186,7 @@ echo -e "${GREEN}Max iter:${NC}  $MAX_ITER"
 echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
 echo -e "${GREEN}Auto-start:${NC} $( [[ "$SERVER_NO_AUTO_START" == true ]] && echo 'false' || echo 'true' )"
+echo -e "${GREEN}OpenCode readiness:${NC} $OPENCODE_READINESS"
 echo -e "${GREEN}Root:${NC}      $REPO_ROOT"
 echo -e "${GREEN}Output:${NC}    $OUTPUT_PROJECTS_DIR"
 if [[ -n "$WORKFLOW_PATH" ]]; then
@@ -201,24 +237,57 @@ else
     echo -e "${YELLOW}⚠  original_src/ not found (will use project root directly)${NC}"
 fi
 
-# Check OpenCode server
-if [[ "$DRY_RUN" == true ]]; then
+# Check OpenCode server using the standalone diagnostic script.
+DIAG_SCRIPT="$REPO_ROOT/scripts/diagnose_seam_opencode.py"
+if [[ ! -f "$DIAG_SCRIPT" ]]; then
+    echo -e "${RED}✗ OpenCode diagnostic script not found: $DIAG_SCRIPT${NC}"
+    exit 1
+fi
+
+if [[ "$OPENCODE_READINESS" != "off" && "$OPENCODE_READINESS" != "basic" && "$OPENCODE_READINESS" != "message" ]]; then
+    echo -e "${RED}✗ Invalid --opencode-readiness: $OPENCODE_READINESS${NC}"
+    echo -e "${YELLOW}  Expected one of: off, basic, message${NC}"
+    exit 1
+fi
+
+echo ""
+"$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env
+ENV_PATCH=$("$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env --emit-env)
+if [[ -n "$ENV_PATCH" ]]; then
+    eval "$ENV_PATCH"
+    echo -e "${GREEN}✓${NC} Applied OpenCode preflight environment fixes"
+fi
+
+if [[ "$DRY_RUN" == true && "$OPENCODE_DIAGNOSE_ONLY" != true ]]; then
     echo ""
     echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
 else
     echo ""
     echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
-    if curl -fsS -o /dev/null --max-time 5 "$SERVER_URL/agent" 2>/dev/null; then
-        AGENT_INFO=$(curl -fsS --max-time 5 "$SERVER_URL/agent" 2>/dev/null | head -c 200 || echo "")
-        echo -e "${GREEN}✓${NC} Server reachable: ${AGENT_INFO:-OK}"
-    else
-        if [[ "$SERVER_NO_AUTO_START" == true ]]; then
-            echo -e "${RED}✗ Server not reachable at $SERVER_URL${NC}"
-            echo -e "${YELLOW}  Start the server before running E2E tests.${NC}"
-            exit 1
-        else
-            echo -e "${YELLOW}⚠  Server not reachable at $SERVER_URL (auto-start enabled, Python will attempt)${NC}"
+    set +e
+    "$SEAM_PYTHON" "$DIAG_SCRIPT" \
+        --server-url "$SERVER_URL" \
+        --mode "$OPENCODE_READINESS" \
+        --message-timeout "$OPENCODE_MESSAGE_TIMEOUT"
+    DIAG_EXIT=$?
+    set -e
+
+    if [[ "$OPENCODE_DIAGNOSE_ONLY" == true ]]; then
+        if [[ $DIAG_EXIT -eq 0 || $DIAG_EXIT -eq 20 ]]; then
+            exit 0
         fi
+        exit "$DIAG_EXIT"
+    fi
+
+    if [[ $DIAG_EXIT -eq 0 || $DIAG_EXIT -eq 20 ]]; then
+        echo -e "${GREEN}✓${NC} OpenCode diagnostic passed"
+        PYTHON_OPENCODE_READINESS="off"
+    elif [[ $DIAG_EXIT -eq 40 && "$SERVER_NO_AUTO_START" != true ]]; then
+        echo -e "${YELLOW}⚠  OpenCode server is not reachable; auto-start is enabled, Python will attempt to start it.${NC}"
+        PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
+    else
+        echo -e "${RED}✗ OpenCode diagnostic failed with exit code $DIAG_EXIT${NC}"
+        exit "$DIAG_EXIT"
     fi
 fi
 
@@ -236,11 +305,13 @@ if [[ "$DRY_RUN" == true ]]; then
     echo -e "${YELLOW}── Dry-run mode ──${NC}"
     echo "Would execute:"
     echo "  cd $REPO_ROOT && \\"
-    echo "  ${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \\"
+    echo "  $SEAM_PYTHON -m tests.e2e.e2e_test_v3 \\"
     echo "    --server-url $SERVER_URL \\"
     echo "    --project-dir $PROJECT_DIR \\"
     echo "    --output-dir $OUTPUT_PROJECTS_DIR \\"
     echo "    --max-phase5-iter $MAX_ITER \\"
+    echo "    --opencode-readiness $PYTHON_OPENCODE_READINESS \\"
+    echo "    --opencode-message-timeout $OPENCODE_MESSAGE_TIMEOUT \\"
     echo "    --keep-temp-dir \\"
     if [[ -n "$WORKFLOW_PATH" ]]; then
         echo "    --workflow-path $WORKFLOW_PATH \\"
@@ -283,11 +354,13 @@ fi
 
 cd "$REPO_ROOT"
 
-${PYTHON:-python3.10} -m tests.e2e.e2e_test_v3 \
+"$SEAM_PYTHON" -m tests.e2e.e2e_test_v3 \
     --server-url "$SERVER_URL" \
     --project-dir "$PROJECT_DIR" \
     --output-dir "$OUTPUT_PROJECTS_DIR" \
     --max-phase5-iter "$MAX_ITER" \
+    --opencode-readiness "$PYTHON_OPENCODE_READINESS" \
+    --opencode-message-timeout "$OPENCODE_MESSAGE_TIMEOUT" \
     $KEEP_FLAG \
     $REVIEW_FLAG \
     $CONSTRAINTS_FLAG \
