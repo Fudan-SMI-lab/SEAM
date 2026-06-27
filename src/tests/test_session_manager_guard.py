@@ -247,15 +247,21 @@ def test_send_command_times_out_for_incomplete_todos_without_reposting(monkeypat
             {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "rerun validator"}]}]},
         ],
     )
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
+    manager._todo_nudge_enabled = False
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
     result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=2))
 
     post_calls = [call for call in manager.calls if call["method"] == "POST"]
     assert result["ok"] is False
-    assert "Session still running" in result["error"]
+    assert "incomplete todos" in result["error"] or "Session still running" in result["error"]
     assert len(post_calls) == 1
 
 
@@ -399,8 +405,14 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
         )
 
     manager = _sqlite_backed_manager(db_path, status_data={})
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
+    manager._todo_nudge_enabled = False
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
     result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
@@ -422,9 +434,12 @@ def test_sqlite_fallback_skips_todo_tables_without_session_column(tmp_path: Path
 
 
 def test_pending_word_in_normal_text_does_not_mark_todos_incomplete() -> None:
+    # History latest mirrors the POST text (real idle behavior): the refetch
+    # returns the same final answer, and the "pending" prose must not be
+    # misread as an incomplete TODO.
     manager = _manager_with_message(
         {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "The pending import issue was resolved."}]},
-        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "No structured todos. Pending issue resolved."}]}]},
+        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "The pending import issue was resolved."}]}]},
     )
 
     assert manager.send_command("ses-1", "do work", retries=0) == "The pending import issue was resolved."
@@ -682,3 +697,229 @@ class TestAvailableAgentsProperty:
         # Second access uses cache
         _ = manager.available_agents
         assert len(manager.calls) == 1
+
+
+# --- Target 1: idle refetch ---------------------------------------------------
+
+def test_refetch_returns_post_text_when_history_matches() -> None:
+    manager = _manager_with_message(
+        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "final answer"}]},
+        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "final answer"}]}]},
+    )
+    assert manager.send_command("ses-1", "do work", retries=0) == "final answer"
+
+
+def test_refetch_replaces_with_newer_history_text() -> None:
+    state = {"posted": False}
+
+    def message_route(call: dict[str, Any]) -> dict[str, Any]:
+        if not state["posted"]:
+            return {"ok": True, "data": [{"parts": [{"type": "text", "text": "old turn"}]}]}
+        return {"ok": True, "data": [{"parts": [{"type": "text", "text": "completed final answer"}]}]}
+
+    def post_route(_call: dict[str, Any]) -> dict[str, Any]:
+        state["posted"] = True
+        return {"ok": True, "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "intermediate"}]}}
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): post_route,
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+    assert manager.send_command("ses-1", "do work", retries=0) == "completed final answer"
+
+
+
+def test_refetch_falls_back_when_history_empty() -> None:
+    manager = _manager_with_message(
+        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "post answer"}]},
+        history={"ok": False, "status": 404},
+    )
+    assert manager.send_command("ses-1", "do work", retries=0) == "post answer"
+
+
+def test_refetch_falls_back_when_history_equals_command() -> None:
+    manager = _manager_with_message(
+        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "post answer"}]},
+        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "do work"}]}]},
+    )
+    assert manager.send_command("ses-1", "do work", retries=0) == "post answer"
+
+
+# --- Target 2: TODO nudge -----------------------------------------------------
+
+def _nudge_manager(
+    monkeypatch: pytest.MonkeyPatch,
+    todo_pending_message_calls: int,
+    final_text: str = "final answer",
+    max_nudges: int = 2,
+) -> FakeSessionManager:
+    """Build a manager whose GET /message reports an incomplete TODO for the
+    first ``todo_pending_message_calls`` TODO-probe requests (limit=20), then a
+    completed TODO. limit=1 requests always return ``final_text``."""
+    state = {"todo_calls": 0, "posts": 0}
+
+    def message_route(call: dict[str, Any]) -> dict[str, Any]:
+        query = call.get("query") or {}
+        if query.get("limit") == 20:
+            state["todo_calls"] += 1
+            if state["todo_calls"] <= todo_pending_message_calls:
+                return {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "x"}]}]}
+            return {"ok": True, "data": [{"todos": [{"status": "completed"}]}]}
+        # limit=1 refetch / previous_text probe. Latest text advances per POST:
+        #   0 posts → pre-request old turn
+        #   1 post  → intermediate (original answer, before any nudge)
+        #   2+ posts → final_text (after nudge)
+        if state["posts"] == 0:
+            text = "old turn"
+        elif state["posts"] == 1:
+            text = "intermediate"
+        else:
+            text = final_text
+        return {"ok": True, "data": [{"parts": [{"type": "text", "text": text}]}]}
+
+    def post_route(_call: dict[str, Any]) -> dict[str, Any]:
+        state["posts"] += 1
+        return {"ok": True, "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "intermediate"}]}}
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): post_route,
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+    manager._todo_stabilize_wait_s = 0.0
+    manager._max_todo_nudges = max_nudges
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    return manager
+
+
+def test_nudge_self_heals_without_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    # First wait sees TODO_PENDING; recheck already idle (todo complete) → no nudge.
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=1)
+    result = manager.send_command("ses-1", "do work", retries=0)
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result == "intermediate"  # original answer, refetched; no nudge sent
+    assert len(post_calls) == 1  # only the original POST, no nudge
+
+
+def test_nudge_sent_then_converges(monkeypatch: pytest.MonkeyPatch) -> None:
+    # TODO_PENDING on first wait AND recheck → send nudge; after nudge, idle.
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=2)
+    result = manager.send_command("ses-1", "do work", retries=0)
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result == "final answer"
+    assert len(post_calls) == 2  # original POST + 1 nudge
+    nudge_body = post_calls[1]["body"]
+    nudge_text = nudge_body["parts"][0]["text"]
+    assert "TODO list" in nudge_text
+    assert "original prompt" in nudge_text.lower()
+
+
+def test_nudge_limit_raises_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Always TODO_PENDING; with max 1 nudge it should give up via TimeoutError.
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=999, max_nudges=1)
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
+    result = json.loads(manager.send_command("ses-1", "do work", timeout=50, retries=0))
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result["ok"] is False
+    assert "incomplete todos" in result["error"]
+    assert len(post_calls) == 2  # original + exactly 1 nudge
+
+
+def test_nudge_disabled_does_not_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=999)
+    manager._todo_nudge_enabled = False
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
+    result = json.loads(manager.send_command("ses-1", "do work", timeout=10, retries=0))
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result["ok"] is False
+    assert len(post_calls) == 1  # no nudge ever sent
+
+
+# --- Nested todowrite snapshots (real OpenCode parts[].state.input.todos) -----
+
+def _msg_with_todowrite(todos: list[dict[str, Any]], tool_status: str = "completed") -> dict[str, Any]:
+    return {
+        "info": {"role": "assistant"},
+        "parts": [{
+            "type": "tool",
+            "tool": "todowrite",
+            "state": {"status": tool_status, "input": {"todos": todos}},
+        }],
+    }
+
+
+def test_nested_all_completed_todos_is_complete() -> None:
+    mgr = FakeSessionManager({})
+    data = [_msg_with_todowrite([
+        {"content": "print 1", "status": "completed"},
+        {"content": "print 2", "status": "completed"},
+        {"content": "print 3", "status": "completed"},
+    ])]
+    # All items completed but list NOT cleared -> complete (False).
+    assert mgr._latest_todo_state_from_messages(data) is False
+
+
+def test_nested_mixed_todos_is_incomplete() -> None:
+    mgr = FakeSessionManager({})
+    data = [_msg_with_todowrite([
+        {"content": "a", "status": "completed"},
+        {"content": "b", "status": "pending"},
+    ])]
+    assert mgr._latest_todo_state_from_messages(data) is True
+
+
+def test_nested_cleared_todos_is_complete() -> None:
+    mgr = FakeSessionManager({})
+    data = [_msg_with_todowrite([])]
+    assert mgr._latest_todo_state_from_messages(data) is False
+
+
+def test_nested_latest_snapshot_overrides_older_pending() -> None:
+    mgr = FakeSessionManager({})
+    # Older snapshot still pending, newest snapshot all completed.
+    data = [
+        _msg_with_todowrite([
+            {"content": "a", "status": "in_progress"},
+            {"content": "b", "status": "pending"},
+        ]),
+        _msg_with_todowrite([
+            {"content": "a", "status": "completed"},
+            {"content": "b", "status": "completed"},
+        ]),
+    ]
+    assert mgr._latest_todo_state_from_messages(data) is False
+
+
+def test_send_command_completes_with_nested_all_completed_todos() -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "all done"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): {
+            "ok": True,
+            "data": [_msg_with_todowrite([
+                {"content": "x", "status": "completed"},
+                {"content": "y", "status": "completed"},
+            ])],
+        },
+    })
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+    # Should return the answer, not spin/nudge on the un-cleared completed list.
+    assert manager.send_command("ses-1", "do work", retries=0) == "all done"
