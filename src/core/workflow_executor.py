@@ -1285,16 +1285,45 @@ class WorkflowExecutor:
           - $.field_name shorthand for loop_state / step_outputs lookup
           - Boolean operators: ==, !=, >, <, >=, <=, and, or, not, in
         """
-        # Step 1: Resolve ${...} templates
-        resolved = self.resolver.resolve(
-            condition,
-            state=state,
-            globals=self.workflow.globals,
-            context=context,
-            loop_vars=loop_vars,
-            loop_state=loop_state,
-            step_outputs=step_outputs,
-        )
+        # Step 1: Resolve ${...} templates. For embedded templates inside a
+        # boolean expression, preserve strings as literals so empty values do
+        # not turn `${context.X} != ''` into the malformed expression `!= ''`.
+        template_pattern = getattr(self.resolver, "_pattern", None)
+        if template_pattern is not None and template_pattern.fullmatch(condition):
+            resolved = self.resolver.resolve(
+                condition,
+                state=state,
+                globals=self.workflow.globals,
+                context=context,
+                loop_vars=loop_vars,
+                loop_state=loop_state,
+                step_outputs=step_outputs,
+            )
+        elif "${" in condition and template_pattern is not None:
+
+            def template_repl(match: re.Match) -> str:
+                value = self.resolver._resolve_expr(  # noqa: SLF001 - condition evaluator needs literal-preserving substitution.
+                    match.group(1).strip(),
+                    state=state,
+                    globals=self.workflow.globals,
+                    context=context,
+                    loop_vars=loop_vars,
+                    loop_state=loop_state,
+                    step_outputs=step_outputs,
+                )
+                return json.dumps(value, ensure_ascii=False, default=str)
+
+            resolved = template_pattern.sub(template_repl, condition)
+        else:
+            resolved = self.resolver.resolve(
+                condition,
+                state=state,
+                globals=self.workflow.globals,
+                context=context,
+                loop_vars=loop_vars,
+                loop_state=loop_state,
+                step_outputs=step_outputs,
+            )
         if not isinstance(resolved, str):
             return bool(resolved)
 
@@ -1755,7 +1784,7 @@ class WorkflowExecutor:
         "phase_0_env_detect": [],
         "phase_1_project_analysis": [],
         "phase_2_venv_create": [],
-        # Phase 1.5 gets `phase_1_context` separately; do not duplicate.
+        # Phase 1.5 only consumes user constraints.
         "phase_1_5_constraint_summary": [],
         # Phase 3 only needs its own input mapping; no prior outputs required.
         "phase_3_entry_script": [],
@@ -1838,16 +1867,6 @@ class WorkflowExecutor:
         state: dict,
     ) -> None:
         pid = phase.id
-        if "phase_1_5" in pid or "constraint_summary" in pid:
-            ph1 = state.get("phase_1_project_analysis", {})
-            if isinstance(ph1, dict) and ph1:
-                input_ctx.setdefault(
-                    "phase_1_context", json.dumps(ph1, indent=2, ensure_ascii=False)
-                )
-            else:
-                input_ctx.setdefault(
-                    "phase_1_context", "(No phase 1 context available)"
-                )
         if "phase_35" in pid or "static_validate" in pid:
             ph3 = state.get("phase_3_entry_script", {})
             if isinstance(ph3, dict):
