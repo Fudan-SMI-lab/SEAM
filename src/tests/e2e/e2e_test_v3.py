@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
+from core.review_policy import ReviewCliOverrides
 from core.run_manifest import RunId
 from harness.run import (
     CleanupContext,
@@ -445,6 +446,7 @@ def run_e2e_v3(
     server_auto_start: bool = True,
     server_port: int = 0,
     review_gate: bool = False,
+    review_policy_overrides: ReviewCliOverrides | None = None,
     framework_config_path: str | None = None,
     workflow_path: Path | None = None,
     opencode_readiness: str = "message",
@@ -458,6 +460,13 @@ def run_e2e_v3(
     from core.config_loader import load_framework_config
     from core.paths import default_output_projects_root
     from core.prompt_loader import PromptLoader
+    from core.review_policy import (
+        ReviewPolicyInputs,
+        apply_review_policy,
+        framework_review_defaults,
+        resolve_review_policy,
+        workflow_review_defaults,
+    )
     from core.runtime_observability_models import EMPTY_OBSERVABILITY_SUMMARY
     from core.telemetry_bridge import TelemetryBridge
     from core.validator_engine import ValidatorEngine
@@ -654,12 +663,34 @@ def run_e2e_v3(
             f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
         )
 
+        framework_config = load_framework_config(framework_config_path)
+        effective_review_policy = resolve_review_policy(
+            ReviewPolicyInputs(
+                cli=(
+                    review_policy_overrides
+                    if review_policy_overrides is not None
+                    else ReviewCliOverrides(max_iterations=None, fail_closed=None)
+                ),
+                workflow=workflow_review_defaults(workflow),
+                framework=framework_review_defaults(framework_config),
+            )
+        )
+        apply_review_policy(workflow, effective_review_policy)
+        log(
+            "Review policy resolved: "
+            f"max={effective_review_policy.max_iterations} "
+            f"fail_closed={effective_review_policy.fail_closed}"
+        )
+        observer.set_metadata(
+            "max_review_iterations", int(effective_review_policy.max_iterations)
+        )
+        observer.set_metadata("review_fail_closed", effective_review_policy.fail_closed)
+
         if isinstance(workflow.globals, dict):
             workflow.globals["max_repair_iterations"] = max_phase5_iter
             workflow.globals["review_gate_enabled"] = review_gate
 
         telemetry_bridge = TelemetryBridge(str(output_dir))
-        framework_config = load_framework_config(framework_config_path)
 
         experience_store = None
         if workflow.experience.enabled:
@@ -815,6 +846,9 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument(
         "--max-phase5-iter", type=positive_int, default=DEFAULT_MAX_PHASE5_ITER
     )
+    from core.review_policy import add_review_policy_arguments
+
+    add_review_policy_arguments(parser)
     _ = parser.add_argument("--keep-temp-dir", action="store_true")
     _ = parser.add_argument("--project-dir", type=Path, default=None)
     _ = parser.add_argument("--agent", type=str, default=None)
@@ -851,6 +885,8 @@ def _resolve_user_constraints(raw: str | None) -> str:
 
 
 def main() -> int:
+    from core.review_policy import review_cli_overrides_from_namespace
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -880,6 +916,7 @@ def main() -> int:
         server_auto_start=server_auto_start,
         server_port=args.server_port,
         review_gate=args.review_gate,
+        review_policy_overrides=review_cli_overrides_from_namespace(args, parser),
         framework_config_path=args.framework_config,
         workflow_path=args.workflow_path,
         opencode_readiness=args.opencode_readiness,
