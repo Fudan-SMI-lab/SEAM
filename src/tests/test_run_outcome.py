@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 from typing_extensions import assert_never
 
+from harness.run import PhaseStatus
 from core.run_outcome import (
     AcceptedAttemptId,
     OutcomeContractError,
@@ -17,7 +18,7 @@ from core.run_outcome import (
     TerminalOutcome,
     WorkflowTerminal,
 )
-from tests.e2e.e2e_test_v3 import PhaseStatus, build_v3_summary
+from .e2e.e2e_test_v3 import build_v3_summary
 
 
 def _round(
@@ -28,7 +29,11 @@ def _round(
     match outcome:
         case ReviewOutcome.ACCEPTED:
             verdict = ReviewVerdict.ACCEPT
-        case ReviewOutcome.REJECTED | ReviewOutcome.REJECT_EXHAUSTED | ReviewOutcome.IMPROVEMENT_ERROR:
+        case (
+            ReviewOutcome.REJECTED
+            | ReviewOutcome.REJECT_EXHAUSTED
+            | ReviewOutcome.IMPROVEMENT_ERROR
+        ):
             verdict = ReviewVerdict.REJECT
         case ReviewOutcome.UNKNOWN | ReviewOutcome.SESSION_ERROR:
             verdict = ReviewVerdict.UNKNOWN
@@ -79,7 +84,9 @@ def _run_outcome(
         workflow_terminal=WorkflowTerminal("complete"),
         terminal_anchor=TerminalAnchor(phase_id=PhaseId("phase_5_validation")),
         executed_phases=(PhaseId("phase_5_validation"),),
-        accepted_attempt_id=AcceptedAttemptId("phase-5-attempt-3") if validation_succeeded else None,
+        accepted_attempt_id=AcceptedAttemptId("phase-5-attempt-3")
+        if validation_succeeded
+        else None,
         review_rounds=_review_rounds(review_outcome),
     )
 
@@ -113,18 +120,91 @@ def test_existing_v3_summary_passes_when_an_executed_phase_passes() -> None:
 
     # When
     summary = build_v3_summary(
-        run_id="baseline-run", base_url="http://127.0.0.1:4096",
-        workflow_path="workflow.yaml", output_dir="output", temp_dir="temp",
-        keep_temp_dir=True, max_phase5_iter=5,
+        authoritative_outcome=_run_outcome(
+            True,
+            ReviewOutcome.DISABLED,
+            True,
+        ),
+        run_id="baseline-run",
+        base_url="http://127.0.0.1:4096",
+        workflow_path="workflow.yaml",
+        output_dir="output",
+        temp_dir="temp",
+        keep_temp_dir=True,
+        max_phase5_iter=5,
         phase_results=phase_results,
-        session_count=0, command_count=0, total_duration_seconds=0.0,
-        artifact_dir=None, telemetry_paths={},
-        before_snapshot_path=None, after_snapshot_path=None, entry_script=None,
+        session_count=0,
+        command_count=0,
+        total_duration_seconds=0.0,
+        artifact_dir=None,
+        telemetry_paths={},
+        before_snapshot_path=None,
+        after_snapshot_path=None,
+        entry_script=None,
         errors=[],
     )
 
     # Then
     assert summary.overall_status == "PASS"
+
+
+@pytest.mark.parametrize(
+    ("authority", "phase_status", "errors", "expected_status"),
+    [
+        (
+            _run_outcome(True, ReviewOutcome.DISABLED, True),
+            "failed",
+            ["contradictory display failure"],
+            "PASS",
+        ),
+        (
+            _run_outcome(False, ReviewOutcome.DISABLED, True),
+            "passed",
+            [],
+            "FAIL",
+        ),
+    ],
+)
+def test_v3_summary_uses_only_supplied_authority(
+    authority: RunOutcome,
+    phase_status: str,
+    errors: list[str],
+    expected_status: str,
+) -> None:
+    # Given
+    phase_results = [
+        PhaseStatus(
+            phase_number=1,
+            phase_id="phase_0_env_detect",
+            label="phase_0_env_detect",
+            status=phase_status,
+        )
+    ]
+
+    # When
+    summary = build_v3_summary(
+        authoritative_outcome=authority,
+        run_id="authority-run",
+        base_url="http://127.0.0.1:4096",
+        workflow_path="workflow.yaml",
+        output_dir="output",
+        temp_dir="temp",
+        keep_temp_dir=True,
+        max_phase5_iter=5,
+        phase_results=phase_results,
+        session_count=0,
+        command_count=0,
+        total_duration_seconds=0.0,
+        artifact_dir=None,
+        telemetry_paths={},
+        before_snapshot_path=None,
+        after_snapshot_path=None,
+        entry_script=None,
+        errors=errors,
+    )
+
+    # Then
+    assert summary.overall_status == expected_status
 
 
 @pytest.mark.parametrize(
@@ -272,21 +352,69 @@ def test_review_parsers_fail_closed_for_non_string_input() -> None:
 
     # When / Then
     for value in values:
-        assert (ReviewVerdict.from_raw(value), ReviewOutcome.from_raw(value)) == (ReviewVerdict.UNKNOWN, ReviewOutcome.UNKNOWN)
+        assert (ReviewVerdict.from_raw(value), ReviewOutcome.from_raw(value)) == (
+            ReviewVerdict.UNKNOWN,
+            ReviewOutcome.UNKNOWN,
+        )
 
 
 @pytest.mark.parametrize(
     ("review_rounds", "review_outcome"),
     [
-        ((_round(3, 3, ReviewOutcome.REJECT_EXHAUSTED), _round(1, 3, ReviewOutcome.ACCEPTED)), ReviewOutcome.ACCEPTED),
-        ((_round(1, 3, ReviewOutcome.ACCEPTED), _round(2, 3, ReviewOutcome.REJECTED)), ReviewOutcome.REJECTED),
-        ((_round(1, 3, ReviewOutcome.UNKNOWN), _round(2, 3, ReviewOutcome.REJECTED)), ReviewOutcome.REJECTED),
-        ((_round(1, 3, ReviewOutcome.SESSION_ERROR), _round(2, 3, ReviewOutcome.REJECTED)), ReviewOutcome.REJECTED),
-        ((_round(1, 3, ReviewOutcome.IMPROVEMENT_ERROR), _round(2, 3, ReviewOutcome.REJECTED)), ReviewOutcome.REJECTED),
-        ((_round(1, 3, ReviewOutcome.REJECTED), _round(2, 4, ReviewOutcome.ACCEPTED)), ReviewOutcome.ACCEPTED),
-        ((_round(1, 3, ReviewOutcome.REJECTED), _round(3, 3, ReviewOutcome.ACCEPTED)), ReviewOutcome.ACCEPTED),
+        (
+            (
+                _round(3, 3, ReviewOutcome.REJECT_EXHAUSTED),
+                _round(1, 3, ReviewOutcome.ACCEPTED),
+            ),
+            ReviewOutcome.ACCEPTED,
+        ),
+        (
+            (
+                _round(1, 3, ReviewOutcome.ACCEPTED),
+                _round(2, 3, ReviewOutcome.REJECTED),
+            ),
+            ReviewOutcome.REJECTED,
+        ),
+        (
+            (_round(1, 3, ReviewOutcome.UNKNOWN), _round(2, 3, ReviewOutcome.REJECTED)),
+            ReviewOutcome.REJECTED,
+        ),
+        (
+            (
+                _round(1, 3, ReviewOutcome.SESSION_ERROR),
+                _round(2, 3, ReviewOutcome.REJECTED),
+            ),
+            ReviewOutcome.REJECTED,
+        ),
+        (
+            (
+                _round(1, 3, ReviewOutcome.IMPROVEMENT_ERROR),
+                _round(2, 3, ReviewOutcome.REJECTED),
+            ),
+            ReviewOutcome.REJECTED,
+        ),
+        (
+            (
+                _round(1, 3, ReviewOutcome.REJECTED),
+                _round(2, 4, ReviewOutcome.ACCEPTED),
+            ),
+            ReviewOutcome.ACCEPTED,
+        ),
+        (
+            (
+                _round(1, 3, ReviewOutcome.REJECTED),
+                _round(3, 3, ReviewOutcome.ACCEPTED),
+            ),
+            ReviewOutcome.ACCEPTED,
+        ),
         ((_round(2, 3, ReviewOutcome.ACCEPTED),), ReviewOutcome.ACCEPTED),
-        ((_round(1, 3, ReviewOutcome.REJECTED), _round(1, 3, ReviewOutcome.ACCEPTED)), ReviewOutcome.ACCEPTED),
+        (
+            (
+                _round(1, 3, ReviewOutcome.REJECTED),
+                _round(1, 3, ReviewOutcome.ACCEPTED),
+            ),
+            ReviewOutcome.ACCEPTED,
+        ),
     ],
 )
 def test_run_outcome_rejects_inconsistent_review_history(
@@ -301,8 +429,19 @@ def test_run_outcome_rejects_inconsistent_review_history(
 @pytest.mark.parametrize(
     ("review_rounds", "review_outcome", "expected"),
     [
-        ((_round(1, 3, ReviewOutcome.REJECTED), _round(2, 3, ReviewOutcome.ACCEPTED)), ReviewOutcome.ACCEPTED, TerminalOutcome.PASSED),
-        ((_round(1, 3, ReviewOutcome.REJECTED),), ReviewOutcome.REJECTED, TerminalOutcome.FAILED),
+        (
+            (
+                _round(1, 3, ReviewOutcome.REJECTED),
+                _round(2, 3, ReviewOutcome.ACCEPTED),
+            ),
+            ReviewOutcome.ACCEPTED,
+            TerminalOutcome.PASSED,
+        ),
+        (
+            (_round(1, 3, ReviewOutcome.REJECTED),),
+            ReviewOutcome.REJECTED,
+            TerminalOutcome.FAILED,
+        ),
     ],
 )
 def test_run_outcome_accepts_consistent_review_history(
