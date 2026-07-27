@@ -1,12 +1,17 @@
 import json
 import os
-import shutil
-import time
 from typing import Any
+
+from core.phase5_artifact_store import Phase5ArtifactStore
+from core.phase5_attempt_receipt import (
+    Phase5AttemptAuthority,
+    Phase5AttemptReceipt,
+    Phase5AttemptReservation,
+    ShellAttemptExecution,
+)
 
 
 class ArtifactStore:
-
     base_dir: str
     run_id: str
     artifact_dir: str
@@ -14,6 +19,7 @@ class ArtifactStore:
     validated_dir: str
     journal_path: str
     checkpoint_path: str
+    _phase5_store: Phase5ArtifactStore
 
     def __init__(self, base_dir: str, run_id: str) -> None:
         self.base_dir = base_dir
@@ -23,10 +29,23 @@ class ArtifactStore:
         self.validated_dir = os.path.join(self.artifact_dir, "validated")
         self.journal_path = os.path.join(self.artifact_dir, "execution_journal.jsonl")
         self.checkpoint_path = os.path.join(self.artifact_dir, "state.json")
+        self._phase5_store = Phase5ArtifactStore(self.artifact_dir, self.run_id)
 
         os.makedirs(self.raw_dir, exist_ok=True)
         os.makedirs(self.validated_dir, exist_ok=True)
 
+    def reserve_phase5_attempt(self) -> Phase5AttemptReservation:
+        return self._phase5_store.reserve_attempt()
+
+    def phase5_attempt_authority(
+        self, receipt_path: str
+    ) -> Phase5AttemptAuthority | None:
+        return self._phase5_store.authority_for(receipt_path)
+
+    def record_finalized_phase5_authority(
+        self, receipt_path: str, receipt: Phase5AttemptReceipt
+    ) -> None:
+        self._phase5_store.record_finalized_authority(receipt_path, receipt)
 
     def save_shell_attempt_artifacts(
         self,
@@ -41,55 +60,25 @@ class ArtifactStore:
         stderr: str | None = None,
         stdout_source_path: str | None = None,
         stderr_source_path: str | None = None,
+        execution: ShellAttemptExecution | None = None,
     ) -> dict[str, Any]:
-        """Persist complete stdout/stderr and metadata for a shell attempt."""
-        artifact_dir = os.path.abspath(os.path.join(self.artifact_dir, "shell_attempts"))
-        os.makedirs(artifact_dir, exist_ok=True)
-        safe_phase = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in phase_id)
-        existing = [
-            name for name in os.listdir(artifact_dir)
-            if name.startswith(f"{safe_phase}_attempt") and name.endswith(".meta.json")
-        ]
-        attempt = len(existing) + 1
-        prefix = os.path.join(artifact_dir, f"{safe_phase}_attempt{attempt:04d}")
-        stdout_path = os.path.abspath(prefix + ".stdout.log")
-        stderr_path = os.path.abspath(prefix + ".stderr.log")
-        meta_path = os.path.abspath(prefix + ".meta.json")
+        return self._phase5_store.save_attempt(
+            phase_id,
+            command=command,
+            cwd=cwd,
+            backend_workdir=backend_workdir,
+            exit_code=exit_code,
+            duration=duration,
+            stdout=stdout,
+            stderr=stderr,
+            stdout_source_path=stdout_source_path,
+            stderr_source_path=stderr_source_path,
+            execution=execution,
+        )
 
-        if stdout_source_path:
-            shutil.copyfile(stdout_source_path, stdout_path)
-        else:
-            with open(stdout_path, "w", encoding="utf-8") as handle:
-                handle.write(stdout or "")
-        if stderr_source_path:
-            shutil.copyfile(stderr_source_path, stderr_path)
-        else:
-            with open(stderr_path, "w", encoding="utf-8") as handle:
-                handle.write(stderr or "")
-
-        metadata: dict[str, Any] = {
-            "phase_id": phase_id,
-            "attempt": attempt,
-            "command": command,
-            "cwd": cwd or "",
-            "backend_workdir": backend_workdir or "",
-            "exit_code": exit_code,
-            "duration": duration,
-            "stdout_path": stdout_path,
-            "stderr_path": stderr_path,
-            "meta_path": meta_path,
-            "stdout_bytes": os.path.getsize(stdout_path),
-            "stderr_bytes": os.path.getsize(stderr_path),
-            "stdout_complete": True,
-            "stderr_complete": True,
-            "complete": True,
-            "timestamp": time.time(),
-        }
-        with open(meta_path, "w", encoding="utf-8") as handle:
-            json.dump(metadata, handle, indent=2)
-        return metadata
-
-    def save_phase_output(self, phase_id: str, data: dict[str, Any], attempt: int = 0) -> str:
+    def save_phase_output(
+        self, phase_id: str, data: dict[str, Any], attempt: int = 0
+    ) -> str:
         key = phase_id.removeprefix("phase_")
         filename = f"phase_{key}_attempt{attempt}.json"
         filepath = os.path.join(self.raw_dir, filename)
