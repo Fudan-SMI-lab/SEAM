@@ -19,6 +19,12 @@ from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
 from core.review_policy import ReviewCliOverrides
 from core.run_manifest import RunId
+from core.run_outcome import RunOutcome, WorkflowTerminal
+from core.v3_outcome_mapping import (
+    V3OutcomeUnavailableError,
+    V3RunFacts,
+    build_v3_run_outcome,
+)
 from harness.run import (
     CleanupContext,
     EvidenceContext,
@@ -310,6 +316,7 @@ def print_summary(summary: RunSummary) -> None:
 
 def build_v3_summary(
     *,
+    authoritative_outcome: RunOutcome,
     run_id: str,
     base_url: str,
     workflow_path: str,
@@ -354,6 +361,7 @@ def build_v3_summary(
             entry_script=entry_script,
         ),
         hooks=FinalizationHooks.empty(),
+        authoritative_outcome=authoritative_outcome,
     )
     return build_run_summary(request)
 
@@ -514,6 +522,13 @@ def run_e2e_v3(
     telemetry_bridge: TelemetryBridge | None = None
     agent_io_logger: AgentIOLogger | None = None
     traceback_text: str | None = None
+    authoritative_outcome = build_v3_run_outcome(
+        V3RunFacts(
+            executed_phases=(),
+            workflow_terminal=WorkflowTerminal("interrupted"),
+            phase5_decision=None,
+        )
+    )
 
     try:
         from harness.server.lifecycle import resolve_server_url
@@ -713,12 +728,18 @@ def run_e2e_v3(
             experience_store=experience_store,
         )
 
-        executor.execute(
+        execution_result = executor.execute(
             {
                 "PROJECT_DIR": str(temp_dir),
                 "USER_CONSTRAINTS": user_constraints if user_constraints else "",
             }
         )
+        outcome_value = execution_result.get("run_outcome")
+        if not isinstance(outcome_value, RunOutcome):
+            raise V3OutcomeUnavailableError(
+                detail="active V3 executor did not return a frozen RunOutcome"
+            )
+        authoritative_outcome = outcome_value
 
         telemetry_bridge.set_metadata("agent_name", agent_name)
         telemetry_bridge.set_metadata("workflow_name", workflow.name)
@@ -827,6 +848,7 @@ def run_e2e_v3(
                 entry_script=entry_script,
             ),
             hooks=lifecycle.hooks(),
+            authoritative_outcome=authoritative_outcome,
             observability=(
                 observer.observability_summary
                 if observer is not None
