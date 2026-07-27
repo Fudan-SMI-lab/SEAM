@@ -44,8 +44,11 @@ Options:
                               Port conflict behavior: prompt, start, or error (default: prompt)
   --workflow PATH             Custom workflow YAML path (default: src/workflows/seam_auto_default.yaml)
   --max-iter N                Max Phase 5 repair iterations (default: 8)
+  --max-review-iter N         Max logical review rounds (default: workflow/config, then 3)
   --review                    Enable Review Gate (default: disabled)
   --no-review                 Disable Review Gate (kept for compatibility)
+  --review-fail-closed        Fail when review rejection exhausts the maximum (default)
+  --no-review-fail-closed     Allow reject exhaustion compatibility outcome
   --no-keep-temp              Don't keep output project directory (default: keep)
   --agent NAME                Override auto-detected agent name
   --output-dir DIR            Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
@@ -84,6 +87,8 @@ EOF
 FORWARD_ARGS=()
 HAS_SERVER_URL=false
 HAS_WORKFLOW=false
+HAS_MAX_REVIEW_ITER=false
+REVIEW_FAIL_CLOSED=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -113,12 +118,47 @@ while [[ $# -gt 0 ]]; do
             FORWARD_ARGS+=("--max-iter" "$2")
             shift 2
             ;;
+        --max-review-iter)
+            if [[ "$HAS_MAX_REVIEW_ITER" == true ]]; then
+                echo -e "${RED}Error: --max-review-iter may be supplied only once.${NC}" >&2
+                exit 1
+            fi
+            if [[ $# -lt 2 || ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo -e "${RED}Error: --max-review-iter requires a positive integer.${NC}" >&2
+                exit 1
+            fi
+            FORWARD_ARGS+=("--max-review-iter" "$2")
+            HAS_MAX_REVIEW_ITER=true
+            shift 2
+            ;;
         --review)
             FORWARD_ARGS+=("--review")
             shift
             ;;
         --no-review)
             FORWARD_ARGS+=("--no-review")
+            shift
+            ;;
+        --review-fail-closed)
+            if [[ -n "$REVIEW_FAIL_CLOSED" && "$REVIEW_FAIL_CLOSED" != true ]]; then
+                echo -e "${RED}Error: conflicting review fail-closed options.${NC}" >&2
+                exit 1
+            fi
+            if [[ -z "$REVIEW_FAIL_CLOSED" ]]; then
+                FORWARD_ARGS+=("--review-fail-closed")
+            fi
+            REVIEW_FAIL_CLOSED=true
+            shift
+            ;;
+        --no-review-fail-closed)
+            if [[ -n "$REVIEW_FAIL_CLOSED" && "$REVIEW_FAIL_CLOSED" != false ]]; then
+                echo -e "${RED}Error: conflicting review fail-closed options.${NC}" >&2
+                exit 1
+            fi
+            if [[ -z "$REVIEW_FAIL_CLOSED" ]]; then
+                FORWARD_ARGS+=("--no-review-fail-closed")
+            fi
+            REVIEW_FAIL_CLOSED=false
             shift
             ;;
         --no-keep-temp)

@@ -25,8 +25,11 @@ PROJECT_SEARCH_DIRS=(
 # ── Defaults (mirroring the V1 successful run pattern) ──
 SERVER_URL="http://127.0.0.1:4098"
 MAX_ITER=8
+MAX_REVIEW_ITER=""
 KEEP_TEMP=true
 REVIEW_GATE=false
+REVIEW_FAIL_CLOSED=""
+HAS_MAX_REVIEW_ITER=false
 DRY_RUN=false
 SERVER_NO_AUTO_START=false
 WORKFLOW_PATH=""
@@ -65,8 +68,12 @@ Flat cuda_projects are also accepted; Phase 3 will discover an entry script.
 Options:
   --server-url URL       OpenCode server URL (default: http://127.0.0.1:4098)
   --max-iter N           Max Phase 5 repair iterations (default: 8)
+  --max-review-iter N    Max logical review rounds (default: workflow/config, then 3)
   --review               Enable Review Gate (default: disabled)
   --no-review            Disable Review Gate (kept for compatibility)
+  --review-fail-closed   Fail when review rejection exhausts the maximum (default)
+  --no-review-fail-closed
+                          Allow reject exhaustion compatibility outcome
   --no-keep-temp         Don't keep output project directory (default: keep)
   --agent NAME           Override auto-detected agent name
   --output-dir DIR       Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
@@ -102,8 +109,37 @@ while [[ $# -gt 0 ]]; do
         -h|--help)              usage ;;
         --server-url)           SERVER_URL="$2"; shift 2 ;;
         --max-iter)             MAX_ITER="$2"; shift 2 ;;
+        --max-review-iter)
+            if [[ "$HAS_MAX_REVIEW_ITER" == true ]]; then
+                echo -e "${RED}Error: --max-review-iter may be supplied only once.${NC}" >&2
+                exit 1
+            fi
+            if [[ $# -lt 2 || ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+                echo -e "${RED}Error: --max-review-iter requires a positive integer.${NC}" >&2
+                exit 1
+            fi
+            MAX_REVIEW_ITER="$2"
+            HAS_MAX_REVIEW_ITER=true
+            shift 2
+            ;;
         --review)               REVIEW_GATE=true; shift ;;
         --no-review)            REVIEW_GATE=false; shift ;;
+        --review-fail-closed)
+            if [[ -n "$REVIEW_FAIL_CLOSED" && "$REVIEW_FAIL_CLOSED" != true ]]; then
+                echo -e "${RED}Error: conflicting review fail-closed options.${NC}" >&2
+                exit 1
+            fi
+            REVIEW_FAIL_CLOSED=true
+            shift
+            ;;
+        --no-review-fail-closed)
+            if [[ -n "$REVIEW_FAIL_CLOSED" && "$REVIEW_FAIL_CLOSED" != false ]]; then
+                echo -e "${RED}Error: conflicting review fail-closed options.${NC}" >&2
+                exit 1
+            fi
+            REVIEW_FAIL_CLOSED=false
+            shift
+            ;;
         --no-keep-temp)         KEEP_TEMP=false; shift ;;
         --agent)                EXTRA_ARGS="$EXTRA_ARGS --agent $2"; shift 2 ;;
         --output-dir)           OUTPUT_PROJECTS_DIR="$2"; shift 2 ;;
@@ -184,6 +220,8 @@ echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
 echo -e "${GREEN}Server:${NC}    $SERVER_URL"
 echo -e "${GREEN}Max iter:${NC}  $MAX_ITER"
 echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
+echo -e "${GREEN}Review max override:${NC} ${MAX_REVIEW_ITER:-(unset; resolve after workflow selection)}"
+echo -e "${GREEN}Review fail-closed override:${NC} ${REVIEW_FAIL_CLOSED:-(unset; resolve after workflow selection)}"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
 echo -e "${GREEN}Auto-start:${NC} $( [[ "$SERVER_NO_AUTO_START" == true ]] && echo 'false' || echo 'true' )"
 echo -e "${GREEN}OpenCode readiness:${NC} $OPENCODE_READINESS"
@@ -299,6 +337,16 @@ if [[ "$SERVER_NO_AUTO_START" == true ]]; then
     NO_AUTO_FLAG="--server-no-auto-start"
 fi
 
+REVIEW_POLICY_ARGS=()
+if [[ -n "$MAX_REVIEW_ITER" ]]; then
+    REVIEW_POLICY_ARGS+=("--max-review-iter" "$MAX_REVIEW_ITER")
+fi
+if [[ "$REVIEW_FAIL_CLOSED" == true ]]; then
+    REVIEW_POLICY_ARGS+=("--review-fail-closed")
+elif [[ "$REVIEW_FAIL_CLOSED" == false ]]; then
+    REVIEW_POLICY_ARGS+=("--no-review-fail-closed")
+fi
+
 # ── Dry-run mode ──
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
@@ -310,6 +358,14 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "    --project-dir $PROJECT_DIR \\"
     echo "    --output-dir $OUTPUT_PROJECTS_DIR \\"
     echo "    --max-phase5-iter $MAX_ITER \\"
+    if [[ -n "$MAX_REVIEW_ITER" ]]; then
+        echo "    --max-review-iter $MAX_REVIEW_ITER \\"
+    fi
+    if [[ "$REVIEW_FAIL_CLOSED" == true ]]; then
+        echo "    --review-fail-closed \\"
+    elif [[ "$REVIEW_FAIL_CLOSED" == false ]]; then
+        echo "    --no-review-fail-closed \\"
+    fi
     echo "    --opencode-readiness $PYTHON_OPENCODE_READINESS \\"
     echo "    --opencode-message-timeout $OPENCODE_MESSAGE_TIMEOUT \\"
     echo "    --keep-temp-dir \\"
@@ -359,6 +415,7 @@ cd "$REPO_ROOT"
     --project-dir "$PROJECT_DIR" \
     --output-dir "$OUTPUT_PROJECTS_DIR" \
     --max-phase5-iter "$MAX_ITER" \
+    "${REVIEW_POLICY_ARGS[@]}" \
     --opencode-readiness "$PYTHON_OPENCODE_READINESS" \
     --opencode-message-timeout "$OPENCODE_MESSAGE_TIMEOUT" \
     $KEEP_FLAG \
