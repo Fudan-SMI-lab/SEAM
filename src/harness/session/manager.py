@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from .event_lifecycle import (
     TransportLifecycle,
@@ -25,6 +25,9 @@ from .events import (
     TransportInvocationId,
     TransportObserver,
 )
+from .opencode_contract import JsonObject
+from .opencode_trace_client import OpenCodeTraceClient
+from .trace_seeds import SessionLifecycle, TraceSeed, TraceSeedRegistry
 
 logger = logging.getLogger("harness.session.manager")
 
@@ -168,7 +171,7 @@ class SessionRecord:
     session_id: str
     role: str
     agent: str
-    lifecycle: Literal["persistent", "reusable", "ephemeral"]
+    lifecycle: SessionLifecycle
     created_at: float = field(default_factory=time.time)
     last_used_at: float = field(default_factory=time.time)
     command_count: int = 0
@@ -210,6 +213,8 @@ class MigrationSessionManager:
         )
         self._last_todo_summary = ""
         self._transport_lifecycle = TransportLifecycle(transport_observer)
+        self._trace_seed_registry: TraceSeedRegistry = TraceSeedRegistry()
+        self._trace_client: OpenCodeTraceClient = OpenCodeTraceClient(self._trace_http)
         if auto_detect_agent:
             self._detect_agent()
 
@@ -227,6 +232,30 @@ class MigrationSessionManager:
     @property
     def work_dir(self) -> Path:
         return self._work_dir
+
+    @property
+    def trace_client(self) -> OpenCodeTraceClient:
+        return self._trace_client
+
+    @property
+    def trace_seeds(self) -> tuple[TraceSeed, ...]:
+        return self._trace_seed_registry.snapshot()
+
+    def annotate_trace_seed(
+        self,
+        session_id: str,
+        logical_role: str | None,
+        scope: str | None,
+    ) -> None:
+        _ = self._trace_seed_registry.annotate(session_id, logical_role, scope)
+
+    def _trace_http(
+        self,
+        method: str,
+        path: str,
+        query: JsonObject | None = None,
+    ) -> JsonObject:
+        return self._http(method, path, query=query)
 
     def _detect_agent(self) -> None:
         agent_names = self.available_agents
@@ -338,7 +367,7 @@ class MigrationSessionManager:
         self,
         role: str,
         agent: str = "",
-        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "ephemeral",
+        lifecycle: SessionLifecycle = "ephemeral",
         title: str = "",
         working_dir: str = "",
         initial_prompt: str = "",
@@ -359,6 +388,13 @@ class MigrationSessionManager:
             working_dir=working_dir or str(self._work_dir),
         )
         self._sessions[session_id] = record
+        _ = self._trace_seed_registry.record(
+            session_id=record.session_id,
+            logical_role=record.role,
+            lifecycle=record.lifecycle,
+            agent=record.agent,
+            working_directory=record.working_dir,
+        )
         if initial_prompt:
             self._send_message_raw(session_id, initial_prompt, agent=record.agent, timeout=120)
         return session_id
@@ -367,7 +403,7 @@ class MigrationSessionManager:
         self,
         session_id: str,
         role: str = "",
-        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
+        lifecycle: SessionLifecycle = "persistent",
     ) -> bool:
         resp = self._http("GET", f"/session/{session_id}")
         if not resp.get("ok"):
@@ -380,13 +416,21 @@ class MigrationSessionManager:
                 lifecycle=lifecycle,
                 working_dir=str(self._work_dir),
             )
+        record = self._sessions[session_id]
+        _ = self._trace_seed_registry.record(
+            session_id=record.session_id,
+            logical_role=record.role,
+            lifecycle=record.lifecycle,
+            agent=record.agent,
+            working_directory=record.working_dir,
+        )
         return True
 
     def get_or_create(
         self,
         role: str,
         agent: str = "",
-        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
+        lifecycle: SessionLifecycle = "persistent",
         title: str = "",
         working_dir: str = "",
         initial_prompt: str = "",
@@ -694,10 +738,8 @@ class MigrationSessionManager:
                 "open_todos",
                 "pending_todos",
             )
-            found_explicit = False
             for key in explicit_keys:
                 if key in payload:
-                    found_explicit = True
                     container = payload.get(key)
                     # An empty todo container means nothing is pending.
                     if isinstance(container, (list, tuple)) and not container:
@@ -1743,14 +1785,30 @@ class MigrationSessionManager:
                 request_timeout = self._timeout
             with urllib.request.urlopen(request, timeout=request_timeout) as response:
                 raw = response.read()
+                response_headers = {
+                    str(key): str(value)
+                    for key, value in (getattr(response, "headers", None) or {}).items()
+                }
                 if response.status == 204 or not raw:
-                    return {"ok": True, "status": response.status, "data": None}
+                    return {
+                        "ok": True,
+                        "status": response.status,
+                        "data": None,
+                        "headers": response_headers,
+                        "raw_body": "",
+                    }
                 text = raw.decode()
                 try:
                     parsed = json.loads(text)
                 except json.JSONDecodeError:
                     parsed = text
-                return {"ok": True, "status": response.status, "data": parsed}
+                return {
+                    "ok": True,
+                    "status": response.status,
+                    "data": parsed,
+                    "headers": response_headers,
+                    "raw_body": text,
+                }
         except urllib.error.HTTPError as exc:
             details = exc.read().decode(errors="replace") if exc.fp else ""
             return {
@@ -1758,6 +1816,11 @@ class MigrationSessionManager:
                 "status": exc.code,
                 "error": str(exc),
                 "details": details,
+                "headers": {
+                    str(key): str(value)
+                    for key, value in (exc.headers.items() if exc.headers else ())
+                },
+                "raw_body": details,
             }
         except TimeoutError as exc:
             logger.debug("HTTP timeout for %s %s: %s", method, path, exc)
