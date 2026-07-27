@@ -84,6 +84,7 @@ from tests.resource_manifest_store_cases import (
     test_store_rejects_stale_duplicate_and_context_mismatch as test_store_rejects_stale_duplicate_and_context_mismatch,
 )
 from tests.task5_py38_compat_cases import (
+    test_py38_required_stage_rejected_output_fails_closed as test_py38_required_stage_rejected_output_fails_closed,
     test_py38_finalizer_isolates_ordinary_exceptions_and_propagates_controls as test_py38_finalizer_isolates_ordinary_exceptions_and_propagates_controls,
     test_real_task5_finalizer_executes_resource_hook_on_cpython_38 as test_real_task5_finalizer_executes_resource_hook_on_cpython_38,
 )

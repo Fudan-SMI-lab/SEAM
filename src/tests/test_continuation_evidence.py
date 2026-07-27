@@ -11,7 +11,7 @@ from core.continuation import (
 )
 from core.continuation_evidence import ChildEvidenceRequest
 from core.run_manifest import CanonicalReference, RunId
-from core.run_outcome import PhaseId
+from core.run_outcome import PhaseId, TerminalAnchor
 from tests.terminal_run_continuation_test_support import (
     create_parent_run,
     tree_bytes,
@@ -85,7 +85,8 @@ def test_prepare_archives_mutable_reports_and_records_shared_baseline(
             b'{"complete":true}\n'
         )
         _ = prepared.artifact_store.mark_validated("phase_5_validation", {"ok": True})
-        sealed = seal_child_evidence(prepared)
+        child_anchor = TerminalAnchor(phase_id=PhaseId("phase_7_finalize"))
+        sealed = seal_child_evidence(prepared, terminal_anchor=child_anchor)
         verified = verify_final_child_evidence(prepared)
 
     # Then external run-scoped evidence is complete without freezing the project.
@@ -105,6 +106,7 @@ def test_prepare_archives_mutable_reports_and_records_shared_baseline(
         b'{"status":"parent"}\n'
     )
     assert sealed.evidence_sealed is True
+    assert sealed.terminal_anchor == child_anchor
     assert (
         verified.child_manifest.inherited_canonical
         == prepared.request.inherited_canonical

@@ -11,6 +11,7 @@ if sys.version_info >= (3, 10):
         finalize_run,
     )
     from .models import (
+        ContinuationRunSummary,
         EMPTY_ARTIFACT_UPDATE,
         FinalizationDiagnostic,
         FinalizationHook,
@@ -49,6 +50,7 @@ if sys.version_info >= (3, 10):
         "EMPTY_ARTIFACT_UPDATE",
         "BridgeSidecar",
         "CleanupContext",
+        "ContinuationRunSummary",
         "EvidenceContext",
         "EvidencePersister",
         "FinalizationDiagnostic",
@@ -87,8 +89,10 @@ if sys.version_info >= (3, 10):
     )
 else:
     from .finalization_contract import (
+        ContinuationRunSummary,
         FinalizationHooks,
         FinalizationResult,
+        FinalizationStage,
         PhaseStatus,
         RunArtifacts,
         RunArtifactUpdate,
@@ -103,8 +107,10 @@ else:
     from .resource_manifest_hook import resource_manifest_finalization_hook
 
     __all__ = (
+        "ContinuationRunSummary",
         "FinalizationHooks",
         "FinalizationResult",
+        "FinalizationStage",
         "PhaseStatus",
         "RunArtifacts",
         "RunArtifactUpdate",

@@ -51,6 +51,7 @@ NC='\033[0m'
 usage() {
     cat <<'EOF'
 Usage: run_e2e_v3.sh <PROJECT_NAME> [OPTIONS]
+       run_e2e_v3.sh --continue-from <SUMMARY_JSON> [OPTIONS]
 
 PROJECT_NAME must have a corresponding directory under:
   ./original_projects/<PROJECT_NAME>/ or ./cuda_projects/<PROJECT_NAME>/
@@ -67,6 +68,7 @@ Flat cuda_projects are also accepted; Phase 3 will discover an entry script.
 
 Options:
   --server-url URL       OpenCode server URL (default: http://127.0.0.1:4098)
+  --continue-from PATH   Continue an explicit terminal V3 summary
   --max-iter N           Max Phase 5 repair iterations (default: 8)
   --max-review-iter N    Max logical review rounds (default: workflow/config, then 3)
   --review               Enable Review Gate (default: disabled)
@@ -103,11 +105,20 @@ EOF
 
 # ── Arg parsing ──
 PROJECT_NAME=""
+CONTINUE_FROM=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)              usage ;;
         --server-url)           SERVER_URL="$2"; shift 2 ;;
+        --continue-from)
+            if [[ -n "$CONTINUE_FROM" || $# -lt 2 || -z "$2" ]]; then
+                echo -e "${RED}Error: --continue-from requires one summary.json path.${NC}" >&2
+                exit 1
+            fi
+            CONTINUE_FROM="$2"
+            shift 2
+            ;;
         --max-iter)             MAX_ITER="$2"; shift 2 ;;
         --max-review-iter)
             if [[ "$HAS_MAX_REVIEW_ITER" == true ]]; then
@@ -162,9 +173,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "$PROJECT_NAME" ]]; then
-    echo -e "${RED}Error: PROJECT_NAME is required.${NC}" >&2
-    usage
+if [[ -n "$PROJECT_NAME" && -n "$CONTINUE_FROM" ]]; then
+    echo -e "${RED}Error: PROJECT_NAME and --continue-from are mutually exclusive.${NC}" >&2
+    exit 1
+fi
+if [[ -z "$PROJECT_NAME" && -z "$CONTINUE_FROM" ]]; then
+    echo -e "${RED}Error: PROJECT_NAME or --continue-from is required.${NC}" >&2
+    exit 1
+fi
+if [[ -n "$CONTINUE_FROM" && -n "$WORKFLOW_PATH" ]]; then
+    echo -e "${RED}Error: --workflow is not valid with --continue-from; the parent workflow is pinned.${NC}" >&2
+    exit 1
+fi
+if [[ -n "$CONTINUE_FROM" ]]; then
+    CONTINUE_PARENT="$(cd "$(dirname "$CONTINUE_FROM")" 2>/dev/null && pwd -P)" || {
+        echo -e "${RED}Error: --continue-from parent directory is unavailable.${NC}" >&2
+        exit 1
+    }
+    CONTINUE_FROM="$CONTINUE_PARENT/$(basename "$CONTINUE_FROM")"
 fi
 
 resolve_python() {
@@ -207,7 +233,10 @@ resolve_project_dir() {
     return 1
 }
 
-PROJECT_DIR="$(resolve_project_dir "$PROJECT_NAME" || true)"
+PROJECT_DIR=""
+if [[ -n "$PROJECT_NAME" ]]; then
+    PROJECT_DIR="$(resolve_project_dir "$PROJECT_NAME" || true)"
+fi
 
 # ── Validation ──
 echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -215,8 +244,12 @@ echo -e "${CYAN}║          src  E2E  Migration  Test  Launcher (V3)           
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
-echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
+if [[ -n "$CONTINUE_FROM" ]]; then
+    echo -e "${GREEN}Continue:${NC}  $CONTINUE_FROM"
+else
+    echo -e "${GREEN}Project:${NC}   $PROJECT_NAME"
+    echo -e "${GREEN}Path:${NC}      $PROJECT_DIR"
+fi
 echo -e "${GREEN}Server:${NC}    $SERVER_URL"
 echo -e "${GREEN}Max iter:${NC}  $MAX_ITER"
 echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
@@ -234,7 +267,7 @@ echo -e "${GREEN}Extra:    ${NC}  ${EXTRA_ARGS:-(none)}"
 echo ""
 
 # Check project directory
-if [[ -z "$PROJECT_DIR" || ! -d "$PROJECT_DIR" ]]; then
+if [[ -z "$CONTINUE_FROM" && ( -z "$PROJECT_DIR" || ! -d "$PROJECT_DIR" ) ]]; then
     echo -e "${RED}✗ Project directory not found: $PROJECT_NAME${NC}"
     echo -e "${YELLOW}  Searched:${NC}"
     for base in "${PROJECT_SEARCH_DIRS[@]}"; do
@@ -242,23 +275,27 @@ if [[ -z "$PROJECT_DIR" || ! -d "$PROJECT_DIR" ]]; then
     done
     exit 1
 fi
-echo -e "${GREEN}✓${NC} Project directory exists"
+if [[ -z "$CONTINUE_FROM" ]]; then
+    echo -e "${GREEN}✓${NC} Project directory exists"
+fi
 
 # Check ADAPTATION_REQUIREMENTS.md
 HAS_CONSTRAINTS=false
-if [[ -f "$PROJECT_DIR/ADAPTATION_REQUIREMENTS.md" ]]; then
+if [[ -z "$CONTINUE_FROM" && -f "$PROJECT_DIR/ADAPTATION_REQUIREMENTS.md" ]]; then
     echo -e "${GREEN}✓${NC} ADAPTATION_REQUIREMENTS.md exists"
     HAS_CONSTRAINTS=true
-else
+elif [[ -z "$CONTINUE_FROM" ]]; then
     echo -e "${YELLOW}⚠  ADAPTATION_REQUIREMENTS.md not found (no constraints will be applied)${NC}"
 fi
 
 # Check test entry script hints. Some cuda_projects are flat source trees and let Phase 3 discover the entry.
 ENTRY_SCRIPTS=""
-if [[ -d "$PROJECT_DIR/test_data_and_scripts" ]]; then
+if [[ -z "$CONTINUE_FROM" && -d "$PROJECT_DIR/test_data_and_scripts" ]]; then
     ENTRY_SCRIPTS=$(find "$PROJECT_DIR/test_data_and_scripts" -name "*.py" 2>/dev/null | head -5 || true)
 fi
-if [[ -z "$ENTRY_SCRIPTS" ]]; then
+if [[ -n "$CONTINUE_FROM" ]]; then
+    :
+elif [[ -z "$ENTRY_SCRIPTS" ]]; then
     echo -e "${YELLOW}⚠  No test_data_and_scripts/*.py found (Phase 3 will discover an entry script)${NC}"
 else
     echo -e "${GREEN}✓${NC} Entry scripts found:"
@@ -268,7 +305,9 @@ else
 fi
 
 # Check original_src
-if [[ -d "$PROJECT_DIR/original_src" ]]; then
+if [[ -n "$CONTINUE_FROM" ]]; then
+    :
+elif [[ -d "$PROJECT_DIR/original_src" ]]; then
     FILE_COUNT=$(find "$PROJECT_DIR/original_src" -type f 2>/dev/null | wc -l)
     echo -e "${GREEN}✓${NC} original_src/ exists ($FILE_COUNT files)"
 else
@@ -296,7 +335,11 @@ if [[ -n "$ENV_PATCH" ]]; then
     echo -e "${GREEN}✓${NC} Applied OpenCode preflight environment fixes"
 fi
 
-if [[ "$DRY_RUN" == true && "$OPENCODE_DIAGNOSE_ONLY" != true ]]; then
+if [[ -n "$CONTINUE_FROM" ]]; then
+    echo ""
+    echo -e "${CYAN}OpenCode readiness will run after continuation ownership and environment validation.${NC}"
+    PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
+elif [[ "$DRY_RUN" == true && "$OPENCODE_DIAGNOSE_ONLY" != true ]]; then
     echo ""
     echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
 else
@@ -341,6 +384,13 @@ REVIEW_POLICY_ARGS=()
 if [[ -n "$MAX_REVIEW_ITER" ]]; then
     REVIEW_POLICY_ARGS+=("--max-review-iter" "$MAX_REVIEW_ITER")
 fi
+
+MODE_ARGS=()
+if [[ -n "$CONTINUE_FROM" ]]; then
+    MODE_ARGS+=("--continue-from" "$CONTINUE_FROM")
+else
+    MODE_ARGS+=("--project-dir" "$PROJECT_DIR" "--output-dir" "$OUTPUT_PROJECTS_DIR")
+fi
 if [[ "$REVIEW_FAIL_CLOSED" == true ]]; then
     REVIEW_POLICY_ARGS+=("--review-fail-closed")
 elif [[ "$REVIEW_FAIL_CLOSED" == false ]]; then
@@ -355,8 +405,12 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "  cd $REPO_ROOT && \\"
     echo "  $SEAM_PYTHON -m tests.e2e.e2e_test_v3 \\"
     echo "    --server-url $SERVER_URL \\"
-    echo "    --project-dir $PROJECT_DIR \\"
-    echo "    --output-dir $OUTPUT_PROJECTS_DIR \\"
+    if [[ -n "$CONTINUE_FROM" ]]; then
+        echo "    --continue-from $CONTINUE_FROM \\"
+    else
+        echo "    --project-dir $PROJECT_DIR \\"
+        echo "    --output-dir $OUTPUT_PROJECTS_DIR \\"
+    fi
     echo "    --max-phase5-iter $MAX_ITER \\"
     if [[ -n "$MAX_REVIEW_ITER" ]]; then
         echo "    --max-review-iter $MAX_REVIEW_ITER \\"
@@ -412,8 +466,7 @@ cd "$REPO_ROOT"
 
 "$SEAM_PYTHON" -m tests.e2e.e2e_test_v3 \
     --server-url "$SERVER_URL" \
-    --project-dir "$PROJECT_DIR" \
-    --output-dir "$OUTPUT_PROJECTS_DIR" \
+    "${MODE_ARGS[@]}" \
     --max-phase5-iter "$MAX_ITER" \
     "${REVIEW_POLICY_ARGS[@]}" \
     --opencode-readiness "$PYTHON_OPENCODE_READINESS" \
@@ -439,7 +492,9 @@ else
 fi
 echo ""
 echo -e "${CYAN}Reports:${NC}  $REPO_ROOT/e2e-reports/src/$(date +%Y%m%d)_*/"
-echo -e "${CYAN}Output:${NC}   $OUTPUT_PROJECTS_DIR/${PROJECT_NAME}_$(date +%Y%m%d)_*/"
+if [[ -z "$CONTINUE_FROM" ]]; then
+    echo -e "${CYAN}Output:${NC}   $OUTPUT_PROJECTS_DIR/${PROJECT_NAME}_$(date +%Y%m%d)_*/"
+fi
 echo ""
 
 exit $EXIT_CODE

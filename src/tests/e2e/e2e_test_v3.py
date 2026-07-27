@@ -20,6 +20,14 @@ from core.paths import execution_root
 from core.review_policy import ReviewCliOverrides
 from core.run_manifest import RunId
 from core.run_outcome import RunOutcome, WorkflowTerminal
+from core.terminal_continuation_models import (
+    PreparedTerminalContinuation,
+    TerminalContinuationRunRequest,
+    V3InvocationOptions,
+    V3OpenCodeOptions,
+    V3ReviewRunOptions,
+    V3ServerRunOptions,
+)
 from core.v3_outcome_mapping import (
     V3OutcomeUnavailableError,
     V3RunFacts,
@@ -27,12 +35,15 @@ from core.v3_outcome_mapping import (
 )
 from harness.run import (
     CleanupContext,
+    ContinuationRunSummary,
     EvidenceContext,
     EvidencePersister,
     FinalizationHooks,
+    FinalizationStage,
     PhaseStatus,
     ReportAllocationError,
     RunArtifacts,
+    RunArtifactUpdate,
     RunExecution,
     RunFinalizationRequest,
     RunIdentity,
@@ -285,7 +296,16 @@ def _format_selector_result_log(
     )
 
 
-def print_summary(summary: RunSummary) -> None:
+def print_summary(
+    summary: RunSummary,
+    *,
+    finalization_failed: bool = False,
+) -> None:
+    if finalization_failed:
+        print()
+        print(colorize("E2E FINALIZATION FAILED", Ansi.RED))
+        print(f"- Output dir: {summary.output_dir}")
+        return
     headline = colorize(
         f"E2E {summary.overall_status}",
         Ansi.GREEN if summary.overall_status == "PASS" else Ansi.RED,
@@ -442,6 +462,51 @@ def _install_sqlite_fallback_if_needed() -> None:
     sys.modules["sqlite3.dbapi2"] = _StubDbapi2
 
 
+def run_terminal_continuation(
+    request: TerminalContinuationRunRequest,
+) -> int:
+    from core.continuation import ContinuationError, ContinuationHydrationError
+    from core.continuation_environment import ContinuationEnvironmentError
+    from core.continuation_evidence import ContinuationEvidenceError
+    from core.terminal_continuation import prepare_terminal_continuation
+    from core.terminal_continuation_models import TerminalContinuationError
+
+    child_run_id = f"e2e-v3-{uuid4().hex[:12]}"
+    try:
+        with prepare_terminal_continuation(
+            request.summary_path,
+            child_run_id,
+        ) as continuation:
+            return run_e2e_v3(
+                base_url=request.server.base_url,
+                max_phase5_iter=request.review.max_phase5_iter,
+                keep_temp_dir=request.invocation.keep_temp_dir,
+                agent_name=request.invocation.agent_name,
+                project_dir=None,
+                user_constraints=request.invocation.user_constraints,
+                server_auto_start=request.server.auto_start,
+                server_port=request.server.port,
+                review_gate=request.review.enabled,
+                review_policy_overrides=request.review.overrides,
+                framework_config_path=request.invocation.framework_config_path,
+                workflow_path=None,
+                opencode_readiness=request.opencode.readiness,
+                opencode_message_timeout=request.opencode.message_timeout,
+                continuation=continuation,
+            )
+    except (
+        ContinuationError,
+        ContinuationHydrationError,
+        ContinuationEnvironmentError,
+        ContinuationEvidenceError,
+        TerminalContinuationError,
+        OSError,
+        ValueError,
+    ) as exc:
+        print(colorize(f"E2E CONTINUATION FAILED: {exc}", Ansi.RED), file=sys.stderr)
+        return 1
+
+
 def run_e2e_v3(
     *,
     base_url: str | None,
@@ -459,6 +524,7 @@ def run_e2e_v3(
     workflow_path: Path | None = None,
     opencode_readiness: str = "message",
     opencode_message_timeout: int = 120,
+    continuation: PreparedTerminalContinuation | None = None,
 ) -> int:
     _install_sqlite_fallback_if_needed()
 
@@ -503,14 +569,24 @@ def run_e2e_v3(
     )
 
     started_at = datetime.now(timezone.utc)
-    run_id = RunId(f"e2e-v3-{uuid4().hex[:12]}")
-    try:
-        output_dir = allocate_report_directory(OUTPUT_ROOT, run_id)
-    except ReportAllocationError as exc:
-        print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
-        return 1
+    if continuation is None:
+        run_id = RunId(f"e2e-v3-{uuid4().hex[:12]}")
+        try:
+            output_dir = allocate_report_directory(OUTPUT_ROOT, run_id)
+        except ReportAllocationError as exc:
+            print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
+            return 1
+    else:
+        run_id = RunId(continuation.evidence.request.continuation.child_run_id)
+        output_dir = continuation.evidence.namespace.report_dir
 
-    effective_workflow_path = workflow_path if workflow_path else _default_workflow_path
+    effective_workflow_path = (
+        continuation.parent.workflow_path
+        if continuation is not None
+        else workflow_path
+        if workflow_path
+        else _default_workflow_path
+    )
 
     server_proc: subprocess.Popen[bytes] | None = None
     temp_dir: Path | None = None
@@ -549,7 +625,11 @@ def run_e2e_v3(
         )
         log(f"OpenCode server ready at {base_url}")
         log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
-        if project_dir is not None:
+        if continuation is not None:
+            temp_dir = continuation.parent.output_project
+            keep_temp_dir = True
+            log(f"Continuing in lineage-shared project: {temp_dir}")
+        elif project_dir is not None:
             project_name = project_dir.resolve().name
             timestamp = started_at.strftime("%Y%m%d_%H%M%S")
             output_project_base = (
@@ -573,11 +653,14 @@ def run_e2e_v3(
                 _ = shutil.copytree(TEMPLATE_DIR, temp_dir, dirs_exist_ok=True)
             log(f"Created temp dir: {temp_dir}")
 
-        before_snapshot = persist_python_snapshot(
-            temp_dir, output_dir / "before_snapshot.json"
-        )
-        before_snapshot_path = before_snapshot.path
-        log(f"Snapshot: {before_snapshot.file_count} .py files")
+        if continuation is not None:
+            before_snapshot_path = str(continuation.evidence.namespace.baseline_path)
+        else:
+            before_snapshot = persist_python_snapshot(
+                temp_dir, output_dir / "before_snapshot.json"
+            )
+            before_snapshot_path = before_snapshot.path
+            log(f"Snapshot: {before_snapshot.file_count} .py files")
 
         agent_io_logger = AgentIOLogger.from_env(output_dir, str(run_id))
         observed_session = TelemetryObserver.create_observed_session(
@@ -611,14 +694,18 @@ def run_e2e_v3(
         observer.set_metadata("base_url", base_url)
         observer.set_metadata("review_gate", review_gate)
 
-        artifact_store = ArtifactStore(str(temp_dir), str(run_id))
+        artifact_store = (
+            continuation.evidence.artifact_store
+            if continuation is not None
+            else ArtifactStore(str(temp_dir), str(run_id))
+        )
         prompt_loader = PromptLoader()
 
         # ── Workflow Selector resolution (before load_workflow) ──────────
         original_workflow_path = effective_workflow_path
         selector_resolved_path: str | None = None
         try:
-            if is_selector_file(str(effective_workflow_path)):
+            if continuation is None and is_selector_file(str(effective_workflow_path)):
                 log(f"Detected selector YAML: {effective_workflow_path}")
                 project_ctx = _build_project_context(temp_dir)
                 materialized = resolve_workflow_from_selector(
@@ -673,7 +760,11 @@ def run_e2e_v3(
             lambda d: {"passed": True, "errors": [], "warnings": []},
         )
 
-        workflow = load_workflow(str(effective_workflow_path))
+        workflow = (
+            continuation.workflow
+            if continuation is not None
+            else load_workflow(str(effective_workflow_path))
+        )
         log(
             f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
         )
@@ -713,6 +804,15 @@ def run_e2e_v3(
 
             experience_store = ExperienceStore(str(REPO_ROOT))
 
+        execution_user_constraints = user_constraints
+        if continuation is not None:
+            continuation_context = continuation.prompt_facts.render()
+            execution_user_constraints = (
+                f"{user_constraints}\n\n{continuation_context}"
+                if user_constraints
+                else continuation_context
+            )
+
         executor = WorkflowExecutor(
             workflow=workflow,
             session_mgr=observer,
@@ -723,15 +823,16 @@ def run_e2e_v3(
             framework_config=framework_config,
             project_dir=str(temp_dir),
             output_dir=str(output_dir),
-            user_constraints=user_constraints,
+            user_constraints=execution_user_constraints,
             telemetry_bridge=telemetry_bridge,
             experience_store=experience_store,
+            continuation=(continuation.hydration if continuation is not None else None),
         )
 
         execution_result = executor.execute(
             {
                 "PROJECT_DIR": str(temp_dir),
-                "USER_CONSTRAINTS": user_constraints if user_constraints else "",
+                "USER_CONSTRAINTS": execution_user_constraints,
             }
         )
         outcome_value = execution_result.get("run_outcome")
@@ -802,7 +903,7 @@ def run_e2e_v3(
         evidence=EvidencePersister(
             EvidenceContext(
                 output_dir=output_dir,
-                temp_dir=temp_dir,
+                temp_dir=temp_dir if continuation is None else None,
                 traceback_text=traceback_text,
                 phase_results=tuple(phase_results),
             ),
@@ -813,7 +914,7 @@ def run_e2e_v3(
             CleanupContext(
                 temp_dir=temp_dir,
                 keep_temp_dir=keep_temp_dir,
-                owns_temp_dir=project_dir is None,
+                owns_temp_dir=continuation is None and project_dir is None,
                 observer=telemetry.observer,
                 server_process=server_proc,
             )
@@ -822,6 +923,35 @@ def run_e2e_v3(
         started_at=started_at,
     )
     counts = lifecycle.counts()
+    finalization_hooks = lifecycle.hooks()
+    continuation_summary = None
+    if continuation is not None:
+        from core.continuation_evidence import (
+            seal_child_evidence,
+            verify_final_child_evidence,
+        )
+
+        def seal_and_verify_child(_outcome):
+            _ = seal_child_evidence(
+                continuation.evidence,
+                terminal_anchor=authoritative_outcome.terminal_anchor,
+            )
+            _ = verify_final_child_evidence(continuation.evidence)
+            return RunArtifactUpdate()
+
+        finalization_hooks = FinalizationHooks(
+            evidence_replay=finalization_hooks.evidence_replay,
+            trace_export=seal_and_verify_child,
+            authorized_cleanup=finalization_hooks.authorized_cleanup,
+            post_cleanup_manifest=finalization_hooks.post_cleanup_manifest,
+        )
+        continuation_summary = ContinuationRunSummary(
+            parent_run_id=continuation.prompt_facts.parent_run_id,
+            anchor_phase_id=continuation.prompt_facts.anchor_phase_id,
+            inherited_phase_ids=continuation.prompt_facts.inherited_phase_ids,
+            resource_eligibility=continuation.prompt_facts.resource_eligibility,
+            attachment_mode=continuation.prompt_facts.attachment_mode,
+        )
 
     finalization = finalize_run(
         RunFinalizationRequest(
@@ -847,16 +977,26 @@ def run_e2e_v3(
                 before_snapshot_path=before_snapshot_path,
                 entry_script=entry_script,
             ),
-            hooks=lifecycle.hooks(),
+            hooks=finalization_hooks,
             authoritative_outcome=authoritative_outcome,
             observability=(
                 observer.observability_summary
                 if observer is not None
                 else EMPTY_OBSERVABILITY_SUMMARY
             ),
+            continuation=continuation_summary,
+            required_stages=(
+                frozenset({FinalizationStage.TRACE_EXPORT})
+                if continuation is not None
+                else frozenset()
+            ),
+            summary_required=continuation is not None,
         )
     )
-    print_summary(finalization.summary)
+    print_summary(
+        finalization.summary,
+        finalization_failed=finalization.finalization_failed,
+    )
     return finalization.exit_code
 
 
@@ -872,7 +1012,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_review_policy_arguments(parser)
     _ = parser.add_argument("--keep-temp-dir", action="store_true")
-    _ = parser.add_argument("--project-dir", type=Path, default=None)
+    run_mode = parser.add_mutually_exclusive_group(required=True)
+    _ = run_mode.add_argument("--project-dir", type=Path, default=None)
+    _ = run_mode.add_argument("--continue-from", type=Path, default=None)
     _ = parser.add_argument("--agent", type=str, default=None)
     _ = parser.add_argument("--output-dir", type=Path, default=None)
     _ = parser.add_argument("--user-constraints", type=Path, default=None)
@@ -911,6 +1053,8 @@ def main() -> int:
 
     parser = build_parser()
     args = parser.parse_args()
+    if args.continue_from is not None and args.workflow_path is not None:
+        parser.error("--continue-from and --workflow-path are mutually exclusive")
 
     user_constraints_text = ""
     if args.user_constraints:
@@ -927,6 +1071,34 @@ def main() -> int:
 
     server_auto_start = not args.server_no_auto_start
 
+    review_overrides = review_cli_overrides_from_namespace(args, parser)
+    if args.continue_from is not None:
+        return run_terminal_continuation(
+            TerminalContinuationRunRequest(
+                summary_path=args.continue_from,
+                server=V3ServerRunOptions(
+                    base_url=args.server_url,
+                    auto_start=server_auto_start,
+                    port=args.server_port,
+                ),
+                review=V3ReviewRunOptions(
+                    max_phase5_iter=args.max_phase5_iter,
+                    enabled=args.review_gate,
+                    overrides=review_overrides,
+                ),
+                invocation=V3InvocationOptions(
+                    keep_temp_dir=args.keep_temp_dir,
+                    agent_name=args.agent,
+                    user_constraints=user_constraints_text,
+                    framework_config_path=args.framework_config,
+                ),
+                opencode=V3OpenCodeOptions(
+                    readiness=args.opencode_readiness,
+                    message_timeout=args.opencode_message_timeout,
+                ),
+            )
+        )
+
     return run_e2e_v3(
         base_url=args.server_url,
         max_phase5_iter=args.max_phase5_iter,
@@ -938,7 +1110,7 @@ def main() -> int:
         server_auto_start=server_auto_start,
         server_port=args.server_port,
         review_gate=args.review_gate,
-        review_policy_overrides=review_cli_overrides_from_namespace(args, parser),
+        review_policy_overrides=review_overrides,
         framework_config_path=args.framework_config,
         workflow_path=args.workflow_path,
         opencode_readiness=args.opencode_readiness,

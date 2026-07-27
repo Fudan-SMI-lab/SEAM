@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .models import (
+    ContinuationRunSummary,
     FinalizationDiagnostic,
     RunSummary,
     SidecarWriteError,
@@ -70,8 +71,15 @@ def write_json_text(path: Path, serialized_json: str) -> str:
     return str(path)
 
 
-def write_summary(path: Path, summary: RunSummary) -> str:
-    text = json.dumps(asdict(summary), indent=2, ensure_ascii=False, default=str)
+def write_summary(
+    path: Path,
+    summary: RunSummary,
+    continuation: ContinuationRunSummary | None = None,
+) -> str:
+    payload = asdict(summary)
+    if continuation is not None:
+        payload["continuation"] = asdict(continuation)
+    text = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
     _atomic_write(path, text.replace("\n", os.linesep).encode())
     return str(path)
 

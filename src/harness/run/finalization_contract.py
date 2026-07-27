@@ -9,6 +9,7 @@ if sys.version_info >= (3, 10):
     from core.run_outcome import TerminalOutcome as TerminalOutcome
 
     from .models import FinalizationDiagnostic as FinalizationDiagnostic
+    from .models import ContinuationRunSummary as ContinuationRunSummary
     from .models import FinalizationHooks as FinalizationHooks
     from .models import FinalizationResult as FinalizationResult
     from .models import FinalizationStage as FinalizationStage
@@ -86,6 +87,13 @@ else:
                 entry_script=update.entry_script or self.entry_script,
             )
 
+    class ContinuationRunSummary(typing.NamedTuple):
+        parent_run_id: str
+        anchor_phase_id: str
+        inherited_phase_ids: typing.Tuple[str, ...]
+        resource_eligibility: str
+        attachment_mode: str
+
     @unique
     class FinalizationStage(str, Enum):
         EVIDENCE_REPLAY = "evidence_replay"
@@ -136,6 +144,9 @@ else:
         hooks: FinalizationHooks
         authoritative_outcome: RunOutcome
         observability: typing.Tuple[str, ...] = ()
+        continuation: typing.Optional[ContinuationRunSummary] = None
+        required_stages: typing.FrozenSet[FinalizationStage] = frozenset()
+        summary_required: bool = False
 
     class FinalizationDiagnostic(typing.NamedTuple):
         stage: FinalizationStage
@@ -155,13 +166,19 @@ else:
         diagnostics: typing.Tuple[FinalizationDiagnostic, ...]
         summary_path: typing.Optional[str]
         diagnostics_path: typing.Optional[str]
+        finalization_failed: bool = False
 
         @property
         def exit_code(self) -> int:
-            return 1 if self.outcome is TerminalOutcome.FAILED else 0
+            return (
+                1
+                if self.finalization_failed or self.outcome is TerminalOutcome.FAILED
+                else 0
+            )
 
 
 __all__ = (
+    "ContinuationRunSummary",
     "FinalizationDiagnostic",
     "FinalizationHooks",
     "FinalizationResult",

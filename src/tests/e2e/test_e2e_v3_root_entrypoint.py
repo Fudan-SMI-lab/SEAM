@@ -11,6 +11,21 @@ from harness.run import copy_run_artifacts
 from .e2e_v3_summary_cases import (
     test_v3_summary_bytes_and_exit_mapping_are_stable as test_v3_summary_bytes_and_exit_mapping_are_stable,
 )
+from .e2e_v3_continuation_entrypoint_cases import (
+    test_continuation_coordinator_uses_fresh_sessions_without_copy_or_selector as test_continuation_coordinator_uses_fresh_sessions_without_copy_or_selector,
+    test_terminal_continuation_allocates_fresh_child_context_per_invocation as test_terminal_continuation_allocates_fresh_child_context_per_invocation,
+    test_v3_main_dispatches_only_to_terminal_continuation as test_v3_main_dispatches_only_to_terminal_continuation,
+    test_v3_main_rejects_workflow_override_in_continuation_mode as test_v3_main_rejects_workflow_override_in_continuation_mode,
+    test_v3_parser_requires_exactly_one_terminal_run_mode as test_v3_parser_requires_exactly_one_terminal_run_mode,
+    test_v3_required_finalization_failure_never_prints_pass as test_v3_required_finalization_failure_never_prints_pass,
+)
+from .e2e_v3_continuation_shell_cases import (
+    test_v3_launcher_defers_session_diagnostics_until_after_ownership as test_v3_launcher_defers_session_diagnostics_until_after_ownership,
+    test_v3_launcher_checked_out_bytes_parse_directly as test_v3_launcher_checked_out_bytes_parse_directly,
+    test_v3_launcher_canonicalizes_relative_continuation_summary as test_v3_launcher_canonicalizes_relative_continuation_summary,
+    test_v3_launcher_forwards_continuation_without_project as test_v3_launcher_forwards_continuation_without_project,
+    test_v3_launcher_rejects_invalid_run_mode as test_v3_launcher_rejects_invalid_run_mode,
+)
 
 
 MIGRATION_UTILS_ROOT = Path(__file__).resolve().parents[2]
@@ -36,7 +51,14 @@ def test_root_module_v3_entrypoint_shows_help() -> None:
 def test_root_module_v3_entrypoint_propagates_parser_failure() -> None:
     # Given an invalid argument passed through the public root wrapper.
     completed = subprocess.run(
-        [sys.executable, "-m", "tests.e2e.e2e_test_v3", "--unknown-option"],
+        [
+            sys.executable,
+            "-m",
+            "tests.e2e.e2e_test_v3",
+            "--project-dir",
+            ".",
+            "--unknown-option",
+        ],
         cwd=EXECUTION_ROOT,
         capture_output=True,
         text=True,
@@ -147,7 +169,8 @@ def test_v3_main_return_becomes_process_exit(expected_exit: int) -> None:
         "import sys; sys.path.insert(0, 'src'); "
         "from tests.e2e import e2e_test_v3 as target; "
         f"target.run_e2e_v3 = lambda **kwargs: {expected_exit}; "
-        "sys.argv = ['e2e_test_v3']; raise SystemExit(target.main())"
+        "sys.argv = ['e2e_test_v3', '--project-dir', '.']; "
+        "raise SystemExit(target.main())"
     )
 
     # When Python executes the real module main boundary.

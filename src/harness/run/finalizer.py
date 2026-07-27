@@ -124,6 +124,7 @@ def build_run_summary(request: RunFinalizationRequest) -> RunSummary:
 def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
     outcome = _freeze_outcome(request)
     diagnostics: list[FinalizationDiagnostic] = []
+    finalization_failed = False
     report_dir = Path(request.identity.output_dir)
     initial = validate_initial_artifacts(report_dir, request.initial_artifacts)
     receipts = initial.receipts
@@ -146,9 +147,13 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
             diagnostics.append(
                 FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
             )
+            if stage in request.required_stages:
+                finalization_failed = True
             continue
         receipts = receipts.overlay(validation.update)
         _append_artifact_diagnostics(diagnostics, stage, validation.errors)
+        if validation.errors and stage in request.required_stages:
+            finalization_failed = True
 
     frozen = freeze_artifacts(report_dir, receipts)
     _append_artifact_diagnostics(
@@ -157,16 +162,23 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
     summary = _build_summary(request, frozen.receipts.to_artifacts(), outcome)
     summary_path = report_dir / "summary.json"
     persisted_summary_path: str | None = None
-    try:
-        persisted_summary_path = write_summary(summary_path, summary)
-    except SidecarWriteError as exc:
-        diagnostics.append(
-            FinalizationDiagnostic(
-                stage=FinalizationStage.SUMMARY_WRITE,
-                error_type=type(exc).__name__,
-                detail=str(exc),
+    if not finalization_failed:
+        try:
+            persisted_summary_path = write_summary(
+                summary_path,
+                summary,
+                request.continuation,
             )
-        )
+        except SidecarWriteError as exc:
+            diagnostics.append(
+                FinalizationDiagnostic(
+                    stage=FinalizationStage.SUMMARY_WRITE,
+                    error_type=type(exc).__name__,
+                    detail=str(exc),
+                )
+            )
+            if request.summary_required:
+                finalization_failed = True
 
     persisted_diagnostics_path: str | None = None
     if diagnostics:
@@ -183,6 +195,7 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
         diagnostics=tuple(diagnostics),
         summary_path=persisted_summary_path,
         diagnostics_path=persisted_diagnostics_path,
+        finalization_failed=finalization_failed,
     )
 
 

@@ -32,6 +32,7 @@ SEAM (Self-Evolving Agentic Migration) — Public Launcher
 
 Usage:
   bash src/scripts/run_seam.sh <PROJECT_PATH> [OPTIONS]
+  bash src/scripts/run_seam.sh --continue-from <SUMMARY_JSON> [OPTIONS]
 
 PROJECT_PATH can be:
   - A directory name under cuda_projects/ or original_projects/
@@ -39,6 +40,7 @@ PROJECT_PATH can be:
 
 Options:
   --server_type TYPE          Server backend type: opencode (default)
+  --continue-from PATH        Continue an explicit terminal V3 summary
   --server_url URL            Server base URL. Defaults to http://127.0.0.1:4098 if unset.
   --server-conflict-action ACTION
                               Port conflict behavior: prompt, start, or error (default: prompt)
@@ -89,6 +91,8 @@ HAS_SERVER_URL=false
 HAS_WORKFLOW=false
 HAS_MAX_REVIEW_ITER=false
 REVIEW_FAIL_CLOSED=""
+CONTINUE_FROM=""
+PROJECT_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -116,6 +120,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --max-iter)
             FORWARD_ARGS+=("--max-iter" "$2")
+            shift 2
+            ;;
+        --continue-from)
+            if [[ -n "$CONTINUE_FROM" || $# -lt 2 || -z "$2" ]]; then
+                echo -e "${RED}Error: --continue-from requires one summary.json path.${NC}" >&2
+                exit 1
+            fi
+            CONTINUE_FROM="$2"
             shift 2
             ;;
         --max-review-iter)
@@ -206,11 +218,37 @@ while [[ $# -gt 0 ]]; do
             usage
             ;;
         *)
+            if [[ -n "$PROJECT_ARG" ]]; then
+                echo -e "${RED}Unexpected argument: $1${NC}" >&2
+                exit 1
+            fi
+            PROJECT_ARG="$1"
             FORWARD_ARGS+=("$1")
             shift
             ;;
     esac
 done
+
+if [[ -n "$PROJECT_ARG" && -n "$CONTINUE_FROM" ]]; then
+    echo -e "${RED}Error: PROJECT_PATH and --continue-from are mutually exclusive.${NC}" >&2
+    exit 1
+fi
+if [[ -z "$PROJECT_ARG" && -z "$CONTINUE_FROM" ]]; then
+    echo -e "${RED}Error: PROJECT_PATH or --continue-from is required.${NC}" >&2
+    exit 1
+fi
+if [[ -n "$CONTINUE_FROM" && "$HAS_WORKFLOW" == true ]]; then
+    echo -e "${RED}Error: --workflow is not valid with --continue-from; the parent workflow is pinned.${NC}" >&2
+    exit 1
+fi
+if [[ -n "$CONTINUE_FROM" ]]; then
+    CONTINUE_PARENT="$(cd "$(dirname "$CONTINUE_FROM")" 2>/dev/null && pwd -P)" || {
+        echo -e "${RED}Error: --continue-from parent directory is unavailable.${NC}" >&2
+        exit 1
+    }
+    CONTINUE_FROM="$CONTINUE_PARENT/$(basename "$CONTINUE_FROM")"
+    FORWARD_ARGS+=("--continue-from" "$CONTINUE_FROM")
+fi
 
 # Default server URL if not provided
 if [[ "$HAS_SERVER_URL" != true ]]; then
@@ -218,7 +256,7 @@ if [[ "$HAS_SERVER_URL" != true ]]; then
 fi
 
 # Default workflow if not provided
-if [[ "$HAS_WORKFLOW" != true ]]; then
+if [[ "$HAS_WORKFLOW" != true && -z "$CONTINUE_FROM" ]]; then
     FORWARD_ARGS+=("--workflow" "src/workflows/seam_auto_default.yaml")
 fi
 

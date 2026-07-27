@@ -86,6 +86,15 @@ class RunArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuationRunSummary:
+    parent_run_id: str
+    anchor_phase_id: str
+    inherited_phase_ids: tuple[str, ...]
+    resource_eligibility: str
+    attachment_mode: str
+
+
+@dataclass(frozen=True, slots=True)
 class RunSummary:
     run_id: str
     base_url: str
@@ -185,6 +194,9 @@ class RunFinalizationRequest:
     hooks: FinalizationHooks
     authoritative_outcome: RunOutcome | None
     observability: ObservabilitySummary = EMPTY_OBSERVABILITY_SUMMARY
+    continuation: ContinuationRunSummary | None = None
+    required_stages: frozenset[FinalizationStage] = frozenset()
+    summary_required: bool = False
 
     @property
     def frozen_outcome(self) -> RunOutcome | None:
@@ -205,9 +217,12 @@ class FinalizationResult:
     diagnostics: tuple[FinalizationDiagnostic, ...]
     summary_path: str | None
     diagnostics_path: str | None
+    finalization_failed: bool = False
 
     @property
     def exit_code(self) -> int:
+        if self.finalization_failed:
+            return 1
         match self.outcome:
             case TerminalOutcome.FAILED:
                 return 1

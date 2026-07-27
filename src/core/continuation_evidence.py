@@ -36,6 +36,7 @@ from .run_manifest import (
     RunManifestStore,
 )
 from .run_manifest_paths import digest_inventory
+from .run_outcome import TerminalAnchor
 
 
 _error = ContinuationEvidenceError
@@ -144,11 +145,24 @@ def prepare_child_evidence(
     )
 
 
-def seal_child_evidence(prepared: PreparedChildEvidence) -> RunManifest:
+def seal_child_evidence(
+    prepared: PreparedChildEvidence,
+    *,
+    terminal_anchor: TerminalAnchor | None = None,
+) -> RunManifest:
     try:
         current = prepared.child_store.read()
         if current.evidence_sealed:
             return current
+        if terminal_anchor is not None and current.terminal_anchor != terminal_anchor:
+            current = prepared.child_store.write(
+                current.model_copy(
+                    update={
+                        "revision": current.revision + 1,
+                        "terminal_anchor": terminal_anchor,
+                    }
+                )
+            )
         precontinuation = digest_inventory(
             prepared.namespace.precontinuation_dir,
             prepared.namespace.report_dir,

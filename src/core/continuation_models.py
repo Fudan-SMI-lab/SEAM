@@ -115,6 +115,14 @@ class _PhaseSummary(_FrozenModel):
     error: _Text | None = None
 
 
+class _ContinuationRunSummary(_FrozenModel):
+    parent_run_id: _SafeId
+    anchor_phase_id: _SafeId
+    inherited_phase_ids: tuple[_SafeId, ...]
+    resource_eligibility: _Status
+    attachment_mode: _Status
+
+
 class RunSummaryDocument(_FrozenModel):
     run_id: _SafeId
     base_url: _Text
@@ -136,6 +144,7 @@ class RunSummaryDocument(_FrozenModel):
     entry_script: _Text | None
     errors: tuple[str, ...]
     review_timeout_observability: _ObservabilitySummary
+    continuation: _ContinuationRunSummary | None = None
 
     @model_validator(mode="after")
     def require_unique_phases(self) -> Self:
