@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 from core.agent_io_logger import AgentIOLogger
+from core.ui_events import UIEventSink, summarize_text
 
 
 def _utc_now() -> str:
@@ -98,12 +99,14 @@ class TelemetryObserver:
     _events: list[dict[str, object]]
     _metadata: dict[str, object]
     _agent_io_logger: AgentIOLogger | None
+    _ui_event_sink: UIEventSink | None
 
     def __init__(
         self,
         session_mgr: SessionManagerBackend,
         output_dir: str | Path,
         agent_io_logger: AgentIOLogger | None = None,
+        ui_event_sink: UIEventSink | None = None,
     ) -> None:
         self._session_mgr = session_mgr
         self._output_dir = Path(output_dir)
@@ -118,6 +121,7 @@ class TelemetryObserver:
         self._events = []
         self._metadata = {}
         self._agent_io_logger = agent_io_logger
+        self._ui_event_sink = ui_event_sink
 
     def __getattr__(self, name: str) -> object:
         return cast(object, getattr(self._session_mgr, name))
@@ -223,6 +227,16 @@ class TelemetryObserver:
                 role=role,
                 lifecycle=lifecycle,
             )
+            if self._ui_event_sink is not None:
+                self._ui_event_sink.emit(
+                    "session_ready",
+                    phase_id=self._active_phase,
+                    agent_role=role,
+                    session_id=session_id,
+                    status="ready",
+                    message=f"{role} session ready",
+                    details={"lifecycle": lifecycle},
+                )
         if self._active_phase and self._active_phase not in metric.phases:
             metric.phases.append(self._active_phase)
         return session_id
@@ -252,6 +266,22 @@ class TelemetryObserver:
         phase_metric = self._phases.get(active_phase or "") if active_phase else None
         if phase_metric is not None and session_id not in phase_metric.session_ids:
             phase_metric.session_ids.append(session_id)
+
+        if self._ui_event_sink is not None:
+            self._ui_event_sink.emit(
+                "agent_command_started",
+                phase_id=active_phase,
+                agent_role=metric.role if metric is not None else None,
+                session_id=session_id,
+                status="running",
+                message=summarize_text(command, 180),
+                details={
+                    "timeout_seconds": timeout,
+                    "command_preview": summarize_text(command, 300),
+                    "command_sequence": self._command_sequence,
+                    "active_phase": active_phase,
+                },
+            )
 
         try:
             response = self._session_mgr.send_command(
@@ -320,6 +350,24 @@ class TelemetryObserver:
                 response_length=len(response),
                 error=error_message,
             )
+            if self._ui_event_sink is not None:
+                self._ui_event_sink.emit(
+                    "agent_command_finished",
+                    phase_id=active_phase,
+                    agent_role=metric.role if metric is not None else None,
+                    session_id=session_id,
+                    status=status,
+                    message=error_message or summarize_text(response, 180),
+                    details={
+                        "duration_seconds": duration_seconds,
+                        "command_sequence": self._command_sequence,
+                        "active_phase": active_phase,
+                        "command_length": len(command),
+                        "response_length": len(response),
+                        "response_preview": summarize_text(response, 300),
+                        "error": error_message,
+                    },
+                )
 
     def cleanup_all(self) -> int:
         cleaned = self._session_mgr.cleanup_all()

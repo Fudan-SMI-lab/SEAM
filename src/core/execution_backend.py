@@ -782,7 +782,8 @@ class ContainerBackend:
             "facts = {\n"
             '    "status": "ok",\n'
             '    "interpreter_path": sys.executable,\n'
-            '    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",\n'
+            '    "python_version": f"{sys.version_info.major}.'
+            '{sys.version_info.minor}.{sys.version_info.micro}",\n'
             '    "platform": platform.system(),\n'
             '    "platform_machine": platform.machine(),\n'
             '    "cwd": os.getcwd(),\n'

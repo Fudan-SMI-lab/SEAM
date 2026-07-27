@@ -78,6 +78,9 @@ Options:
                           Timeout for model-backed OpenCode message probe (default: 120)
   --opencode-diagnose-only
                           Run OpenCode diagnostics and exit before launching E2E
+  --dashboard             Force live terminal dashboard on
+  --no-dashboard          Force live terminal dashboard off
+  --dashboard-mode MODE   Dashboard mode: auto, on, or off (default: auto)
   --dry-run              Validate setup without running the test
   --extra 'ARGS...'      Pass extra arguments to e2e_test_v3.py
   --verbose              Enable verbose debug logging
@@ -112,6 +115,9 @@ while [[ $# -gt 0 ]]; do
         --opencode-readiness)    OPENCODE_READINESS="$2"; shift 2 ;;
         --opencode-message-timeout) OPENCODE_MESSAGE_TIMEOUT="$2"; shift 2 ;;
         --opencode-diagnose-only) OPENCODE_DIAGNOSE_ONLY=true; shift ;;
+        --dashboard)           EXTRA_ARGS="$EXTRA_ARGS --dashboard"; shift ;;
+        --no-dashboard)        EXTRA_ARGS="$EXTRA_ARGS --no-dashboard"; shift ;;
+        --dashboard-mode)      EXTRA_ARGS="$EXTRA_ARGS --dashboard-mode $2"; shift 2 ;;
         --dry-run)              DRY_RUN=true; shift ;;
         --verbose)              EXTRA_ARGS="$EXTRA_ARGS --verbose"; shift ;;
         --extra)                EXTRA_ARGS="$EXTRA_ARGS $2"; shift 2 ;;

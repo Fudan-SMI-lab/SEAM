@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -310,6 +311,53 @@ def print_summary(summary: RunSummary) -> None:
             print(f"  - {error}")
 
 
+def write_usage_guide(
+    project_dir: Path,
+    *,
+    entry_script: str | None,
+    overall_status: str,
+    output_dir: Path,
+) -> str:
+    reports_dir = project_dir / "migration_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    usage_path = reports_dir / "USAGE.md"
+    command = entry_script or "<entry command unavailable; inspect summary.json>"
+    status_text = "E2E TEST PASSED" if overall_status == "PASS" else "Migration did not fully pass validation"
+    content = "\n".join(
+        [
+            "# Migrated Project Usage",
+            "",
+            f"Status: {status_text}",
+            "",
+            "## Project",
+            "",
+            f"- Migrated project: `{project_dir}`",
+            f"- SEAM run reports: `{output_dir}`",
+            "",
+            "## Run",
+            "",
+            "```bash",
+            f"cd {project_dir}",
+            "source .venv/bin/activate  # if .venv exists",
+            command,
+            "```",
+            "",
+            "## Reports",
+            "",
+            "- `migration_reports/USAGE.md`",
+            "- `migration_reports/SUMMARY_REPORT.md`",
+            "- `.sm-artifacts/`",
+            "",
+            "## If Validation Failed",
+            "",
+            "Review `.sm-artifacts/`, `summary.json`, and `traceback.txt` if present, then rerun SEAM with a higher `--max-iter` or the missing external resource prepared.",
+            "",
+        ]
+    )
+    usage_path.write_text(content, encoding="utf-8")
+    return str(usage_path)
+
+
 def build_v3_summary(
     *,
     run_id: str,
@@ -441,6 +489,7 @@ def run_e2e_v3(
     workflow_path: Path | None = None,
     opencode_readiness: str = "message",
     opencode_message_timeout: int = 120,
+    dashboard_mode: str = "auto",
 ) -> int:
     _install_sqlite_fallback_if_needed()
 
@@ -451,6 +500,8 @@ def run_e2e_v3(
     from core.paths import default_output_projects_root
     from core.prompt_loader import PromptLoader
     from core.telemetry_bridge import TelemetryBridge
+    from core.dashboard import SeamDashboardApp
+    from core.ui_events import UIEventSink, dashboard_enabled
     from core.validator_engine import ValidatorEngine
     from core.workflow_executor import WorkflowExecutor
     from core.workflow_selector import (
@@ -488,6 +539,24 @@ def run_e2e_v3(
     phase_results: list[PhaseStatus] = []
     observer: TelemetryObserver | None = None
     telemetry_bridge: TelemetryBridge | None = None
+    ui_event_sink = UIEventSink(output_dir, run_id)
+    dashboard_stop = threading.Event()
+    dashboard_thread: threading.Thread | None = None
+
+    os.environ.update(ui_event_sink.as_env())
+    ui_event_sink.emit(
+        "runner_started",
+        status="running",
+        message="SEAM migration run started",
+        details={"dashboard_mode": dashboard_mode},
+    )
+    if dashboard_enabled(dashboard_mode, is_tty=sys.stdout.isatty(), environ=os.environ):
+        dashboard_app = SeamDashboardApp(ui_event_sink.path, dashboard_stop)
+        dashboard_thread = threading.Thread(
+            target=dashboard_app.run,
+            daemon=True,
+        )
+        dashboard_thread.start()
 
     try:
         from harness.server.lifecycle import resolve_server_url
@@ -509,6 +578,14 @@ def run_e2e_v3(
         log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
     except Exception as exc:
         print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
+        ui_event_sink.emit(
+            "runner_failed",
+            status="failed",
+            message=f"{exc.__class__.__name__}: {exc}",
+        )
+        dashboard_stop.set()
+        if dashboard_thread is not None:
+            dashboard_thread.join(timeout=2)
         return 1
 
     try:
@@ -548,7 +625,12 @@ def run_e2e_v3(
         log(f"SessionManager created: active_agent={canonical}, overridden={agent_name is not None}")
 
         agent_io_logger = AgentIOLogger.from_env(output_dir, run_id)
-        observer = TelemetryObserver(session_mgr, output_dir, agent_io_logger=agent_io_logger)
+        observer = TelemetryObserver(
+            session_mgr,
+            output_dir,
+            agent_io_logger=agent_io_logger,
+            ui_event_sink=ui_event_sink,
+        )
         observer.set_metadata("run_id", run_id)
         observer.set_metadata("base_url", base_url)
         observer.set_metadata("review_gate", review_gate)
@@ -634,6 +716,7 @@ def run_e2e_v3(
             user_constraints=user_constraints,
             telemetry_bridge=telemetry_bridge,
             experience_store=experience_store,
+            ui_event_sink=ui_event_sink,
         )
 
         executor.execute({
@@ -671,7 +754,11 @@ def run_e2e_v3(
         bridge_paths = telemetry_bridge.save_metrics(
             filename="telemetry_bridge.json", return_key="telemetry_bridge_json",
         )
-        telemetry_paths = {**observer_paths, **bridge_paths}
+        telemetry_paths = {
+            **observer_paths,
+            **bridge_paths,
+            "ui_events_jsonl": str(ui_event_sink.path),
+        }
         if agent_io_logger is not None:
             agent_io_paths = agent_io_logger.paths()
             telemetry_paths["agent_io_jsonl"] = agent_io_paths["jsonl"]
@@ -711,6 +798,12 @@ def run_e2e_v3(
             artifact_dir = copy_artifacts(temp_dir, output_dir)
         if observer is not None:
             observer.record_event("runner_error", error=str(exc), traceback=traceback.format_exc())
+        ui_event_sink.emit(
+            "runner_failed",
+            status="failed",
+            message=f"{exc.__class__.__name__}: {exc}",
+            details={"traceback_path": str(traceback_path)},
+        )
     finally:
         if temp_dir is not None and observer is not None:
             observer.record_event("cleanup_requested", keep_temp_dir=keep_temp_dir)
@@ -730,6 +823,7 @@ def run_e2e_v3(
     command_count = observer.command_count if observer else 0
     if not observer and telemetry_bridge is not None:
         command_count = len(telemetry_bridge._commands)
+    telemetry_paths.setdefault("ui_events_jsonl", str(ui_event_sink.path))
 
     summary = build_v3_summary(
         run_id=run_id, base_url=base_url,
@@ -743,8 +837,33 @@ def run_e2e_v3(
         after_snapshot_path=after_snapshot_path, entry_script=entry_script, errors=errors,
     )
 
+    if temp_dir is not None:
+        usage_path = write_usage_guide(
+            temp_dir,
+            entry_script=entry_script,
+            overall_status=summary.overall_status,
+            output_dir=output_dir,
+        )
+        telemetry_paths["usage_guide"] = usage_path
+        summary.telemetry_paths["usage_guide"] = usage_path
+        ui_event_sink.emit(
+            "usage_guide_written",
+            status="passed",
+            message="Usage guide written",
+            artifact_path=usage_path,
+        )
+
     _ = write_json(output_dir / "summary.json", asdict(summary))
+    ui_event_sink.emit(
+        "runner_finished",
+        status=summary.overall_status.lower(),
+        message=f"E2E {summary.overall_status}",
+        details={"summary_path": str(output_dir / "summary.json")},
+    )
     print_summary(summary)
+    dashboard_stop.set()
+    if dashboard_thread is not None:
+        dashboard_thread.join(timeout=2)
     return 0 if summary.overall_status == "PASS" else 1
 
 
@@ -764,6 +883,9 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument("--server-port", type=int, default=0)
     _ = parser.add_argument("--opencode-readiness", choices=("off", "basic", "message"), default="message")
     _ = parser.add_argument("--opencode-message-timeout", type=positive_int, default=120)
+    _ = parser.add_argument("--dashboard-mode", choices=("auto", "on", "off"), default="auto")
+    _ = parser.add_argument("--dashboard", action="store_true", help="Enable the live dashboard.")
+    _ = parser.add_argument("--no-dashboard", action="store_true", help="Disable the live dashboard.")
     _ = parser.add_argument("--verbose", action="store_true")
     _ = parser.add_argument("--workflow-path", type=Path, default=None,
                             help="Absolute or relative path to a workflow YAML file (overrides default).")
@@ -793,6 +915,11 @@ def main() -> int:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
     server_auto_start = not args.server_no_auto_start
+    dashboard_mode = args.dashboard_mode
+    if args.dashboard:
+        dashboard_mode = "on"
+    if args.no_dashboard:
+        dashboard_mode = "off"
 
     return run_e2e_v3(
         base_url=args.server_url,
@@ -809,6 +936,7 @@ def main() -> int:
         workflow_path=args.workflow_path,
         opencode_readiness=args.opencode_readiness,
         opencode_message_timeout=args.opencode_message_timeout,
+        dashboard_mode=dashboard_mode,
     )
 
 
