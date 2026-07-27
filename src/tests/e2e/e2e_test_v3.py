@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import shutil
@@ -11,20 +10,35 @@ import subprocess
 import sys
 import tempfile
 import traceback
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from hashlib import sha256
 from pathlib import Path
+from typing import ClassVar
 from uuid import uuid4
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-if str(PACKAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(PACKAGE_ROOT))
-
+from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
+from core.run_manifest import RunId
+from harness.run import (
+    CleanupContext,
+    EvidenceContext,
+    EvidencePersister,
+    FinalizationHooks,
+    PhaseStatus,
+    ReportAllocationError,
+    RunArtifacts,
+    RunExecution,
+    RunFinalizationRequest,
+    RunIdentity,
+    RunSummary,
+    ResourceCleanup,
+    V3TelemetrySources,
+    V3RunLifecycle,
+    allocate_report_directory,
+    build_telemetry_sidecars,
+    finalize_run,
+    persist_python_snapshot,
+)
+from harness.run.finalizer import build_run_summary
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
 DEFAULT_MAX_PHASE5_ITER = 5
@@ -34,39 +48,6 @@ REPO_ROOT = execution_root()
 TEMPLATE_DIR = PACKAGE_ROOT / "test_project_template"
 _default_workflow_path = PACKAGE_ROOT / "workflows" / "seam_auto_default.yaml"
 OUTPUT_ROOT = REPO_ROOT / "e2e-reports" / "src"
-
-
-@dataclass
-class PhaseStatus:
-    phase_number: int
-    phase_id: str
-    label: str
-    status: str
-    duration_seconds: float = 0.0
-    error: str | None = None
-
-
-@dataclass
-class RunSummary:
-    run_id: str
-    base_url: str
-    workflow_path: str
-    output_dir: str
-    temp_dir: str
-    keep_temp_dir: bool
-    requested_max_phase5_iter: int
-    effective_max_phase5_iter: int
-    phases: list[PhaseStatus]
-    session_count: int
-    command_count: int
-    overall_status: str
-    total_duration_seconds: float
-    artifact_dir: str | None
-    telemetry_paths: dict[str, str]
-    before_snapshot_path: str | None
-    after_snapshot_path: str | None
-    entry_script: str | None
-    errors: list[str]
 
 
 class Ansi:
@@ -82,7 +63,9 @@ def log(msg: str, *, flush: bool = True) -> None:
 
 
 def supports_color() -> bool:
-    return sys.stdout.isatty() and (not hasattr(sys.stdout, "isatty") or sys.stdout.isatty())
+    return sys.stdout.isatty() and (
+        not hasattr(sys.stdout, "isatty") or sys.stdout.isatty()
+    )
 
 
 def colorize(text: str, color: str) -> str:
@@ -103,15 +86,24 @@ def print_phase_running(phase_number: int, phase_total: int, label: str) -> None
 
 
 def print_phase_finished(
-    phase_number: int, phase_total: int, label: str,
-    passed: bool, duration_seconds: float, error: str | None = None,
+    phase_number: int,
+    phase_total: int,
+    label: str,
+    passed: bool,
+    duration_seconds: float,
+    error: str | None = None,
 ) -> None:
     status = "PASSED" if passed else "FAILED"
     details = f" ({duration_seconds:.1f}s)"
     if error:
         details += f"\n  Error: {error}"
     color = Ansi.GREEN if passed else Ansi.RED
-    print(colorize(f"[Phase {phase_number}/{phase_total}] {label} — {status}{details}", color), flush=True)
+    print(
+        colorize(
+            f"[Phase {phase_number}/{phase_total}] {label} — {status}{details}", color
+        ),
+        flush=True,
+    )
 
 
 def check_server_running(
@@ -138,12 +130,18 @@ def check_server_running(
         "--message-timeout",
         str(message_timeout),
     ]
-    completed = subprocess.run(cmd, capture_output=True, text=True, timeout=message_timeout + 30, check=False)
+    completed = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=message_timeout + 30, check=False
+    )
     if completed.stdout.strip():
         for line in completed.stdout.strip().splitlines():
             log(f"OpenCode diagnostic: {line}")
     if completed.returncode not in {0, 20}:
-        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        detail = (
+            completed.stderr.strip()
+            or completed.stdout.strip()
+            or f"exit code {completed.returncode}"
+        )
         raise RuntimeError(f"OpenCode readiness diagnostic failed: {detail}")
 
 
@@ -154,6 +152,7 @@ def log_server_diagnostics(
 ) -> None:
     try:
         from harness.server.lifecycle import collect_server_diagnostics
+
         diagnostics = collect_server_diagnostics(
             base_url,
             server_proc=server_proc,
@@ -190,7 +189,11 @@ def log_server_diagnostics(
             )
 
     models = diagnostics.get("models")
-    model_text = ", ".join(str(model) for model in models) if isinstance(models, list) and models else "none found"
+    model_text = (
+        ", ".join(str(model) for model in models)
+        if isinstance(models, list) and models
+        else "none found"
+    )
     log(
         "OpenCode model config: "
         f"path={display(diagnostics.get('model_config_path'))} "
@@ -202,7 +205,17 @@ def copy_project_light(src: Path, dst: Path) -> int:
     if not dst.is_dir():
         dst.mkdir(parents=True, exist_ok=True)
     excluded_dirs = EXCLUDED_SNAPSHOT_DIRS | {"build", "dist"}
-    excluded_ext = {".bin", ".pt", ".pth", ".onnx", ".safetensors", ".tar", ".gz", ".zip", ".egg"}
+    excluded_ext = {
+        ".bin",
+        ".pt",
+        ".pth",
+        ".onnx",
+        ".safetensors",
+        ".tar",
+        ".gz",
+        ".zip",
+        ".egg",
+    }
     max_file_size = 50 * 1024 * 1024
     copied = 0
     for item in src.iterdir():
@@ -231,7 +244,17 @@ def symlink_large_files(project_dir: Path, source_dir: Path) -> int:
         target = project_dir / relative
         if target.exists():
             continue
-        if item.suffix.lower() in {".bin", ".pt", ".pth", ".onnx", ".safetensors", ".tar", ".gz", ".zip", ".egg"}:
+        if item.suffix.lower() in {
+            ".bin",
+            ".pt",
+            ".pth",
+            ".onnx",
+            ".safetensors",
+            ".tar",
+            ".gz",
+            ".zip",
+            ".egg",
+        }:
             target.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(str(item.resolve()), str(target))
             symlinked += 1
@@ -240,26 +263,6 @@ def symlink_large_files(project_dir: Path, source_dir: Path) -> int:
             os.symlink(str(item.resolve()), str(target))
             symlinked += 1
     return symlinked
-
-
-def snapshot_python_files(project_dir: Path) -> dict[str, dict[str, str]]:
-    snapshot: dict[str, dict[str, str]] = {}
-    for path in sorted(project_dir.rglob("*.py")):
-        relative_path = path.relative_to(project_dir)
-        if any(part in EXCLUDED_SNAPSHOT_DIRS for part in relative_path.parts):
-            continue
-        content = path.read_text(encoding="utf-8")
-        snapshot[str(relative_path)] = {
-            "sha256": sha256(content.encode("utf-8")).hexdigest(),
-            "content": content,
-        }
-    return snapshot
-
-
-def write_json(path: Path, payload: object) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-    return str(path)
 
 
 def _format_selector_result_log(
@@ -275,19 +278,11 @@ def _format_selector_result_log(
     )
 
 
-def copy_artifacts(temp_dir: Path, output_dir: Path) -> str | None:
-    source = temp_dir / ".sm-artifacts"
-    if not source.exists():
-        return None
-    destination = output_dir / ".sm-artifacts"
-    if destination.exists():
-        shutil.rmtree(destination)
-    _ = shutil.copytree(source, destination)
-    return str(destination)
-
-
 def print_summary(summary: RunSummary) -> None:
-    headline = colorize(f"E2E {summary.overall_status}", Ansi.GREEN if summary.overall_status == "PASS" else Ansi.RED)
+    headline = colorize(
+        f"E2E {summary.overall_status}",
+        Ansi.GREEN if summary.overall_status == "PASS" else Ansi.RED,
+    )
     print()
     print(headline)
     print(f"- Output dir: {summary.output_dir}")
@@ -303,7 +298,9 @@ def print_summary(summary: RunSummary) -> None:
     print("- Phase timings:")
     for phase in summary.phases:
         suffix = f" - {phase.error}" if phase.error else ""
-        print(f"  - {phase.phase_id}: {phase.status.upper()} ({phase.duration_seconds:.2f}s){suffix}")
+        print(
+            f"  - {phase.phase_id}: {phase.status.upper()} ({phase.duration_seconds:.2f}s){suffix}"
+        )
     if summary.errors:
         print("- Errors:")
         for error in summary.errors:
@@ -330,28 +327,34 @@ def build_v3_summary(
     entry_script: str | None,
     errors: list[str],
 ) -> RunSummary:
-    passed = all(p.status in ("passed", "skipped") for p in phase_results)
-    return RunSummary(
-        run_id=run_id,
-        base_url=base_url,
-        workflow_path=workflow_path,
-        output_dir=output_dir,
-        temp_dir=temp_dir,
-        keep_temp_dir=keep_temp_dir,
-        requested_max_phase5_iter=max_phase5_iter,
-        effective_max_phase5_iter=max_phase5_iter,
-        phases=phase_results,
-        session_count=session_count,
-        command_count=command_count,
-        overall_status="PASS" if passed and not errors else "FAIL",
-        total_duration_seconds=round(total_duration_seconds, 3),
-        artifact_dir=artifact_dir,
-        telemetry_paths=telemetry_paths,
-        before_snapshot_path=before_snapshot_path,
-        after_snapshot_path=after_snapshot_path,
-        entry_script=entry_script,
-        errors=errors,
+    request = RunFinalizationRequest(
+        identity=RunIdentity(
+            run_id=RunId(run_id),
+            base_url=base_url,
+            workflow_path=workflow_path,
+            output_dir=output_dir,
+            temp_dir=temp_dir,
+        ),
+        execution=RunExecution(
+            keep_temp_dir=keep_temp_dir,
+            requested_max_phase5_iter=max_phase5_iter,
+            effective_max_phase5_iter=max_phase5_iter,
+            phases=tuple(phase_results),
+            session_count=session_count,
+            command_count=command_count,
+            total_duration_seconds=total_duration_seconds,
+            errors=tuple(errors),
+        ),
+        initial_artifacts=RunArtifacts(
+            artifact_dir=artifact_dir,
+            telemetry_paths=tuple(telemetry_paths.items()),
+            before_snapshot_path=before_snapshot_path,
+            after_snapshot_path=after_snapshot_path,
+            entry_script=entry_script,
+        ),
+        hooks=FinalizationHooks.empty(),
     )
+    return build_run_summary(request)
 
 
 def _build_project_context(project_dir: Path) -> dict[str, object]:
@@ -392,10 +395,13 @@ def _install_sqlite_fallback_if_needed() -> None:
 
     class _SqliteError(Exception):
         """Placeholder for sqlite3.Error so except clauses skip the sqlite path."""
+
         pass
 
     class _StubDBModule:
         """Minimal DB-API 2.0 stub so 'import sqlite3' does not crash."""
+
+        dbapi2: ClassVar[type[_StubDBModule]]
         apilevel = "2.0"
         paramstyle = "qmark"
         threadsafety = 1
@@ -414,13 +420,15 @@ def _install_sqlite_fallback_if_needed() -> None:
 
         @staticmethod
         def connect(*_args, **_kwargs):
-            raise _SqliteError("sqlite3 unavailable: _sqlite3 C extension is not installed")
+            raise _SqliteError(
+                "sqlite3 unavailable: _sqlite3 C extension is not installed"
+            )
 
     class _StubDbapi2(_StubDBModule):
         pass
 
+    _StubDBModule.dbapi2 = _StubDbapi2
     stub = _StubDBModule()
-    stub.dbapi2 = _StubDbapi2
     sys.modules["sqlite3"] = stub
     sys.modules["sqlite3.dbapi2"] = _StubDbapi2
 
@@ -450,6 +458,7 @@ def run_e2e_v3(
     from core.config_loader import load_framework_config
     from core.paths import default_output_projects_root
     from core.prompt_loader import PromptLoader
+    from core.runtime_observability_models import EMPTY_OBSERVABILITY_SUMMARY
     from core.telemetry_bridge import TelemetryBridge
     from core.validator_engine import ValidatorEngine
     from core.workflow_executor import WorkflowExecutor
@@ -459,38 +468,47 @@ def run_e2e_v3(
         resolve_workflow_from_selector,
     )
     from harness.session.manager import SessionManager
-    from tests.e2e.e2e_observer import TelemetryObserver
+    from tests.e2e.e2e_observer import TelemetryObserver, TelemetryObserverConfig
     from validators.validate_env_detect import validate as validate_env_detect
-    from validators.validate_project_analysis import validate as validate_project_analysis
+    from validators.validate_project_analysis import (
+        validate as validate_project_analysis,
+    )
     from validators.validate_venv import validate as validate_venv
     from validators.validate_entry_script import validate as validate_entry_script
     from validators.validate_entry_static import validate as validate_entry_static
     from validators.validate_rule_migration import validate as validate_rule_migration
-    from validators.validate_validation_final import validate as validate_validation_final
+    from validators.validate_validation_final import (
+        validate as validate_validation_final,
+    )
     from validators.validate_reports import validate as validate_reports
-    from validators.validate_constraint_summary import validate as validate_constraint_summary
+    from validators.validate_constraint_summary import (
+        validate as validate_constraint_summary,
+    )
 
     started_at = datetime.now(timezone.utc)
-    run_id = f"e2e-v3-{uuid4().hex[:12]}"
-    output_dir = OUTPUT_ROOT / started_at.strftime("%Y%m%d_%H%M%S")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = RunId(f"e2e-v3-{uuid4().hex[:12]}")
+    try:
+        output_dir = allocate_report_directory(OUTPUT_ROOT, run_id)
+    except ReportAllocationError as exc:
+        print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
+        return 1
 
     effective_workflow_path = workflow_path if workflow_path else _default_workflow_path
 
     server_proc: subprocess.Popen[bytes] | None = None
     temp_dir: Path | None = None
-    artifact_dir: str | None = None
     before_snapshot_path: str | None = None
-    after_snapshot_path: str | None = None
-    telemetry_paths: dict[str, str] = {}
     entry_script: str | None = None
     errors: list[str] = []
     phase_results: list[PhaseStatus] = []
     observer: TelemetryObserver | None = None
     telemetry_bridge: TelemetryBridge | None = None
+    agent_io_logger: AgentIOLogger | None = None
+    traceback_text: str | None = None
 
     try:
         from harness.server.lifecycle import resolve_server_url
+
         base_url, server_proc = resolve_server_url(
             base_url,
             auto_start=server_auto_start,
@@ -507,22 +525,23 @@ def run_e2e_v3(
         )
         log(f"OpenCode server ready at {base_url}")
         log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
-    except Exception as exc:
-        print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
-        return 1
-
-    try:
         if project_dir is not None:
             project_name = project_dir.resolve().name
             timestamp = started_at.strftime("%Y%m%d_%H%M%S")
-            output_project_base = output_project_dir if output_project_dir else default_output_projects_root()
+            output_project_base = (
+                output_project_dir
+                if output_project_dir
+                else default_output_projects_root()
+            )
             output_project_base.mkdir(parents=True, exist_ok=True)
             dest = output_project_base / f"{project_name}_{timestamp}"
             log(f"Copying project {project_dir} to {dest}...")
             copied_count = copy_project_light(project_dir, dest)
             symlinked_count = symlink_large_files(dest, project_dir)
             temp_dir = dest.resolve()
-            log(f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}")
+            log(
+                f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}"
+            )
             keep_temp_dir = True
         else:
             temp_dir = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-v3-"))
@@ -530,11 +549,27 @@ def run_e2e_v3(
                 _ = shutil.copytree(TEMPLATE_DIR, temp_dir, dirs_exist_ok=True)
             log(f"Created temp dir: {temp_dir}")
 
-        before_snapshot = snapshot_python_files(temp_dir)
-        before_snapshot_path = write_json(output_dir / "before_snapshot.json", before_snapshot)
-        log(f"Snapshot: {len(before_snapshot)} .py files")
+        before_snapshot = persist_python_snapshot(
+            temp_dir, output_dir / "before_snapshot.json"
+        )
+        before_snapshot_path = before_snapshot.path
+        log(f"Snapshot: {before_snapshot.file_count} .py files")
 
-        session_mgr = SessionManager(work_dir=str(temp_dir), base_url=base_url)
+        agent_io_logger = AgentIOLogger.from_env(output_dir, str(run_id))
+        observed_session = TelemetryObserver.create_observed_session(
+            lambda transport_observer: SessionManager(
+                work_dir=str(temp_dir),
+                base_url=base_url,
+                transport_observer=transport_observer,
+            ),
+            TelemetryObserverConfig(
+                output_dir=output_dir,
+                run_id=str(run_id),
+                agent_io_logger=agent_io_logger,
+            ),
+        )
+        session_mgr = observed_session.session_manager
+        observer = observed_session.observer
         if agent_name:
             try:
                 canonical = session_mgr.override_agent(agent_name)
@@ -545,15 +580,14 @@ def run_e2e_v3(
                 ) from exc
         else:
             canonical = session_mgr.active_agent
-        log(f"SessionManager created: active_agent={canonical}, overridden={agent_name is not None}")
+        log(
+            f"SessionManager created: active_agent={canonical}, overridden={agent_name is not None}"
+        )
 
-        agent_io_logger = AgentIOLogger.from_env(output_dir, run_id)
-        observer = TelemetryObserver(session_mgr, output_dir, agent_io_logger=agent_io_logger)
-        observer.set_metadata("run_id", run_id)
         observer.set_metadata("base_url", base_url)
         observer.set_metadata("review_gate", review_gate)
 
-        artifact_store = ArtifactStore(str(temp_dir), run_id)
+        artifact_store = ArtifactStore(str(temp_dir), str(run_id))
         prompt_loader = PromptLoader()
 
         # ── Workflow Selector resolution (before load_workflow) ──────────
@@ -574,24 +608,30 @@ def run_e2e_v3(
                 )
                 effective_workflow_path = materialized
                 selector_resolved_path = str(materialized)
-                selector_metadata = read_selector_resolution_metadata(materialized) or {}
-                selected_workflow_path = selector_metadata.get("selected_path", "(unknown)")
+                selector_metadata = (
+                    read_selector_resolution_metadata(materialized) or {}
+                )
+                selected_workflow_path = selector_metadata.get(
+                    "selected_path", "(unknown)"
+                )
                 selector_path_for_log = selector_metadata.get(
                     "selector_path", str(original_workflow_path)
                 )
                 materialized_path_for_log = selector_metadata.get(
                     "materialized_path", str(materialized)
                 )
-                log(_format_selector_result_log(
-                    selector_path_for_log,
-                    selected_workflow_path,
-                    materialized_path_for_log,
-                ))
+                log(
+                    _format_selector_result_log(
+                        selector_path_for_log,
+                        selected_workflow_path,
+                        materialized_path_for_log,
+                    )
+                )
                 observer.set_metadata("selector_path", str(original_workflow_path))
                 observer.set_metadata("selected_workflow_path", selected_workflow_path)
                 observer.set_metadata("resolved_workflow_path", selector_resolved_path)
         except Exception:
-            log(f"Selector resolution failed; re-raising to surface the error")
+            log("Selector resolution failed; re-raising to surface the error")
             raise
 
         validator = ValidatorEngine()
@@ -604,10 +644,15 @@ def run_e2e_v3(
         validator.register_validator("validation_final", validate_validation_final)
         validator.register_validator("reports", validate_reports)
         validator.register_validator("constraint_summary", validate_constraint_summary)
-        validator.register_validator("repair_classification", lambda d: {"passed": True, "errors": [], "warnings": []})
+        validator.register_validator(
+            "repair_classification",
+            lambda d: {"passed": True, "errors": [], "warnings": []},
+        )
 
         workflow = load_workflow(str(effective_workflow_path))
-        log(f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}")
+        log(
+            f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
+        )
 
         if isinstance(workflow.globals, dict):
             workflow.globals["max_repair_iterations"] = max_phase5_iter
@@ -619,6 +664,7 @@ def run_e2e_v3(
         experience_store = None
         if workflow.experience.enabled:
             from core.experience_store import ExperienceStore
+
             experience_store = ExperienceStore(str(REPO_ROOT))
 
         executor = WorkflowExecutor(
@@ -636,61 +682,42 @@ def run_e2e_v3(
             experience_store=experience_store,
         )
 
-        executor.execute({
-            "PROJECT_DIR": str(temp_dir),
-            "USER_CONSTRAINTS": user_constraints if user_constraints else "",
-        })
+        executor.execute(
+            {
+                "PROJECT_DIR": str(temp_dir),
+                "USER_CONSTRAINTS": user_constraints if user_constraints else "",
+            }
+        )
 
         telemetry_bridge.set_metadata("agent_name", agent_name)
         telemetry_bridge.set_metadata("workflow_name", workflow.name)
         telemetry_bridge.set_metadata("workflow_version", workflow.version)
 
-        phase_order_map = {p.id: i for i, p in enumerate(executor.workflow.phases or [])}
+        phase_order_map = {
+            p.id: i for i, p in enumerate(executor.workflow.phases or [])
+        }
         for pid, pr in executor.phase_results.items():
             idx = phase_order_map.get(pid, 999)
             status_str = str(pr.get("status", "unknown"))
-            mapped_status = {"success": "passed", "failure": "failed", "skipped": "skipped"}.get(status_str, status_str)
-            error_msg = pr.get("output_summary", "")[:500] if status_str == "failure" else None
-            phase_results.append(PhaseStatus(
-                phase_number=idx + 1, phase_id=pid, label=pid,
-                status=mapped_status,
-                duration_seconds=round(pr.get("duration", 0.0), 3),
-                error=error_msg,
-            ))
+            mapped_status = {
+                "success": "passed",
+                "failure": "failed",
+                "skipped": "skipped",
+            }.get(status_str, status_str)
+            error_msg = (
+                pr.get("output_summary", "")[:500] if status_str == "failure" else None
+            )
+            phase_results.append(
+                PhaseStatus(
+                    phase_number=idx + 1,
+                    phase_id=pid,
+                    label=pid,
+                    status=mapped_status,
+                    duration_seconds=round(pr.get("duration", 0.0), 3),
+                    error=error_msg,
+                )
+            )
         phase_results.sort(key=lambda p: p.phase_number)
-
-        after_snapshot = snapshot_python_files(temp_dir)
-        after_snapshot_path = write_json(output_dir / "after_snapshot.json", after_snapshot)
-        log(f"After snapshot: {len(after_snapshot)} .py files")
-
-        artifact_dir = copy_artifacts(temp_dir, output_dir)
-        if artifact_dir:
-            log(f"Artifacts copied to {artifact_dir}")
-
-        observer_paths = observer.save_metrics()
-        bridge_paths = telemetry_bridge.save_metrics(
-            filename="telemetry_bridge.json", return_key="telemetry_bridge_json",
-        )
-        telemetry_paths = {**observer_paths, **bridge_paths}
-        if agent_io_logger is not None:
-            agent_io_paths = agent_io_logger.paths()
-            telemetry_paths["agent_io_jsonl"] = agent_io_paths["jsonl"]
-            telemetry_paths["agent_io_payload_dir"] = agent_io_paths["payload_dir"]
-            telemetry_json_path = telemetry_paths.get("telemetry_json")
-            if telemetry_json_path:
-                try:
-                    telemetry_payload = json.loads(Path(telemetry_json_path).read_text(encoding="utf-8"))
-                    metadata = telemetry_payload.setdefault("metadata", {})
-                    if isinstance(metadata, dict):
-                        metadata["agent_io_paths"] = agent_io_paths
-                    _ = Path(telemetry_json_path).write_text(
-                        json.dumps(telemetry_payload, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-                except Exception as exc:
-                    observer.record_event("agent_io_metadata_error", error=str(exc))
-
-        _ = write_json(output_dir / "phase_results.json", [asdict(p) for p in phase_results])
 
         phase_3_output = executor.state.get("phase_3_entry_script")
         if isinstance(phase_3_output, dict):
@@ -700,58 +727,94 @@ def run_e2e_v3(
 
     except Exception as exc:
         errors.append(f"{exc.__class__.__name__}: {exc}")
-        traceback_path = output_dir / "traceback.txt"
-        _ = traceback_path.write_text(traceback.format_exc(), encoding="utf-8")
-        if temp_dir is not None:
-            try:
-                after_snapshot = snapshot_python_files(temp_dir)
-                after_snapshot_path = write_json(output_dir / "after_snapshot.json", after_snapshot)
-            except Exception:
-                pass
-            artifact_dir = copy_artifacts(temp_dir, output_dir)
+        traceback_text = traceback.format_exc()
         if observer is not None:
-            observer.record_event("runner_error", error=str(exc), traceback=traceback.format_exc())
-    finally:
-        if temp_dir is not None and observer is not None:
-            observer.record_event("cleanup_requested", keep_temp_dir=keep_temp_dir)
-            try:
-                cleaned_sessions = observer.cleanup_all()
-                observer.set_metadata("cleaned_sessions", cleaned_sessions)
-            except Exception:
-                pass
-        if server_proc is not None:
-            from harness.server.lifecycle import stop_server
-            _ = stop_server(server_proc)
-        if temp_dir is not None and not keep_temp_dir and project_dir is None:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            observer.record_event(
+                "runner_error", error=str(exc), traceback=traceback_text
+            )
 
-    total_duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
-    session_count = observer.session_count if observer else 0
-    command_count = observer.command_count if observer else 0
-    if not observer and telemetry_bridge is not None:
-        command_count = len(telemetry_bridge._commands)
-
-    summary = build_v3_summary(
-        run_id=run_id, base_url=base_url,
-        workflow_path=str(effective_workflow_path),
-        output_dir=str(output_dir),
-        temp_dir=str(temp_dir or ""), keep_temp_dir=keep_temp_dir,
-        max_phase5_iter=max_phase5_iter, phase_results=phase_results,
-        session_count=session_count, command_count=command_count,
-        total_duration_seconds=total_duration_seconds, artifact_dir=artifact_dir,
-        telemetry_paths=telemetry_paths, before_snapshot_path=before_snapshot_path,
-        after_snapshot_path=after_snapshot_path, entry_script=entry_script, errors=errors,
+    telemetry = build_telemetry_sidecars(
+        V3TelemetrySources(
+            observer=observer,
+            bridge=telemetry_bridge,
+            agent=agent_io_logger,
+            keep_temp_dir=keep_temp_dir,
+            bridge_command_count=(
+                (lambda: len(telemetry_bridge._commands))
+                if telemetry_bridge is not None
+                else None
+            ),
+        )
     )
+    lifecycle = V3RunLifecycle(
+        evidence=EvidencePersister(
+            EvidenceContext(
+                output_dir=output_dir,
+                temp_dir=temp_dir,
+                traceback_text=traceback_text,
+                phase_results=tuple(phase_results),
+            ),
+            telemetry,
+            log,
+        ),
+        cleanup=ResourceCleanup(
+            CleanupContext(
+                temp_dir=temp_dir,
+                keep_temp_dir=keep_temp_dir,
+                owns_temp_dir=project_dir is None,
+                observer=telemetry.observer,
+                server_process=server_proc,
+            )
+        ),
+        telemetry=telemetry,
+        started_at=started_at,
+    )
+    counts = lifecycle.counts()
 
-    _ = write_json(output_dir / "summary.json", asdict(summary))
-    print_summary(summary)
-    return 0 if summary.overall_status == "PASS" else 1
+    finalization = finalize_run(
+        RunFinalizationRequest(
+            identity=RunIdentity(
+                run_id=run_id,
+                base_url=base_url or DEFAULT_SERVER_URL,
+                workflow_path=str(effective_workflow_path),
+                output_dir=str(output_dir),
+                temp_dir=str(temp_dir or ""),
+            ),
+            execution=RunExecution(
+                keep_temp_dir=keep_temp_dir,
+                requested_max_phase5_iter=max_phase5_iter,
+                effective_max_phase5_iter=max_phase5_iter,
+                phases=tuple(phase_results),
+                session_count=counts.session_count,
+                command_count=counts.command_count,
+                total_duration_seconds=0.0,
+                errors=tuple(errors),
+                duration_source=lifecycle.elapsed_seconds,
+            ),
+            initial_artifacts=RunArtifacts(
+                before_snapshot_path=before_snapshot_path,
+                entry_script=entry_script,
+            ),
+            hooks=lifecycle.hooks(),
+            observability=(
+                observer.observability_summary
+                if observer is not None
+                else EMPTY_OBSERVABILITY_SUMMARY
+            ),
+        )
+    )
+    print_summary(finalization.summary)
+    return finalization.exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run YAML-driven migration_utils E2E migration workflow (V3 — supports custom workflow path).")
+    parser = argparse.ArgumentParser(
+        description="Run YAML-driven migration_utils E2E migration workflow (V3 — supports custom workflow path)."
+    )
     _ = parser.add_argument("--server-url", default=None)
-    _ = parser.add_argument("--max-phase5-iter", type=positive_int, default=DEFAULT_MAX_PHASE5_ITER)
+    _ = parser.add_argument(
+        "--max-phase5-iter", type=positive_int, default=DEFAULT_MAX_PHASE5_ITER
+    )
     _ = parser.add_argument("--keep-temp-dir", action="store_true")
     _ = parser.add_argument("--project-dir", type=Path, default=None)
     _ = parser.add_argument("--agent", type=str, default=None)
@@ -762,11 +825,19 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument("--server-auto-start", action="store_true", default=True)
     _ = parser.add_argument("--server-no-auto-start", action="store_true")
     _ = parser.add_argument("--server-port", type=int, default=0)
-    _ = parser.add_argument("--opencode-readiness", choices=("off", "basic", "message"), default="message")
-    _ = parser.add_argument("--opencode-message-timeout", type=positive_int, default=120)
+    _ = parser.add_argument(
+        "--opencode-readiness", choices=("off", "basic", "message"), default="message"
+    )
+    _ = parser.add_argument(
+        "--opencode-message-timeout", type=positive_int, default=120
+    )
     _ = parser.add_argument("--verbose", action="store_true")
-    _ = parser.add_argument("--workflow-path", type=Path, default=None,
-                            help="Absolute or relative path to a workflow YAML file (overrides default).")
+    _ = parser.add_argument(
+        "--workflow-path",
+        type=Path,
+        default=None,
+        help="Absolute or relative path to a workflow YAML file (overrides default).",
+    )
     return parser
 
 
@@ -788,9 +859,13 @@ def main() -> int:
         user_constraints_text = _resolve_user_constraints(str(args.user_constraints))
 
     if args.verbose:
-        logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+        logging.basicConfig(
+            level=logging.DEBUG, format="%(asctime)s %(name)s %(levelname)s %(message)s"
+        )
     else:
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+        logging.basicConfig(
+            level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
+        )
 
     server_auto_start = not args.server_no_auto_start
 
