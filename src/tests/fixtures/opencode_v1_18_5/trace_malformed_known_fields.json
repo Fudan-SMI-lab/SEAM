@@ -1,0 +1,36 @@
+{
+  "fixtureVersion": 1,
+  "health": {"status": 200, "body": {"healthy": true, "version": "1.18.5"}},
+  "doc": {
+    "status": 200,
+    "body": {
+      "openapi": "3.1.0",
+      "info": {"title": "opencode", "version": "1.0.0"},
+      "paths": {
+        "/global/health": {},
+        "/session/{sessionID}/message": {},
+        "/session/{sessionID}/children": {}
+      }
+    }
+  },
+  "messages": {
+    "status": 200,
+    "query": {},
+    "headers": {},
+    "body": [
+      {
+        "info": {},
+        "parts": [
+          {
+            "id": "prt_bad_tool",
+            "sessionID": "ses_root",
+            "messageID": "msg_bad",
+            "type": "tool",
+            "state": {"status": "completed"}
+          }
+        ]
+      }
+    ]
+  },
+  "children": {"status": 200, "body": []}
+}
