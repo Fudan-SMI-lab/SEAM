@@ -5,8 +5,14 @@ which blocks import of ``harness.session.manager`` during test collection.
 Provide a minimal stub only when ``_sqlite3`` is truly missing. On properly
 built Python installations this code is never executed.
 """
+
 import sys
-import types
+from pathlib import Path
+from types import ModuleType
+from typing import Iterator
+
+import pytest
+
 
 class _FakeSqliteError(Exception):
     pass
@@ -31,36 +37,49 @@ class _FakeSqliteConnection:
         raise _FakeSqliteError("sqlite connect unavailable")
 
 
-class _FakeSqliteDbapi2:
-    """Minimal sqlite3.dbapi2 stub."""
-    apilevel = "2.0"
-    paramstyle = "qmark"
-    threadsafety = 1
-    Error = _FakeSqliteError
-    Row = type("Row", (), {})
-    connect = _FakeSqliteConnection
+def _fake_sqlite_module(name: str) -> ModuleType:
+    module = ModuleType(name)
+    setattr(module, "apilevel", "2.0")
+    setattr(module, "paramstyle", "qmark")
+    setattr(module, "threadsafety", 1)
+    setattr(module, "Error", _FakeSqliteError)
+    setattr(module, "Row", type("Row", (), {}))
+    setattr(module, "connect", _FakeSqliteConnection)
+    return module
 
 
+_no_real_sqlite3 = False
 if "_sqlite3" not in sys.modules:
     try:
         import sqlite3  # noqa: F401
     except ImportError:
-        sys.modules["_sqlite3"] = _FakeSqliteDbapi2
-        sys.modules["sqlite3.dbapi2"] = _FakeSqliteDbapi2
-        sys.modules["sqlite3"] = _FakeSqliteDbapi2
-        _NO_REAL_SQLITE3 = True
-    else:
-        _NO_REAL_SQLITE3 = False
-else:
-    _NO_REAL_SQLITE3 = False
+        sqlite_stub = _fake_sqlite_module("sqlite3")
+        sys.modules["_sqlite3"] = sqlite_stub
+        sys.modules["sqlite3.dbapi2"] = sqlite_stub
+        sys.modules["sqlite3"] = sqlite_stub
+        _no_real_sqlite3 = True
 
 # Expose so test files can skip when real sqlite3 is unavailable.
-NO_REAL_SQLITE3 = _NO_REAL_SQLITE3
-
-import pytest
+NO_REAL_SQLITE3 = _no_real_sqlite3
 
 
 @pytest.fixture
 def base_path():
     """Return the base path for test fixtures."""
     return __file__
+
+
+@pytest.fixture(autouse=True)
+def isolate_phase7_fallback_reports(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    isolated = request.node.nodeid.endswith(
+        "test_workflow_executor.py::TestPhase7SkipAndReroute::test_phase7_skipped_in_execute_loop"
+    )
+    if isolated:
+        monkeypatch.chdir(request.getfixturevalue("tmp_path"))
+    yield
+    if isolated:
+        repository_root = Path(__file__).resolve().parents[2]
+        assert not (repository_root / "MagicMock").exists()
