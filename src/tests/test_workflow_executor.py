@@ -674,7 +674,9 @@ def test_phase5_entry_shell_persists_complete_stderr_artifact_and_prompt_paths(t
         phase,
         state={},
         context={},
-        loop_vars={"entry_script": f"{sys.executable} {script.name}"},
+        loop_vars={
+            "entry_script": f"{sys.executable.replace(chr(92), '/')} {script.name}"
+        },
         loop_state=step_outputs,
     )
 
@@ -1906,7 +1908,11 @@ def test_phase5_entry_command_does_not_expand_globs_or_tilde(tmp_path: Path) -> 
         phase,
         state={},
         context={},
-        loop_vars={"entry_script": f"{sys.executable} {recorder.name} *.txt ~"},
+        loop_vars={
+            "entry_script": (
+                f"{sys.executable.replace(chr(92), '/')} {recorder.name} *.txt ~"
+            )
+        },
         loop_state={},
     )
 
@@ -1952,7 +1958,11 @@ def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: 
         phase,
         state={},
         context={},
-        loop_vars={"entry_script": f"{sys.executable} train.py --config cfg.yaml"},
+        loop_vars={
+            "entry_script": (
+                f"{sys.executable.replace(chr(92), '/')} train.py --config cfg.yaml"
+            )
+        },
         loop_state=loop_state,
     )
 
@@ -1998,7 +2008,12 @@ def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.M
         phase,
         state={},
         context={},
-        loop_vars={"entry_script": "MPLBACKEND=Agg python3 env_target.py"},
+        loop_vars={
+            "entry_script": (
+                "MPLBACKEND=Agg "
+                f"{sys.executable.replace(chr(92), '/')} env_target.py"
+            )
+        },
         loop_state={},
     )
 
@@ -2042,7 +2057,12 @@ def test_phase5_env_prefix_multiple_env_vars(tmp_path: Path) -> None:
         phase,
         state={},
         context={},
-        loop_vars={"entry_script": "FOO=hello BAR=world python3 multi_env.py"},
+        loop_vars={
+            "entry_script": (
+                "FOO=hello BAR=world "
+                f"{sys.executable.replace(chr(92), '/')} multi_env.py"
+            )
+        },
         loop_state={},
     )
 
@@ -2803,7 +2823,7 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
 def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path):
     import sys as _sys
 
-    python = _sys.executable
+    python = _sys.executable.replace(chr(92), "/")
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2815,7 +2835,7 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
                 "type": "shell",
                 "command": (
                     f"{python} -c \"import pathlib, sys; "
-                    f"p=pathlib.Path('{tmp_path / 'flag'}'); sys.exit(0 if p.exists() else 1)\""
+                    f"p=pathlib.Path('{(tmp_path / 'flag').as_posix()}'); sys.exit(0 if p.exists() else 1)\""
                 ),
                 "on_failure": "continue",
             },
@@ -3250,7 +3270,7 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
     refreshed by a canonical re-run so the loop can return success."""
     import sys as _sys
 
-    python = _sys.executable  # use the same interpreter, portable across envs
+    python = _sys.executable.replace(chr(92), "/")
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -3262,7 +3282,7 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
                 "type": "shell",
                 "command": (
                     f"{python} -c \"import pathlib, sys; "
-                    f"p=pathlib.Path('{tmp_path / 'flag'}'); sys.exit(0 if p.exists() else 1)\""
+                    f"p=pathlib.Path('{(tmp_path / 'flag').as_posix()}'); sys.exit(0 if p.exists() else 1)\""
                 ),
                 "on_failure": "continue",
             },
@@ -3624,7 +3644,9 @@ def test_entry_script_action_revises_next_loop_command_without_consuming_repair_
     executor = _entry_script_revision_executor(tmp_path, workflow)
     revised_script = tmp_path / "final_evidence_validate.py"
     revised_script.write_text("from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8")
-    revised_command = f"{sys.executable} {revised_script}"
+    revised_command = (
+        f'{sys.executable.replace(chr(92), "/")} "{revised_script.as_posix()}"'
+    )
     executor.session_mgr.send_command.return_value = json.dumps({
         "repair_role": "",
         "category": "validation",
@@ -3684,7 +3706,9 @@ def test_entry_script_action_with_repair_role_dispatches_after_command_revision(
     executor = _entry_script_revision_executor(tmp_path, workflow)
     revised_script = tmp_path / "final_evidence_validate.py"
     revised_script.write_text("from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8")
-    revised_command = f"{sys.executable} {revised_script}"
+    revised_command = (
+        f'{sys.executable.replace(chr(92), "/")} "{revised_script.as_posix()}"'
+    )
 
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
