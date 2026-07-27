@@ -2,24 +2,26 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Generic, Literal, Protocol, TypeVar, cast
 
-from core.agent_io_logger import AgentIOLogger
+from core.agent_io_logger import AgentIOLogger, redact_sensitive_text
+from core.deferred_transport_observer import DeferredTransportObserver
+from core.runtime_observability import RuntimeObservability
+from core.runtime_observability_models import (
+    ObservabilitySummary,
+    ReviewCompletion,
+    TimeoutScope,
+)
+from harness.session.events import TransportAttemptEvent, TransportObserver
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _trim_text(text: str, limit: int = 500) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "..."
 
 
 @dataclass
@@ -43,8 +45,6 @@ class CommandMetric:
     status: str
     command_length: int
     response_length: int
-    command_preview: str
-    response_preview: str
     error: str | None = None
 
 
@@ -63,13 +63,12 @@ class SessionManagerBackend(Protocol):
     def get_or_create(
         self,
         role: str,
-        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
         agent: str = "",
+        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
         title: str = "",
         working_dir: str = "",
         initial_prompt: str = "",
-    ) -> str:
-        ...
+    ) -> str: ...
 
     def send_command(
         self,
@@ -78,11 +77,26 @@ class SessionManagerBackend(Protocol):
         agent: str = "",
         timeout: int = 600,
         retries: int = 2,
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    def cleanup_all(self) -> int:
-        ...
+    def cleanup_all(self) -> int: ...
+
+
+SessionBackendT = TypeVar("SessionBackendT", bound=SessionManagerBackend)
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryObserverConfig:
+    output_dir: Path
+    run_id: str
+    agent_io_logger: AgentIOLogger | None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedSessionRuntime(Generic[SessionBackendT]):
+    session_manager: SessionBackendT
+    observer: TelemetryObserver
+    transport_observer: DeferredTransportObserver
 
 
 class TelemetryObserver:
@@ -98,6 +112,7 @@ class TelemetryObserver:
     _events: list[dict[str, object]]
     _metadata: dict[str, object]
     _agent_io_logger: AgentIOLogger | None
+    _runtime_observability: RuntimeObservability
 
     def __init__(
         self,
@@ -118,6 +133,28 @@ class TelemetryObserver:
         self._events = []
         self._metadata = {}
         self._agent_io_logger = agent_io_logger
+        self._runtime_observability = RuntimeObservability(self._output_dir)
+
+    @classmethod
+    def create_observed_session(
+        cls,
+        manager_factory: Callable[[TransportObserver], SessionBackendT],
+        config: TelemetryObserverConfig,
+    ) -> ObservedSessionRuntime[SessionBackendT]:
+        transport_observer = DeferredTransportObserver()
+        session_manager = manager_factory(transport_observer)
+        observer = cls(
+            session_manager,
+            config.output_dir,
+            agent_io_logger=config.agent_io_logger,
+        )
+        observer.set_metadata("run_id", config.run_id)
+        transport_observer.bind(observer.record_transport_event)
+        return ObservedSessionRuntime(
+            session_manager=session_manager,
+            observer=observer,
+            transport_observer=transport_observer,
+        )
 
     def __getattr__(self, name: str) -> object:
         return cast(object, getattr(self._session_mgr, name))
@@ -125,6 +162,11 @@ class TelemetryObserver:
     @property
     def active_phase(self) -> str | None:
         return self._active_phase
+
+    @property
+    def run_id(self) -> str | None:
+        run_id = self._metadata.get("run_id")
+        return run_id if isinstance(run_id, str) else None
 
     @property
     def session_count(self) -> int:
@@ -138,18 +180,80 @@ class TelemetryObserver:
     def phase_metrics(self) -> dict[str, PhaseMetric]:
         return dict(self._phases)
 
+    @property
+    def observability_summary(self) -> ObservabilitySummary:
+        return self._runtime_observability.summary()
+
     def set_metadata(self, key: str, value: object) -> None:
         self._metadata[key] = value
 
     def record_event(self, event_type: str, **details: object) -> None:
+        concise_details: dict[str, object] = {}
+        for key, value in details.items():
+            lowered = key.lower()
+            sensitive_key = any(
+                fragment in lowered
+                for fragment in (
+                    "prompt",
+                    "response",
+                    "preview",
+                    "body",
+                    "auth",
+                    "secret",
+                    "token",
+                    "traceback",
+                )
+            )
+            if sensitive_key and not lowered.endswith("_length"):
+                continue
+            concise_details[key] = (
+                redact_sensitive_text(value) if isinstance(value, str) else value
+            )
         self._events.append(
             {
                 "event_type": event_type,
                 "timestamp": _utc_now(),
                 "phase_id": self._active_phase,
+                "details": concise_details,
+            }
+        )
+
+    def record_review_completion(self, completion: ReviewCompletion) -> bool:
+        details = self._runtime_observability.add_review(completion)
+        if details is None:
+            return False
+        self._events.append(
+            {
+                "event_type": "review_completed",
+                "timestamp": _utc_now(),
+                "phase_id": completion.scope.phase_id,
                 "details": details,
             }
         )
+        return True
+
+    def record_transport_event(self, event: TransportAttemptEvent) -> None:
+        run_id = self._metadata.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            return
+        session = self._sessions.get(event.session_id)
+        details = self._runtime_observability.add_transport(
+            TimeoutScope(
+                run_id=run_id,
+                agent=session.role if session is not None else "unknown_agent",
+                sub_phase=self._active_phase or "unknown_sub_phase",
+            ),
+            event,
+        )
+        if details is not None:
+            self._events.append(
+                {
+                    "event_type": "transport_timeout",
+                    "timestamp": _utc_now(),
+                    "phase_id": self._active_phase,
+                    "details": details,
+                }
+            )
 
     def set_active_phase(self, phase_id: str | None) -> None:
         self._active_phase = phase_id
@@ -183,7 +287,9 @@ class TelemetryObserver:
             )
             self._active_phase = previous_phase
 
-    def mark_phase_status(self, phase_id: str, status: str, error: str | None = None) -> None:
+    def mark_phase_status(
+        self, phase_id: str, status: str, error: str | None = None
+    ) -> None:
         metric = self._phases.get(phase_id)
         if metric is None:
             metric = PhaseMetric(phase_id=phase_id, started_at=_utc_now())
@@ -305,9 +411,11 @@ class TelemetryObserver:
                     status=status,
                     command_length=len(command),
                     response_length=len(response),
-                    command_preview=_trim_text(command),
-                    response_preview=_trim_text(response),
-                    error=error_message,
+                    error=(
+                        redact_sensitive_text(error_message)
+                        if error_message is not None
+                        else None
+                    ),
                 )
             )
             self.record_event(
@@ -328,13 +436,20 @@ class TelemetryObserver:
 
     def save_metrics(self) -> dict[str, str]:
         output_path = self._output_dir / "telemetry.json"
+        observability = self.observability_summary
+        concise_metadata: dict[str, object] = {}
+        for key, value in self._metadata.items():
+            concise_metadata[key] = (
+                redact_sensitive_text(value) if isinstance(value, str) else value
+            )
         metadata: dict[str, object] = {
             "run_started_at": self._run_started_at,
             "generated_at": _utc_now(),
             "elapsed_seconds": round(time.monotonic() - self._run_started_monotonic, 3),
             "session_count": self.session_count,
             "command_count": self.command_count,
-            **self._metadata,
+            "review_timeout_observability": asdict(observability),
+            **concise_metadata,
         }
         if self._agent_io_logger is not None:
             metadata["agent_io_paths"] = self._agent_io_logger.paths()
@@ -346,5 +461,11 @@ class TelemetryObserver:
             "commands": [asdict(metric) for metric in self._commands],
             "events": self._events,
         }
-        _ = output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        return {"telemetry_json": str(output_path)}
+        _ = output_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        paths = {"telemetry_json": str(output_path)}
+        observability_path = self._runtime_observability.write_artifact(observability)
+        if observability_path is not None:
+            paths["phase_observability_json"] = observability_path
+        return paths
