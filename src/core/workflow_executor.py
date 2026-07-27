@@ -46,6 +46,18 @@ from core.execution_backend import (
     get_execution_context as _get_exec_ctx,
     get_execution_environment_context as _get_exec_env_ctx,
 )
+from core.artifact_store import ArtifactStore
+from core.phase5_attempt_receipt import (
+    BackendExecution,
+    BackendKind,
+    ShellAttemptExecution,
+    ShellInvocation,
+)
+from core.phase5_attempt_runtime import (
+    accept_phase5_receipt,
+    build_shell_invocation,
+    finalize_latest_phase5_receipt,
+)
 from harness.session.manager import extract_json_response
 from migrator.rule_based import RuleBasedMigrator
 from migrator.rule_based_ppu import PPURuleBasedMigrator
@@ -852,6 +864,12 @@ class WorkflowExecutor:
                     output,
                     phase5_runtime_config,
                 )
+                if isinstance(output, dict) and isinstance(
+                    self.artifact_store, ArtifactStore
+                ):
+                    decision = accept_phase5_receipt(
+                        output, decision, self.artifact_store
+                    )
                 phase5_decision = decision
                 status = decision.parent_disposition.value
 
@@ -2710,6 +2728,7 @@ class WorkflowExecutor:
         stderr: str | None = None,
         stdout_source_path: str | None = None,
         stderr_source_path: str | None = None,
+        execution: ShellAttemptExecution | None = None,
     ) -> dict[str, Any] | None:
         writer = getattr(self.artifact_store, "save_shell_attempt_artifacts", None)
         if not callable(writer) or hasattr(writer, "mock_calls"):
@@ -2726,6 +2745,7 @@ class WorkflowExecutor:
                 stderr=stderr,
                 stdout_source_path=stdout_source_path,
                 stderr_source_path=stderr_source_path,
+                execution=execution,
             )
         except Exception as exc:
             logger.warning(
@@ -3039,6 +3059,25 @@ class WorkflowExecutor:
         else:
             run_cmd = str(cmd)
 
+        task18_receipts_enabled = isinstance(
+            (self.workflow.globals or {}).get("review_fail_closed"), bool
+        )
+        reservation = (
+            self.artifact_store.reserve_phase5_attempt()
+            if entry_script_command
+            and task18_receipts_enabled
+            and isinstance(self.artifact_store, ArtifactStore)
+            else None
+        )
+        if reservation is not None and loop_state is not None:
+            loop_state.pop("latest_shell_attempt_artifacts", None)
+            loop_state.pop("latest_complete_stdout_artifact_path", None)
+            loop_state.pop("latest_complete_stderr_artifact_path", None)
+            loop_state.pop("latest_complete_meta_artifact_path", None)
+        backend_execution: BackendExecution | None = None
+        invocation = build_shell_invocation(run_cmd, run_env)
+        exact_argv = invocation.argv
+
         try:
             result = backend.run(
                 run_cmd,
@@ -3050,16 +3089,20 @@ class WorkflowExecutor:
             stdout = result.stdout
             stderr = result.stderr
             duration = result.duration
+            backend_execution = result.backend_execution
+            exact_argv = result.argv or exact_argv
         except subprocess.TimeoutExpired:
             exit_code = 124
             duration = timeout if timeout else 0
             stdout = ""
             stderr = f"Execution timed out after {timeout}s"
+            backend_execution = backend.latest_execution()
         except Exception as exc:
             exit_code = 1
             duration = 0
             stdout = ""
             stderr = str(exc)
+            backend_execution = backend.latest_execution()
 
         captured = {
             "exit_code": exit_code,
@@ -3070,18 +3113,39 @@ class WorkflowExecutor:
         }
         artifact_metadata = None
         if entry_script_command:
-            artifact_metadata = self._persist_shell_attempt_artifacts(
-                phase_id=phase.id,
-                command=str(cmd),
-                cwd=cwd,
-                backend_workdir=_get_exec_ctx(
-                    self.exec_backend, command=run_cmd, cwd=cwd, env=run_env
-                ).get("container_workdir"),
-                exit_code=exit_code,
-                duration=captured["duration"],
-                stdout=stdout,
-                stderr=stderr,
+            execution = (
+                ShellAttemptExecution(
+                    reservation=reservation,
+                    invocation=ShellInvocation(
+                        argv=exact_argv,
+                        environment_delta=invocation.environment_delta,
+                    ),
+                    backend=backend_execution,
+                )
+                if reservation is not None and backend_execution is not None
+                else None
             )
+            if reservation is None or execution is not None:
+                artifact_metadata = self._persist_shell_attempt_artifacts(
+                    phase_id=phase.id,
+                    command=str(cmd),
+                    cwd=cwd,
+                    backend_workdir=(
+                        backend_execution.backend_cwd
+                        if backend_execution is not None
+                        else _get_exec_ctx(
+                            self.exec_backend,
+                            command=run_cmd,
+                            cwd=cwd,
+                            env=run_env,
+                        ).get("container_workdir")
+                    ),
+                    exit_code=exit_code,
+                    duration=captured["duration"],
+                    stdout=stdout,
+                    stderr=stderr,
+                    execution=execution,
+                )
             if artifact_metadata:
                 captured["artifacts"] = artifact_metadata
 
@@ -3136,6 +3200,36 @@ class WorkflowExecutor:
             run_shell = False
         else:
             run_cmd = str(cmd)
+
+        task18_receipts_enabled = isinstance(
+            (self.workflow.globals or {}).get("review_fail_closed"), bool
+        )
+        reservation = (
+            self.artifact_store.reserve_phase5_attempt()
+            if entry_script_command
+            and task18_receipts_enabled
+            and isinstance(self.artifact_store, ArtifactStore)
+            else None
+        )
+        if reservation is not None and loop_state is not None:
+            loop_state.pop("latest_shell_attempt_artifacts", None)
+            loop_state.pop("latest_complete_stdout_artifact_path", None)
+            loop_state.pop("latest_complete_stderr_artifact_path", None)
+            loop_state.pop("latest_complete_meta_artifact_path", None)
+        execution = (
+            ShellAttemptExecution(
+                reservation=reservation,
+                invocation=build_shell_invocation(run_cmd, run_env),
+                backend=BackendExecution(
+                    kind=BackendKind.LOCAL,
+                    namespace="host",
+                    host_cwd=str(Path(cwd).resolve()),
+                    backend_cwd=str(Path(cwd).resolve()),
+                ),
+            )
+            if reservation is not None
+            else None
+        )
 
         out_path = err_path = None
         artifact_metadata: dict[str, Any] | None = None
@@ -3196,6 +3290,7 @@ class WorkflowExecutor:
                     ),
                     stdout=stdout if "stdout" in locals() else "",
                     stderr=stderr if "stderr" in locals() else "",
+                    execution=execution,
                 )
             for p in (out_path, err_path):
                 if p and os.path.exists(p):
@@ -4049,6 +4144,13 @@ class WorkflowExecutor:
             )
             iter_start = time.time()
             step_outputs: dict[str, Any] = {}
+            if isinstance(self.artifact_store, ArtifactStore) and isinstance(
+                (self.workflow.globals or {}).get("review_fail_closed"), bool
+            ):
+                loop_state.pop("latest_shell_attempt_artifacts", None)
+                loop_state.pop("latest_complete_stdout_artifact_path", None)
+                loop_state.pop("latest_complete_stderr_artifact_path", None)
+                loop_state.pop("latest_complete_meta_artifact_path", None)
             review_round_count_before = len(review_gate.rounds) if review_gate else 0
             if review_gate is not None:
                 step_outputs[REVIEW_GATE_STATE_KEY] = review_gate
@@ -4102,6 +4204,9 @@ class WorkflowExecutor:
                         improvement_status=improvement_status,
                     ),
                 )
+            finalize_latest_phase5_receipt(
+                loop_state, state, self.artifact_store
+            )
             self._stamp_pending_experience_verifications(loop_state, iteration)
             verification_signal = self._record_pending_experience_verification(
                 loop_state, step_outputs, iteration
@@ -4293,6 +4398,9 @@ class WorkflowExecutor:
                                     improvement_status=improvement_status,
                                 ),
                             )
+                        finalize_latest_phase5_receipt(
+                            loop_state, state, self.artifact_store
+                        )
                         # Restore experience-tracking records so the bonus
                         # pass never corrupts stamped/verified state.
                         if _pending is not None:
