@@ -50,6 +50,7 @@ from .run_artifact_receipt_cases import (
 )
 from .run_finalizer_test_support import (
     FinalizerScenario,
+    failed_finalizer_outcome,
     finalization_request,
 )
 
@@ -201,6 +202,7 @@ def test_successful_sidecars_cannot_turn_failed_workflow_into_pass(
     scenario = FinalizerScenario(
         status="failed",
         errors=("RuntimeError: migration failed",),
+        authoritative_outcome=failed_finalizer_outcome(),
     )
 
     # When the run is finalized.

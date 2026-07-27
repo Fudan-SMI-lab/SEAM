@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.run_manifest import RunId
+from core.run_outcome import (
+    PhaseId,
+    ReviewOutcome,
+    RunOutcome,
+    TerminalAnchor,
+    WorkflowTerminal,
+)
 from harness.run import (
     FinalizationHooks,
     PhaseStatus,
@@ -14,11 +21,33 @@ from harness.run import (
 )
 
 
+def _finalizer_outcome(validation_succeeded: bool) -> RunOutcome:
+    return RunOutcome(
+        validation_succeeded=validation_succeeded,
+        review_outcome=ReviewOutcome.DISABLED,
+        review_fail_closed=True,
+        workflow_terminal=WorkflowTerminal("complete"),
+        terminal_anchor=TerminalAnchor(phase_id=PhaseId("phase_0_env_detect")),
+        executed_phases=(PhaseId("phase_0_env_detect"),),
+        accepted_attempt_id=None,
+        review_rounds=(),
+    )
+
+
+def passing_finalizer_outcome() -> RunOutcome:
+    return _finalizer_outcome(True)
+
+
+def failed_finalizer_outcome() -> RunOutcome:
+    return _finalizer_outcome(False)
+
+
 @dataclass(frozen=True, slots=True)
 class FinalizerScenario:
     status: str = "passed"
     errors: tuple[str, ...] = ()
     hooks: FinalizationHooks | None = None
+    authoritative_outcome: RunOutcome = field(default_factory=passing_finalizer_outcome)
 
 
 def finalization_request(
@@ -60,4 +89,5 @@ def finalization_request(
             entry_script="python app.py",
         ),
         hooks=scenario.hooks or FinalizationHooks.empty(),
+        authoritative_outcome=scenario.authoritative_outcome,
     )

@@ -4,6 +4,8 @@ import logging
 import re
 from pathlib import Path
 
+from typing_extensions import assert_never
+
 from core.run_manifest import RunId
 from core.run_outcome import TerminalOutcome
 
@@ -58,17 +60,11 @@ def allocate_report_directory(
 
 
 def _freeze_outcome(request: RunFinalizationRequest) -> TerminalOutcome:
-    authoritative = request.authoritative_outcome
-    if authoritative is not None:
-        return authoritative.terminal_outcome
-    passed = all(
-        phase.status in ("passed", "skipped") for phase in request.execution.phases
-    )
-    return (
-        TerminalOutcome.PASSED
-        if passed and not request.execution.errors
-        else TerminalOutcome.FAILED
-    )
+    match request.frozen_outcome:
+        case None:
+            return TerminalOutcome.FAILED
+        case authoritative:
+            return authoritative.terminal_outcome
 
 
 def _build_summary(
@@ -83,6 +79,13 @@ def _build_summary(
         if execution.duration_source is None
         else execution.duration_source()
     )
+    match outcome:
+        case TerminalOutcome.FAILED:
+            overall_status = "FAIL"
+        case TerminalOutcome.PASSED | TerminalOutcome.PASSED_WITH_REVIEWS:
+            overall_status = "PASS"
+        case unreachable:
+            assert_never(unreachable)
     return RunSummary(
         run_id=str(identity.run_id),
         base_url=identity.base_url,
@@ -95,7 +98,7 @@ def _build_summary(
         phases=execution.phases,
         session_count=execution.session_count,
         command_count=execution.command_count,
-        overall_status="FAIL" if outcome is TerminalOutcome.FAILED else "PASS",
+        overall_status=overall_status,
         total_duration_seconds=round(total_duration_seconds, 3),
         artifact_dir=artifacts.artifact_dir,
         telemetry_paths=dict(artifacts.telemetry_paths),

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum, unique
 from typing import TypeAlias
 
-from typing_extensions import override
+from typing_extensions import assert_never, override
 
 from core.run_manifest import RunId
 from core.run_outcome import RunOutcome, TerminalOutcome
@@ -183,8 +183,12 @@ class RunFinalizationRequest:
     execution: RunExecution
     initial_artifacts: RunArtifacts
     hooks: FinalizationHooks
-    authoritative_outcome: RunOutcome | None = None
+    authoritative_outcome: RunOutcome | None
     observability: ObservabilitySummary = EMPTY_OBSERVABILITY_SUMMARY
+
+    @property
+    def frozen_outcome(self) -> RunOutcome | None:
+        return self.authoritative_outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,7 +208,13 @@ class FinalizationResult:
 
     @property
     def exit_code(self) -> int:
-        return 1 if self.outcome is TerminalOutcome.FAILED else 0
+        match self.outcome:
+            case TerminalOutcome.FAILED:
+                return 1
+            case TerminalOutcome.PASSED | TerminalOutcome.PASSED_WITH_REVIEWS:
+                return 0
+            case unreachable:
+                assert_never(unreachable)
 
 
 @unique
