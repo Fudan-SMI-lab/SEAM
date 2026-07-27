@@ -510,7 +510,7 @@ def _parse_sub_workflows(
             max_iterations=sw_cfg.get("max_iterations", 5),
             stagnation_threshold=sw_cfg.get("stagnation_threshold", 3),
             review_gate_enabled=sw_cfg.get("review_gate_enabled", False),
-            max_review_iterations=sw_cfg.get("max_review_iterations", 3),
+            max_review_iterations=sw_cfg.get("max_review_iterations"),
             stop_conditions=stop_conditions,
             phases=sub_phases,
             blocks=blocks,

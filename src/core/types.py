@@ -311,7 +311,7 @@ class SubWorkflowDefinition:
     max_iterations: int | str = 5
     stagnation_threshold: int | str = 3
     review_gate_enabled: bool | str = False
-    max_review_iterations: int | str = 3
+    max_review_iterations: int | str | None = None
     stop_conditions: list[dict[str, Any]] = field(default_factory=list)
     phases: list[dict[str, Any]] = field(default_factory=list)
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
