@@ -16,6 +16,7 @@ import argparse
 import sys
 import time
 
+from harness.session.events import PreparedTransportAttempt
 from harness.session.manager import MigrationSessionManager, IdleOutcome
 
 
@@ -88,10 +89,22 @@ def check_todo_nudge(mgr: MigrationSessionManager) -> bool:
     post_count = {"n": 0}
     original_post = mgr._post_message_only
 
-    def counting_post(session_id, text, agent, timeout):  # type: ignore[no-untyped-def]
+    def counting_post(
+        session_id: str,
+        text: str,
+        agent: str,
+        timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
+    ) -> str:
         post_count["n"] += 1
         print(f"  [nudge POST #{post_count['n']}] sent")
-        return original_post(session_id, text, agent=agent, timeout=timeout)
+        return original_post(
+            session_id,
+            text,
+            agent=agent,
+            timeout=timeout,
+            transport_attempt=transport_attempt,
+        )
 
     mgr._post_message_only = counting_post  # type: ignore[method-assign]
     # Shorten stabilize wait so the test is quick if a nudge triggers.
@@ -149,10 +162,22 @@ def check_forced_nudge(mgr: MigrationSessionManager) -> bool:
     post_count = {"n": 0}
     original_post = mgr._post_message_only
 
-    def counting_post(session_id, text, agent, timeout):  # type: ignore[no-untyped-def]
+    def counting_post(
+        session_id: str,
+        text: str,
+        agent: str,
+        timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
+    ) -> str:
         post_count["n"] += 1
         print(f"  [real nudge POST #{post_count['n']}] sent to server")
-        return original_post(session_id, text, agent=agent, timeout=timeout)
+        return original_post(
+            session_id,
+            text,
+            agent=agent,
+            timeout=timeout,
+            transport_attempt=transport_attempt,
+        )
 
     mgr._session_has_incomplete_todos = forced_todo  # type: ignore[method-assign]
     mgr._post_message_only = counting_post  # type: ignore[method-assign]

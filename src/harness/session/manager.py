@@ -16,6 +16,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
+from .event_lifecycle import (
+    TransportLifecycle,
+)
+from .events import (
+    PreparedTransportAttempt,
+    TransportInvocation,
+    TransportInvocationId,
+    TransportObserver,
+)
+
 logger = logging.getLogger("harness.session.manager")
 
 RUNNING_TOKENS = {
@@ -82,7 +92,9 @@ class SessionManagerError(RuntimeError):
 
 
 class SessionTransportError(SessionManagerError):
-    pass
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
 
 
 class SessionAuthError(SessionManagerError):
@@ -175,6 +187,7 @@ class MigrationSessionManager:
         todo_nudge_enabled: bool = DEFAULT_TODO_NUDGE_ENABLED,
         todo_stabilize_wait_s: float = DEFAULT_TODO_STABILIZE_WAIT_S,
         max_todo_nudges: int = DEFAULT_MAX_TODO_NUDGES,
+        transport_observer: TransportObserver | None = None,
     ) -> None:
         self._work_dir = Path(work_dir).resolve()
         self._base_url = base_url.rstrip("/")
@@ -196,6 +209,7 @@ class MigrationSessionManager:
             0, _env_int("SEAM_MAX_TODO_NUDGES", int(max_todo_nudges))
         )
         self._last_todo_summary = ""
+        self._transport_lifecycle = TransportLifecycle(transport_observer)
         if auto_detect_agent:
             self._detect_agent()
 
@@ -410,31 +424,66 @@ class MigrationSessionManager:
             record.last_used_at = time.time()
             record.command_count += 1
 
+        invocation = self._transport_lifecycle.new_invocation(
+            session_id=session_id,
+            timeout_s=timeout,
+            max_attempts=retries + 1,
+        )
         for attempt in range(retries + 1):
+            transport_attempt = self._transport_lifecycle.prepare(
+                invocation,
+                attempt + 1,
+            )
             try:
                 return self._send_message_raw(
-                    session_id, command, agent=selected_agent, timeout=timeout
+                    session_id,
+                    command,
+                    agent=selected_agent,
+                    timeout=timeout,
+                    transport_attempt=transport_attempt,
                 )
             except (SessionAuthError, SessionServerError) as exc:
                 last_error = exc
+                self._transport_lifecycle.hard_error(transport_attempt)
                 self._wait_after_hard_error(session_id, timeout=timeout)
                 break
             except TimeoutError as exc:
                 last_error = exc
                 break
+            except SessionTransportError as exc:
+                last_error = exc
+                will_retry = attempt < retries and self._transport_lifecycle.is_active(
+                    transport_attempt
+                )
+                self._transport_lifecycle.transport_failure(
+                    transport_attempt,
+                    timed_out=exc.timed_out,
+                    will_retry=will_retry,
+                )
+                if not will_retry:
+                    break
+                time.sleep(2**attempt)
             except (
-                SessionTransportError,
                 SessionCompacted,
                 urllib.error.URLError,
                 RuntimeError,
                 ValueError,
             ) as exc:
                 last_error = exc
-                if attempt >= retries:
+                will_retry = attempt < retries and self._transport_lifecycle.is_active(
+                    transport_attempt
+                )
+                self._transport_lifecycle.session_failure(
+                    transport_attempt,
+                    will_retry=will_retry,
+                )
+                if not will_retry:
                     break
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
 
-        return json.dumps({"ok": False, "error": str(last_error or 'unknown session error')})
+        return json.dumps(
+            {"ok": False, "error": str(last_error or "unknown session error")}
+        )
 
     @staticmethod
     def _effective_wait_timeout(timeout: int | float | None) -> float:
@@ -1316,10 +1365,17 @@ class MigrationSessionManager:
         status = resp.get("status")
         detail = resp.get("details") or resp.get("error") or "request failed"
         if status in {401, 403}:
-            raise SessionAuthError(f"POST /session/{session_id}/message unauthorized: {detail}")
+            raise SessionAuthError(
+                f"POST /session/{session_id}/message unauthorized: {detail}"
+            )
         if isinstance(status, int) and status >= 500:
-            raise SessionServerError(f"POST /session/{session_id}/message failed: {detail}")
-        raise SessionTransportError(f"POST /session/{session_id}/message failed: {detail}")
+            raise SessionServerError(
+                f"POST /session/{session_id}/message failed: {detail}"
+            )
+        raise SessionTransportError(
+            f"POST /session/{session_id}/message failed: {detail}",
+            timed_out=resp.get("_transport_timeout") is True,
+        )
 
     def _send_message_raw(
         self,
@@ -1327,6 +1383,7 @@ class MigrationSessionManager:
         text: str,
         agent: str = "",
         timeout: int | float | None = None,
+        transport_attempt: PreparedTransportAttempt | None = None,
     ) -> str:
         command_text = text
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
@@ -1334,43 +1391,102 @@ class MigrationSessionManager:
             payload["agent"] = agent
         http_timeout = self._effective_wait_timeout(timeout) + 30
         previous_text = self._last_message_text_tolerant(session_id)
-        resp = self._http(
-            "POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout
-        )
-        if not resp.get("ok"):
-            self._classify_post_failure(resp, session_id)
-        data = resp.get("data") or {}
-        if not isinstance(data, dict):
-            raise ValueError("Unexpected session response payload")
-
-        info = data.get("info") or {}
-        if isinstance(info, dict) and info.get("error"):
-            raise RuntimeError(self._extract_error_text(info.get("error")))
-
-        if self._is_compaction_payload(data):
-            raise SessionCompacted("Compaction response is incomplete")
-
-        finish = str(info.get("finish", "")).lower() if isinstance(info, dict) else ""
-        if finish and finish not in {"stop", "success"}:
-            raise RuntimeError(f"Agent finished unexpectedly: {finish}")
-
-        text = self._extract_message_text(data)
-        if not text:
-            text = self._recover_empty_response_text(
-                session_id, timeout, previous_text, command_text=command_text
+        owns_transport_attempt = transport_attempt is None
+        if owns_transport_attempt:
+            transport_attempt = self._transport_lifecycle.prepare(
+                self._transport_lifecycle.new_invocation(
+                    session_id=session_id,
+                    timeout_s=timeout,
+                    max_attempts=1,
+                ),
+                1,
             )
-            if not text:
-                raise RuntimeError("Empty session response")
-            return text
+        active_transport = self._transport_lifecycle.start(transport_attempt)
+        convergence_started = False
+        try:
+            resp = self._http(
+                "POST",
+                f"/session/{session_id}/message",
+                body=payload,
+                timeout=http_timeout,
+            )
+            if not resp.get("ok"):
+                self._classify_post_failure(resp, session_id)
+            data = resp.get("data") or {}
+            if not isinstance(data, dict):
+                raise ValueError("Unexpected session response payload")
 
-        return self._await_and_finalize(
-            session_id=session_id,
-            post_text=text,
-            previous_text=previous_text,
-            command_text=command_text,
-            agent=agent,
-            timeout=timeout,
-        )
+            info = data.get("info") or {}
+            if isinstance(info, dict) and info.get("error"):
+                raise RuntimeError(self._extract_error_text(info.get("error")))
+
+            if self._is_compaction_payload(data):
+                raise SessionCompacted("Compaction response is incomplete")
+
+            finish = (
+                str(info.get("finish", "")).lower() if isinstance(info, dict) else ""
+            )
+            if finish and finish not in {"stop", "success"}:
+                raise RuntimeError(f"Agent finished unexpectedly: {finish}")
+
+            text = self._extract_message_text(data)
+            if not text:
+                text = self._recover_empty_response_text(
+                    session_id, timeout, previous_text, command_text=command_text
+                )
+                if not text:
+                    raise RuntimeError("Empty session response")
+                self._transport_lifecycle.complete(active_transport)
+                return text
+
+            convergence_started = True
+            final_text = self._await_and_finalize(
+                session_id=session_id,
+                post_text=text,
+                previous_text=previous_text,
+                command_text=command_text,
+                agent=agent,
+                timeout=timeout,
+                transport_attempt=transport_attempt,
+            )
+        except TimeoutError:
+            self._transport_lifecycle.post_acceptance_timeout(transport_attempt)
+            raise
+        except (SessionAuthError, SessionServerError):
+            if convergence_started or owns_transport_attempt:
+                self._transport_lifecycle.hard_error(transport_attempt)
+            raise
+        except SessionTransportError as exc:
+            if convergence_started:
+                self._transport_lifecycle.post_acceptance_transport_failure(
+                    transport_attempt,
+                    timed_out=exc.timed_out,
+                )
+            elif owns_transport_attempt:
+                self._transport_lifecycle.transport_failure(
+                    transport_attempt,
+                    timed_out=exc.timed_out,
+                    will_retry=False,
+                )
+            raise
+        except (
+            SessionCompacted,
+            urllib.error.URLError,
+            RuntimeError,
+            ValueError,
+        ):
+            if convergence_started:
+                self._transport_lifecycle.post_acceptance_session_failure(
+                    transport_attempt,
+                )
+            elif owns_transport_attempt:
+                self._transport_lifecycle.session_failure(
+                    transport_attempt,
+                    will_retry=False,
+                )
+            raise
+        self._transport_lifecycle.complete(active_transport)
+        return final_text
 
     def _post_message_only(
         self,
@@ -1378,6 +1494,7 @@ class MigrationSessionManager:
         text: str,
         agent: str,
         timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
     ) -> str:
         """Send a single POST /message and return its text without entering the
         idle/nudge convergence loop. Used by TODO nudges to avoid recursion."""
@@ -1385,18 +1502,45 @@ class MigrationSessionManager:
         if agent:
             payload["agent"] = agent
         http_timeout = self._effective_wait_timeout(timeout) + 30
-        resp = self._http(
-            "POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout
-        )
-        if not resp.get("ok"):
-            self._classify_post_failure(resp, session_id)
-        data = resp.get("data") or {}
-        if isinstance(data, dict):
-            info = data.get("info") or {}
-            if isinstance(info, dict) and info.get("error"):
-                raise RuntimeError(self._extract_error_text(info.get("error")))
-            if self._is_compaction_payload(data):
-                raise SessionCompacted("Compaction response is incomplete")
+        active_transport = self._transport_lifecycle.start(transport_attempt)
+        try:
+            resp = self._http(
+                "POST",
+                f"/session/{session_id}/message",
+                body=payload,
+                timeout=http_timeout,
+            )
+            if not resp.get("ok"):
+                self._classify_post_failure(resp, session_id)
+            data = resp.get("data") or {}
+            if isinstance(data, dict):
+                info = data.get("info") or {}
+                if isinstance(info, dict) and info.get("error"):
+                    raise RuntimeError(self._extract_error_text(info.get("error")))
+                if self._is_compaction_payload(data):
+                    raise SessionCompacted("Compaction response is incomplete")
+        except (SessionAuthError, SessionServerError):
+            self._transport_lifecycle.hard_error(transport_attempt)
+            raise
+        except SessionTransportError as exc:
+            self._transport_lifecycle.transport_failure(
+                transport_attempt,
+                timed_out=exc.timed_out,
+                will_retry=False,
+            )
+            raise
+        except (
+            SessionCompacted,
+            urllib.error.URLError,
+            RuntimeError,
+            ValueError,
+        ):
+            self._transport_lifecycle.session_failure(
+                transport_attempt,
+                will_retry=False,
+            )
+            raise
+        self._transport_lifecycle.complete(active_transport)
         return self._extract_message_text(data)
 
     def _build_todo_nudge_prompt(self) -> str:
@@ -1423,10 +1567,30 @@ class MigrationSessionManager:
         session_id: str,
         agent: str,
         timeout: int | float | None,
+        parent_attempt: PreparedTransportAttempt,
+        nudge_number: int,
     ) -> str:
         nudge = self._build_todo_nudge_prompt()
         logger.info("[TODO NUDGE] session=%s", session_id)
-        return self._post_message_only(session_id, nudge, agent=agent, timeout=timeout)
+        parent_invocation = parent_attempt.invocation
+        nudge_attempt = PreparedTransportAttempt(
+            invocation=TransportInvocation(
+                session_id=session_id,
+                invocation_id=TransportInvocationId(
+                    f"{parent_invocation.invocation_id}:nudge-{nudge_number:02d}"
+                ),
+                max_attempts=1,
+                timeout_s=parent_invocation.timeout_s,
+            ),
+            attempt=1,
+        )
+        return self._post_message_only(
+            session_id,
+            nudge,
+            agent=agent,
+            timeout=timeout,
+            transport_attempt=nudge_attempt,
+        )
 
     def _await_and_finalize(
         self,
@@ -1436,6 +1600,7 @@ class MigrationSessionManager:
         command_text: str,
         agent: str,
         timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
     ) -> str:
         effective_timeout = self._effective_wait_timeout(timeout)
         deadline = time.time() + effective_timeout
@@ -1522,7 +1687,11 @@ class MigrationSessionManager:
                 self._max_todo_nudges,
             )
             nudge_text = self._send_todo_nudge(
-                session_id, agent=agent, timeout=timeout
+                session_id,
+                agent=agent,
+                timeout=timeout,
+                parent_attempt=transport_attempt,
+                nudge_number=nudge_count,
             )
             if nudge_text:
                 current_post_text = nudge_text
@@ -1584,7 +1753,22 @@ class MigrationSessionManager:
                 return {"ok": True, "status": response.status, "data": parsed}
         except urllib.error.HTTPError as exc:
             details = exc.read().decode(errors="replace") if exc.fp else ""
-            return {"ok": False, "status": exc.code, "error": str(exc), "details": details}
+            return {
+                "ok": False,
+                "status": exc.code,
+                "error": str(exc),
+                "details": details,
+            }
+        except TimeoutError as exc:
+            logger.debug("HTTP timeout for %s %s: %s", method, path, exc)
+            return {"ok": False, "error": str(exc), "_transport_timeout": True}
+        except urllib.error.URLError as exc:
+            logger.debug("HTTP URL error for %s %s: %s", method, path, exc)
+            return {
+                "ok": False,
+                "error": str(exc),
+                "_transport_timeout": isinstance(exc.reason, TimeoutError),
+            }
         except Exception as exc:  # pragma: no cover - network failure path
             logger.debug("HTTP error for %s %s: %s", method, path, exc)
             return {"ok": False, "error": str(exc)}
