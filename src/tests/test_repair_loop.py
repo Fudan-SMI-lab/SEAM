@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnusedCallResult=false, reportUnusedParameter=false
 
 import json
+import shlex
 import sys
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -1595,6 +1596,7 @@ def test_repair_loop_entry_script_action_blocked_without_phase3_flag(tmp_path: P
 def test_repair_loop_entry_script_action_safe_revision_recomputes_command(tmp_path: Path) -> None:
     engine, _session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     revised = tmp_path / "new.py"
+    previous = tmp_path / "old.py"
     revised.write_text("print('new')\n", encoding="utf-8")
     classification = {
         "category": "validation",
@@ -1607,15 +1609,15 @@ def test_repair_loop_entry_script_action_safe_revision_recomputes_command(tmp_pa
             "action": "modify",
             "reason": "switch",
             "entry_script_path": str(revised),
-            "run_command": f"{sys.executable} {revised}",
+            "run_command": shlex.join([sys.executable, str(revised)]),
         },
     }
 
     result = engine._maybe_apply_entry_script_action(
         classification=cast(ClassificationDict, cast(object, classification)),
         active_contract={
-            "entry_script_path": str(tmp_path / "old.py"),
-            "run_command": f"{sys.executable} {tmp_path / 'old.py'}",
+            "entry_script_path": str(previous),
+            "run_command": shlex.join([sys.executable, str(previous)]),
             "phase5_entry_script_revision_allowed": True,
         },
         project_dir=str(tmp_path),
