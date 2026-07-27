@@ -91,6 +91,13 @@ from core.review_observability import (
     publish_review_transition,
 )
 from core.run_outcome import ReviewOutcome, ReviewVerdict
+from core.v3_outcome_mapping import Phase5Decision
+from core.v3_phase5_runtime import (
+    Phase5RuntimeConfig,
+    build_executor_run_outcome,
+    phase5_decision_from_runtime,
+)
+from core.run_outcome import PhaseId
 from core.runtime_observability_models import ImprovementStatus
 from core.platform_policy import resolve_policy, PlatformPolicy
 from validators.validate_entry_script import (
@@ -706,11 +713,28 @@ class WorkflowExecutor:
         phases = self.workflow.phases or []
         terminals = set(self.workflow.terminals or [])
         current_phase_id: str | None = phases[0].id if phases else None
+        phase5_decision: Phase5Decision | None = None
+        terminal_failure_anchor: PhaseId | None = None
+        workflow_globals = self.workflow.globals or {}
+        max_review_rounds_value = workflow_globals.get("max_review_iterations", 3)
+        phase5_runtime_config = Phase5RuntimeConfig(
+            review_enabled=workflow_globals.get("review_gate_enabled") is True,
+            review_fail_closed=workflow_globals.get("review_fail_closed") is not False,
+            max_review_rounds=(
+                max_review_rounds_value
+                if type(max_review_rounds_value) is int
+                and max_review_rounds_value > 0
+                else 3
+            ),
+        )
+        v3_enabled = isinstance(workflow_globals.get("review_fail_closed"), bool)
 
         while current_phase_id and current_phase_id not in terminals:
             phase = self._find_phase_by_id(current_phase_id)
             if phase is None:
                 logger.warning("Phase '%s' not found, terminating.", current_phase_id)
+                if v3_enabled:
+                    terminal_failure_anchor = PhaseId(current_phase_id)
                 break
 
             logger.info(">>> Executing phase: %s (%s)", phase.id, phase.type)
@@ -820,6 +844,17 @@ class WorkflowExecutor:
 
             duration = time.time() - start_t
 
+            if (
+                v3_enabled
+                and phase.id == "phase_5_validation"
+            ):
+                decision = phase5_decision_from_runtime(
+                    output,
+                    phase5_runtime_config,
+                )
+                phase5_decision = decision
+                status = decision.parent_disposition.value
+
             # Record results
             self.phase_results[phase.id] = {
                 "status": status,
@@ -871,6 +906,18 @@ class WorkflowExecutor:
         self._cleanup_execution_backend()
 
         # 7. Return final result
+        if v3_enabled:
+            return {
+                "state": self.state,
+                "phase_results": self.phase_results,
+                "status": "complete",
+                "run_outcome": build_executor_run_outcome(
+                    self.phase_results,
+                    current_phase_id,
+                    phase5_decision,
+                    terminal_failure_anchor,
+                ),
+            }
         return {
             "state": self.state,
             "phase_results": self.phase_results,
@@ -4291,6 +4338,12 @@ class WorkflowExecutor:
                             case _:
                                 assert_never(review_gate.outcome)
                     break
+
+        else:
+            if isinstance(
+                (self.workflow.globals or {}).get("review_fail_closed"), bool
+            ):
+                final_status = "failure"
 
         if final_status == "success" and loop_state.get("script_exit_code") != 0:
             final_status = "failure"
