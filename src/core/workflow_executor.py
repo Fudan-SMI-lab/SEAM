@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from typing_extensions import assert_never
+
 from core.types import (
     PhaseDefinition,
     WorkflowDefinition,
@@ -75,6 +77,21 @@ from core.repair_loop import (
     _write_final_gate_validator_runner,
     force_custom_op_operator_routing_if_needed,
 )
+from core.review_gate import (
+    REVIEW_GATE_STATE_KEY,
+    ImprovementApplied,
+    ImprovementFailed,
+    ImprovementResult,
+    ReviewGate,
+)
+from core.review_observability import (
+    REVIEW_RECEIPT_STATE_KEY,
+    ReviewCommandReceipt,
+    ReviewTransition,
+    publish_review_transition,
+)
+from core.run_outcome import ReviewOutcome, ReviewVerdict
+from core.runtime_observability_models import ImprovementStatus
 from core.platform_policy import resolve_policy, PlatformPolicy
 from validators.validate_entry_script import (
     validate as validate_entry_script,
@@ -3660,6 +3677,9 @@ class WorkflowExecutor:
     ) -> dict:
         """Execute a review gate: get verdict, route accept/reject."""
         max_retry = 2  # retry_json_parse
+        gate_value = loop_state.get(REVIEW_GATE_STATE_KEY)
+        review_gate = gate_value if isinstance(gate_value, ReviewGate) else None
+        review_started_at = time.perf_counter()
 
         # 1. Get review session
         agent_id = phase.agent or "main_engineer"
@@ -3712,12 +3732,42 @@ class WorkflowExecutor:
         # 3. Send command with JSON parse retry
         parsed: dict = {}
         active_prompt = prompt_text
+        attempt = 1
         for attempt in range(1, max_retry + 1):
-            raw_response = self.session_mgr.send_command(
-                sid, active_prompt, timeout=phase.timeout
-            )
-            parsed = extract_json_response(raw_response)
-            self._raise_for_session_error_output(parsed, phase.id)
+            try:
+                raw_response = self.session_mgr.send_command(
+                    sid, active_prompt, timeout=phase.timeout
+                )
+                parsed = extract_json_response(raw_response)
+                self._raise_for_session_error_output(parsed, phase.id)
+            except SessionCommandError as exc:
+                if review_gate is None:
+                    raise
+                updated_gate = review_gate.record_session_error()
+                loop_state[REVIEW_RECEIPT_STATE_KEY] = ReviewCommandReceipt(
+                    session_id=sid,
+                    command_id=(
+                        f"{sid}:{phase.id}:round-{len(updated_gate.rounds)}:"
+                        f"attempt-{attempt}"
+                    ),
+                    reviewer_agent=agent_id,
+                    sub_phase=phase.id,
+                    duration_seconds=time.perf_counter() - review_started_at,
+                )
+                loop_state[REVIEW_GATE_STATE_KEY] = updated_gate
+                loop_state["review_verdict_status"] = ReviewVerdict.UNKNOWN.value
+                loop_state["review_outcome"] = ReviewOutcome.SESSION_ERROR
+                loop_state["review_verdict"] = {
+                    "verdict": ReviewVerdict.UNKNOWN.value,
+                    "reasoning": str(exc),
+                    "status": ReviewOutcome.SESSION_ERROR.value,
+                }
+                return {
+                    "verdict": ReviewVerdict.UNKNOWN.value,
+                    "reasoning": str(exc),
+                    "status": ReviewOutcome.SESSION_ERROR.value,
+                    "outcome": ReviewOutcome.SESSION_ERROR,
+                }
             verdict = str(parsed.get("verdict", "")).lower()
             if verdict in ("accept", "reject"):
                 break
@@ -3733,20 +3783,9 @@ class WorkflowExecutor:
             parsed = {"verdict": "unknown", "reasoning": "Failed to parse response"}
         verdict = str(parsed.get("verdict", "unknown")).lower()
         reasoning = parsed.get("reasoning", "")
+        typed_verdict = ReviewVerdict.from_raw(parsed.get("verdict"))
 
-        # 6. Route based on verdict
-        verdicts = verdicts_cfg or {
-            "accept": "success",
-            "reject": "reject",
-            "accept_with_warning": "success",
-        }
-
-        if verdict in ("accept", "accept_with_warning"):
-            status = "success"
-            if "review_verdict_status" not in loop_state:
-                loop_state["review_verdict_status"] = "accept"
-        elif verdict == "reject":
-            # Snapshot project
+        if typed_verdict is ReviewVerdict.REJECT:
             try:
                 self.hook_manager._dispatch_builtin(
                     "snapshot_project",
@@ -3756,6 +3795,44 @@ class WorkflowExecutor:
             except Exception as exc:
                 logger.warning("Review reject snapshot failed: %s", exc)
 
+        if review_gate is not None:
+            updated_gate = review_gate.record_judgment(typed_verdict)
+            outcome = updated_gate.outcome
+            assert outcome is not None
+            loop_state[REVIEW_RECEIPT_STATE_KEY] = ReviewCommandReceipt(
+                session_id=sid,
+                command_id=(
+                    f"{sid}:{phase.id}:round-{len(updated_gate.rounds)}:"
+                    f"attempt-{attempt}"
+                ),
+                reviewer_agent=agent_id,
+                sub_phase=phase.id,
+                duration_seconds=time.perf_counter() - review_started_at,
+            )
+            loop_state[REVIEW_GATE_STATE_KEY] = updated_gate
+            loop_state["review_reject_count"] = sum(
+                review_round.verdict is ReviewVerdict.REJECT
+                for review_round in updated_gate.rounds
+            )
+            loop_state["review_verdict_status"] = typed_verdict.value
+            loop_state["review_outcome"] = outcome
+            loop_state["review_verdict"] = {
+                "verdict": typed_verdict.value,
+                "reasoning": reasoning,
+                "status": outcome.value,
+            }
+            return {
+                "verdict": typed_verdict.value,
+                "reasoning": reasoning,
+                "status": outcome.value,
+                "outcome": outcome,
+            }
+
+        if verdict in ("accept", "accept_with_warning"):
+            status = "success"
+            if "review_verdict_status" not in loop_state:
+                loop_state["review_verdict_status"] = "accept"
+        elif verdict == "reject":
             rc = loop_state.get("review_reject_count", 0) + 1
             loop_state["review_reject_count"] = rc
             status = "reject"
@@ -3858,7 +3935,6 @@ class WorkflowExecutor:
         # 3. Initialize loop state
         loop_state: dict[str, Any] = {"stagnation_count": 0}
         loop_history: list[dict] = []
-        review_reject_count = 0
         stagnation_threshold = int(
             sub_wf_def.stagnation_threshold
             if isinstance(sub_wf_def.stagnation_threshold, (int, float))
@@ -3880,8 +3956,13 @@ class WorkflowExecutor:
         else:
             max_iterations = self.framework_config.get("max_iterations", 10)
 
+        global_review_enabled = (self.workflow.globals or {}).get(
+            "review_gate_enabled"
+        )
         review_gate_enabled = bool(
-            sub_wf_def.review_gate_enabled
+            global_review_enabled
+            if isinstance(global_review_enabled, bool)
+            else sub_wf_def.review_gate_enabled
             if isinstance(sub_wf_def.review_gate_enabled, bool)
             else self.framework_config.get("review", {}).get("enabled", False)
         )
@@ -3890,6 +3971,14 @@ class WorkflowExecutor:
             if isinstance(sub_wf_def.max_review_iterations, (int, float))
             else self.framework_config.get("review", {}).get("max_review_iterations", 3)
         )
+        review_gate = (
+            ReviewGate(max_rounds=max_review_iterations)
+            if review_gate_enabled
+            else None
+        )
+        loop_state["review_gate_enabled"] = review_gate_enabled
+        if review_gate is not None:
+            loop_state[REVIEW_GATE_STATE_KEY] = review_gate
 
         max_entry_script_revisions = self._max_entry_script_revisions()
         loop_state["max_entry_script_revisions"] = max_entry_script_revisions
@@ -3913,6 +4002,10 @@ class WorkflowExecutor:
             )
             iter_start = time.time()
             step_outputs: dict[str, Any] = {}
+            review_round_count_before = len(review_gate.rounds) if review_gate else 0
+            if review_gate is not None:
+                step_outputs[REVIEW_GATE_STATE_KEY] = review_gate
+                step_outputs["review_gate_enabled"] = True
             self._carry_pending_experience_verifications(loop_state, step_outputs)
 
             # Execute sub-workflow
@@ -3931,8 +4024,37 @@ class WorkflowExecutor:
             iter_status = iter_result.get("status", "success")
 
             # Merge step_outputs for next iterations
-            loop_state.update(iter_result.get("step_outputs", {}))
-            step_outputs.update(iter_result.get("step_outputs", {}))
+            returned_outputs = iter_result.get("step_outputs", {})
+            review_receipt = (
+                returned_outputs.pop(REVIEW_RECEIPT_STATE_KEY, None)
+                if isinstance(returned_outputs, dict)
+                else None
+            )
+            loop_state.update(returned_outputs)
+            step_outputs.update(returned_outputs)
+            gate_value = step_outputs.get(REVIEW_GATE_STATE_KEY)
+            if isinstance(gate_value, ReviewGate):
+                review_gate = gate_value
+            if isinstance(review_receipt, ReviewCommandReceipt) and review_gate is not None:
+                improvement = step_outputs.get("review_improvement")
+                improvement_status = ImprovementStatus.NOT_REQUIRED
+                if isinstance(improvement, dict):
+                    improvement_status = (
+                        ImprovementStatus.APPLIED
+                        if improvement.get("status") == "success"
+                        else ImprovementStatus.FAILED
+                    )
+                _ = publish_review_transition(
+                    self.telemetry_observer,
+                    ReviewTransition(
+                        phase_id=phase.id,
+                        phase5_iteration=iteration,
+                        previous_round_count=review_round_count_before,
+                        gate=review_gate,
+                        receipt=review_receipt,
+                        improvement_status=improvement_status,
+                    ),
+                )
             self._stamp_pending_experience_verifications(loop_state, iteration)
             verification_signal = self._record_pending_experience_verification(
                 loop_state, step_outputs, iteration
@@ -3951,6 +4073,15 @@ class WorkflowExecutor:
             )
             if entry_script_revision_only:
                 loop_state["stagnation_count"] = 0
+                iteration -= 1
+                loop_state["iteration"] = iteration
+                continue
+
+            if (
+                review_gate is not None
+                and review_gate.outcome is ReviewOutcome.REJECTED
+                and len(review_gate.rounds) > review_round_count_before
+            ):
                 iteration -= 1
                 loop_state["iteration"] = iteration
                 continue
@@ -4027,7 +4158,15 @@ class WorkflowExecutor:
                 break
 
             # 4d. Break if sub-workflow explicitly ended
-            if iter_status in ("failure", "accept", "reject_exhausted"):
+            if iter_status in {
+                "failure",
+                "accept",
+                ReviewOutcome.ACCEPTED.value,
+                ReviewOutcome.REJECT_EXHAUSTED.value,
+                ReviewOutcome.UNKNOWN.value,
+                ReviewOutcome.SESSION_ERROR.value,
+                ReviewOutcome.IMPROVEMENT_ERROR.value,
+            }:
                 final_status = iter_status
                 break
 
@@ -4058,37 +4197,108 @@ class WorkflowExecutor:
                     # overwrite the already-stamped records.
                     _pending = loop_state.get("pending_experience_verifications")
                     _verified = loop_state.get("experience_verifications")
-                    bonus_result = self._run_sub_workflow(
-                        sub_wf_def,
-                        loop_vars,
-                        state,
-                        context,
-                        sub_wf_phases,
-                        sub_wf_blocks,
-                        step_outputs,
-                        loop_history,
-                        loop_state,
-                        validation_only=True,
-                    )
-                    loop_state.update(bonus_result.get("step_outputs", {}))
-                    # Restore experience-tracking records so the bonus
-                    # pass never corrupts stamped/verified state.
-                    if _pending is not None:
-                        loop_state["pending_experience_verifications"] = _pending
-                    if _verified is not None:
-                        loop_state["experience_verifications"] = _verified
-                    # Re-check stop conditions after bonus pass
-                    bonus_stop = self._check_stop_conditions(
-                        stop_conds, loop_state, self.workflow.globals or {}
-                    )
-                    if bonus_stop:
-                        final_status = bonus_stop
-                        logger.info(
-                            "Post-repair stop condition matched: '%s'", bonus_stop
+                    while True:
+                        review_round_count_before = (
+                            len(review_gate.rounds) if review_gate else 0
                         )
-                        break
+                        bonus_result = self._run_sub_workflow(
+                            sub_wf_def,
+                            loop_vars,
+                            state,
+                            context,
+                            sub_wf_phases,
+                            sub_wf_blocks,
+                            step_outputs,
+                            loop_history,
+                            loop_state,
+                            validation_only=True,
+                        )
+                        bonus_outputs = bonus_result.get("step_outputs", {})
+                        review_receipt = (
+                            bonus_outputs.pop(REVIEW_RECEIPT_STATE_KEY, None)
+                            if isinstance(bonus_outputs, dict)
+                            else None
+                        )
+                        loop_state.update(bonus_outputs)
+                        gate_value = bonus_outputs.get(REVIEW_GATE_STATE_KEY)
+                        if isinstance(gate_value, ReviewGate):
+                            review_gate = gate_value
+                        if (
+                            isinstance(review_receipt, ReviewCommandReceipt)
+                            and review_gate is not None
+                        ):
+                            improvement = bonus_outputs.get("review_improvement")
+                            improvement_status = ImprovementStatus.NOT_REQUIRED
+                            if isinstance(improvement, dict):
+                                improvement_status = (
+                                    ImprovementStatus.APPLIED
+                                    if improvement.get("status") == "success"
+                                    else ImprovementStatus.FAILED
+                                )
+                            _ = publish_review_transition(
+                                self.telemetry_observer,
+                                ReviewTransition(
+                                    phase_id=phase.id,
+                                    phase5_iteration=iteration,
+                                    previous_round_count=review_round_count_before,
+                                    gate=review_gate,
+                                    receipt=review_receipt,
+                                    improvement_status=improvement_status,
+                                ),
+                            )
+                        # Restore experience-tracking records so the bonus
+                        # pass never corrupts stamped/verified state.
+                        if _pending is not None:
+                            loop_state["pending_experience_verifications"] = _pending
+                        if _verified is not None:
+                            loop_state["experience_verifications"] = _verified
+                        if loop_state.get("script_exit_code", 0) != 0:
+                            final_status = "failure"
+                            break
+                        bonus_stop = self._check_stop_conditions(
+                            stop_conds, loop_state, self.workflow.globals or {}
+                        )
+                        if bonus_stop:
+                            final_status = bonus_stop
+                            logger.info(
+                                "Post-repair stop condition matched: '%s'", bonus_stop
+                            )
+                            break
+                        if review_gate is None or review_gate.outcome is None:
+                            break
+                        match review_gate.outcome:
+                            case ReviewOutcome.REJECTED:
+                                if (
+                                    len(review_gate.rounds)
+                                    <= review_round_count_before
+                                ):
+                                    final_status = "failure"
+                                    break
+                            case ReviewOutcome.ACCEPTED:
+                                final_status = "success"
+                                break
+                            case (
+                                ReviewOutcome.REJECT_EXHAUSTED
+                                | ReviewOutcome.UNKNOWN
+                                | ReviewOutcome.SESSION_ERROR
+                                | ReviewOutcome.IMPROVEMENT_ERROR
+                            ):
+                                final_status = review_gate.outcome.value
+                                break
+                            case ReviewOutcome.DISABLED:
+                                final_status = "failure"
+                                break
+                            case _:
+                                assert_never(review_gate.outcome)
+                    break
 
         if final_status == "success" and loop_state.get("script_exit_code") != 0:
+            final_status = "failure"
+        if (
+            final_status == "success"
+            and review_gate is not None
+            and review_gate.outcome is ReviewOutcome.REJECTED
+        ):
             final_status = "failure"
 
         # 5. Store final result
@@ -4104,6 +4314,8 @@ class WorkflowExecutor:
             "iterations": len(loop_history),
             "loop_history": loop_history,
             "loop_state": loop_state,
+            "review_gate": review_gate,
+            "review_outcome": review_gate.outcome if review_gate is not None else None,
         }
 
     def _execute_orchestration_phase(
@@ -4201,188 +4413,39 @@ class WorkflowExecutor:
         state: dict,
         context: dict,
         loop_state: dict,
-    ) -> None:
+    ) -> ImprovementResult:
         imp_phases = block_cfg.get("phases", [])
-        if not imp_phases:
-            return
-        step_outputs: dict[str, Any] = {}
-        for imp_phase in imp_phases:
-            if not isinstance(imp_phase, dict):
-                continue
-            pid = imp_phase.get("id", "unnamed")
-            ptype = (imp_phase.get("type") or "llm").lower()
-
-            cond = imp_phase.get("condition")
-            if cond:
-                cond_met = self._evaluate_condition(
-                    cond,
-                    state,
-                    context,
-                    loop_vars={},
-                    loop_state=loop_state,
-                    step_outputs=step_outputs,
-                )
-                if not cond_met:
-                    continue
-
-            try:
-                if ptype == "llm":
-                    mini = self._mini_phase(imp_phase)
-                    input_ctx = self._resolve_input_mapping(
-                        mini,
-                        state,
-                        context,
-                        loop_vars={},
-                        loop_state=loop_state,
-                        step_outputs=step_outputs,
-                    )
-                    self._inject_llm_baseline_context(input_ctx, mini, state)
-                    self._inject_sub_workflow_context(
-                        input_ctx,
-                        pid,
-                        step_outputs,
-                        {},
-                        state,
-                        [],
-                    )
-                    prompt_text = self.prompt_loader.load_prompt(
-                        mini.prompt_template,
-                        input_ctx,
-                    )
-                    agent_id = mini.agent or "main_engineer"
-                    prompt_text, _explicit_skill_bundle = (
-                        self._append_explicit_runtime_skill_markdown(
-                            prompt_text, mini, agent_id
-                        )
-                    )
-                    if self.session_registry:
-                        try:
-                            sid = self.session_registry.resolve(agent_id)
-                        except KeyError:
-                            sid = self.session_mgr.get_or_create(
-                                role=agent_id, lifecycle="persistent"
-                            )
-                    else:
-                        sid = self.session_mgr.get_or_create(
-                            role=agent_id, lifecycle="persistent"
-                        )
-                    timeout = self._resolve_sub_workflow_llm_timeout(mini)
-                    raw_response = self._send_sub_workflow_llm_command(
-                        phase_id=pid,
-                        agent_id=agent_id,
-                        session_id=sid,
-                        prompt_text=prompt_text,
-                        timeout=timeout,
-                    )
-                    output = extract_json_response(raw_response)
-                    self._raise_for_session_error_output(output, pid)
-                    if not output:
-                        output = {"raw_response": raw_response}
-                    if isinstance(output, dict):
-                        self._attach_experience_usage_report(step_outputs, pid, output)
-                    step_outputs[pid] = output
-                    if mini.output_as:
-                        state[mini.output_as] = output
-                    state[pid] = output
-
-                elif ptype == "dispatch":
-                    next_id = self._execute_dispatch_phase(
-                        self._mini_phase(imp_phase),
-                        state,
-                        context,
-                        loop_vars={},
-                        loop_state=step_outputs,
-                        step_outputs=step_outputs,
-                    )
-                    if next_id:
-                        for rest in imp_phases[imp_phases.index(imp_phase) + 1 :]:
-                            if isinstance(rest, dict) and rest.get("id") == next_id:
-                                rest_mini = self._mini_phase(rest)
-                                if (rest.get("type") or "llm").lower() == "llm":
-                                    mini_ctx = self._resolve_input_mapping(
-                                        rest_mini,
-                                        state,
-                                        context,
-                                        loop_vars={},
-                                        loop_state=step_outputs,
-                                        step_outputs=step_outputs,
-                                    )
-                                    self._inject_llm_baseline_context(
-                                        mini_ctx, rest_mini, state
-                                    )
-                                    self._inject_sub_workflow_context(
-                                        mini_ctx,
-                                        rest.get("id"),
-                                        step_outputs,
-                                        {},
-                                        state,
-                                        [],
-                                    )
-                                    prompt = self.prompt_loader.load_prompt(
-                                        rest_mini.prompt_template, mini_ctx
-                                    )
-                                    agent_id = rest_mini.agent or "main_engineer"
-                                    prompt, _explicit_skill_bundle = (
-                                        self._append_explicit_runtime_skill_markdown(
-                                            prompt, rest_mini, agent_id
-                                        )
-                                    )
-                                    if self.session_registry:
-                                        try:
-                                            sid = self.session_registry.resolve(
-                                                agent_id
-                                            )
-                                        except KeyError:
-                                            sid = self.session_mgr.get_or_create(
-                                                role=agent_id, lifecycle="persistent"
-                                            )
-                                    else:
-                                        sid = self.session_mgr.get_or_create(
-                                            role=agent_id, lifecycle="persistent"
-                                        )
-                                    timeout = self._resolve_sub_workflow_llm_timeout(
-                                        rest_mini
-                                    )
-                                    raw = self._send_sub_workflow_llm_command(
-                                        phase_id=next_id,
-                                        agent_id=agent_id,
-                                        session_id=sid,
-                                        prompt_text=prompt,
-                                        timeout=timeout,
-                                    )
-                                    out = extract_json_response(raw)
-                                    self._raise_for_session_error_output(out, next_id)
-                                    if not out:
-                                        out = {"raw_response": raw}
-                                    if isinstance(out, dict):
-                                        self._attach_experience_usage_report(
-                                            step_outputs, next_id, out
-                                        )
-                                    step_outputs[next_id] = out
-                                    if rest_mini.output_as:
-                                        state[rest_mini.output_as] = out
-                                    state[next_id] = out
-                                    break
-
-                elif ptype == "shell":
-                    mini = self._mini_phase(imp_phase)
-                    cmd = self.resolver.resolve(
-                        getattr(mini, "command", "") or "",
-                        state=state,
-                        globals=self.workflow.globals,
-                        context=context,
-                        loop_state=loop_state,
-                    )
-                    subprocess.run(
-                        str(cmd),
-                        shell=True,
-                        cwd=self.project_dir,
-                        timeout=self._mini_phase(imp_phase).timeout,
-                    )
-            except Exception as exc:
-                logger.warning("Improvement phase '%s' failed: %s", pid, exc)
-        if step_outputs:
-            loop_state.update(step_outputs)
+        if not isinstance(imp_phases, list) or not imp_phases:
+            return ImprovementFailed(reason="improvement block has no phases")
+        improvement_workflow = SubWorkflowDefinition(
+            id="review_improvement",
+            phases=imp_phases,
+        )
+        result = self._run_sub_workflow(
+            improvement_workflow,
+            loop_vars={},
+            state=state,
+            context=context,
+            sub_wf_phases=imp_phases,
+            blocks={},
+            step_outputs={},
+            loop_history=[],
+            loop_state=loop_state,
+        )
+        outputs = result.get("step_outputs", {})
+        if isinstance(outputs, dict):
+            loop_state.update(outputs)
+        dispatch_output = outputs.get("improvement_dispatch", {})
+        selected_phase = (
+            dispatch_output.get("dispatched_to")
+            if isinstance(dispatch_output, dict)
+            else None
+        )
+        if not isinstance(selected_phase, str) or not selected_phase:
+            return ImprovementFailed(reason="improvement selector chose no path")
+        if result.get("status") == "failure" or selected_phase not in outputs:
+            return ImprovementFailed(reason=f"selected improvement failed: {selected_phase}")
+        return ImprovementApplied(selected_phase=selected_phase)
 
     # ── Sub-workflow runner ─────────────────────────────────────────────
 
@@ -4450,7 +4513,7 @@ class WorkflowExecutor:
             # Re-read phase_id (was already read above but we preserve it)
             phase_type = (sub_phase.get("type") or "llm").lower()
 
-            if validation_only and phase_type in {"llm", "dispatch", "review"}:
+            if validation_only and phase_type in {"llm", "dispatch"}:
                 continue
 
             # Evaluate condition
@@ -4716,16 +4779,45 @@ class WorkflowExecutor:
                         verdicts_cfg=sub_phase.get("verdicts", {}),
                     )
                     phase_status = phase_output.get("status", "success")
-                    if phase_status == "reject":
+                    if phase_status in {
+                        "reject",
+                        ReviewOutcome.REJECTED.value,
+                    }:
                         blocks = blocks or {}
                         imp_block = blocks.get("improvement_block")
-                        if imp_block:
+                        improvement_result = (
                             self._execute_improvement_block(
                                 imp_block,
                                 state,
                                 context,
                                 step_outputs,
                             )
+                            if isinstance(imp_block, dict)
+                            else ImprovementFailed(
+                                reason="review rejection has no improvement block"
+                            )
+                        )
+                        match improvement_result:
+                            case ImprovementApplied(selected_phase=selected_phase):
+                                step_outputs["review_improvement"] = {
+                                    "selected_phase": selected_phase,
+                                    "status": "success",
+                                }
+                            case ImprovementFailed(reason=reason):
+                                step_outputs["review_improvement"] = {
+                                    "reason": reason,
+                                    "status": ReviewOutcome.IMPROVEMENT_ERROR.value,
+                                }
+                                gate_value = step_outputs.get(REVIEW_GATE_STATE_KEY)
+                                if isinstance(gate_value, ReviewGate):
+                                    failed_gate = gate_value.record_improvement_error()
+                                    step_outputs[REVIEW_GATE_STATE_KEY] = failed_gate
+                                    step_outputs["review_outcome"] = (
+                                        ReviewOutcome.IMPROVEMENT_ERROR
+                                    )
+                                phase_status = ReviewOutcome.IMPROVEMENT_ERROR.value
+                            case _:
+                                assert_never(improvement_result)
 
                 else:
                     logger.warning("Unknown sub-phase type '%s'", phase_type)
