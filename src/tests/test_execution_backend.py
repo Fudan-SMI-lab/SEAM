@@ -6,6 +6,7 @@ import logging
 import json
 import os
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
@@ -22,9 +23,14 @@ from core.execution_backend import (
     LocalBackend,
     auto_select_backend,
     get_container_prompt_context,
+    inspect_retained_container,
+    probe_retained_environment,
+)
+from core.continuation_environment import (
+    RetainedContainerProbeRequest,
+    RetainedEnvironmentProbeRequest,
 )
 from core.workflow_executor import WorkflowExecutor
-from core.artifact_store import ArtifactStore
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS_DIR = ROOT / "workflows"
@@ -241,14 +247,19 @@ class TestLocalBackend:
 
     def test_run_with_cwd(self, tmp_path: Path):
         backend = LocalBackend()
-        result = backend.run("pwd", cwd=str(tmp_path))
+        result = backend.run(
+            [sys.executable, "-c", "import os; print(os.getcwd())"],
+            cwd=str(tmp_path),
+        )
         assert result.exit_code == 0
-        assert str(tmp_path) in result.stdout
+        assert Path(result.stdout.strip()).resolve() == tmp_path.resolve()
 
     def test_run_timeout_raises(self):
         backend = LocalBackend()
         with pytest.raises(subprocess.TimeoutExpired):
-            backend.run("sleep 10", timeout=0.1)
+            backend.run(
+                [sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.1
+            )
 
     def test_is_available(self):
         assert LocalBackend().is_available() is True
@@ -1382,7 +1393,7 @@ class TestContainerBackendEnvironmentReset:
         create_call = mock_run.call_args_list[-1][0][0]
         assert create_call[:3] == ["docker", "run", "-d"]
         assert "test:latest" in create_call
-        assert "/tmp/proj:/workspace:rw" in create_call
+        assert f"{Path('/tmp/proj').resolve()}:/workspace:rw" in create_call
         assert "/dev/accel" in create_call
         assert "/cache:/cache:rw" in create_call
         assert "FOO=bar" in create_call
@@ -2157,3 +2168,107 @@ class TestAutoImageSelection:
         assert "None" not in call_ctx["candidate_images"]
         assert "good:1" in call_ctx["candidate_images"]
         assert "also-good:2" in call_ctx["candidate_images"]
+
+
+class TestContinuationEnvironmentReadOnlyProbes:
+    @patch("subprocess.run")
+    def test_inspect_retained_container_captures_exact_immutable_context(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr="",
+            stdout=json.dumps(
+                [
+                    {
+                        "Id": "immutable-id",
+                        "Name": "/seam-parent",
+                        "Image": "sha256:image-id",
+                        "State": {"Status": "running"},
+                        "Config": {
+                            "Image": "cpu:test",
+                            "WorkingDir": "/workspace",
+                            "Labels": {
+                                "seam.owner": "parent-run",
+                                "seam.owner-token": "owner-token",
+                            },
+                        },
+                        "HostConfig": {
+                            "Devices": [{"PathOnHost": "/dev/null"}]
+                        },
+                        "Mounts": [
+                            {
+                                "Type": "bind",
+                                "Source": str(project),
+                                "Destination": "/workspace",
+                            }
+                        ],
+                    }
+                ]
+            ),
+        )
+
+        result = inspect_retained_container(
+            RetainedContainerProbeRequest(
+                runtime="docker",
+                container_id="immutable-id",
+                expected_ownership_token="owner-token",
+                expected_ownership_label="seam.owner=parent-run",
+            )
+        )
+
+        assert result.container_id == "immutable-id"
+        assert result.name == "seam-parent"
+        assert result.image_identity == "sha256:image-id"
+        assert result.bind_mounts[0].source == project.resolve()
+        assert result.ownership_token == "owner-token"
+        assert result.ownership_label == "seam.owner=parent-run"
+        command = mock_run.call_args.args[0]
+        assert command == ["docker", "inspect", "immutable-id"]
+        assert not {"run", "stop", "rm"}.intersection(command)
+
+    @patch("subprocess.run")
+    def test_container_fingerprint_probe_executes_only_in_recorded_namespace(
+        self, mock_run: MagicMock
+    ) -> None:
+        payload = {
+            "interpreter_realpath": "/project/.venv/bin/python",
+            "sys_executable": "/project/.venv/bin/python",
+            "sys_prefix": "/project/.venv",
+            "sys_base_prefix": "/usr",
+            "python_implementation": "CPython",
+            "python_version": "3.11.9",
+            "platform_system": "Linux",
+            "platform_architecture": "x86_64",
+            "package_inventory_hash": "a" * 64,
+        }
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps(payload), stderr=""),
+        ]
+
+        result = probe_retained_environment(
+            RetainedEnvironmentProbeRequest(
+                interpreter_path="/project/.venv/bin/python",
+                runtime="podman",
+                container_id="immutable-id",
+            )
+        )
+
+        assert result.namespace == "container:immutable-id"
+        assert result.container_id == "immutable-id"
+        assert result.environment_type.value == "project_venv"
+        commands = tuple(call.args[0] for call in mock_run.call_args_list)
+        assert all(
+            command[:3] == ["podman", "exec", "immutable-id"]
+            for command in commands
+        )
+        assert all(
+            not {"run", "stop", "rm"}.intersection(command)
+            for command in commands
+        )
+        assert not any(
+            command[0] == "/project/.venv/bin/python" for command in commands
+        )

@@ -6,7 +6,10 @@ import socket
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import BinaryIO, final
 
 from .continuation_models import (
@@ -127,6 +130,7 @@ class _ExclusiveProjectLock:
                 ContinuationErrorKind.LOCK_IO,
                 "partial continuation owner cleanup failed",
             ) from exc
+
         current = (
             metadata.st_dev,
             metadata.st_ino,
@@ -146,6 +150,10 @@ class _ExclusiveProjectLock:
                 "partial continuation owner cleanup failed",
             ) from exc
 
+    @property
+    def active(self) -> bool:
+        return not self._handle.closed
+
     def release(self) -> None:
         try:
             metadata = self._path.lstat()
@@ -163,7 +171,7 @@ class _ExclusiveProjectLock:
                 handle_metadata.st_mode,
                 getattr(handle_metadata, "st_file_attributes", 0),
             )
-            self._handle.seek(0)
+            _ = self._handle.seek(0)
             content_matches = self._handle.read(len(self._content) + 1) == self._content
             if linked or current != self._identity or not content_matches:
                 raise _error(
@@ -201,6 +209,33 @@ class _ExclusiveProjectLock:
                 self._handle.close()
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveProjectOwnerLock:
+    parent_run_id: str
+    child_run_id: str
+    lineage_root_run_id: str
+    output_project: Path
+    _owner: _ExclusiveProjectLock = field(repr=False, compare=False)
+
+    @property
+    def active(self) -> bool:
+        return _ACTIVE_PROJECT_OWNER.get() is self and self._owner.active
+
+
+_ACTIVE_PROJECT_OWNER: ContextVar[ActiveProjectOwnerLock | None] = ContextVar(
+    "seam_active_project_owner",
+    default=None,
+)
+
+
+def current_project_owner_lock() -> ActiveProjectOwnerLock | None:
+    return _ACTIVE_PROJECT_OWNER.get()
+
+
+def project_owner_lock_is_active(lock: ActiveProjectOwnerLock) -> bool:
+    return lock.active
+
+
 @contextmanager
 def claim_terminal_parent(
     request: ContinuationRequest,
@@ -212,7 +247,18 @@ def claim_terminal_parent(
             "continuation child run ID must differ from its parent",
         )
     owner = _ExclusiveProjectLock(authority, request.child_run_id)
+    proof = ActiveProjectOwnerLock(
+        parent_run_id=str(authority.parent.run_id),
+        child_run_id=request.child_run_id,
+        lineage_root_run_id=str(authority.parent.run_manifest.lineage_root_run_id),
+        output_project=authority.parent.output_project,
+        _owner=owner,
+    )
+    active_token = _ACTIVE_PROJECT_OWNER.set(proof)
     try:
         yield authority.parent
     finally:
-        owner.release()
+        try:
+            owner.release()
+        finally:
+            _ACTIVE_PROJECT_OWNER.reset(active_token)

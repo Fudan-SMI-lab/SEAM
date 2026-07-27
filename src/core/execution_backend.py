@@ -10,6 +10,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from core.phase5_attempt_receipt import BackendExecution, BackendKind
+from core.continuation_environment_probe import (
+    inspect_retained_container as inspect_retained_container,
+    probe_retained_environment as probe_retained_environment,
+)
 from core.types import ExecutionBackendConfig
 
 logger = logging.getLogger(__name__)
