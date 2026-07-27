@@ -9,7 +9,8 @@ from typing import Annotated, ClassVar, Final, NewType, Protocol, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import override
 
-from core.types import WorkflowDefinition
+from core.run_outcome import ReviewOutcome
+from core.types import TransitionDefinition, WorkflowDefinition
 
 
 ReviewIterationLimit = NewType("ReviewIterationLimit", int)
@@ -240,3 +241,12 @@ def apply_review_policy(
         sub_workflow = workflow.sub_workflows.get(name)
         if sub_workflow is not None:
             sub_workflow.max_review_iterations = int(policy.max_iterations)
+
+
+def review_outcome_routes(
+    transition: TransitionDefinition,
+) -> Mapping[ReviewOutcome, str]:
+    target = transition.on_reject_exhausted
+    if target is None:
+        return {}
+    return {ReviewOutcome.REJECT_EXHAUSTED: target}
