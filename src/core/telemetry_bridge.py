@@ -5,11 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-def _trim_text(text: str, limit: int = 500) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "..."
+from core.agent_io_logger import redact_sensitive_text
 
 
 def _utc_now() -> str:
@@ -24,11 +20,11 @@ class TelemetryBridge:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._run_started = time.monotonic()
         self._run_started_iso = _utc_now()
-        self._phase_timings: dict[str, dict] = (
-            {}
-        )  # phase_id -> {started_at, ended_at, duration, status}
-        self._commands: list[dict] = []
-        self._events: list[dict] = []
+        self._phase_timings: dict[
+            str, dict[str, object]
+        ] = {}  # phase_id -> {started_at, ended_at, duration, status}
+        self._commands: list[dict[str, object]] = []
+        self._events: list[dict[str, object]] = []
         self._active_phase: str | None = None
         self._command_seq = 0
         self._metadata: dict[str, object] = {}
@@ -45,7 +41,7 @@ class TelemetryBridge:
         self._active_phase = phase_id
 
     def on_phase_end(self, phase_id: str, status: str, duration: float) -> None:
-        metric = self._phase_timings.get(phase_id)
+        metric: dict[str, object] | None = self._phase_timings.get(phase_id)
         if metric is None:
             metric = {
                 "phase_id": phase_id,
@@ -71,29 +67,44 @@ class TelemetryBridge:
         resp_length: int = 0,
         error: str | None = None,
     ) -> None:
+        del cmd_preview, resp_preview
         self._command_seq += 1
         self._commands.append(
             {
                 "sequence": self._command_seq,
                 "phase_id": phase_id,
                 "session_id": session_id,
-                "command_preview": _trim_text(cmd_preview),
-                "response_preview": _trim_text(resp_preview),
                 "duration_seconds": round(duration, 3),
                 "status": status,
                 "command_length": cmd_length,
                 "response_length": resp_length,
-                "error": error,
+                "error": redact_sensitive_text(error) if error is not None else None,
             }
         )
 
-    def on_event(self, event_type: str, **kwargs) -> None:
+    def on_event(self, event_type: str, **kwargs: object) -> None:
         evt: dict[str, object] = {
             "event_type": event_type,
             "timestamp": _utc_now(),
         }
         if kwargs:
-            evt["details"] = kwargs
+            evt["details"] = {
+                key: redact_sensitive_text(value) if isinstance(value, str) else value
+                for key, value in kwargs.items()
+                if not any(
+                    fragment in key.lower()
+                    for fragment in (
+                        "prompt",
+                        "response",
+                        "preview",
+                        "body",
+                        "auth",
+                        "secret",
+                        "token",
+                        "traceback",
+                    )
+                )
+            }
         self._events.append(evt)
 
     def set_metadata(self, key: str, value: object) -> None:
@@ -107,7 +118,7 @@ class TelemetryBridge:
     ) -> dict[str, str]:
         output_path = self._output_dir / filename
         phases_list = list(self._phase_timings.values())
-        payload = {
+        payload: dict[str, object] = {
             "metadata": {
                 "run_started_at": self._run_started_iso,
                 "generated_at": _utc_now(),
@@ -121,7 +132,7 @@ class TelemetryBridge:
             "commands": self._commands,
             "events": self._events,
         }
-        output_path.write_text(
+        _ = output_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         return {return_key: str(output_path)}

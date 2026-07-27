@@ -26,6 +26,13 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def redact_sensitive_text(text: str) -> str:
+    redacted = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
 def _env_enabled(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -156,10 +163,7 @@ class AgentIOLogger:
         return self._truncate_utf8(payload)
 
     def _redact(self, text: str) -> str:
-        redacted = text
-        for pattern, replacement in _SECRET_PATTERNS:
-            redacted = pattern.sub(replacement, redacted)
-        return redacted
+        return redact_sensitive_text(text)
 
     def _truncate_utf8(self, text: str) -> tuple[str, bool]:
         if self.max_bytes <= 0:
