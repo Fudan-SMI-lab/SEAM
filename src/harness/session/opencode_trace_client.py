@@ -78,6 +78,10 @@ class OpenCodeTraceClient:
         encoded = urllib.parse.quote(session_id, safe="")
         return self._get(f"/session/{encoded}/message")
 
+    def get_session_info(self, session_id: str) -> EndpointCapture:
+        encoded = urllib.parse.quote(session_id, safe="")
+        return self._get(f"/session/{encoded}")
+
     def get_immediate_children(self, session_id: str) -> EndpointCapture:
         encoded = urllib.parse.quote(session_id, safe="")
         return self._get(f"/session/{encoded}/children")
