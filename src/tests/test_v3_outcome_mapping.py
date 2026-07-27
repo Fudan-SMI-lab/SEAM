@@ -1,0 +1,59 @@
+from .v3_outcome_characterization_cases import (
+    test_characterizes_empty_legacy_executor_as_complete as test_characterizes_empty_legacy_executor_as_complete,
+    test_characterizes_existing_v3_finalizer_pass_and_fail_exits as test_characterizes_existing_v3_finalizer_pass_and_fail_exits,
+    test_characterizes_failure_routed_to_complete_as_failed_phase as test_characterizes_failure_routed_to_complete_as_failed_phase,
+    test_characterizes_legacy_executor_terminal_envelope as test_characterizes_legacy_executor_terminal_envelope,
+    test_characterizes_v2_summary_mapping_without_v3_domain_outcome as test_characterizes_v2_summary_mapping_without_v3_domain_outcome,
+)
+from .v3_outcome_runtime_cases import (
+    test_active_executor_outcome_matrix as test_active_executor_outcome_matrix,
+    test_active_executor_maps_missing_review_gate_to_unknown as test_active_executor_maps_missing_review_gate_to_unknown,
+    test_active_executor_preserves_yaml_terminal_and_failure_anchor as test_active_executor_preserves_yaml_terminal_and_failure_anchor,
+    test_active_executor_rejects_empty_execution_as_pass as test_active_executor_rejects_empty_execution_as_pass,
+    test_phase5_natural_exhaustion_discards_stale_success as test_phase5_natural_exhaustion_discards_stale_success,
+)
+from .v3_outcome_deepwave_cases import (
+    test_deepwave_repeated_rejects_and_swallowed_fixer_fail_explicitly as test_deepwave_repeated_rejects_and_swallowed_fixer_fail_explicitly,
+)
+from .v3_outcome_exit_cases import (
+    test_finalizer_fails_closed_without_frozen_outcome as test_finalizer_fails_closed_without_frozen_outcome,
+    test_finalizer_ignores_conflicting_phase_strings_and_errors as test_finalizer_ignores_conflicting_phase_strings_and_errors,
+    test_finalization_request_requires_authoritative_outcome as test_finalization_request_requires_authoritative_outcome,
+    test_frozen_outcome_controls_summary_and_process_exit as test_frozen_outcome_controls_summary_and_process_exit,
+)
+from .v3_outcome_execution_status_cases import (
+    test_execute_cannot_promote_failed_phase5_with_stale_zero_exit as test_execute_cannot_promote_failed_phase5_with_stale_zero_exit,
+    test_execute_rejects_malformed_phase5_execution_status as test_execute_rejects_malformed_phase5_execution_status,
+    test_execute_uses_effective_runtime_review_gate_when_global_is_absent as test_execute_uses_effective_runtime_review_gate_when_global_is_absent,
+    test_phase5_parser_rejects_boolean_validation_and_attempt as test_phase5_parser_rejects_boolean_validation_and_attempt,
+)
+from .v3_outcome_anchor_cases import (
+    test_later_failure_keeps_phase5_attempt_and_anchors_later_phase as test_later_failure_keeps_phase5_attempt_and_anchors_later_phase,
+    test_missing_transition_target_fails_at_unresolved_terminal as test_missing_transition_target_fails_at_unresolved_terminal,
+    test_terminal_anchor_rejects_missing_phase as test_terminal_anchor_rejects_missing_phase,
+)
+
+__all__ = (
+    "test_active_executor_outcome_matrix",
+    "test_active_executor_maps_missing_review_gate_to_unknown",
+    "test_active_executor_preserves_yaml_terminal_and_failure_anchor",
+    "test_active_executor_rejects_empty_execution_as_pass",
+    "test_characterizes_empty_legacy_executor_as_complete",
+    "test_characterizes_existing_v3_finalizer_pass_and_fail_exits",
+    "test_characterizes_failure_routed_to_complete_as_failed_phase",
+    "test_characterizes_legacy_executor_terminal_envelope",
+    "test_characterizes_v2_summary_mapping_without_v3_domain_outcome",
+    "test_deepwave_repeated_rejects_and_swallowed_fixer_fail_explicitly",
+    "test_finalizer_fails_closed_without_frozen_outcome",
+    "test_finalizer_ignores_conflicting_phase_strings_and_errors",
+    "test_finalization_request_requires_authoritative_outcome",
+    "test_execute_cannot_promote_failed_phase5_with_stale_zero_exit",
+    "test_execute_rejects_malformed_phase5_execution_status",
+    "test_execute_uses_effective_runtime_review_gate_when_global_is_absent",
+    "test_frozen_outcome_controls_summary_and_process_exit",
+    "test_later_failure_keeps_phase5_attempt_and_anchors_later_phase",
+    "test_missing_transition_target_fails_at_unresolved_terminal",
+    "test_phase5_natural_exhaustion_discards_stale_success",
+    "test_phase5_parser_rejects_boolean_validation_and_attempt",
+    "test_terminal_anchor_rejects_missing_phase",
+)
