@@ -6,9 +6,10 @@ import shlex
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from core.phase5_attempt_receipt import BackendExecution, BackendKind
 from core.types import ExecutionBackendConfig
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,14 @@ class ContainerNotRunningError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ExecResult:
     exit_code: int
     stdout: str
     stderr: str
     duration: float
+    backend_execution: BackendExecution | None = None
+    argv: tuple[str, ...] | None = None
 
 
 class ExecutionBackend(Protocol):
@@ -120,10 +123,7 @@ class LocalBackend:
         command: str | list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> dict[str, str]:
-        _ = cwd, env
-        cmd_str = command
-        if isinstance(command, list):
-            cmd_str = " ".join(command)
+        _ = cwd, command, env
         return {
             "execution_backend_mode": "local",
             "actual_execution_command": "(local execution; run entry_script directly)",
@@ -156,6 +156,7 @@ class ContainerBackend:
         self._initialized = False
         self._runtime_cmd = "docker" if config.runtime == "docker" else "podman"
         self._host_project_dir: str | None = None
+        self._last_execution: BackendExecution | None = None
 
     def _resolve_candidate_images(self) -> list[str]:
         """Return the ordered list of candidate images, normalized.
@@ -530,7 +531,13 @@ class ContainerBackend:
             )
 
         result = subprocess.run(
-            [self._runtime_cmd, "inspect", "--format", "{{.State.Status}}", cname],
+            [
+                self._runtime_cmd,
+                "inspect",
+                "--format",
+                "{{.State.Status}}|{{.Id}}",
+                cname,
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -539,16 +546,22 @@ class ContainerBackend:
             raise ContainerNotFoundError(
                 f"Container '{cname}' not found. {result.stderr.strip()}"
             )
-        status = result.stdout.strip()
+        identity = result.stdout.strip().split("|", 1)
+        status = identity[0]
         if status != "running":
             raise ContainerNotRunningError(
                 f"Container '{cname}' status is '{status}', expected 'running'"
             )
+        if len(identity) != 2 or not identity[1]:
+            raise ContainerNotFoundError(
+                f"Container '{cname}' has no immutable runtime identity"
+            )
+        container_id = identity[1]
 
         if self.config.required_devices:
             for dev in self.config.required_devices:
                 check = subprocess.run(
-                    [self._runtime_cmd, "exec", cname, "test", "-e", dev],
+                    [self._runtime_cmd, "exec", container_id, "test", "-e", dev],
                     capture_output=True,
                     timeout=10,
                 )
@@ -561,7 +574,7 @@ class ContainerBackend:
 
         if self.config.required_env_vars:
             env_result = subprocess.run(
-                [self._runtime_cmd, "exec", cname, "env"],
+                [self._runtime_cmd, "exec", container_id, "env"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -579,28 +592,27 @@ class ContainerBackend:
                         cname,
                     )
 
-        self._container_id = cname
+        self._container_id = container_id
         self._initialized = True
-        logger.info("Existing container validated: %s", cname)
+        logger.info("Existing container validated: %s (%s)", cname, container_id)
 
     def _rewrite_host_path(self, path_str: str) -> str:
         if not self._host_project_dir:
             return path_str
-        host = str(Path(path_str).resolve()) if path_str else path_str
-        if host.startswith(self._host_project_dir):
-            rel = Path(host).relative_to(self._host_project_dir)
-            return str(Path(self.config.container_workdir) / rel)
-        return path_str
+        try:
+            rel = Path(path_str).resolve().relative_to(self._host_project_dir)
+        except (OSError, ValueError):
+            return path_str
+        return str(PurePosixPath(self.config.container_workdir, *rel.parts))
 
     def _rewrite_single_path(self, token: str) -> str:
         if not self._host_project_dir:
             return token
-        if token.startswith(self._host_project_dir):
-            rel = token[len(self._host_project_dir) :].lstrip("/")
-            if rel:
-                return str(Path(self.config.container_workdir) / rel)
-            return self.config.container_workdir
-        return token
+        try:
+            rel = Path(token).resolve().relative_to(self._host_project_dir)
+        except (OSError, ValueError):
+            return token
+        return str(PurePosixPath(self.config.container_workdir, *rel.parts))
 
     def _rewrite_command_paths(self, command: str) -> str:
         if not self._host_project_dir:
@@ -620,7 +632,7 @@ class ContainerBackend:
                 resolved = token
             if resolved.startswith(host_dir):
                 rel = Path(resolved).relative_to(host_dir)
-                rewritten.append(str(Path(container_dir) / rel))
+                rewritten.append(str(PurePosixPath(container_dir, *rel.parts)))
             else:
                 rewritten.append(token)
         return shlex.join(rewritten)
@@ -632,6 +644,7 @@ class ContainerBackend:
         env: dict[str, str] | None = None,
         timeout: int | float | None = None,
     ) -> ExecResult:
+        self._last_execution = None
         cid = self._ensure_container()
         exec_cmd: list[str] = [self._runtime_cmd, "exec", "-i"]
         workdir = self.config.container_workdir
@@ -640,7 +653,9 @@ class ContainerBackend:
                 host = str(Path(cwd).resolve())
                 if host.startswith(self._host_project_dir):
                     rel = Path(host).relative_to(self._host_project_dir)
-                    workdir = str(Path(self.config.container_workdir) / rel)
+                    workdir = str(
+                        PurePosixPath(self.config.container_workdir, *rel.parts)
+                    )
             except (ValueError, OSError):
                 pass
         if workdir:
@@ -652,9 +667,25 @@ class ContainerBackend:
         if isinstance(command, list):
             rewritten = [self._rewrite_single_path(token) for token in command]
             exec_cmd.extend([cid] + rewritten)
+            exact_argv = tuple(rewritten)
         else:
             rewritten = self._rewrite_command_paths(command)
             exec_cmd.extend([cid, "bash", "-c", rewritten])
+            exact_argv = ("bash", "-c", rewritten)
+
+        host_cwd = str(Path(cwd or self._host_project_dir or ".").resolve())
+        backend_execution = BackendExecution(
+            kind=BackendKind.CONTAINER,
+            namespace=f"container:{cid}",
+            host_cwd=host_cwd,
+            backend_cwd=workdir,
+            runtime=self._runtime_cmd,
+            container_id=cid,
+            container_retained=(
+                self.config.source == "existing_container" or not self.config.cleanup
+            ),
+        )
+        self._last_execution = backend_execution
 
         effective_timeout = timeout or self.config.timeout
         start = time.monotonic()
@@ -670,7 +701,12 @@ class ContainerBackend:
             stdout=proc.stdout or "",
             stderr=proc.stderr or "",
             duration=round(elapsed, 3),
+            backend_execution=backend_execution,
+            argv=exact_argv,
         )
+
+    def latest_execution(self) -> BackendExecution | None:
+        return self._last_execution
 
     def cleanup(self) -> None:
         if self.config.source == "existing_container":
@@ -724,7 +760,9 @@ class ContainerBackend:
                 host = str(Path(cwd).resolve())
                 if host.startswith(self._host_project_dir):
                     rel = Path(host).relative_to(self._host_project_dir)
-                    workdir = str(Path(self.config.container_workdir) / rel)
+                    workdir = str(
+                        PurePosixPath(self.config.container_workdir, *rel.parts)
+                    )
             except (ValueError, OSError):
                 pass
         if workdir:
@@ -878,7 +916,9 @@ class ContainerBackend:
                 host = str(Path(cwd).resolve())
                 if host.startswith(self._host_project_dir):
                     rel = Path(host).relative_to(self._host_project_dir)
-                    container_proj = str(Path(self.config.container_workdir) / rel)
+                    container_proj = str(
+                        PurePosixPath(self.config.container_workdir, *rel.parts)
+                    )
             except (ValueError, OSError):
                 pass
 

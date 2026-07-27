@@ -59,7 +59,9 @@ def test_existing_container_characterization_preserves_user_resource(
     run: MagicMock,
 ) -> None:
     # Given a user-selected running container even when legacy cleanup is true.
-    run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
+    run.return_value = MagicMock(
+        returncode=0, stdout="running|immutable-user-dev\n", stderr=""
+    )
     backend = ContainerBackend(
         ExecutionBackendConfig(
             mode="container",
@@ -75,7 +77,7 @@ def test_existing_container_characterization_preserves_user_resource(
     backend.cleanup()
 
     # Then attachment identity remains and no stop/remove command is issued.
-    assert backend._container_id == "user-dev"
+    assert backend._container_id == "immutable-user-dev"
     assert run.call_count == calls_after_preflight
 
 

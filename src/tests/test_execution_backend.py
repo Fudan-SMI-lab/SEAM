@@ -413,7 +413,7 @@ class TestContainerBackendExisting:
     @patch("subprocess.run")
     def test_existing_container_running(self, mock_run: MagicMock):
         mock_run.return_value = MagicMock(
-            returncode=0, stdout="running\n", stderr=""
+            returncode=0, stdout="running|immutable-01\n", stderr=""
         )
         cfg = ExecutionBackendConfig.from_dict(
             {
@@ -424,7 +424,7 @@ class TestContainerBackendExisting:
         )
         backend = ContainerBackend(cfg)
         backend._check_existing_container()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
         assert backend._initialized is True
         call_args = mock_run.call_args[0][0]
         assert "inspect" in call_args
@@ -465,7 +465,7 @@ class TestContainerBackendExisting:
     @patch("subprocess.run")
     def test_existing_container_cleanup_noop(self, mock_run: MagicMock):
         mock_run.return_value = MagicMock(
-            returncode=0, stdout="running\n", stderr=""
+            returncode=0, stdout="running|immutable-01\n", stderr=""
         )
         cfg = ExecutionBackendConfig.from_dict(
             {
@@ -484,7 +484,7 @@ class TestContainerBackendExisting:
     @patch("subprocess.run")
     def test_existing_required_env_warning(self, mock_run: MagicMock):
         side_effects = [
-            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="running|immutable-01\n", stderr=""),
             MagicMock(returncode=0, stdout="PATH=/usr/bin\n", stderr=""),
         ]
         mock_run.side_effect = side_effects
@@ -498,12 +498,12 @@ class TestContainerBackendExisting:
         )
         backend = ContainerBackend(cfg)
         backend._check_existing_container()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
 
     @patch("subprocess.run")
     def test_existing_required_device_warning(self, mock_run: MagicMock):
         side_effects = [
-            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="running|immutable-01\n", stderr=""),
             MagicMock(returncode=1, stdout="", stderr=""),
         ]
         mock_run.side_effect = side_effects
@@ -517,7 +517,7 @@ class TestContainerBackendExisting:
         )
         backend = ContainerBackend(cfg)
         backend._check_existing_container()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
 
 
 # ── Auto select backend ──────────────────────────────────────────────────
@@ -1138,7 +1138,9 @@ class TestContainerBackendPreflight:
 
     @patch("subprocess.run")
     def test_preflight_validates_existing_container(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="running|immutable-01\n", stderr=""
+        )
         cfg = ExecutionBackendConfig.from_dict(
             {
                 "mode": "container",
@@ -1148,7 +1150,7 @@ class TestContainerBackendPreflight:
         )
         backend = ContainerBackend(cfg)
         backend.preflight()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
         assert backend._initialized is True
 
     @patch("subprocess.run")
