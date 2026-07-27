@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+from enum import Enum, unique
+from pathlib import Path
+from typing import ClassVar, Literal, NamedTuple, NewType, final
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic_core import PydanticCustomError
+from typing_extensions import Annotated, Self, override
+
+from .resource_manifest import ResourceManifest
+from .run_manifest import RunId, RunManifest, Sha256Digest
+from .run_outcome import TerminalAnchor
+
+_SafeId = Annotated[
+    str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+]
+_Text = Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+_Status = Annotated[str, StringConstraints(min_length=1, max_length=32)]
+OwnerToken = NewType("OwnerToken", str)
+
+
+class _FrozenModel(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+
+@unique
+class TerminalParentStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+
+
+@unique
+class ContinuationErrorKind(str, Enum):
+    UNSAFE_SUMMARY_PATH = "unsafe_summary_path"
+    MALFORMED_SUMMARY = "malformed_summary"
+    STATUS_INELIGIBLE = "status_ineligible"
+    RUN_ID_MISMATCH = "run_id_mismatch"
+    INCOMPLETE_PARENT = "incomplete_parent"
+    OUTPUT_PROJECT_MISMATCH = "output_project_mismatch"
+    WORKFLOW_MISMATCH = "workflow_mismatch"
+    AUTHORITY_INVALID = "authority_invalid"
+    ANCHOR_INVALID = "anchor_invalid"
+    CHILD_RUN_ID_REUSED = "child_run_id_reused"
+    PROJECT_LOCKED = "project_locked"
+    LOCK_IO = "lock_io"
+    LOCK_RELEASE = "lock_release"
+
+
+@final
+class ContinuationError(Exception):
+    __slots__ = ("kind", "detail")
+
+    def __init__(self, kind: ContinuationErrorKind, detail: str) -> None:
+        super().__init__(kind, detail)
+        self.kind = kind
+        self.detail = detail
+
+    @override
+    def __str__(self) -> str:
+        return f"{self.kind.value}: {self.detail}"
+
+
+class _ReviewDetails(_FrozenModel):
+    record_id: _Text
+    phase_id: _Text
+    phase5_iteration: Annotated[int, Field(ge=1)]
+    logical_round: Annotated[int, Field(ge=1)]
+    max_rounds: Annotated[int, Field(ge=1)]
+    remaining_rounds: Annotated[int, Field(ge=0)]
+    verdict: _Text
+    outcome: _Text
+    duration_seconds: Annotated[float, Field(ge=0)]
+    improvement_status: _Text
+    session_id: _Text
+    command_id: _Text
+    reviewer_agent: _Text
+    sub_phase: _Text
+
+
+class _TimeoutDetails(_FrozenModel):
+    record_id: _Text
+    event_phase: _Text
+    agent: _Text
+    sub_phase: _Text
+    session_id: _Text
+    command_id: _Text
+    attempt: Annotated[int, Field(ge=1)]
+    max_attempts: Annotated[int, Field(ge=1)]
+    configured_timeout_seconds: Annotated[float, Field(ge=0)]
+    elapsed_seconds: Annotated[float, Field(ge=0)]
+    retry_decision: _Text
+    reason: _Text
+    exhausted: bool
+
+
+class _ObservabilitySummary(_FrozenModel):
+    schema_version: _Text
+    review_count: Annotated[int, Field(ge=0)]
+    reviews: tuple[_ReviewDetails, ...]
+    timeout_count: Annotated[int, Field(ge=0)]
+    timeouts: tuple[_TimeoutDetails, ...]
+    exhaustion_count: Annotated[int, Field(ge=0)]
+    dropped_event_count: Annotated[int, Field(ge=0)]
+    review_duration_seconds: Annotated[float, Field(ge=0)]
+    timeout_elapsed_seconds: Annotated[float, Field(ge=0)]
+
+
+class _PhaseSummary(_FrozenModel):
+    phase_number: Annotated[int, Field(ge=1)]
+    phase_id: _SafeId
+    label: _Text
+    status: _Status
+    duration_seconds: Annotated[float, Field(ge=0)] = 0.0
+    error: _Text | None = None
+
+
+class RunSummaryDocument(_FrozenModel):
+    run_id: _SafeId
+    base_url: _Text
+    workflow_path: _Text
+    output_dir: _Text
+    temp_dir: _Text
+    keep_temp_dir: bool
+    requested_max_phase5_iter: Annotated[int, Field(ge=1)]
+    effective_max_phase5_iter: Annotated[int, Field(ge=1)]
+    phases: tuple[_PhaseSummary, ...]
+    session_count: Annotated[int, Field(ge=0)]
+    command_count: Annotated[int, Field(ge=0)]
+    overall_status: _Status
+    total_duration_seconds: Annotated[float, Field(ge=0)]
+    artifact_dir: _Text | None
+    telemetry_paths: dict[str, str]
+    before_snapshot_path: _Text | None
+    after_snapshot_path: _Text | None
+    entry_script: _Text | None
+    errors: tuple[str, ...]
+    review_timeout_observability: _ObservabilitySummary
+
+    @model_validator(mode="after")
+    def require_unique_phases(self) -> Self:
+        phase_ids = tuple(phase.phase_id for phase in self.phases)
+        if len(phase_ids) != len(set(phase_ids)):
+            raise PydanticCustomError(
+                "duplicate_phase", "summary phase identifiers must be unique"
+            )
+        return self
+
+
+class ContinuationRequest(_FrozenModel):
+    summary_path: Path
+    child_run_id: _SafeId
+
+
+class ResolvedTerminalParent(_FrozenModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        frozen=True, extra="forbid", arbitrary_types_allowed=True
+    )
+
+    run_id: RunId
+    status: TerminalParentStatus
+    output_project: Path
+    workflow_path: Path
+    workflow_digest: Sha256Digest
+    terminal_anchor: TerminalAnchor
+    run_manifest: RunManifest
+    resource_manifest: ResourceManifest
+
+
+class ResolvedAuthority(NamedTuple):
+    parent: ResolvedTerminalParent
+    authoritative_root: Path
+    workspace_digest: Sha256Digest
+
+
+class OwnerMetadata(_FrozenModel):
+    schema_id: Literal["seam.continuation-owner"] = Field(
+        default="seam.continuation-owner",
+        alias="schema",
+        serialization_alias="schema",
+    )
+    schema_version: Literal[1] = 1
+    parent_run_id: _SafeId
+    child_run_id: _SafeId
+    pid: Annotated[int, Field(ge=0)]
+    hostname: _Text
+    acquired_at_utc: _Text
+    owner_token: _Text
