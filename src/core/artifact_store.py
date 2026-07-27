@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import stat
 from typing import Any
 
 from core.phase5_artifact_store import Phase5ArtifactStore
@@ -9,6 +11,8 @@ from core.phase5_attempt_receipt import (
     Phase5AttemptReservation,
     ShellAttemptExecution,
 )
+
+_SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 class ArtifactStore:
@@ -33,6 +37,31 @@ class ArtifactStore:
 
         os.makedirs(self.raw_dir, exist_ok=True)
         os.makedirs(self.validated_dir, exist_ok=True)
+
+    @classmethod
+    def create_exclusive(cls, base_dir: str, run_id: str) -> "ArtifactStore":
+        if _SAFE_RUN_ID.fullmatch(run_id) is None:
+            message = f"run_id is not a safe artifact namespace: {run_id!r}"
+            raise ValueError(message)
+        project_dir = os.path.abspath(base_dir)
+        project_metadata = os.lstat(project_dir)
+        project_attributes = getattr(project_metadata, "st_file_attributes", 0)
+        linked_project = stat.S_ISLNK(project_metadata.st_mode) or bool(
+            project_attributes & 0x400
+        )
+        if linked_project or not stat.S_ISDIR(project_metadata.st_mode):
+            raise OSError("project directory must not be a link or reparse point")
+        artifacts_dir = os.path.join(project_dir, ".sm-artifacts")
+        os.makedirs(artifacts_dir, exist_ok=True)
+        artifact_metadata = os.lstat(artifacts_dir)
+        artifact_attributes = getattr(artifact_metadata, "st_file_attributes", 0)
+        linked = stat.S_ISLNK(artifact_metadata.st_mode) or bool(
+            artifact_attributes & 0x400
+        )
+        if linked or not stat.S_ISDIR(artifact_metadata.st_mode):
+            raise OSError("artifact root must be a real directory")
+        os.mkdir(os.path.join(artifacts_dir, run_id))
+        return cls(project_dir, run_id)
 
     def reserve_phase5_attempt(self) -> Phase5AttemptReservation:
         return self._phase5_store.reserve_attempt()
