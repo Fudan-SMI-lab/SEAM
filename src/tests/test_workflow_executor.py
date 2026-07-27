@@ -28,6 +28,15 @@ from core.config import load_workflow
 from core.validator_engine import ValidatorEngine
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
+from tests.workflow_executor_continuation_cases import (
+    test_hydrate_executor_rejects_empty_child_execution as test_hydrate_executor_rejects_empty_child_execution,
+    test_hydrate_executor_rejects_conditionally_skipped_anchor as test_hydrate_executor_rejects_conditionally_skipped_anchor,
+    test_hydrate_executor_rejects_anchor_returning_skipped as test_hydrate_executor_rejects_anchor_returning_skipped,
+    test_continuation_executor_starts_at_anchor_and_marks_provenance as test_continuation_executor_starts_at_anchor_and_marks_provenance,
+)
+from tests.workflow_executor_continuation_counter_cases import (
+    test_hydrate_phase5_execution_resets_all_loop_counters as test_hydrate_phase5_execution_resets_all_loop_counters,
+)
 
 
 def write_runtime_skill(root: Path, name: str, content: str | None = None) -> Path:

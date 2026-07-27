@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import stat
+import hashlib
 from enum import Enum, unique
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 from pydantic import ValidationError
 from typing_extensions import assert_never
@@ -14,6 +15,7 @@ from .continuation_models import (
     ContinuationErrorKind,
     RunSummaryDocument,
 )
+from .run_manifest import Sha256Digest
 
 _WINDOWS_REPARSE_POINT: Final = 0x400
 _MAX_SUMMARY_BYTES: Final = 2 * 1024 * 1024
@@ -71,7 +73,13 @@ def canonical_existing_path(
             assert_never(unreachable)
 
 
-def parse_explicit_summary(path: Path) -> tuple[Path, RunSummaryDocument]:
+class ExplicitSummarySnapshot(NamedTuple):
+    path: Path
+    document: RunSummaryDocument
+    digest: Sha256Digest
+
+
+def read_explicit_summary_snapshot(path: Path) -> ExplicitSummarySnapshot:
     canonical = canonical_existing_path(
         path, PathKind.FILE, ContinuationErrorKind.UNSAFE_SUMMARY_PATH
     )
@@ -81,13 +89,19 @@ def parse_explicit_summary(path: Path) -> tuple[Path, RunSummaryDocument]:
             "continuation input must be an explicit summary.json",
         )
     try:
-        size = canonical.stat().st_size
-        if size > _MAX_SUMMARY_BYTES:
-            raise _error(
-                ContinuationErrorKind.MALFORMED_SUMMARY,
-                "summary exceeds the bounded input size",
-            )
-        content = canonical.read_bytes()
+        with canonical.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            if size > _MAX_SUMMARY_BYTES:
+                raise _error(
+                    ContinuationErrorKind.MALFORMED_SUMMARY,
+                    "summary exceeds the bounded input size",
+                )
+            content = handle.read(_MAX_SUMMARY_BYTES + 1)
+            if len(content) != size:
+                raise _error(
+                    ContinuationErrorKind.MALFORMED_SUMMARY,
+                    "summary changed while being read",
+                )
         summary = RunSummaryDocument.model_validate_json(content)
     except ContinuationError:
         raise
@@ -96,4 +110,13 @@ def parse_explicit_summary(path: Path) -> tuple[Path, RunSummaryDocument]:
             ContinuationErrorKind.MALFORMED_SUMMARY,
             f"summary is not a valid V3 run summary: {exc}",
         ) from exc
-    return canonical, summary
+    return ExplicitSummarySnapshot(
+        canonical,
+        summary,
+        Sha256Digest(hashlib.sha256(content).hexdigest()),
+    )
+
+
+def parse_explicit_summary(path: Path) -> tuple[Path, RunSummaryDocument]:
+    snapshot = read_explicit_summary_snapshot(path)
+    return snapshot.path, snapshot.document

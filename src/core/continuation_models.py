@@ -162,6 +162,7 @@ class ResolvedTerminalParent(_FrozenModel):
     output_project: Path
     workflow_path: Path
     workflow_digest: Sha256Digest
+    summary_digest: Sha256Digest
     terminal_anchor: TerminalAnchor
     run_manifest: RunManifest
     resource_manifest: ResourceManifest

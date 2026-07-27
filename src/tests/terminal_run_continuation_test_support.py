@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, TypeAlias
+from typing import Final, Literal
 from unittest.mock import Mock
 
 import pytest
-from pydantic import JsonValue, TypeAdapter
+from pydantic import TypeAdapter
 
 from core.artifact_store import ArtifactStore
 from core.continuation import (
@@ -36,68 +35,20 @@ from core.run_manifest import (
     SharedWorkspaceMarker,
 )
 from core.run_outcome import PhaseId, TerminalAnchor
+from tests.terminal_run_continuation_receipt_support import (
+    record_accepted_phase5_receipt,
+)
+from tests.terminal_run_continuation_parent_scenarios import (
+    ParentCanonicalFixture,
+    ParentRun,
+    ParentRunScenario,
+    SummaryPayload,
+)
+from tests.terminal_run_continuation_summary_support import build_summary_payload
 
 PARENT_RUN_ID = RunId("parent-run-001")
 CHILD_RUN_ID = RunId("child-run-001")
-SummaryPayload: TypeAlias = dict[str, JsonValue]
 _JSON_ADAPTER: Final = TypeAdapter(SummaryPayload)
-
-
-@dataclass(frozen=True, slots=True)
-class ParentRun:
-    summary_path: Path
-    report_dir: Path
-    reports_root: Path
-    project_dir: Path
-    workflow_path: Path
-    run_manifest_path: Path
-    workflow_digest: Sha256Digest
-
-
-def _summary_payload(
-    parent: ParentRun, status: str, phase_status: str
-) -> SummaryPayload:
-    return {
-        "run_id": str(PARENT_RUN_ID),
-        "base_url": "http://127.0.0.1:4096",
-        "workflow_path": str(parent.workflow_path),
-        "output_dir": str(parent.report_dir),
-        "temp_dir": str(parent.project_dir),
-        "keep_temp_dir": True,
-        "requested_max_phase5_iter": 5,
-        "effective_max_phase5_iter": 5,
-        "phases": [
-            {
-                "phase_number": 5,
-                "phase_id": "phase_5_validation",
-                "label": "phase_5_validation",
-                "status": phase_status,
-                "duration_seconds": 1.25,
-                "error": "validation failed" if phase_status == "failed" else None,
-            }
-        ],
-        "session_count": 2,
-        "command_count": 3,
-        "overall_status": status,
-        "total_duration_seconds": 4.5,
-        "artifact_dir": None,
-        "telemetry_paths": {},
-        "before_snapshot_path": None,
-        "after_snapshot_path": None,
-        "entry_script": "python app.py",
-        "errors": ["validation failed"] if status == "FAIL" else [],
-        "review_timeout_observability": {
-            "schema_version": "1.0",
-            "review_count": 0,
-            "reviews": [],
-            "timeout_count": 0,
-            "timeouts": [],
-            "exhaustion_count": 0,
-            "dropped_event_count": 0,
-            "review_duration_seconds": 0.0,
-            "timeout_elapsed_seconds": 0.0,
-        },
-    }
 
 
 def create_parent_run(
@@ -106,12 +57,17 @@ def create_parent_run(
     status: str = "PASS",
     phase_status: str = "passed",
     anchor_phase: str = "phase_5_validation",
+    scenario: ParentRunScenario | None = None,
 ) -> ParentRun:
     project_dir = tmp_path / "output-project"
     project_dir.mkdir()
     reports_root = tmp_path / "e2e-reports"
     workflow_path = tmp_path / "materialized-workflow.yaml"
-    workflow_bytes = b"name: pinned-workflow\nversion: 1\n"
+    workflow_bytes = (
+        scenario.workflow_bytes
+        if scenario is not None
+        else b"name: pinned-workflow\nversion: 1\n"
+    )
     _ = workflow_path.write_bytes(workflow_bytes)
     workflow_digest = Sha256Digest(hashlib.sha256(workflow_bytes).hexdigest())
     context = RunStorageContext.bind(reports_root, project_dir)
@@ -134,7 +90,30 @@ def create_parent_run(
         sealed_evidence=(),
     )
     working = ArtifactStore(str(project_dir), str(PARENT_RUN_ID))
-    _ = working.mark_validated("phase_5_validation", {"status": phase_status})
+    canonical_outputs = (
+        scenario.canonical_outputs
+        if scenario is not None
+        else (ParentCanonicalFixture("phase_5_validation", {"status": phase_status}),)
+    )
+    for canonical in canonical_outputs:
+        _ = working.save_phase_output(
+            canonical.phase_id, {"raw_phase": canonical.phase_id}
+        )
+        _ = working.mark_validated(canonical.phase_id, canonical.value)
+    phase5_status = (
+        next(
+            (
+                phase.status
+                for phase in scenario.phases
+                if phase.phase_id == "phase_5_validation"
+            ),
+            phase_status,
+        )
+        if scenario is not None
+        else phase_status
+    )
+    if phase5_status == "passed":
+        record_accepted_phase5_receipt(working, project_dir)
     run_store = RunManifestStore.create(context, manifest)
     _ = run_store.seal_working_evidence(working)
     report_dir = reports_root / str(PARENT_RUN_ID)
@@ -179,7 +158,7 @@ def create_parent_run(
         run_manifest_path=report_dir / "run-manifest.v1.json",
         workflow_digest=workflow_digest,
     )
-    write_summary(parent, _summary_payload(parent, status, phase_status))
+    write_summary(parent, build_summary_payload(parent, status, phase_status, scenario))
     return parent
 
 

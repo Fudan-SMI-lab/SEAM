@@ -4,6 +4,7 @@ variable passing, and stagnation detection."""
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import importlib
@@ -45,6 +46,12 @@ from core.execution_backend import (
     ContainerBackend,
     get_execution_context as _get_exec_ctx,
     get_execution_environment_context as _get_exec_env_ctx,
+)
+from core.continuation_hydration_models import (
+    ContinuationHydration,
+    ContinuationHydrationError,
+    ContinuationHydrationErrorKind,
+    require_executable_hydration,
 )
 from core.artifact_store import ArtifactStore
 from core.phase5_attempt_receipt import (
@@ -107,6 +114,7 @@ from core.v3_outcome_mapping import Phase5Decision
 from core.v3_phase5_runtime import (
     Phase5RuntimeConfig,
     build_executor_run_outcome,
+    phase5_decision_with_inherited_attempt,
     phase5_decision_from_runtime,
 )
 from core.run_outcome import PhaseId
@@ -423,6 +431,7 @@ class WorkflowExecutor:
         hook_manager: HookManager | None = None,
         experience_store=None,
         exec_backend: Any = None,
+        continuation: ContinuationHydration | None = None,
     ) -> None:
         self.workflow = workflow
         self.session_mgr = session_mgr
@@ -444,6 +453,13 @@ class WorkflowExecutor:
         self.telemetry_observer = telemetry_observer
         self.experience_store = experience_store
         self.exec_backend = exec_backend
+        self._continuation = continuation
+        if continuation is not None:
+            require_executable_hydration(
+                continuation,
+                tuple(phase.id for phase in self.workflow.phases),
+                tuple(self.workflow.terminals),
+            )
         self._initialize_execution_backend()
         self._container_env_probe = getattr(self, "_container_env_probe", None)
         self._runtime_skill_resolver: RuntimeSkillResolver | None = None
@@ -459,6 +475,27 @@ class WorkflowExecutor:
             {}
         )  # phase_id -> {status, duration, ...}
         self.state: dict[str, dict[str, Any]] = {}  # phase_id -> canonical output
+        self.state_provenance: dict[str, dict[str, Any]] = {}
+        if continuation is not None:
+            self.state = copy.deepcopy(dict(continuation.initial_state))
+            for inherited in continuation.phase_results:
+                reference = inherited.canonical_reference
+                reference_payload = {
+                    "phase_id": str(reference.phase_id),
+                    "artifact_name": reference.artifact_name,
+                    "digest": str(reference.digest),
+                }
+                self.phase_results[str(inherited.phase_id)] = {
+                    "status": "success",
+                    "duration": 0,
+                    "inherited": True,
+                    "canonical_reference": reference_payload.copy(),
+                }
+                self.state_provenance[inherited.state_key] = {
+                    "phase_id": str(inherited.phase_id),
+                    "inherited": True,
+                    "canonical_reference": reference_payload.copy(),
+                }
         self.phase_index: dict[str, int] = {}  # phase_id -> index in workflow.phases
 
         for i, p in enumerate(self.workflow.phases or []):
@@ -724,7 +761,13 @@ class WorkflowExecutor:
         # 3. Iterate through phases
         phases = self.workflow.phases or []
         terminals = set(self.workflow.terminals or [])
-        current_phase_id: str | None = phases[0].id if phases else None
+        current_phase_id: str | None = (
+            str(self._continuation.start_phase_id)
+            if self._continuation is not None
+            else phases[0].id
+            if phases
+            else None
+        )
         phase5_decision: Phase5Decision | None = None
         terminal_failure_anchor: PhaseId | None = None
         workflow_globals = self.workflow.globals or {}
@@ -757,12 +800,21 @@ class WorkflowExecutor:
                     getattr(self.workflow, "experience", None), "phase7_enabled", True
                 )
                 if not p7_cfg:
+                    if self._continuation is not None and phase.id == str(
+                        self._continuation.start_phase_id
+                    ):
+                        raise ContinuationHydrationError(
+                            ContinuationHydrationErrorKind.EMPTY_CHILD_EXECUTION,
+                            f"continuation anchor was skipped: {phase.id}",
+                        )
                     logger.info("Phase '%s' skipped (phase7_enabled=false)", phase.id)
                     self.phase_results[phase.id] = {
                         "status": "skipped",
                         "duration": 0,
                         "reason": "phase7_disabled",
                     }
+                    if self._continuation is not None:
+                        self.phase_results[phase.id]["inherited"] = False
                     idx = self.phase_index.get(phase.id, -1)
                     phases_list = self.workflow.phases or []
                     if idx >= 0 and idx + 1 < len(phases_list):
@@ -775,12 +827,21 @@ class WorkflowExecutor:
             if phase.condition:
                 cond_met = self._evaluate_condition(phase.condition, self.state, ctx)
                 if not cond_met:
+                    if self._continuation is not None and phase.id == str(
+                        self._continuation.start_phase_id
+                    ):
+                        raise ContinuationHydrationError(
+                            ContinuationHydrationErrorKind.EMPTY_CHILD_EXECUTION,
+                            f"continuation anchor condition was false: {phase.id}",
+                        )
                     logger.info("Phase '%s' condition FALSE → skipped", phase.id)
                     self.phase_results[phase.id] = {
                         "status": "skipped",
                         "duration": 0,
                         "reason": "condition_false",
                     }
+                    if self._continuation is not None:
+                        self.phase_results[phase.id]["inherited"] = False
                     next_id = self._get_next_phase_id(phase, "skipped", self.state, ctx)
                     current_phase_id = next_id
                     continue
@@ -830,6 +891,8 @@ class WorkflowExecutor:
                             "duration": time.time() - start_t,
                             "target": next_id,
                         }
+                        if self._continuation is not None:
+                            self.phase_results[phase.id]["inherited"] = False
                         self._set_telemetry_active_phase(None)
                         continue
                     status = "success"
@@ -873,17 +936,35 @@ class WorkflowExecutor:
                 phase5_decision = decision
                 status = decision.parent_disposition.value
 
+            if (
+                self._continuation is not None
+                and phase.id == str(self._continuation.start_phase_id)
+                and status == "skipped"
+            ):
+                raise ContinuationHydrationError(
+                    ContinuationHydrationErrorKind.EMPTY_CHILD_EXECUTION,
+                    f"hydrated anchor was skipped during execution: {phase.id}",
+                )
+
             # Record results
             self.phase_results[phase.id] = {
                 "status": status,
                 "duration": round(duration, 3),
                 "output_summary": str(output)[:500] if output else "",
             }
+            if self._continuation is not None:
+                self.phase_results[phase.id]["inherited"] = False
 
             # Update state
             if isinstance(output, dict):
                 key = phase.output_as or phase.id
                 self.state[key] = output
+                if self._continuation is not None:
+                    self.state_provenance[key] = {
+                        "phase_id": phase.id,
+                        "inherited": False,
+                        "canonical_reference": None,
+                    }
 
             # Save to artifact store
             if isinstance(output, dict) and status == "success":
@@ -925,17 +1006,25 @@ class WorkflowExecutor:
 
         # 7. Return final result
         if v3_enabled:
-            return {
+            result = {
                 "state": self.state,
                 "phase_results": self.phase_results,
                 "status": "complete",
                 "run_outcome": build_executor_run_outcome(
                     self.phase_results,
                     current_phase_id,
-                    phase5_decision,
+                    phase5_decision_with_inherited_attempt(
+                        phase5_decision,
+                        self._continuation.parent_accepted_attempt
+                        if self._continuation is not None
+                        else None,
+                    ),
                     terminal_failure_anchor,
                 ),
             }
+            if self._continuation is not None:
+                result["state_provenance"] = self.state_provenance
+            return result
         return {
             "state": self.state,
             "phase_results": self.phase_results,
@@ -4075,7 +4164,12 @@ class WorkflowExecutor:
         loop_vars = self._resolve_input_mapping(phase, state, context)
 
         # 3. Initialize loop state
-        loop_state: dict[str, Any] = {"stagnation_count": 0}
+        loop_state: dict[str, Any] = {
+            "iteration": 0,
+            "stagnation_count": 0,
+            "last_error_signature": "",
+            "review_reject_count": 0,
+        }
         loop_history: list[dict] = []
         stagnation_threshold = int(
             sub_wf_def.stagnation_threshold

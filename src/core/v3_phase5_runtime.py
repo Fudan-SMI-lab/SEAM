@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing_extensions import TypeAlias
 
 from core.review_gate import ReviewGate
+from core.continuation_hydration_models import ParentAcceptedAttemptReference
 from core.run_outcome import PhaseId, RunOutcome, WorkflowTerminal
 from core.v3_outcome_mapping import (
     ExecutedPhase,
@@ -17,6 +18,7 @@ from core.v3_outcome_mapping import (
     evaluate_phase5,
     parse_phase5_execution_disposition,
     parse_phase_disposition,
+    PhaseDisposition,
 )
 
 
@@ -94,6 +96,7 @@ def build_executor_run_outcome(
             ),
         )
         for phase_id, phase_result in phase_results.items()
+        if phase_result.get("inherited") is not True
         for status_value in (phase_result.get("status"),)
     )
     return build_v3_run_outcome(
@@ -105,4 +108,20 @@ def build_executor_run_outcome(
             phase5_decision=phase5_decision,
             terminal_failure_anchor=terminal_failure_anchor,
         )
+    )
+
+
+def phase5_decision_with_inherited_attempt(
+    decision: Phase5Decision | None,
+    reference: ParentAcceptedAttemptReference | None,
+) -> Phase5Decision | None:
+    if decision is not None or reference is None:
+        return decision
+    return Phase5Decision(
+        validation_succeeded=True,
+        review_outcome=reference.review_outcome,
+        review_rounds=reference.review_rounds,
+        review_fail_closed=reference.review_fail_closed,
+        accepted_attempt_id=reference.attempt_id,
+        parent_disposition=PhaseDisposition.SUCCEEDED,
     )

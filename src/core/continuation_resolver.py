@@ -17,9 +17,13 @@ from .continuation_models import (
 from .continuation_paths import (
     PathKind,
     canonical_existing_path,
-    parse_explicit_summary,
+    read_explicit_summary_snapshot,
 )
 from .continuation_resource import open_existing_resource_manifest
+from .continuation_workflow_snapshot import (
+    WorkflowSnapshotError,
+    read_workflow_snapshot,
+)
 from .resource_manifest import ResourceManifestIdentity
 from .run_manifest import (
     ManifestErrorKind,
@@ -172,7 +176,9 @@ def _open_run_manifest(
 
 
 def resolve_authority(summary_path: Path) -> ResolvedAuthority:
-    canonical_summary, summary = parse_explicit_summary(summary_path)
+    summary_snapshot = read_explicit_summary_snapshot(summary_path)
+    canonical_summary = summary_snapshot.path
+    summary = summary_snapshot.document
     status = _terminal_status(summary)
     expectation = _terminal_expectation(status)
     report_dir = _require_summary_identity(canonical_summary, summary)
@@ -186,9 +192,11 @@ def resolve_authority(summary_path: Path) -> ResolvedAuthority:
         PathKind.FILE,
         ContinuationErrorKind.WORKFLOW_MISMATCH,
     )
-    workflow_digest = Sha256Digest(
-        hashlib.sha256(workflow_path.read_bytes()).hexdigest()
-    )
+    try:
+        workflow_content = read_workflow_snapshot(workflow_path)
+    except WorkflowSnapshotError as exc:
+        raise _error(ContinuationErrorKind.WORKFLOW_MISMATCH, str(exc)) from exc
+    workflow_digest = Sha256Digest(hashlib.sha256(workflow_content).hexdigest())
     try:
         context = RunStorageContext.bind(report_dir.parent, output_project)
     except RunManifestError as exc:
@@ -230,6 +238,7 @@ def resolve_authority(summary_path: Path) -> ResolvedAuthority:
             output_project=output_project,
             workflow_path=workflow_path,
             workflow_digest=workflow_digest,
+            summary_digest=summary_snapshot.digest,
             terminal_anchor=run_manifest.terminal_anchor,
             run_manifest=run_manifest,
             resource_manifest=resource_manifest,
