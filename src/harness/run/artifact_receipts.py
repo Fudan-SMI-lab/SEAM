@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 from typing_extensions import override
 
-from .models import FinalizationStage, RunArtifacts, RunArtifactUpdate
+from .finalization_contract import RunArtifactUpdate
+from .models import FinalizationStage, RunArtifacts
 from .artifact_paths import (
     ArtifactPathKind,
     ArtifactReceipt,
@@ -25,7 +27,7 @@ class ArtifactProvenanceError(ValueError):
         return f"{self.path}: {self.detail}"
 
 
-ArtifactReceiptError = SidecarValidationError | ArtifactProvenanceError
+ArtifactReceiptError: TypeAlias = SidecarValidationError | ArtifactProvenanceError
 
 
 @dataclass(frozen=True, slots=True)
