@@ -7,7 +7,7 @@ import re
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol, cast, runtime_checkable
 
 from harness.session.manager import extract_json_response
@@ -108,6 +108,8 @@ def _rewrite_container_to_host_path(
     rel = path_str[len(safe) :].lstrip("/")
     if not rel:
         return project_dir
+    if project_dir.startswith("/"):
+        return str(PurePosixPath(project_dir) / rel)
     return str(Path(project_dir) / rel)
 
 
