@@ -14,6 +14,8 @@ REPO_ROOT = SRC_ROOT.parent
 
 def _wsl_path(path: Path) -> str:
     resolved = path.resolve()
+    if os.name != "nt":
+        return resolved.as_posix()
     drive = resolved.drive.removesuffix(":").lower()
     suffix = resolved.as_posix().split(":", maxsplit=1)[1]
     return f"/mnt/{drive}{suffix}"
@@ -99,6 +101,7 @@ def test_v3_launcher_checked_out_bytes_parse_directly(script_name: str) -> None:
     assert completed.returncode == 0, completed.stderr
 
 
+@pytest.mark.integration
 def test_v3_launcher_defers_session_diagnostics_until_after_ownership(
     tmp_path: Path,
 ) -> None:

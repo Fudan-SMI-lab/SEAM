@@ -4,33 +4,35 @@ import sys
 from pathlib import Path
 from typing import cast
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from core.paths import execution_root
 from scripts.e2e_smoke_test import MockSessionManager
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-def test_verify_improvements_accepts_seam_execution_root(tmp_path: Path) -> None:
+
+def test_verify_improvements_accepts_seam_execution_root() -> None:
+    script = (PROJECT_ROOT / "scripts" / "verify_improvements.sh").read_bytes()
     result = subprocess.run(
         [
             "bash",
-            str(PROJECT_ROOT / "scripts" / "verify_improvements.sh"),
+            "-s",
+            "--",
             "--output-dir",
-            str(tmp_path),
+            ".",
             "--repo-root",
-            str(execution_root()),
+            "..",
         ],
         cwd=PROJECT_ROOT,
+        input=script.replace(b"\r\n", b"\n"),
         capture_output=True,
-        text=True,
         check=False,
     )
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "Results: 4 passed, 0 failed" in result.stdout
+    assert result.returncode == 0, stdout + stderr
+    assert "Results: 4 passed, 0 failed" in stdout
 
 
 def test_e2e_smoke_help_does_not_run_smoke() -> None:
