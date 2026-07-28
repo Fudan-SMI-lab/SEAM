@@ -30,6 +30,7 @@ from tests.phase5_receipt_security_cases import (
     test_finalized_gate_evidence_substitution_invalidates_authority as _gate_evidence_case,
 )
 from tests.phase5_persistence_failure_cases import (
+    test_compatibility_exhaustion_requires_finalized_receipt_authority as _compatibility_persistence_case,
     test_internal_receipt_failure_rolls_back_attempt_files as _rollback_case,
     test_metadata_hash_failure_rolls_back_shell_artifacts as _hash_rollback_case,
     test_successful_rerun_with_receipt_failure_cannot_reuse_prior_attempt as _persistence_case,
@@ -215,6 +216,9 @@ test_mutated_invocation_cannot_be_accepted = _invocation_case
 test_accepted_receipt_cannot_transition_back_to_finalized = _monotonic_case
 test_finalized_gate_evidence_substitution_invalidates_authority = _gate_evidence_case
 test_internal_receipt_failure_rolls_back_attempt_files = _rollback_case
+test_compatibility_exhaustion_requires_finalized_receipt_authority = (
+    _compatibility_persistence_case
+)
 test_metadata_hash_failure_rolls_back_shell_artifacts = _hash_rollback_case
 test_successful_rerun_with_receipt_failure_cannot_reuse_prior_attempt = (
     _persistence_case

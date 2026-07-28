@@ -133,6 +133,32 @@ def accept_phase5_receipt(
     if decision.accepted_attempt_id is None:
         if not decision.validation_succeeded:
             return decision
+        if (
+            decision.review_outcome is ReviewOutcome.REJECT_EXHAUSTED
+            and not decision.review_fail_closed
+        ):
+            loop_state_value = output.get("loop_state")
+            loop_state = (
+                loop_state_value if isinstance(loop_state_value, Mapping) else {}
+            )
+            metadata_value = loop_state.get("latest_shell_attempt_artifacts")
+            metadata = metadata_value if isinstance(metadata_value, Mapping) else {}
+            receipt_path = metadata.get("receipt_path")
+            authority = (
+                artifact_store.phase5_attempt_authority(receipt_path)
+                if isinstance(receipt_path, str) and receipt_path
+                else None
+            )
+            if authority is not None and authority.finalized_digest is not None:
+                return decision
+            logger.warning(
+                "Compatibility Phase 5 success has no finalized attempt receipt"
+            )
+            return replace(
+                decision,
+                validation_succeeded=False,
+                parent_disposition=PhaseDisposition.FAILED,
+            )
         logger.warning("Successful Phase 5 decision has no accepted attempt receipt")
         return replace(
             decision,

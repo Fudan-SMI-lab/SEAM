@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
-from typing import Protocol, final
+from contextvars import ContextVar, Token
+from types import TracebackType
+from typing import Literal, Protocol, final
 
 from .resource_retention import ContainerDeletionError
+from .resource_retention import ContainerCleanupStatus
 from .resource_retention_lifecycle import (
     RetentionBackend,
     RetentionLifecycleMeasurement,
@@ -83,14 +83,8 @@ class RetentionLifecycleRecorder:
                 "unknown",
                 "authorized cleanup finalization stage required",
             )
-        if self._binding is not None and (
-            self._bound_backend is not finalizer.backend
-            or self._bound_container_id
-            != (
-                finalizer.backend.container_id
-                if finalizer.backend is not None
-                else None
-            )
+        if self._binding is not None and not self._identity_matches(
+            finalizer.backend, value
         ):
             raise ContainerDeletionError(
                 finalizer.backend.container_id
@@ -134,10 +128,8 @@ class RetentionLifecycleRecorder:
             or record is None
             or binding is None
             or self._measurement_issued
-            or self._bound_backend is not backend
             or self._record_backend is not backend
-            or self._bound_container_id
-            != (backend.container_id if backend is not None else None)
+            or not self._identity_matches(backend, record)
         ):
             raise ContainerDeletionError(
                 backend.container_id
@@ -150,13 +142,70 @@ class RetentionLifecycleRecorder:
         self._measurement_issued = True
         return _issue_retention_lifecycle_measurement(record, backend, binding)
 
+    def recorded_deletion_matches(self, backend: RetentionBackend | None) -> bool:
+        record = self._record
+        return (
+            record is not None
+            and self._record_backend is backend
+            and self._bound_backend is backend
+            and self._bound_container_id is not None
+            and backend is not None
+            and backend.container_id is None
+            and record.cleanup_status is ContainerCleanupStatus.DELETED
+            and record.post_state == "absent"
+        )
 
-@contextmanager
+    def _identity_matches(
+        self,
+        backend: RetentionBackend | None,
+        record: RetentionLifecycleRecord,
+    ) -> bool:
+        if self._bound_backend is not backend:
+            return False
+        current_id = backend.container_id if backend is not None else None
+        return self._bound_container_id == current_id or (
+            self._bound_container_id is not None
+            and current_id is None
+            and record.cleanup_status is ContainerCleanupStatus.DELETED
+            and record.post_state == "absent"
+        )
+
+
+@final
+class _AuthorizedRetentionFinalization:
+    __slots__ = ("_finalizer", "_token")
+
+    def __init__(self, finalizer: RetentionMeasurementProducer) -> None:
+        self._finalizer = finalizer
+        self._token: Token[RetentionMeasurementProducer | None] | None = None
+
+    def __enter__(self) -> None:
+        if self._token is not None:
+            backend = self._finalizer.backend
+            raise ContainerDeletionError(
+                backend.container_id
+                if backend is not None and backend.container_id is not None
+                else "unknown",
+                "unknown",
+                "unknown",
+                "retention finalization grant already active",
+            )
+        self._token = _ACTIVE_RETENTION_FINALIZER.set(self._finalizer)
+
+    def __exit__(
+        self,
+        _error_type: type[BaseException] | None,
+        _error: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> Literal[False]:
+        token = self._token
+        if token is not None:
+            _ACTIVE_RETENTION_FINALIZER.reset(token)
+            self._token = None
+        return False
+
+
 def _authorized_retention_finalization(
     finalizer: RetentionMeasurementProducer,
-) -> Iterator[None]:
-    token = _ACTIVE_RETENTION_FINALIZER.set(finalizer)
-    try:
-        yield
-    finally:
-        _ACTIVE_RETENTION_FINALIZER.reset(token)
+) -> _AuthorizedRetentionFinalization:
+    return _AuthorizedRetentionFinalization(finalizer)

@@ -103,12 +103,20 @@ class ContainerRetentionFinalizer:
                 pass
             case unreachable:
                 assert_never(unreachable)
+        container_id = backend.container_id
         try:
             with _authorized_container_cleanup(authority):
                 receipt = backend.delete_container(authority)
         except ContainerDeletionError as error:
             self._record_failure(entry, error)
             raise
+        if receipt.container_id != container_id:
+            raise ContainerDeletionError(
+                container_id,
+                receipt.pre_state,
+                receipt.post_state,
+                "deletion receipt identity differs from requested backend",
+            )
         self.recorder._record_measured(
             self,
             RetentionLifecycleRecord(

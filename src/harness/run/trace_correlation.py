@@ -51,7 +51,7 @@ def _parent_trace_reference(
     continuation: PreparedTerminalContinuation,
 ) -> ParentTraceReference | None:
     parent_run_id = continuation.parent.run_id
-    expected = f"{parent_run_id}/trace/manifest.json"
+    expected = "trace/manifest.json"
     matches = tuple(
         item
         for item in continuation.evidence.parent_report_inventory
@@ -63,6 +63,7 @@ def _parent_trace_reference(
     return ParentTraceReference(
         run_id=parent_run_id,
         manifest_path=continuation.evidence.context.authoritative_root
+        / str(parent_run_id)
         / Path(evidence.relative_path),
         sha256=evidence.digest,
         size_bytes=evidence.size_bytes,

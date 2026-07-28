@@ -7,8 +7,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.artifact_store import ArtifactStore
+from core.phase5_attempt_runtime import accept_phase5_receipt
 from core.phase5_attempt_receipt import load_attempt_receipt
+from core.run_outcome import ReviewOutcome
 from core.types import PhaseDefinition, SubWorkflowDefinition, WorkflowDefinition
+from core.v3_outcome_mapping import Phase5Decision, PhaseDisposition
 from core.workflow_executor import WorkflowExecutor
 from tests.phase5_receipt_test_support import execution
 
@@ -135,6 +138,29 @@ def test_internal_receipt_failure_rolls_back_attempt_files(
     assert not Path(f"{prefix}.stderr.log").exists()
     assert not Path(f"{prefix}.meta.json").exists()
     assert not Path(attempt.reservation.receipt_path).exists()
+
+
+def test_compatibility_exhaustion_requires_finalized_receipt_authority(
+    tmp_path: Path,
+) -> None:
+    # Given compatibility review exhaustion after successful shell validation.
+    decision = Phase5Decision(
+        validation_succeeded=True,
+        review_outcome=ReviewOutcome.REJECT_EXHAUSTED,
+        review_rounds=(),
+        review_fail_closed=False,
+        accepted_attempt_id=None,
+        parent_disposition=PhaseDisposition.SUCCEEDED,
+    )
+    store = ArtifactStore(str(tmp_path), "run-compatibility-persistence-failure")
+
+    # When current receipt persistence produced no finalized authority.
+    revised = accept_phase5_receipt({"loop_state": {}}, decision, store)
+
+    # Then compatibility cannot turn unpersisted validation into PASS authority.
+    assert revised.validation_succeeded is False
+    assert revised.accepted_attempt_id is None
+    assert revised.parent_disposition is PhaseDisposition.FAILED
 
 
 def test_metadata_hash_failure_rolls_back_shell_artifacts(

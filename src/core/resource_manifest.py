@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Literal, final
+from typing import TYPE_CHECKING, final
 
 if TYPE_CHECKING:
     from .resource_retention_lifecycle import (
@@ -53,6 +53,7 @@ from .resource_manifest_paths import (
     bind_resource_directory,
     require_bound_resource_directory,
 )
+from .resource_manifest_status import TerminalResourceStatus
 from .resource_manifest_models import (
     RESOURCE_MANIFEST_FILENAME as RESOURCE_MANIFEST_FILENAME,
     RESOURCE_MANIFEST_SCHEMA as RESOURCE_MANIFEST_SCHEMA,
@@ -70,6 +71,7 @@ from .resource_manifest_models import (
     ResourceManifestIdentity as ResourceManifestIdentity,
     ResourceManifestUpdate as ResourceManifestUpdate,
 )
+
 from .resource_manifest_initial import build_initial_manifest as build_initial_manifest
 from .resource_manifest_validation import merge_update, validate_manifest_structure
 
@@ -241,9 +243,7 @@ class ResourceManifestStore:
     def seal(
         self,
         expected_revision: int,
-        terminal_status: Literal[
-            "passed", "passed_with_reviews", "failed", "cancelled", "error"
-        ],
+        terminal_status: TerminalResourceStatus,
     ) -> ResourceManifest:
         with self._thread_lock, ResourceManifestLock(self.context.report_dir):
             current = self.read()

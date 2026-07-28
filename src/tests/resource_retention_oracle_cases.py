@@ -9,10 +9,14 @@ import pytest
 from core.resource_manifest import ResourceManifestError
 from core.resource_retention import (
     ContainerCleanupStatus,
+    ContainerDeleteAuthority,
+    ContainerDeletionReceipt,
     ContainerDeletionError,
     ContainerRetention,
+    resolve_v3_container_retention,
 )
 from core.resource_retention_finalizer import (
+    ContainerRetentionFinalizer,
     RetentionLifecycleRecorder,
     _authorized_retention_finalization,
 )
@@ -22,6 +26,7 @@ from core.resource_retention_lifecycle import (
 )
 from core.resource_retention_manifest import RetentionManifestFinalizer
 from tests.resource_retention_manifest_cases import _retained_store
+from tests.resource_retention_test_support import RecordingBackend, container_workflow
 
 
 def test_recorder_subclass_cannot_issue_forged_measurement(tmp_path: Path) -> None:
@@ -142,3 +147,55 @@ def test_measurement_capability_cannot_be_copied(tmp_path: Path) -> None:
 
     # Then the original remains the sole consumable capability.
     assert store.read().sealed is False
+
+
+def test_retention_finalization_grant_reentry_cannot_leak_authority(
+    tmp_path: Path,
+) -> None:
+    # Given one harness-owned retention finalization grant.
+    policy = resolve_v3_container_retention(
+        container_workflow(), ContainerRetention.DELETE, "run-safe-24"
+    )
+    backend = RecordingBackend()
+    finalizer = ContainerRetentionFinalizer(
+        policy, backend, tmp_path, RetentionLifecycleRecorder()
+    )
+    grant = _authorized_retention_finalization(finalizer)
+
+    # When the same grant is re-entered inside its active scope.
+    with grant:
+        with pytest.raises(ContainerDeletionError, match="already active"):
+            with grant:
+                pass
+
+    # Then authority is absent after exit and cannot trigger deletion.
+    with pytest.raises(ContainerDeletionError, match="finalization stage"):
+        finalizer.run()
+    assert backend.delete_calls == []
+
+
+def test_deletion_receipt_must_match_captured_backend_identity(tmp_path: Path) -> None:
+    # Given an owned backend that returns a receipt for another container.
+    policy = resolve_v3_container_retention(
+        container_workflow(), ContainerRetention.DELETE, "run-safe-24"
+    )
+    backend = RecordingBackend()
+    recorder = RetentionLifecycleRecorder()
+    finalizer = ContainerRetentionFinalizer(policy, backend, tmp_path, recorder)
+
+    def mismatched_delete(
+        authority: ContainerDeleteAuthority,
+    ) -> ContainerDeletionReceipt:
+        backend.delete_calls.append(authority)
+        backend._container_id = None
+        return ContainerDeletionReceipt("foreign-id", "running", "absent")
+
+    # When destructive cleanup reports success for that foreign identity.
+    with patch.object(backend, "delete_container", mismatched_delete):
+        with _authorized_retention_finalization(finalizer):
+            with pytest.raises(ContainerDeletionError, match="receipt identity"):
+                finalizer.run()
+
+    # Then no authenticated lifecycle record can be issued from the receipt.
+    with pytest.raises(ContainerDeletionError, match="cleanup did not run"):
+        _ = recorder.require_record(backend)

@@ -25,6 +25,9 @@ from .resource_manifest import (
     build_initial_manifest,
     build_opencode_facts,
 )
+from .resource_manifest_status import (
+    TerminalResourceStatus as TerminalResourceStatus,
+)
 from .resource_retention import (
     ContinuationContainerDeleteAuthority,
     CurrentRunContainerDeleteAuthority,
@@ -40,9 +43,6 @@ from .resource_retention_lifecycle import (
 from .types import ExecutionBackendConfig
 
 BackendMode = Literal["auto", "local", "container"]
-TerminalResourceStatus = Literal[
-    "passed", "passed_with_reviews", "failed", "cancelled", "error"
-]
 
 
 class ManifestContainerBackend(RetentionBackend, Protocol):
@@ -249,7 +249,12 @@ class RetentionManifestFinalizer:
         terminal_status: TerminalResourceStatus,
     ) -> Path:
         backend = self.backend
-        if backend is not None and backend.container_id != self._captured_container_id:
+        deleted = self.recorder.recorded_deletion_matches(backend)
+        if (
+            backend is not None
+            and backend.container_id != self._captured_container_id
+            and not deleted
+        ):
             raise ResourceManifestError(
                 ResourceManifestErrorKind.RUN_CONTEXT_MISMATCH,
                 "retained backend identity changed before manifest sealing",
