@@ -152,6 +152,7 @@ class _StopCoordinatorProbe(BaseException):
     pass
 
 
+@pytest.mark.e2e
 def test_continuation_coordinator_uses_fresh_sessions_without_copy_or_selector(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -234,6 +235,7 @@ def test_continuation_coordinator_uses_fresh_sessions_without_copy_or_selector(
     assert session_ids == ["session-1", "session-2"]
 
 
+@pytest.mark.e2e
 def test_terminal_continuation_allocates_fresh_child_context_per_invocation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

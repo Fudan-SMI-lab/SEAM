@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from .e2e_v3_runtime_review_cases import (
     test_v3_runtime_accepts_review_and_publishes_authoritative_evidence as test_v3_runtime_accepts_review_and_publishes_authoritative_evidence,
     test_v3_runtime_post_acceptance_timeout_logs_attempt_without_repost as test_v3_runtime_post_acceptance_timeout_logs_attempt_without_repost,
@@ -26,6 +28,8 @@ from .e2e_v3_runtime_continuation_cases import (
     test_v3_runtime_continuation_anchor_matrix_runs_fresh_child_only as test_v3_runtime_continuation_anchor_matrix_runs_fresh_child_only,
     test_v3_runtime_missing_environment_refuses_before_child_side_effects as test_v3_runtime_missing_environment_refuses_before_child_side_effects,
 )
+
+pytestmark = pytest.mark.e2e
 
 __all__ = (
     "test_v3_runtime_accepts_review_and_publishes_authoritative_evidence",
