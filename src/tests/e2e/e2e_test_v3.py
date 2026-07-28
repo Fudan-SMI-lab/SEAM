@@ -16,10 +16,16 @@ from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
 from core.review_policy import ReviewCliOverrides
 from core.execution_backend import ContainerBackend
+from core.execution_env_context import (
+    Phase2EnvironmentReport,
+    Phase2EnvironmentRequest,
+)
 from core.resource_manifest import ResourceManifestError, ResourceManifestErrorKind
 from core.resource_retention import (
     ContainerRetention,
@@ -36,6 +42,11 @@ from core.resource_retention_manifest import (
 )
 from core.run_manifest import RunId
 from core.run_outcome import RunOutcome, WorkflowTerminal
+from core.v3_runtime_report import V3RuntimeReport
+from core.v3_runtime_report_integration import (
+    RuntimeReportingInputs,
+    prepare_runtime_report_request,
+)
 from core.terminal_continuation_models import (
     PreparedTerminalContinuation,
     TerminalContinuationRunRequest,
@@ -74,7 +85,11 @@ from harness.run import (
 )
 from harness.run.finalizer import build_run_summary
 from harness.run.v3_retention import (
-    compose_v3_retention_hooks,
+    _compose_v3_retention_hooks,
+)
+from harness.run.v3_runtime_reporting import (
+    V3RuntimeReportRecorder,
+    print_runtime_report,
 )
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
@@ -319,6 +334,7 @@ def print_summary(
     summary: RunSummary,
     *,
     finalization_failed: bool = False,
+    runtime_report: V3RuntimeReport | None = None,
 ) -> None:
     if finalization_failed:
         print()
@@ -351,6 +367,9 @@ def print_summary(
         print("- Errors:")
         for error in summary.errors:
             print(f"  - {error}")
+    if runtime_report is not None:
+        print("- Runtime resources:")
+        print_runtime_report(runtime_report)
 
 
 def build_v3_summary(
@@ -621,6 +640,10 @@ def run_e2e_v3(
     traceback_text: str | None = None
     retention_cleanup: ContainerRetentionFinalizer | None = None
     retention_manifest: RetentionManifestFinalizer | None = None
+    retention_backend = None
+    resource_store = None
+    artifact_store = None
+    executor = None
     retention_manifest_error: OSError | ResourceManifestError | None = None
     continuation_evidence_sealed = False
     authoritative_outcome = build_v3_run_outcome(
@@ -1033,8 +1056,54 @@ def run_e2e_v3(
     )
     counts = lifecycle.counts()
     finalization_hooks = lifecycle.hooks()
+    phase2_environment = None
+    if executor is not None:
+        phase2_value = executor.state.get("phase_2_venv_create")
+        if isinstance(phase2_value, dict):
+            try:
+                phase2_report = Phase2EnvironmentReport.model_validate(phase2_value)
+            except ValidationError:
+                phase2_report = None
+            if phase2_report is not None:
+                phase2_environment = Phase2EnvironmentRequest(
+                    environment_id="phase2-project-venv",
+                    namespace=(
+                        f"container:{retention_backend.container_id}"
+                        if retention_backend is not None
+                        and retention_backend.container_id is not None
+                        else "host"
+                    ),
+                    container_id=(
+                        retention_backend.container_id
+                        if retention_backend is not None
+                        else None
+                    ),
+                    report=phase2_report,
+                )
+    runtime_report_request = prepare_runtime_report_request(
+        RuntimeReportingInputs(
+            manifest_store=resource_store,
+            artifact_store=artifact_store,
+            outcome=authoritative_outcome,
+            expected_run_id=str(run_id),
+            phase2_environment=phase2_environment,
+        )
+    )
+    runtime_report_recorder = None
+    if observer is not None:
+        runtime_report_recorder = V3RuntimeReportRecorder(
+            runtime_report_request,
+            observer,
+            finalization_hooks.post_cleanup_manifest,
+        )
+        finalization_hooks = FinalizationHooks(
+            evidence_replay=finalization_hooks.evidence_replay,
+            trace_export=finalization_hooks.trace_export,
+            authorized_cleanup=finalization_hooks.authorized_cleanup,
+            post_cleanup_manifest=runtime_report_recorder,
+        )
     if retention_cleanup is not None:
-        finalization_hooks = compose_v3_retention_hooks(
+        finalization_hooks = _compose_v3_retention_hooks(
             finalization_hooks,
             lifecycle.cleanup,
             retention_cleanup,
@@ -1118,11 +1187,17 @@ def run_e2e_v3(
                 )
             ),
             summary_required=continuation is not None,
+            runtime_report_source=(
+                runtime_report_recorder.read
+                if runtime_report_recorder is not None
+                else None
+            ),
         )
     )
     print_summary(
         finalization.summary,
         finalization_failed=finalization.finalization_failed,
+        runtime_report=finalization.runtime_report,
     )
     return finalization.exit_code
 

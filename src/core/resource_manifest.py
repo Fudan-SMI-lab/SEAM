@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Lock
-from typing import Literal, final
+from typing import TYPE_CHECKING, Literal, final
+
+if TYPE_CHECKING:
+    from .resource_retention_lifecycle import (
+        RetentionBackend,
+        RetentionLifecycleMeasurement,
+    )
 
 from .execution_env_context import (
     BackendFactRequest as BackendFactRequest,
@@ -122,6 +128,29 @@ class ResourceManifestContext:
         request: BackendFactRequest,
     ) -> CapturedFacts:
         return _capture_backend(self._authority, request)
+
+    def capture_measured_retention_lifecycle(
+        self,
+        measurement: RetentionLifecycleMeasurement,
+        backend: RetentionBackend | None,
+        expected_revision: int,
+    ) -> ResourceManifestUpdate:
+        from .resource_retention_lifecycle import (
+            consume_retention_lifecycle_measurement,
+            retention_manifest_update,
+        )
+
+        record = consume_retention_lifecycle_measurement(
+            measurement,
+            self,
+            backend,
+        )
+        update = retention_manifest_update(record, expected_revision)
+        return update.model_copy(
+            update={
+                "facts": self._authority.capture_lifecycle_facts(update.facts),
+            }
+        )
 
 
 @final

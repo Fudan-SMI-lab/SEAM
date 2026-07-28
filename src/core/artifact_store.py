@@ -71,6 +71,12 @@ class ArtifactStore:
     ) -> Phase5AttemptAuthority | None:
         return self._phase5_store.authority_for(receipt_path)
 
+    def phase5_attempt_authority_by_id(
+        self,
+        attempt_id: str,
+    ) -> Phase5AttemptAuthority | None:
+        return self._phase5_store.authority_for_attempt(attempt_id)
+
     def record_finalized_phase5_authority(
         self, receipt_path: str, receipt: Phase5AttemptReceipt
     ) -> None:

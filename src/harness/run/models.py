@@ -9,12 +9,14 @@ from typing_extensions import assert_never, override
 
 from core.run_manifest import RunId
 from core.run_outcome import RunOutcome, TerminalOutcome
+from core.v3_runtime_report import V3RuntimeReport
 from core.runtime_observability_models import (
     EMPTY_OBSERVABILITY_SUMMARY,
     ObservabilitySummary,
 )
 
 DurationSource: TypeAlias = Callable[[], float]
+RuntimeReportSource: TypeAlias = Callable[[], V3RuntimeReport | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +127,7 @@ class FinalizationStage(str, Enum):
     TRACE_EXPORT = "trace_export"
     AUTHORIZED_CLEANUP = "authorized_cleanup"
     POST_CLEANUP_MANIFEST = "post_cleanup_manifest"
+    RUNTIME_REPORT = "runtime_report"
     ARTIFACT_FREEZE = "artifact_freeze"
     SUMMARY_WRITE = "summary_write"
 
@@ -197,6 +200,7 @@ class RunFinalizationRequest:
     continuation: ContinuationRunSummary | None = None
     required_stages: frozenset[FinalizationStage] = frozenset()
     summary_required: bool = False
+    runtime_report_source: RuntimeReportSource | None = None
 
     @property
     def frozen_outcome(self) -> RunOutcome | None:
@@ -217,6 +221,7 @@ class FinalizationResult:
     diagnostics: tuple[FinalizationDiagnostic, ...]
     summary_path: str | None
     diagnostics_path: str | None
+    runtime_report: V3RuntimeReport | None = None
     finalization_failed: bool = False
     requested_cleanup_failed: bool = False
 

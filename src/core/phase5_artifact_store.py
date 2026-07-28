@@ -241,6 +241,17 @@ class Phase5ArtifactStore:
     def authority_for(self, receipt_path: str) -> Phase5AttemptAuthority | None:
         return self._authorities.get(str(Path(receipt_path).resolve()))
 
+    def authority_for_attempt(
+        self,
+        attempt_id: str,
+    ) -> Phase5AttemptAuthority | None:
+        matches = tuple(
+            authority
+            for authority in self._authorities.values()
+            if authority.attempt_id == attempt_id
+        )
+        return matches[0] if len(matches) == 1 else None
+
     def record_finalized_authority(
         self, receipt_path: str, receipt: Phase5AttemptReceipt
     ) -> None:

@@ -81,7 +81,7 @@ def test_released_continuation_lock_prohibits_delete_side_effect(
             finalizer.run()
     # Then stop/remove remains prohibited despite the stale typed eligibility.
     assert backend.delete_calls == []
-    assert recorder.require_record().cleanup_status.value == "failed"
+    assert recorder.require_record(backend).cleanup_status.value == "failed"
     assert policy.delete_authority is not None
     workflow = container_workflow("existing_container")
     assert workflow.execution_backend is not None

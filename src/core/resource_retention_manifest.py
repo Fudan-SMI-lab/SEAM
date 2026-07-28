@@ -8,13 +8,19 @@ from typing import Literal, Protocol
 
 from typing_extensions import assert_never
 
-from .execution_env_context import BackendFactRequest, OpenCodeFactRequest
+from .execution_env_context import (
+    BackendFactRequest,
+    EnvironmentProbe,
+    EnvironmentProbeRequest,
+    OpenCodeFactRequest,
+)
 from .resource_manifest import (
     ResourceManifestContext,
     ResourceManifestError,
     ResourceManifestErrorKind,
     ResourceManifestIdentity,
     ResourceManifestStore,
+    ResourceManifestUpdate,
     build_backend_facts,
     build_initial_manifest,
     build_opencode_facts,
@@ -26,7 +32,10 @@ from .resource_retention import (
 )
 from .resource_retention_finalizer import (
     RetentionLifecycleRecorder,
-    retention_manifest_update,
+)
+from .resource_retention_lifecycle import (
+    RetentionBackend,
+    write_measured_retention_lifecycle,
 )
 from .types import ExecutionBackendConfig
 
@@ -36,14 +45,20 @@ TerminalResourceStatus = Literal[
 ]
 
 
-class ManifestContainerBackend(Protocol):
+class ManifestContainerBackend(RetentionBackend, Protocol):
     config: ExecutionBackendConfig
 
     @property
     def container_id(self) -> str | None: ...
 
     @property
+    def container_name(self) -> str | None: ...
+
+    @property
     def environment_probe_status(self) -> str: ...
+
+    @property
+    def observed_environment_probe(self) -> EnvironmentProbe | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +116,34 @@ def create_retention_manifest(
         launcher.facts + backend_facts + opencode_facts,
         launcher.receipts + backend_receipts,
     )
-    return ResourceManifestStore.create(context, manifest)
+    store = ResourceManifestStore.create(context, manifest)
+    if request.backend is None or request.backend.container_id is None:
+        environment = context.capture_local_environment("execution-python")
+    else:
+        probe = request.backend.observed_environment_probe or EnvironmentProbe(
+            status="error",
+            error=(
+                "container environment probe unavailable: "
+                f"{request.backend.environment_probe_status}"
+            )[:1024],
+        )
+        environment = context._capture_environment_probe(
+            EnvironmentProbeRequest(
+                probe_id="probe-execution-python",
+                environment_id="execution-python",
+                namespace=f"container:{request.backend.container_id}",
+                probe=probe,
+            )
+        )
+    current = store.read()
+    _ = store.write(
+        ResourceManifestUpdate(
+            expected_revision=current.revision,
+            environments=(environment.environment,),
+            probe_receipts=(environment.receipt,),
+        )
+    )
+    return store
 
 
 def _backend_fact_request(request: RetentionManifestRequest) -> BackendFactRequest:
@@ -159,8 +201,12 @@ def _backend_fact_request(request: RetentionManifestRequest) -> BackendFactReque
         framework_ownership_token=ownership_token,
         framework_ownership_label=ownership_label,
         container_runtime=config.runtime,
+        container_name=backend.container_name,
         container_id=backend.container_id,
         image=image,
+        container_workdir=config.container_workdir,
+        container_mount_source=str(request.workspace.resolve()),
+        container_mount_destination=config.container_workdir,
         probe_status=backend.environment_probe_status,
         retention_requested=request.policy.requested.value,
         retention_effective=request.policy.effective.value,
@@ -171,38 +217,48 @@ def _backend_fact_request(request: RetentionManifestRequest) -> BackendFactReque
 class RetentionManifestFinalizer:
     store: ResourceManifestStore
     recorder: RetentionLifecycleRecorder
-    backend: ManifestContainerBackend | None = None
+    backend: RetentionBackend | None = None
     _captured_container_id: str | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         backend = self.backend
+        manifest = self.store.read()
+        manifest_container_id = next(
+            (fact.value for fact in manifest.facts if fact.name == "container.id"),
+            None,
+        )
+        backend_container_id = backend.container_id if backend is not None else None
+        if manifest_container_id != backend_container_id:
+            raise ResourceManifestError(
+                ResourceManifestErrorKind.RUN_CONTEXT_MISMATCH,
+                "manifest container identity differs from retention backend",
+            )
+        self.recorder.bind_manifest(
+            self.store.context,
+            backend,
+            manifest_container_id,
+        )
         object.__setattr__(
             self,
             "_captured_container_id",
-            backend.container_id if backend is not None else None,
+            backend_container_id,
         )
 
     def persist_and_seal(
         self,
         terminal_status: TerminalResourceStatus,
     ) -> Path:
-        record = self.recorder.require_record()
         backend = self.backend
-        if (
-            record.effective.value == "retain"
-            and backend is not None
-            and backend.container_id != self._captured_container_id
-        ):
+        if backend is not None and backend.container_id != self._captured_container_id:
             raise ResourceManifestError(
                 ResourceManifestErrorKind.RUN_CONTEXT_MISMATCH,
                 "retained backend identity changed before manifest sealing",
             )
-        current = self.store.read()
-        revised = self.store.write(
-            retention_manifest_update(
-                record,
-                expected_revision=current.revision,
-            )
+        measurement = self.recorder.issue_measurement(backend)
+        revised = write_measured_retention_lifecycle(
+            self.store,
+            measurement,
+            backend,
         )
         _ = self.store.seal(revised.revision, terminal_status)
         return self.store.path

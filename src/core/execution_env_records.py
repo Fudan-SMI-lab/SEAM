@@ -30,10 +30,15 @@ def build_phase2_environment(request: Phase2EnvironmentRequest) -> EnvironmentRe
     configured = FactProvenance.CONFIGURED
     derived = FactProvenance.DERIVED
     inventory = "\n".join(sorted(request.report.installed_packages)).encode()
+    environment_type = (
+        EnvironmentType.BASE
+        if request.report.env_type == "base_env"
+        else EnvironmentType.PROJECT_VENV
+    )
     facts = (
         build_fact(
             "environment.type",
-            Evidence(EnvironmentType.PROJECT_VENV.value, reported, request.namespace),
+            Evidence(environment_type.value, reported, request.namespace),
         ),
         build_fact(
             "environment.namespace",

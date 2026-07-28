@@ -108,6 +108,15 @@ def build_backend_facts(
             ),
         ),
         (
+            "container.name",
+            Evidence(
+                request.container_name,
+                configured,
+                namespace,
+                "container name unavailable",
+            ),
+        ),
+        (
             "container.id",
             Evidence(
                 request.container_id,
@@ -123,6 +132,33 @@ def build_backend_facts(
                 configured,
                 namespace,
                 "image not configured or externally unknown",
+            ),
+        ),
+        (
+            "container.workdir",
+            Evidence(
+                request.container_workdir,
+                configured,
+                namespace,
+                "not applicable to local execution",
+            ),
+        ),
+        (
+            "container.mount_source",
+            Evidence(
+                request.container_mount_source,
+                configured,
+                namespace,
+                "not applicable to local execution",
+            ),
+        ),
+        (
+            "container.mount_destination",
+            Evidence(
+                request.container_mount_destination,
+                configured,
+                namespace,
+                "not applicable to local execution",
             ),
         ),
         (

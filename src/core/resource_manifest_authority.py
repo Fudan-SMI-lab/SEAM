@@ -26,6 +26,16 @@ from .resource_manifest_paths import (
 _TOP_LEVEL_RESOURCES = frozenset(
     {"resource-launcher", "resource-backend", "resource-opencode"}
 )
+_AUTHENTICATED_LIFECYCLE_FACTS = frozenset(
+    {
+        "retention.cleanup_result",
+        "retention.continuation_available",
+        "retention.entry_command",
+        "retention.owner_kind",
+        "retention.post_state",
+        "retention.pre_state",
+    }
+)
 
 
 @final
@@ -43,6 +53,12 @@ class _ResourceCaptureAuthority:
     def _tag(self, fields: typing.Tuple[str, ...]) -> str:
         framed = "".join(f"{len(field)}:{field}" for field in fields).encode()
         return hmac.new(self._secret, framed, hashlib.sha256).hexdigest()
+
+    def capture_lifecycle_facts(
+        self,
+        facts: typing.Tuple[ProvenanceFact, ...],
+    ) -> typing.Tuple[ProvenanceFact, ...]:
+        return _capture_lifecycle_facts(self, facts)
 
 
 def create_resource_capture_authority(
@@ -100,6 +116,18 @@ def _signed_fact(
                 _fact_fields(authority, fact, resource_id, probe_type)
             )
         }
+    )
+
+
+def _capture_lifecycle_facts(
+    authority: _ResourceCaptureAuthority,
+    facts: typing.Tuple[ProvenanceFact, ...],
+) -> typing.Tuple[ProvenanceFact, ...]:
+    return tuple(
+        _signed_fact(authority, fact, "resource-lifecycle", "lifecycle")
+        if fact.name in _AUTHENTICATED_LIFECYCLE_FACTS
+        else fact
+        for fact in facts
     )
 
 
@@ -234,3 +262,9 @@ def require_manifest_authority(
                 _require_fact_tag(
                     authority, fact, environment.environment_id, "environment"
                 )
+    for fact in manifest.facts:
+        if (
+            fact.name in _AUTHENTICATED_LIFECYCLE_FACTS
+            and fact.authority_tag is not None
+        ):
+            _require_fact_tag(authority, fact, "resource-lifecycle", "lifecycle")

@@ -55,8 +55,12 @@ class BackendFactRequest(_FrozenModel):
         framework_ownership_token: typing.Optional[_Text] = None
         framework_ownership_label: typing.Optional[_Text] = None
         container_runtime: typing.Optional[_Text] = None
+        container_name: typing.Optional[_Text] = None
         container_id: typing.Optional[_SafeId] = None
         image: typing.Optional[_Text] = None
+        container_workdir: typing.Optional[_Text] = None
+        container_mount_source: typing.Optional[_Text] = None
+        container_mount_destination: typing.Optional[_Text] = None
         retention_requested: typing.Optional[Literal["retain", "delete"]] = None
         retention_effective: typing.Optional[Literal["retain", "delete"]] = None
     else:
@@ -68,8 +72,12 @@ class BackendFactRequest(_FrozenModel):
         framework_ownership_token: typing.Optional[_Text] = None
         framework_ownership_label: typing.Optional[_Text] = None
         container_runtime: typing.Optional[_Text] = None
+        container_name: typing.Optional[_Text] = None
         container_id: typing.Optional[_SafeId] = None
         image: typing.Optional[_Text] = None
+        container_workdir: typing.Optional[_Text] = None
+        container_mount_source: typing.Optional[_Text] = None
+        container_mount_destination: typing.Optional[_Text] = None
         retention_requested: typing.Optional[Literal["retain", "delete"]] = None
         retention_effective: typing.Optional[Literal["retain", "delete"]] = None
     owner_kind: Literal["framework", "user", "external", "unknown"] = "framework"
@@ -88,8 +96,12 @@ class BackendFactRequest(_FrozenModel):
         container_context = (
             self.attachment_mode,
             self.container_runtime,
+            self.container_name,
             self.container_id,
             self.image,
+            self.container_workdir,
+            self.container_mount_source,
+            self.container_mount_destination,
         )
         if container and (
             self.attachment_mode is None
@@ -133,20 +145,35 @@ class OpenCodeFactRequest(_FrozenModel):
 
 
 class Phase2EnvironmentReport(_FrozenModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
+    env_type: typing.Optional[Literal["base_env", "venv"]] = None
     venv_path: _Text
     python_path: _Text
     installed_packages: Annotated[typing.Tuple[_Text, ...], Field(max_length=512)]
 
     @model_validator(mode="after")
     def require_safe_paths(self) -> Self:
-        for value in (self.venv_path, self.python_path):
+        for value, path_command_allowed in (
+            (self.venv_path, False),
+            (self.python_path, True),
+        ):
             normalized = value.replace("\\", "/")
             absolute = normalized.startswith("/") or re.match(
                 r"^[A-Za-z]:/", normalized
             )
-            if absolute is None or ".." in normalized.split("/") or "\x00" in value:
+            path_command = (
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", normalized)
+                if path_command_allowed
+                else None
+            )
+            if (
+                (absolute is None and path_command is None)
+                or ".." in normalized.split("/")
+                or "\x00" in value
+            ):
                 raise PydanticCustomError(
-                    "unsafe_path", "environment paths must be bounded absolute paths"
+                    "unsafe_path",
+                    "environment values require an absolute path or PATH executable",
                 )
         return self
 

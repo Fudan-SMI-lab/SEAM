@@ -24,7 +24,7 @@ from .models import (
 
 
 @dataclass(frozen=True, slots=True)
-class V3AuthorizedResourceCleanup:
+class _V3AuthorizedResourceCleanup:
     resources: ResourceCleanup
     container: ContainerRetentionFinalizer
 
@@ -58,7 +58,7 @@ PostCleanupHook = Callable[[TerminalOutcome], RunArtifactUpdate]
 
 
 @dataclass(frozen=True, slots=True)
-class V3RetentionManifestHook:
+class _V3RetentionManifestHook:
     manifest: RetentionManifestFinalizer
     existing: PostCleanupHook
 
@@ -82,7 +82,7 @@ class V3RetentionManifestHook:
 
 
 @dataclass(frozen=True, slots=True)
-class V3RetentionManifestFailureHook:
+class _V3RetentionManifestFailureHook:
     error: OSError | ResourceManifestError
     existing: PostCleanupHook
 
@@ -91,7 +91,7 @@ class V3RetentionManifestFailureHook:
         raise self.error
 
 
-def compose_v3_retention_hooks(
+def _compose_v3_retention_hooks(
     hooks: FinalizationHooks,
     resources: ResourceCleanup,
     container: ContainerRetentionFinalizer,
@@ -100,12 +100,12 @@ def compose_v3_retention_hooks(
 ) -> FinalizationHooks:
     post_cleanup = hooks.post_cleanup_manifest
     if manifest is not None:
-        post_cleanup = V3RetentionManifestHook(manifest, post_cleanup)
+        post_cleanup = _V3RetentionManifestHook(manifest, post_cleanup)
     elif manifest_error is not None:
-        post_cleanup = V3RetentionManifestFailureHook(manifest_error, post_cleanup)
+        post_cleanup = _V3RetentionManifestFailureHook(manifest_error, post_cleanup)
     return FinalizationHooks(
         evidence_replay=hooks.evidence_replay,
         trace_export=hooks.trace_export,
-        authorized_cleanup=V3AuthorizedResourceCleanup(resources, container),
+        authorized_cleanup=_V3AuthorizedResourceCleanup(resources, container),
         post_cleanup_manifest=post_cleanup,
     )

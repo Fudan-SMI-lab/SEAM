@@ -172,6 +172,23 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
         if validation.errors and stage in request.required_stages:
             finalization_failed = True
 
+    runtime_report = None
+    if request.runtime_report_source is not None:
+        try:
+            runtime_report = request.runtime_report_source()
+        except Exception as exc:
+            logger.warning(
+                "Runtime reporting failed with %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            diagnostics.append(
+                FinalizationDiagnostic(
+                    FinalizationStage.RUNTIME_REPORT,
+                    type(exc).__name__,
+                    str(exc),
+                )
+            )
     frozen = freeze_artifacts(report_dir, receipts)
     _append_artifact_diagnostics(
         diagnostics, FinalizationStage.ARTIFACT_FREEZE, frozen.errors
@@ -185,6 +202,7 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
                 summary_path,
                 summary,
                 request.continuation,
+                runtime_report,
             )
         except SidecarWriteError as exc:
             diagnostics.append(
@@ -212,6 +230,7 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
         diagnostics=tuple(diagnostics),
         summary_path=persisted_summary_path,
         diagnostics_path=persisted_diagnostics_path,
+        runtime_report=runtime_report,
         finalization_failed=finalization_failed,
         requested_cleanup_failed=requested_cleanup_failed,
     )

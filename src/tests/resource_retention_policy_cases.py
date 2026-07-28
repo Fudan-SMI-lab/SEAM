@@ -26,7 +26,7 @@ from core.resource_retention_finalizer import (
 from core.run_outcome import TerminalOutcome
 from core.types import WorkflowDefinition
 from harness.run import FinalizationHooks, RunArtifactUpdate
-from harness.run.v3_retention import compose_v3_retention_hooks
+from harness.run.v3_retention import _compose_v3_retention_hooks
 from tests.resource_retention_test_support import RecordingBackend, container_workflow
 
 
@@ -84,11 +84,13 @@ def test_retain_finalizer_has_no_delete_side_effect() -> None:
     backend = RecordingBackend()
     recorder = RetentionLifecycleRecorder()
     # When post-evidence cleanup runs.
-    ContainerRetentionFinalizer(
+    finalizer = ContainerRetentionFinalizer(
         policy, backend, Path.cwd(), recorder, _evidence_available
-    ).run()
+    )
+    with _authorized_retention_finalization(finalizer):
+        finalizer.run()
     # Then the container remains available and no delete command is requested.
-    record = recorder.require_record()
+    record = recorder.require_record(backend)
     assert backend.delete_calls == []
     assert record.cleanup_status.value == "retained"
     assert record.continuation_available is True
@@ -107,7 +109,7 @@ def test_owned_delete_finalizer_records_removed_state() -> None:
     with _authorized_retention_finalization(finalizer):
         finalizer.run()
     # Then exactly one typed deletion occurs and continuation becomes unavailable.
-    record = recorder.require_record()
+    record = recorder.require_record(backend)
     assert len(backend.delete_calls) == 1
     assert record.cleanup_status.value == "deleted"
     assert record.post_state == "absent"
@@ -124,14 +126,13 @@ def test_cleanup_failure_is_persistable_without_losing_policy() -> None:
     )
     recorder = RetentionLifecycleRecorder()
     # When explicit deletion fails.
-    finalizer = ContainerRetentionFinalizer(
-        policy, RecordingBackend(failure), Path.cwd(), recorder
-    )
+    backend = RecordingBackend(failure)
+    finalizer = ContainerRetentionFinalizer(policy, backend, Path.cwd(), recorder)
     with _authorized_retention_finalization(finalizer):
         with pytest.raises(ContainerDeletionError):
             finalizer.run()
     # Then the frozen policy and truthful partial state are available to the manifest.
-    record = recorder.require_record()
+    record = recorder.require_record(backend)
     facts = {
         fact.name: fact.value
         for fact in retention_manifest_update(record, expected_revision=3).facts
@@ -202,7 +203,7 @@ def test_manifest_setup_failure_preserves_authorized_cleanup(tmp_path: Path) -> 
         ResourceManifestErrorKind.WRITE_INTERRUPTED,
         "manifest initialization failed",
     )
-    hooks = compose_v3_retention_hooks(
+    hooks = _compose_v3_retention_hooks(
         FinalizationHooks.empty(), resources, cleanup, None, failure
     )
     # When finalization runs cleanup and then required manifest publication.
@@ -239,8 +240,10 @@ def test_local_continuation_availability_requires_finalization_evidence(
         return evidence_available
 
     # When the lifecycle records a run without a container.
-    ContainerRetentionFinalizer(
+    finalizer = ContainerRetentionFinalizer(
         policy, None, tmp_path, recorder, finalized_evidence
-    ).run()
+    )
+    with _authorized_retention_finalization(finalizer):
+        finalizer.run()
     # Then availability requires both the project and finalized evidence.
-    assert recorder.require_record().continuation_available is expected
+    assert recorder.require_record(None).continuation_available is expected

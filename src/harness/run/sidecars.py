@@ -7,6 +7,8 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
+from core.v3_runtime_report import V3RuntimeReport
+
 from .models import (
     ContinuationRunSummary,
     FinalizationDiagnostic,
@@ -75,10 +77,13 @@ def write_summary(
     path: Path,
     summary: RunSummary,
     continuation: ContinuationRunSummary | None = None,
+    runtime_report: V3RuntimeReport | None = None,
 ) -> str:
     payload = asdict(summary)
     if continuation is not None:
         payload["continuation"] = asdict(continuation)
+    if runtime_report is not None:
+        payload["runtime"] = runtime_report.model_dump(mode="json")
     text = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
     _atomic_write(path, text.replace("\n", os.linesep).encode())
     return str(path)

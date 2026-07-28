@@ -11,6 +11,7 @@ from typing_extensions import Annotated, Self, override
 from .resource_manifest import ResourceManifest
 from .run_manifest import RunId, RunManifest, Sha256Digest
 from .run_outcome import TerminalAnchor
+from .v3_runtime_report import V3RuntimeReport
 
 _SafeId = Annotated[
     str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -145,6 +146,7 @@ class RunSummaryDocument(_FrozenModel):
     errors: tuple[str, ...]
     review_timeout_observability: _ObservabilitySummary
     continuation: _ContinuationRunSummary | None = None
+    runtime: V3RuntimeReport | None = None
 
     @model_validator(mode="after")
     def require_unique_phases(self) -> Self:

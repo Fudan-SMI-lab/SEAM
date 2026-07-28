@@ -9,8 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from pydantic import ValidationError
 from typing_extensions import assert_never
 
+from core.execution_env_context import EnvironmentProbe
 from core.phase5_attempt_receipt import BackendExecution, BackendKind
 from core.continuation_environment_probe import (
     inspect_retained_container as inspect_retained_container,
@@ -169,12 +171,14 @@ class ContainerBackend:
             )
         self.config = config
         self._container_id: str | None = None
+        self._container_name: str | None = None
         self._initialized = False
         self._runtime_cmd = "docker" if config.runtime == "docker" else "podman"
         self._host_project_dir: str | None = None
         self._last_execution: BackendExecution | None = None
         self._delete_authority: ContainerDeleteAuthority | None = None
         self._environment_probe_status = "not_requested"
+        self._observed_environment_probe: EnvironmentProbe | None = None
 
     @classmethod
     def _for_v3(
@@ -191,8 +195,16 @@ class ContainerBackend:
         return self._container_id
 
     @property
+    def container_name(self) -> str | None:
+        return self._container_name
+
+    @property
     def environment_probe_status(self) -> str:
         return self._environment_probe_status
+
+    @property
+    def observed_environment_probe(self) -> EnvironmentProbe | None:
+        return self._observed_environment_probe
 
     def _resolve_candidate_images(self) -> list[str]:
         """Return the ordered list of candidate images, normalized.
@@ -581,6 +593,7 @@ class ContainerBackend:
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create container: {result.stderr.strip()}")
         self._container_id = result.stdout.strip()
+        self._container_name = cname
         self._initialized = True
         logger.info("Container created: %s", self._container_id)
 
@@ -654,6 +667,7 @@ class ContainerBackend:
                     )
 
         self._container_id = container_id
+        self._container_name = cname
         self._initialized = True
         logger.info("Existing container validated: %s (%s)", cname, container_id)
 
@@ -1048,6 +1062,8 @@ class ContainerBackend:
 
         probe_script = (
             "import json\n"
+            "import hashlib\n"
+            "import importlib.metadata\n"
             "import os\n"
             "import platform\n"
             "import sys\n"
@@ -1055,9 +1071,15 @@ class ContainerBackend:
             "facts = {\n"
             '    "status": "ok",\n'
             '    "interpreter_path": sys.executable,\n'
+            '    "interpreter_realpath": os.path.realpath(sys.executable),\n'
+            '    "sys_executable": sys.executable,\n'
+            '    "sys_prefix": sys.prefix,\n'
+            '    "sys_base_prefix": sys.base_prefix,\n'
+            '    "python_implementation": platform.python_implementation(),\n'
             '    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",\n'
             '    "platform": platform.system(),\n'
             '    "platform_machine": platform.machine(),\n'
+            '    "package_inventory_hash": hashlib.sha256("\\n".join(sorted(f"{d.metadata.get(\'Name\')}=={d.version}" for d in importlib.metadata.distributions() if d.metadata.get(\'Name\'))).encode()).hexdigest(),\n'
             '    "cwd": os.getcwd(),\n'
             '    "env_keys": sorted(os.environ.keys()),\n'
             "}\n"
@@ -1131,6 +1153,33 @@ class ContainerBackend:
             result["error"] = str(exc)
 
         self._environment_probe_status = str(result.get("status", "unknown"))
+        if self._environment_probe_status == "ok":
+            try:
+                self._observed_environment_probe = EnvironmentProbe(
+                    status="ok",
+                    interpreter_realpath=result.get("interpreter_realpath"),
+                    sys_executable=result.get("sys_executable"),
+                    sys_prefix=result.get("sys_prefix"),
+                    sys_base_prefix=result.get("sys_base_prefix"),
+                    python_implementation=result.get("python_implementation"),
+                    python_version=result.get("python_version"),
+                    platform=result.get("platform"),
+                    architecture=result.get("platform_machine"),
+                    package_inventory_hash=result.get("package_inventory_hash"),
+                )
+            except ValidationError:
+                self._observed_environment_probe = EnvironmentProbe(
+                    status="error",
+                    error="container environment probe returned incomplete facts",
+                )
+        else:
+            self._observed_environment_probe = EnvironmentProbe(
+                status="error",
+                error=str(
+                    result.get("error")
+                    or f"container environment probe status: {self._environment_probe_status}"
+                )[:1024],
+            )
         return result
 
     def get_execution_context(
