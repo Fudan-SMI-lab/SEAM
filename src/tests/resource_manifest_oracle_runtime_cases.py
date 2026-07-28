@@ -6,9 +6,13 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_task16_production_path_executes_on_cpython_38() -> None:
     # Given the project's declared minimum CPython runtime.
     uv = shutil.which("uv")

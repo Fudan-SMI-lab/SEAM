@@ -6,6 +6,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -37,6 +39,8 @@ def _run_cpython38(script: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_real_task5_finalizer_executes_resource_hook_on_cpython_38() -> None:
     # Given the declared minimum runtime imports the public Task 5 facade.
     uv = shutil.which("uv")
@@ -131,6 +135,8 @@ def test_real_task5_finalizer_executes_resource_hook_on_cpython_38() -> None:
     assert "TASK5_REAL_FINALIZER_PY38=PASS" in result.stdout
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_py38_finalizer_isolates_ordinary_exceptions_and_propagates_controls() -> None:
     # Given the real Python 3.8 facade and every finalization hook stage.
     script = textwrap.dedent(
@@ -246,6 +252,8 @@ def test_py38_finalizer_isolates_ordinary_exceptions_and_propagates_controls() -
     assert "CONTROL_MATRIX=8" in result.stdout
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_py38_required_stage_rejected_output_fails_closed() -> None:
     # Given
     script = textwrap.dedent(
