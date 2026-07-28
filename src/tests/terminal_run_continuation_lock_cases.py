@@ -10,11 +10,13 @@ from unittest.mock import Mock
 import pytest
 
 import core.continuation_lock as continuation_lock
+from core.continuation_lock_identity import LockPathSnapshot
 from core.continuation import (
     ContinuationError,
     ContinuationErrorKind,
     ContinuationRequest,
     claim_terminal_parent,
+    current_project_owner_lock,
 )
 from tests.terminal_run_continuation_test_support import (
     CHILD_RUN_ID,
@@ -162,3 +164,120 @@ def test_lock_keeps_owner_handle_open_for_claim_lifetime(
 
     # Then release closes the retained owner handle.
     assert opened[0].closed
+
+
+def test_active_lock_revalidates_path_after_handle_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a pathname snapshot whose bytes differ from the retained owner handle.
+    parent = create_parent_run(tmp_path)
+    lock_path = _lock_path(parent.project_dir, parent.reports_root)
+    replacement = b'{"owner":"replacement"}\n'
+    original_snapshot = continuation_lock.read_lock_path_snapshot
+    snapshot_calls = 0
+
+    def mismatched_snapshot(path: Path, maximum_bytes: int) -> LockPathSnapshot:
+        nonlocal snapshot_calls
+        snapshot = original_snapshot(path, maximum_bytes)
+        snapshot_calls += 1
+        if snapshot_calls == 1:
+            return LockPathSnapshot(snapshot.identity, replacement)
+        return snapshot
+
+    # When active validation races with pathname replacement.
+    with claim_terminal_parent(
+        ContinuationRequest(
+            summary_path=parent.summary_path,
+            child_run_id=CHILD_RUN_ID,
+        )
+    ):
+        owner = current_project_owner_lock()
+        assert owner is not None
+        monkeypatch.setattr(
+            continuation_lock,
+            "read_lock_path_snapshot",
+            mismatched_snapshot,
+        )
+        observed_active = owner.active
+
+    # Then stale handle validity is rejected and normal release remains safe.
+    assert observed_active is False
+    assert not lock_path.exists()
+
+
+def test_release_never_unlinks_post_validation_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given replacement immediately after release's final path validation.
+    parent = create_parent_run(tmp_path)
+    lock_path = _lock_path(parent.project_dir, parent.reports_root)
+    replacement = b'{"owner":"replacement"}\n'
+    original_lstat = Path.lstat
+    target_calls = 0
+
+    def replace_after_final_validation(path: Path):
+        nonlocal target_calls
+        metadata = original_lstat(path)
+        if path == lock_path:
+            target_calls += 1
+            if target_calls == 2:
+                path.unlink()
+                _ = path.write_bytes(replacement)
+        return metadata
+
+    # When deterministic release reaches the unlink boundary.
+    with pytest.raises(ContinuationError) as raised:
+        with claim_terminal_parent(
+            ContinuationRequest(
+                summary_path=parent.summary_path,
+                child_run_id=CHILD_RUN_ID,
+            )
+        ):
+            monkeypatch.setattr(Path, "lstat", replace_after_final_validation)
+
+    # Then another owner's replacement is not removed by pathname.
+    assert raised.value.kind is ContinuationErrorKind.LOCK_RELEASE
+    assert lock_path.read_bytes() == replacement
+
+
+def test_partial_cleanup_never_unlinks_post_validation_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given failed lock publication and a replacement after cleanup validation.
+    parent = create_parent_run(tmp_path)
+    lock_path = _lock_path(parent.project_dir, parent.reports_root)
+    replacement = b'{"owner":"replacement"}\n'
+    original_lstat = Path.lstat
+    replaced = False
+
+    def replace_after_validation(path: Path):
+        nonlocal replaced
+        metadata = original_lstat(path)
+        if path == lock_path and not replaced:
+            replaced = True
+            path.unlink()
+            _ = path.write_bytes(replacement)
+        return metadata
+
+    def fail_publication(_descriptor: int) -> None:
+        raise OSError("forced publication failure")
+
+    monkeypatch.setattr(continuation_lock.os, "fsync", fail_publication)
+    monkeypatch.setattr(Path, "lstat", replace_after_validation)
+
+    # When partial publication cleanup reaches its removal boundary.
+    with pytest.raises(ContinuationError):
+        with claim_terminal_parent(
+            ContinuationRequest(
+                summary_path=parent.summary_path,
+                child_run_id=CHILD_RUN_ID,
+            )
+        ):
+            pass
+
+    # Then another owner's replacement remains at the deterministic pathname.
+    assert replaced is True
+    assert lock_path.read_bytes() == replacement

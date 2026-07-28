@@ -10,6 +10,8 @@ if sys.version_info < (3, 10):
     import typing
     from pathlib import Path
 
+    from core.requested_cleanup_error import RequestedContainerCleanupError
+
     from .finalization_contract import (
         FinalizationDiagnostic,
         FinalizationResult,
@@ -129,6 +131,7 @@ if sys.version_info < (3, 10):
         artifacts = request.initial_artifacts
         diagnostics: typing.List[FinalizationDiagnostic] = []
         finalization_failed = False
+        requested_cleanup_failed = False
         for stage, hook in request.hooks.ordered():
             before = _snapshot_report(report_dir)
             try:
@@ -144,6 +147,14 @@ if sys.version_info < (3, 10):
                     )
                     if stage in request.required_stages:
                         finalization_failed = True
+            except RequestedContainerCleanupError as exc:
+                diagnostics.append(
+                    FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
+                )
+                if stage.value == "authorized_cleanup":
+                    requested_cleanup_failed = True
+                if stage in request.required_stages:
+                    finalization_failed = True
             except (Exception,) as exc:
                 diagnostics.append(
                     FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
@@ -186,6 +197,7 @@ if sys.version_info < (3, 10):
             summary_path=persisted_summary_path,
             diagnostics_path=str(diagnostics_path) if diagnostics_path else None,
             finalization_failed=finalization_failed,
+            requested_cleanup_failed=requested_cleanup_failed,
         )
 
 

@@ -14,6 +14,7 @@ from .continuation_hydration_models import ContinuationHydration
 from .continuation_hydration_models import ParentAcceptedAttemptReference
 from .continuation_models import ResolvedTerminalParent
 from .review_policy import ReviewCliOverrides
+from .resource_retention import ContainerRetention
 from .types import WorkflowDefinition
 
 _MAX_PROMPT_CONTEXT_BYTES: Final = 8192
@@ -98,6 +99,7 @@ class V3InvocationOptions:
     agent_name: str | None
     user_constraints: str
     framework_config_path: str | None
+    container_retention: ContainerRetention = ContainerRetention.RETAIN
 
 
 @dataclass(frozen=True, slots=True)

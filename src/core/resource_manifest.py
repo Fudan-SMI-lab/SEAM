@@ -36,6 +36,7 @@ from .resource_manifest_authority import (
 )
 from .resource_manifest_captures import (
     CapturedFacts as CapturedFacts,
+    capture_backend as _capture_backend,
     capture_environment_probe as _capture_environment_probe,
     capture_launcher,
     capture_local_environment as capture_local_environment_with_authority,
@@ -115,6 +116,12 @@ class ResourceManifestContext:
 
     def capture_local_environment(self, environment_id: str) -> ProbedEnvironment:
         return capture_local_environment_with_authority(self._authority, environment_id)
+
+    def _capture_backend_observation(
+        self,
+        request: BackendFactRequest,
+    ) -> CapturedFacts:
+        return _capture_backend(self._authority, request)
 
 
 @final

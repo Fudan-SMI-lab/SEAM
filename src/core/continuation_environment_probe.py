@@ -163,7 +163,9 @@ def inspect_retained_container(
     record = records[0]
     labels = record.Config.Labels
     token = request.expected_ownership_token
-    matched_token = token if token is not None and token in labels.values() else None
+    matched_token = (
+        token if token is not None and labels.get("seam.owner-token") == token else None
+    )
     mounts = tuple(
         BindMount(source=Path(item.Source).resolve(), destination=item.Destination)
         for item in record.Mounts

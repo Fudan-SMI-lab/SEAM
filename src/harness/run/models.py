@@ -218,6 +218,7 @@ class FinalizationResult:
     summary_path: str | None
     diagnostics_path: str | None
     finalization_failed: bool = False
+    requested_cleanup_failed: bool = False
 
     @property
     def exit_code(self) -> int:
@@ -227,7 +228,7 @@ class FinalizationResult:
             case TerminalOutcome.FAILED:
                 return 1
             case TerminalOutcome.PASSED | TerminalOutcome.PASSED_WITH_REVIEWS:
-                return 0
+                return 2 if self.requested_cleanup_failed else 0
             case unreachable:
                 assert_never(unreachable)
 

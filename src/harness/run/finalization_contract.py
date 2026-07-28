@@ -167,14 +167,18 @@ else:
         summary_path: typing.Optional[str]
         diagnostics_path: typing.Optional[str]
         finalization_failed: bool = False
+        requested_cleanup_failed: bool = False
 
         @property
         def exit_code(self) -> int:
-            return (
-                1
-                if self.finalization_failed or self.outcome is TerminalOutcome.FAILED
-                else 0
-            )
+            if self.finalization_failed or self.outcome is TerminalOutcome.FAILED:
+                return 1
+            if (
+                self.requested_cleanup_failed
+                and self.outcome is not TerminalOutcome.FAILED
+            ):
+                return 2
+            return 0
 
 
 __all__ = (

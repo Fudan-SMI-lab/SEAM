@@ -8,6 +8,7 @@ from typing_extensions import assert_never
 
 from core.run_manifest import RunId
 from core.run_outcome import TerminalOutcome
+from core.requested_cleanup_error import RequestedContainerCleanupError
 
 from .artifact_receipts import (
     ArtifactReceiptError,
@@ -125,6 +126,7 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
     outcome = _freeze_outcome(request)
     diagnostics: list[FinalizationDiagnostic] = []
     finalization_failed = False
+    requested_cleanup_failed = False
     report_dir = Path(request.identity.output_dir)
     initial = validate_initial_artifacts(report_dir, request.initial_artifacts)
     receipts = initial.receipts
@@ -137,6 +139,21 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
             validation = validate_artifact_update(
                 report_dir, hook(outcome), before, stage
             )
+        except RequestedContainerCleanupError as exc:
+            logger.warning(
+                "Finalization hook %s failed with %s: %s",
+                stage.value,
+                type(exc).__name__,
+                exc,
+            )
+            diagnostics.append(
+                FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
+            )
+            if stage is FinalizationStage.AUTHORIZED_CLEANUP:
+                requested_cleanup_failed = True
+            if stage in request.required_stages:
+                finalization_failed = True
+            continue
         except Exception as exc:
             logger.warning(
                 "Finalization hook %s failed with %s: %s",
@@ -196,6 +213,7 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
         summary_path=persisted_summary_path,
         diagnostics_path=persisted_diagnostics_path,
         finalization_failed=finalization_failed,
+        requested_cleanup_failed=requested_cleanup_failed,
     )
 
 

@@ -57,6 +57,8 @@ class BackendFactRequest(_FrozenModel):
         container_runtime: typing.Optional[_Text] = None
         container_id: typing.Optional[_SafeId] = None
         image: typing.Optional[_Text] = None
+        retention_requested: typing.Optional[Literal["retain", "delete"]] = None
+        retention_effective: typing.Optional[Literal["retain", "delete"]] = None
     else:
         attachment_mode: typing.Optional[
             Literal["image_created", "existing_container"]
@@ -68,6 +70,8 @@ class BackendFactRequest(_FrozenModel):
         container_runtime: typing.Optional[_Text] = None
         container_id: typing.Optional[_SafeId] = None
         image: typing.Optional[_Text] = None
+        retention_requested: typing.Optional[Literal["retain", "delete"]] = None
+        retention_effective: typing.Optional[Literal["retain", "delete"]] = None
     owner_kind: Literal["framework", "user", "external", "unknown"] = "framework"
     probe_status: _Text = "not_requested"
 

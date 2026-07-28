@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import secrets
 import socket
-import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -23,6 +22,12 @@ from .continuation_models import (
 )
 from .continuation_paths import PathKind, canonical_existing_path
 from .continuation_resolver import resolve_authority
+from .continuation_lock_identity import (
+    LockIdentity,
+    lock_identity,
+    lock_identity_is_linked,
+    read_lock_path_snapshot,
+)
 
 
 def _error(kind: ContinuationErrorKind, detail: str) -> ContinuationError:
@@ -57,7 +62,7 @@ class _ExclusiveProjectLock:
         self._content = (metadata.model_dump_json(by_alias=True) + "\n").encode("utf-8")
         self._identity, self._handle = self._acquire()
 
-    def _acquire(self) -> tuple[tuple[int, int, int, int], BinaryIO]:
+    def _acquire(self) -> tuple[LockIdentity, BinaryIO]:
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         try:
             descriptor = os.open(self._path, flags, 0o600)
@@ -98,29 +103,17 @@ class _ExclusiveProjectLock:
                 handle.close()
             else:
                 os.close(descriptor)
-            self._remove_partial(
-                (
-                    initial.st_dev,
-                    initial.st_ino,
-                    initial.st_mode,
-                    getattr(initial, "st_file_attributes", 0),
-                )
-            )
+            self._remove_partial(lock_identity(initial))
             raise _error(
                 ContinuationErrorKind.LOCK_IO,
                 "exclusive continuation owner publication failed",
             ) from exc
         return (
-            (
-                metadata.st_dev,
-                metadata.st_ino,
-                metadata.st_mode,
-                getattr(metadata, "st_file_attributes", 0),
-            ),
+            lock_identity(metadata),
             handle,
         )
 
-    def _remove_partial(self, identity: tuple[int, int, int, int]) -> None:
+    def _remove_partial(self, identity: LockIdentity) -> None:
         try:
             metadata = self._path.lstat()
         except FileNotFoundError:
@@ -131,19 +124,33 @@ class _ExclusiveProjectLock:
                 "partial continuation owner cleanup failed",
             ) from exc
 
-        current = (
-            metadata.st_dev,
-            metadata.st_ino,
-            metadata.st_mode,
-            getattr(metadata, "st_file_attributes", 0),
-        )
+        current = lock_identity(metadata)
         if current != identity:
             raise _error(
                 ContinuationErrorKind.LOCK_IO,
                 "partial continuation owner changed before cleanup",
             )
+        quarantine = self._path.with_name(
+            f".{self._path.name}.{secrets.token_hex(16)}.partial"
+        )
         try:
-            self._path.unlink()
+            os.replace(self._path, quarantine)
+            quarantined = read_lock_path_snapshot(
+                quarantine,
+                len(self._content) + 1,
+            )
+            if (
+                lock_identity_is_linked(quarantined.identity)
+                or quarantined.identity != identity
+            ):
+                _restore_quarantined_path(quarantine, self._path)
+                raise _error(
+                    ContinuationErrorKind.LOCK_IO,
+                    "partial continuation owner changed during quarantine cleanup",
+                )
+            quarantine.unlink()
+        except ContinuationError:
+            raise
         except OSError as exc:
             raise _error(
                 ContinuationErrorKind.LOCK_IO,
@@ -152,28 +159,47 @@ class _ExclusiveProjectLock:
 
     @property
     def active(self) -> bool:
-        return not self._handle.closed
+        if self._handle.closed:
+            return False
+        try:
+            metadata = self._path.lstat()
+            current = lock_identity(metadata)
+            handle_metadata = os.fstat(self._handle.fileno())
+            handle_identity = lock_identity(handle_metadata)
+            _ = self._handle.seek(0)
+            content_matches = self._handle.read(len(self._content) + 1) == self._content
+            path_snapshot = read_lock_path_snapshot(
+                self._path,
+                len(self._content) + 1,
+            )
+        except OSError:
+            return False
+        return (
+            not lock_identity_is_linked(current)
+            and current == self._identity
+            and handle_identity == self._identity
+            and content_matches
+            and path_snapshot.matches(self._identity, self._content)
+        )
 
     def release(self) -> None:
         try:
             metadata = self._path.lstat()
-            current = (
-                metadata.st_dev,
-                metadata.st_ino,
-                metadata.st_mode,
-                getattr(metadata, "st_file_attributes", 0),
-            )
-            linked = stat.S_ISLNK(metadata.st_mode) or bool(current[3] & 0x400)
+            current = lock_identity(metadata)
             handle_metadata = os.fstat(self._handle.fileno())
-            handle_identity = (
-                handle_metadata.st_dev,
-                handle_metadata.st_ino,
-                handle_metadata.st_mode,
-                getattr(handle_metadata, "st_file_attributes", 0),
-            )
+            handle_identity = lock_identity(handle_metadata)
             _ = self._handle.seek(0)
             content_matches = self._handle.read(len(self._content) + 1) == self._content
-            if linked or current != self._identity or not content_matches:
+            path_snapshot = read_lock_path_snapshot(
+                self._path,
+                len(self._content) + 1,
+            )
+            if (
+                lock_identity_is_linked(current)
+                or current != self._identity
+                or not content_matches
+                or not path_snapshot.matches(self._identity, self._content)
+            ):
                 raise _error(
                     ContinuationErrorKind.LOCK_RELEASE,
                     "continuation owner changed before deterministic release",
@@ -185,18 +211,27 @@ class _ExclusiveProjectLock:
                 )
             self._handle.close()
             final_metadata = self._path.lstat()
-            final_identity = (
-                final_metadata.st_dev,
-                final_metadata.st_ino,
-                final_metadata.st_mode,
-                getattr(final_metadata, "st_file_attributes", 0),
-            )
+            final_identity = lock_identity(final_metadata)
             if final_identity != self._identity:
                 raise _error(
                     ContinuationErrorKind.LOCK_RELEASE,
                     "continuation owner changed during deterministic release",
                 )
-            self._path.unlink()
+            quarantine = self._path.with_name(
+                f".{self._path.name}.{secrets.token_hex(16)}.release"
+            )
+            os.replace(self._path, quarantine)
+            quarantined = read_lock_path_snapshot(
+                quarantine,
+                len(self._content) + 1,
+            )
+            if not quarantined.matches(self._identity, self._content):
+                _restore_quarantined_path(quarantine, self._path)
+                raise _error(
+                    ContinuationErrorKind.LOCK_RELEASE,
+                    "continuation owner changed during quarantine release",
+                )
+            quarantine.unlink()
         except ContinuationError:
             raise
         except OSError as exc:
@@ -207,6 +242,14 @@ class _ExclusiveProjectLock:
         finally:
             if not self._handle.closed:
                 self._handle.close()
+
+
+def _restore_quarantined_path(quarantine: Path, target: Path) -> None:
+    try:
+        os.link(quarantine, target)
+    except FileExistsError:
+        return
+    quarantine.unlink()
 
 
 @dataclass(frozen=True, slots=True)

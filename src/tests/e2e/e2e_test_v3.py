@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
@@ -18,6 +19,21 @@ from uuid import uuid4
 from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
 from core.review_policy import ReviewCliOverrides
+from core.execution_backend import ContainerBackend
+from core.resource_manifest import ResourceManifestError, ResourceManifestErrorKind
+from core.resource_retention import (
+    ContainerRetention,
+    resolve_v3_container_retention,
+)
+from core.resource_retention_finalizer import (
+    ContainerRetentionFinalizer,
+    RetentionLifecycleRecorder,
+)
+from core.resource_retention_manifest import (
+    RetentionManifestFinalizer,
+    RetentionManifestRequest,
+    create_retention_manifest,
+)
 from core.run_manifest import RunId
 from core.run_outcome import RunOutcome, WorkflowTerminal
 from core.terminal_continuation_models import (
@@ -57,6 +73,9 @@ from harness.run import (
     persist_python_snapshot,
 )
 from harness.run.finalizer import build_run_summary
+from harness.run.v3_retention import (
+    compose_v3_retention_hooks,
+)
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
 DEFAULT_MAX_PHASE5_ITER = 5
@@ -493,6 +512,7 @@ def run_terminal_continuation(
                 opencode_readiness=request.opencode.readiness,
                 opencode_message_timeout=request.opencode.message_timeout,
                 continuation=continuation,
+                container_retention=request.invocation.container_retention,
             )
     except (
         ContinuationError,
@@ -525,6 +545,7 @@ def run_e2e_v3(
     opencode_readiness: str = "message",
     opencode_message_timeout: int = 120,
     continuation: PreparedTerminalContinuation | None = None,
+    container_retention: ContainerRetention = ContainerRetention.RETAIN,
 ) -> int:
     _install_sqlite_fallback_if_needed()
 
@@ -598,6 +619,10 @@ def run_e2e_v3(
     telemetry_bridge: TelemetryBridge | None = None
     agent_io_logger: AgentIOLogger | None = None
     traceback_text: str | None = None
+    retention_cleanup: ContainerRetentionFinalizer | None = None
+    retention_manifest: RetentionManifestFinalizer | None = None
+    retention_manifest_error: OSError | ResourceManifestError | None = None
+    continuation_evidence_sealed = False
     authoritative_outcome = build_v3_run_outcome(
         V3RunFacts(
             executed_phases=(),
@@ -769,6 +794,27 @@ def run_e2e_v3(
             f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
         )
 
+        raw_backend_mode = (
+            workflow.execution_backend.mode
+            if workflow.execution_backend is not None
+            else "local"
+        )
+        match raw_backend_mode:
+            case "auto":
+                requested_backend = "auto"
+            case "container":
+                requested_backend = "container"
+            case "local":
+                requested_backend = "local"
+            case _:
+                requested_backend = "local"
+        retention_policy = resolve_v3_container_retention(
+            workflow,
+            container_retention,
+            str(run_id),
+            continuation.eligibility if continuation is not None else None,
+        )
+
         framework_config = load_framework_config(framework_config_path)
         effective_review_policy = resolve_review_policy(
             ReviewPolicyInputs(
@@ -827,6 +873,62 @@ def run_e2e_v3(
             telemetry_bridge=telemetry_bridge,
             experience_store=experience_store,
             continuation=(continuation.hydration if continuation is not None else None),
+            container_delete_authority=retention_policy.delete_authority,
+            defer_execution_backend_cleanup=True,
+            defer_execution_backend_preflight=True,
+        )
+
+        match executor.exec_backend:
+            case ContainerBackend() as retention_backend:
+                pass
+            case _:
+                retention_backend = None
+        retention_recorder = RetentionLifecycleRecorder()
+        retention_cleanup = ContainerRetentionFinalizer(
+            retention_policy,
+            retention_backend,
+            temp_dir,
+            retention_recorder,
+            lambda: continuation_evidence_sealed,
+        )
+        try:
+            executor._preflight_execution_backend()
+        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+            retention_manifest_error = ResourceManifestError(
+                ResourceManifestErrorKind.WRITE_INTERRUPTED,
+                f"backend preflight failed before manifest setup: {exc}",
+            )
+            raise
+        try:
+            resource_store = create_retention_manifest(
+                RetentionManifestRequest(
+                    report_dir=output_dir,
+                    run_id=str(run_id),
+                    requested_workflow=Path(original_workflow_path),
+                    effective_workflow=Path(effective_workflow_path),
+                    workspace=temp_dir,
+                    requested_backend=requested_backend,
+                    endpoint=base_url,
+                    server_process_id=(
+                        server_proc.pid if server_proc is not None else None
+                    ),
+                    policy=retention_policy,
+                    backend=retention_backend,
+                )
+            )
+            retention_manifest = RetentionManifestFinalizer(
+                resource_store,
+                retention_recorder,
+                retention_backend,
+            )
+        except (OSError, ResourceManifestError) as exc:
+            retention_manifest_error = exc
+        retention_cleanup = ContainerRetentionFinalizer(
+            retention_policy,
+            retention_backend,
+            temp_dir,
+            retention_recorder,
+            lambda: continuation_evidence_sealed,
         )
 
         execution_result = executor.execute(
@@ -913,7 +1015,14 @@ def run_e2e_v3(
         cleanup=ResourceCleanup(
             CleanupContext(
                 temp_dir=temp_dir,
-                keep_temp_dir=keep_temp_dir,
+                keep_temp_dir=(
+                    keep_temp_dir
+                    or (
+                        retention_cleanup is not None
+                        and retention_cleanup.policy.effective
+                        is ContainerRetention.RETAIN
+                    )
+                ),
                 owns_temp_dir=continuation is None and project_dir is None,
                 observer=telemetry.observer,
                 server_process=server_proc,
@@ -924,6 +1033,14 @@ def run_e2e_v3(
     )
     counts = lifecycle.counts()
     finalization_hooks = lifecycle.hooks()
+    if retention_cleanup is not None:
+        finalization_hooks = compose_v3_retention_hooks(
+            finalization_hooks,
+            lifecycle.cleanup,
+            retention_cleanup,
+            retention_manifest,
+            retention_manifest_error,
+        )
     continuation_summary = None
     if continuation is not None:
         from core.continuation_evidence import (
@@ -932,11 +1049,13 @@ def run_e2e_v3(
         )
 
         def seal_and_verify_child(_outcome):
+            nonlocal continuation_evidence_sealed
             _ = seal_child_evidence(
                 continuation.evidence,
                 terminal_anchor=authoritative_outcome.terminal_anchor,
             )
             _ = verify_final_child_evidence(continuation.evidence)
+            continuation_evidence_sealed = True
             return RunArtifactUpdate()
 
         finalization_hooks = FinalizationHooks(
@@ -985,10 +1104,18 @@ def run_e2e_v3(
                 else EMPTY_OBSERVABILITY_SUMMARY
             ),
             continuation=continuation_summary,
-            required_stages=(
-                frozenset({FinalizationStage.TRACE_EXPORT})
-                if continuation is not None
-                else frozenset()
+            required_stages=frozenset(
+                (
+                    {FinalizationStage.TRACE_EXPORT}
+                    if continuation is not None
+                    else set()
+                )
+                | (
+                    {FinalizationStage.POST_CLEANUP_MANIFEST}
+                    if retention_manifest is not None
+                    or retention_manifest_error is not None
+                    else set()
+                )
             ),
             summary_required=continuation is not None,
         )
@@ -998,6 +1125,23 @@ def run_e2e_v3(
         finalization_failed=finalization.finalization_failed,
     )
     return finalization.exit_code
+
+
+class _SingleContainerRetentionAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[str] | None,
+        option_string: str | None = None,
+    ) -> None:
+        del option_string
+        if getattr(namespace, "_container_retention_seen", False):
+            parser.error("--container-retention may be supplied only once")
+        if not isinstance(values, str):
+            parser.error("--container-retention requires one value")
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "_container_retention_seen", True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1012,6 +1156,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_review_policy_arguments(parser)
     _ = parser.add_argument("--keep-temp-dir", action="store_true")
+    _ = parser.add_argument(
+        "--container-retention",
+        choices=("retain", "delete"),
+        default="retain",
+        action=_SingleContainerRetentionAction,
+    )
     run_mode = parser.add_mutually_exclusive_group(required=True)
     _ = run_mode.add_argument("--project-dir", type=Path, default=None)
     _ = run_mode.add_argument("--continue-from", type=Path, default=None)
@@ -1091,6 +1241,7 @@ def main() -> int:
                     agent_name=args.agent,
                     user_constraints=user_constraints_text,
                     framework_config_path=args.framework_config,
+                    container_retention=ContainerRetention(args.container_retention),
                 ),
                 opencode=V3OpenCodeOptions(
                     readiness=args.opencode_readiness,
@@ -1115,6 +1266,7 @@ def main() -> int:
         workflow_path=args.workflow_path,
         opencode_readiness=args.opencode_readiness,
         opencode_message_timeout=args.opencode_message_timeout,
+        container_retention=ContainerRetention(args.container_retention),
     )
 
 

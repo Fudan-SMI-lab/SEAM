@@ -52,6 +52,8 @@ Options:
   --review-fail-closed        Fail when review rejection exhausts the maximum (default)
   --no-review-fail-closed     Allow reject exhaustion compatibility outcome
   --no-keep-temp              Don't keep output project directory (default: keep)
+  --container-retention POLICY
+                              Container policy: retain or delete (default: retain)
   --agent NAME                Override auto-detected agent name
   --output-dir DIR            Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --server-no-auto-start       Disable auto-start of OpenCode server
@@ -93,6 +95,7 @@ HAS_MAX_REVIEW_ITER=false
 REVIEW_FAIL_CLOSED=""
 CONTINUE_FROM=""
 PROJECT_ARG=""
+CONTAINER_RETENTION=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -128,6 +131,18 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             CONTINUE_FROM="$2"
+            shift 2
+            ;;
+        --container-retention)
+            if [[ $# -lt 2 || ( "$2" != "retain" && "$2" != "delete" ) ]]; then
+                echo -e "${RED}Error: --container-retention requires retain or delete.${NC}" >&2
+                exit 1
+            fi
+            if [[ -n "$CONTAINER_RETENTION" && "$CONTAINER_RETENTION" != "$2" ]]; then
+                echo -e "${RED}Error: conflicting container retention options.${NC}" >&2
+                exit 1
+            fi
+            CONTAINER_RETENTION="$2"
             shift 2
             ;;
         --max-review-iter)
@@ -228,6 +243,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -z "$CONTAINER_RETENTION" ]]; then
+    CONTAINER_RETENTION="retain"
+fi
+FORWARD_ARGS+=("--container-retention" "$CONTAINER_RETENTION")
 
 if [[ -n "$PROJECT_ARG" && -n "$CONTINUE_FROM" ]]; then
     echo -e "${RED}Error: PROJECT_PATH and --continue-from are mutually exclusive.${NC}" >&2

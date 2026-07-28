@@ -9,12 +9,24 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from typing_extensions import assert_never
+
 from core.phase5_attempt_receipt import BackendExecution, BackendKind
 from core.continuation_environment_probe import (
     inspect_retained_container as inspect_retained_container,
     probe_retained_environment as probe_retained_environment,
 )
+from core.continuation_lock import project_owner_lock_is_active
 from core.types import ExecutionBackendConfig
+from core.resource_retention import (
+    ContainerDeleteAuthority,
+    ContainerDeletionError,
+    ContainerDeletionReceipt,
+    ContinuationContainerDeleteAuthority,
+    CurrentRunContainerDeleteAuthority,
+    _container_cleanup_is_authorized,
+    _framework_container_delete_eligibility_is_verified,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +173,26 @@ class ContainerBackend:
         self._runtime_cmd = "docker" if config.runtime == "docker" else "podman"
         self._host_project_dir: str | None = None
         self._last_execution: BackendExecution | None = None
+        self._delete_authority: ContainerDeleteAuthority | None = None
+        self._environment_probe_status = "not_requested"
+
+    @classmethod
+    def _for_v3(
+        cls,
+        config: ExecutionBackendConfig,
+        delete_authority: ContainerDeleteAuthority,
+    ) -> ContainerBackend:
+        backend = cls(config)
+        backend._delete_authority = delete_authority
+        return backend
+
+    @property
+    def container_id(self) -> str | None:
+        return self._container_id
+
+    @property
+    def environment_probe_status(self) -> str:
+        return self._environment_probe_status
 
     def _resolve_candidate_images(self) -> list[str]:
         """Return the ordered list of candidate images, normalized.
@@ -292,6 +324,11 @@ class ContainerBackend:
                     f"Cached container '{cid}' no longer exists. "
                     f"{result.stderr.strip()}"
                 )
+            if self._delete_authority is not None:
+                raise ContainerNotFoundError(
+                    f"Retained V3 container '{cid}' no longer exists; "
+                    "implicit replacement is prohibited"
+                )
             logger.warning("Cached container '%s' not found — will recreate", cid)
             self._container_id = None
             self._initialized = False
@@ -303,6 +340,11 @@ class ContainerBackend:
                 raise ContainerNotRunningError(
                     f"Cached container '{cid}' status is '{status}', "
                     f"expected 'running'"
+                )
+            if self._delete_authority is not None:
+                raise ContainerNotRunningError(
+                    f"Retained V3 container '{cid}' status is '{status}'; "
+                    "implicit replacement is prohibited"
                 )
             logger.warning(
                 "Cached container '%s' status is '%s' — will recreate",
@@ -412,6 +454,11 @@ class ContainerBackend:
         return inspect_data
 
     def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
+        if self._delete_authority is not None:
+            raise RuntimeError(
+                "V3 retention prohibits destructive container recreation before "
+                "finalization"
+            )
         if self.config.source != "image":
             raise RuntimeError(
                 "Execution environment reset is only supported for source=image "
@@ -509,6 +556,16 @@ class ContainerBackend:
             cmd.extend(["--network", self.config.network_mode])
         for flag in self.config.runtime_flags:
             cmd.append(flag)
+        match self._delete_authority:
+            case CurrentRunContainerDeleteAuthority() as authority:
+                cmd.extend(["--label", authority.ownership_label])
+                cmd.extend(
+                    ["--label", f"seam.owner-token={authority.ownership_token}"]
+                )
+            case ContinuationContainerDeleteAuthority() | None:
+                pass
+            case unreachable:
+                assert_never(unreachable)
         if self.config.cleanup:
             cmd.append("--rm")
 
@@ -712,6 +769,179 @@ class ContainerBackend:
     def latest_execution(self) -> BackendExecution | None:
         return self._last_execution
 
+    def retention_entry_command(self) -> tuple[str, ...]:
+        container_id = self._container_id
+        if container_id is None:
+            return ()
+        return (self._runtime_cmd, "exec", "-it", container_id, "bash")
+
+    def retention_state(self) -> str:
+        container_id = self._container_id
+        if container_id is None:
+            return "absent"
+        try:
+            observed = subprocess.run(
+                [
+                    self._runtime_cmd,
+                    "inspect",
+                    "--format",
+                    "{{.State.Status}}|{{.Id}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "unknown"
+        if observed.returncode != 0:
+            return "absent"
+        state, separator, immutable_id = observed.stdout.strip().partition("|")
+        if not separator or immutable_id != container_id:
+            return "unknown"
+        return state or "unknown"
+
+    def delete_container(
+        self,
+        authority: ContainerDeleteAuthority,
+    ) -> ContainerDeletionReceipt:
+        container_id = self._container_id
+        if container_id is None:
+            raise ContainerDeletionError(
+                "unknown", "absent", "absent", "container identity is unavailable"
+            )
+        if not _container_cleanup_is_authorized(authority):
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "running",
+                "container deletion is outside authorized finalization",
+            )
+        match authority:
+            case CurrentRunContainerDeleteAuthority() as current_authority:
+                authorized = (
+                    self.config.source == "image"
+                    and authority is self._delete_authority
+                )
+                expected_token = current_authority.ownership_token
+                expected_label = current_authority.ownership_label
+            case ContinuationContainerDeleteAuthority(
+                attachment=attachment,
+                eligibility=eligibility,
+            ):
+                authorized = (
+                    authority is self._delete_authority
+                    and _framework_container_delete_eligibility_is_verified(
+                        eligibility
+                    )
+                    and project_owner_lock_is_active(authority.owner_lock)
+                    and self.config.source == "existing_container"
+                    and attachment.container_id == container_id
+                    and attachment.runtime == self._runtime_cmd
+                    and attachment.original_owner_run_id
+                    == eligibility.original_owner_run_id
+                    and attachment.lineage_root_run_id
+                    == eligibility.lineage_root_run_id
+                    and attachment.ownership_token == eligibility.ownership_token
+                    and attachment.ownership_label == eligibility.ownership_label
+                )
+                expected_token = eligibility.ownership_token
+                expected_label = eligibility.ownership_label
+            case unreachable:
+                assert_never(unreachable)
+        if not authorized:
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "running",
+                "container deletion authority does not match the backend",
+            )
+        try:
+            inspected = subprocess.run(
+                [
+                    self._runtime_cmd,
+                    "inspect",
+                    "--format",
+                    "{{.State.Status}}|{{.Id}}|{{json .Config.Labels}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ContainerDeletionError(
+                container_id, "unknown", "unknown", str(exc)
+            ) from exc
+        state, separator, remainder = inspected.stdout.strip().partition("|")
+        immutable_id, id_separator, raw_labels = remainder.partition("|")
+        try:
+            labels = json.loads(raw_labels) if raw_labels else {}
+        except json.JSONDecodeError as exc:
+            raise ContainerDeletionError(
+                container_id, "unknown", "unknown", "container labels are malformed"
+            ) from exc
+        owner_key, owner_separator, owner_value = expected_label.partition("=")
+        ownership_matches = (
+            isinstance(labels, dict)
+            and owner_separator == "="
+            and owner_key == "seam.owner"
+            and labels.get("seam.owner") == owner_value
+            and labels.get("seam.owner-token") == expected_token
+        )
+        if (
+            inspected.returncode != 0
+            or not separator
+            or not id_separator
+            or immutable_id != container_id
+            or state != "running"
+            or not ownership_matches
+        ):
+            raise ContainerDeletionError(
+                container_id,
+                state or "unknown",
+                state or "unknown",
+                "live container identity, state, or ownership changed",
+            )
+        try:
+            stopped = subprocess.run(
+                [self._runtime_cmd, "stop", container_id],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ContainerDeletionError(
+                container_id, "running", "unknown", str(exc)
+            ) from exc
+        if stopped.returncode != 0:
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "running",
+                stopped.stderr.strip() or "container stop failed",
+            )
+        try:
+            removed = subprocess.run(
+                [self._runtime_cmd, "rm", container_id],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ContainerDeletionError(
+                container_id, "running", "stopped", str(exc)
+            ) from exc
+        if removed.returncode != 0:
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "stopped",
+                removed.stderr.strip() or "container remove failed",
+            )
+        self._container_id = None
+        return ContainerDeletionReceipt(container_id, "running", "absent")
+
     def cleanup(self) -> None:
         if self.config.source == "existing_container":
             return
@@ -813,6 +1043,7 @@ class ContainerBackend:
         if cid is None:
             result["status"] = "skipped"
             result["error"] = "Container not created — call preflight() first"
+            self._environment_probe_status = "skipped"
             return result
 
         probe_script = (
@@ -899,6 +1130,7 @@ class ContainerBackend:
             result["status"] = "probe_failed"
             result["error"] = str(exc)
 
+        self._environment_probe_status = str(result.get("status", "unknown"))
         return result
 
     def get_execution_context(

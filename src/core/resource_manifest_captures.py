@@ -115,9 +115,15 @@ def capture_backend(
     observed_names = frozenset(
         {
             "backend.effective",
+            "container.attachment_mode",
             "container.owner_kind",
+            "container.original_owner_run_id",
+            "container.lineage_root_run_id",
+            "container.framework_ownership_token",
+            "container.framework_ownership_label",
             "container.runtime",
             "container.id",
+            "container.image",
             "container.probe_status",
             "ownership.resource_owner_kind",
         }

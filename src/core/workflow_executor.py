@@ -60,6 +60,7 @@ from core.phase5_attempt_receipt import (
     ShellAttemptExecution,
     ShellInvocation,
 )
+from core.resource_retention import ContainerDeleteAuthority
 from core.phase5_attempt_runtime import (
     accept_phase5_receipt,
     build_shell_invocation,
@@ -432,6 +433,9 @@ class WorkflowExecutor:
         experience_store=None,
         exec_backend: Any = None,
         continuation: ContinuationHydration | None = None,
+        container_delete_authority: ContainerDeleteAuthority | None = None,
+        defer_execution_backend_cleanup: bool = False,
+        defer_execution_backend_preflight: bool = False,
     ) -> None:
         self.workflow = workflow
         self.session_mgr = session_mgr
@@ -454,21 +458,23 @@ class WorkflowExecutor:
         self.experience_store = experience_store
         self.exec_backend = exec_backend
         self._continuation = continuation
+        self._container_delete_authority = container_delete_authority
+        self._defer_execution_backend_cleanup = defer_execution_backend_cleanup
+        self._defer_execution_backend_preflight = defer_execution_backend_preflight
         if continuation is not None:
             require_executable_hydration(
                 continuation,
                 tuple(phase.id for phase in self.workflow.phases),
                 tuple(self.workflow.terminals),
             )
-        self._initialize_execution_backend()
-        self._container_env_probe = getattr(self, "_container_env_probe", None)
-        self._runtime_skill_resolver: RuntimeSkillResolver | None = None
-
         # Resolve platform policy from workflow definition
         self.platform_policy: PlatformPolicy = resolve_policy(
             getattr(workflow, "target_platform", None),
             workflow.name,
         )
+        self._initialize_execution_backend()
+        self._container_env_probe = getattr(self, "_container_env_probe", None)
+        self._runtime_skill_resolver: RuntimeSkillResolver | None = None
 
         # Execution state
         self.phase_results: dict[str, dict[str, Any]] = (
@@ -522,11 +528,24 @@ class WorkflowExecutor:
         if eb.mode != "container":
             return
 
-        backend = ContainerBackend(eb)
+        if self._container_delete_authority is None:
+            backend = ContainerBackend(eb)
+        else:
+            backend = ContainerBackend._for_v3(
+                eb,
+                self._container_delete_authority,
+            )
         backend.set_project_dir(self.project_dir)
+        self.exec_backend = backend
+        if not self._defer_execution_backend_preflight:
+            self._preflight_execution_backend()
+
+    def _preflight_execution_backend(self) -> None:
+        backend = self.exec_backend
+        if backend is None:
+            return
         backend.preflight()
         self._container_env_probe = backend.probe_environment()
-        self.exec_backend = backend
 
     def _auto_select_image(
         self,
@@ -1002,7 +1021,8 @@ class WorkflowExecutor:
             logger.error("workflow_end hook failed: %s", exc)
 
         # 6. Cleanup container execution backend (if configured)
-        self._cleanup_execution_backend()
+        if not self._defer_execution_backend_cleanup:
+            self._cleanup_execution_backend()
 
         # 7. Return final result
         if v3_enabled:

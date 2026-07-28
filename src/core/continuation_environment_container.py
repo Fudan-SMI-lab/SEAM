@@ -14,6 +14,7 @@ from .continuation_environment_models import (
     ContinuationEnvironmentRequest,
     ExistingContainerAttachment,
     FrameworkContainerDeleteEligible,
+    _verified_framework_container_delete_eligibility,
 )
 
 
@@ -133,7 +134,7 @@ def container_eligibility(
         )
     if original_owner is None or lineage_root is None or token is None or label is None:
         raise AssertionError("complete framework ownership unexpectedly absent")
-    return attachment, FrameworkContainerDeleteEligible(
+    return attachment, _verified_framework_container_delete_eligibility(
         original_owner_run_id=original_owner,
         lineage_root_run_id=lineage_root,
         ownership_token=token,

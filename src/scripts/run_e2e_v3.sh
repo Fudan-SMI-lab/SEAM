@@ -33,12 +33,13 @@ HAS_MAX_REVIEW_ITER=false
 DRY_RUN=false
 SERVER_NO_AUTO_START=false
 WORKFLOW_PATH=""
-EXTRA_ARGS=""
+EXTRA_ARGS=()
 SEAM_PYTHON="${PYTHON:-}"
 OPENCODE_READINESS="message"
 OPENCODE_MESSAGE_TIMEOUT=120
 OPENCODE_DIAGNOSE_ONLY=false
 PYTHON_OPENCODE_READINESS="message"
+CONTAINER_RETENTION=""
 
 # ── Color helpers ──
 RED='\033[0;31m'
@@ -77,6 +78,8 @@ Options:
   --no-review-fail-closed
                           Allow reject exhaustion compatibility outcome
   --no-keep-temp         Don't keep output project directory (default: keep)
+  --container-retention POLICY
+                          Container policy: retain or delete (default: retain)
   --agent NAME           Override auto-detected agent name
   --output-dir DIR       Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --workflow PATH        Path to workflow YAML file (overrides default auto selector)
@@ -119,6 +122,18 @@ while [[ $# -gt 0 ]]; do
             CONTINUE_FROM="$2"
             shift 2
             ;;
+        --container-retention)
+            if [[ $# -lt 2 || ( "$2" != "retain" && "$2" != "delete" ) ]]; then
+                echo -e "${RED}Error: --container-retention requires retain or delete.${NC}" >&2
+                exit 1
+            fi
+            if [[ -n "$CONTAINER_RETENTION" && "$CONTAINER_RETENTION" != "$2" ]]; then
+                echo -e "${RED}Error: conflicting container retention options.${NC}" >&2
+                exit 1
+            fi
+            CONTAINER_RETENTION="$2"
+            shift 2
+            ;;
         --max-iter)             MAX_ITER="$2"; shift 2 ;;
         --max-review-iter)
             if [[ "$HAS_MAX_REVIEW_ITER" == true ]]; then
@@ -152,7 +167,14 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --no-keep-temp)         KEEP_TEMP=false; shift ;;
-        --agent)                EXTRA_ARGS="$EXTRA_ARGS --agent $2"; shift 2 ;;
+        --agent)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --agent requires a name.${NC}" >&2
+                exit 1
+            fi
+            EXTRA_ARGS+=("--agent" "$2")
+            shift 2
+            ;;
         --output-dir)           OUTPUT_PROJECTS_DIR="$2"; shift 2 ;;
         --workflow)             WORKFLOW_PATH="$2"; shift 2 ;;
         --server-no-auto-start)  SERVER_NO_AUTO_START=true; shift ;;
@@ -160,8 +182,22 @@ while [[ $# -gt 0 ]]; do
         --opencode-message-timeout) OPENCODE_MESSAGE_TIMEOUT="$2"; shift 2 ;;
         --opencode-diagnose-only) OPENCODE_DIAGNOSE_ONLY=true; shift ;;
         --dry-run)              DRY_RUN=true; shift ;;
-        --verbose)              EXTRA_ARGS="$EXTRA_ARGS --verbose"; shift ;;
-        --extra)                EXTRA_ARGS="$EXTRA_ARGS $2"; shift 2 ;;
+        --verbose)              EXTRA_ARGS+=("--verbose"); shift ;;
+        --extra)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --extra requires an argument string.${NC}" >&2
+                exit 1
+            fi
+            read -r -a EXTRA_PARTS <<< "$2"
+            for extra_arg in "${EXTRA_PARTS[@]}"; do
+                if [[ "$extra_arg" == "--container-retention" || "$extra_arg" == --container-retention=* ]]; then
+                    echo -e "${RED}Error: --container-retention cannot be supplied through --extra.${NC}" >&2
+                    exit 1
+                fi
+            done
+            EXTRA_ARGS+=("${EXTRA_PARTS[@]}")
+            shift 2
+            ;;
         -*)                     echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
         *)
             if [[ -z "$PROJECT_NAME" ]]; then
@@ -172,6 +208,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -z "$CONTAINER_RETENTION" ]]; then
+    CONTAINER_RETENTION="retain"
+fi
 
 if [[ -n "$PROJECT_NAME" && -n "$CONTINUE_FROM" ]]; then
     echo -e "${RED}Error: PROJECT_NAME and --continue-from are mutually exclusive.${NC}" >&2
@@ -256,6 +296,7 @@ echo -e "${GREEN}Review:${NC}    $REVIEW_GATE"
 echo -e "${GREEN}Review max override:${NC} ${MAX_REVIEW_ITER:-(unset; resolve after workflow selection)}"
 echo -e "${GREEN}Review fail-closed override:${NC} ${REVIEW_FAIL_CLOSED:-(unset; resolve after workflow selection)}"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
+echo -e "${GREEN}Container retention:${NC} $CONTAINER_RETENTION"
 echo -e "${GREEN}Auto-start:${NC} $( [[ "$SERVER_NO_AUTO_START" == true ]] && echo 'false' || echo 'true' )"
 echo -e "${GREEN}OpenCode readiness:${NC} $OPENCODE_READINESS"
 echo -e "${GREEN}Root:${NC}      $REPO_ROOT"
@@ -263,7 +304,11 @@ echo -e "${GREEN}Output:${NC}    $OUTPUT_PROJECTS_DIR"
 if [[ -n "$WORKFLOW_PATH" ]]; then
     echo -e "${GREEN}Workflow:${NC} $WORKFLOW_PATH"
 fi
-echo -e "${GREEN}Extra:    ${NC}  ${EXTRA_ARGS:-(none)}"
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    echo -e "${GREEN}Extra:    ${NC}  ${EXTRA_ARGS[*]}"
+else
+    echo -e "${GREEN}Extra:    ${NC}  (none)"
+fi
 echo ""
 
 # Check project directory
@@ -375,9 +420,9 @@ fi
 echo ""
 echo -e "${GREEN}════ All checks passed ═════${NC}"
 
-NO_AUTO_FLAG=""
+NO_AUTO_ARGS=()
 if [[ "$SERVER_NO_AUTO_START" == true ]]; then
-    NO_AUTO_FLAG="--server-no-auto-start"
+    NO_AUTO_ARGS+=("--server-no-auto-start")
 fi
 
 REVIEW_POLICY_ARGS=()
@@ -391,6 +436,7 @@ if [[ -n "$CONTINUE_FROM" ]]; then
 else
     MODE_ARGS+=("--project-dir" "$PROJECT_DIR" "--output-dir" "$OUTPUT_PROJECTS_DIR")
 fi
+RETENTION_ARGS=("--container-retention" "$CONTAINER_RETENTION")
 if [[ "$REVIEW_FAIL_CLOSED" == true ]]; then
     REVIEW_POLICY_ARGS+=("--review-fail-closed")
 elif [[ "$REVIEW_FAIL_CLOSED" == false ]]; then
@@ -412,6 +458,7 @@ if [[ "$DRY_RUN" == true ]]; then
         echo "    --output-dir $OUTPUT_PROJECTS_DIR \\"
     fi
     echo "    --max-phase5-iter $MAX_ITER \\"
+    echo "    --container-retention $CONTAINER_RETENTION \\"
     if [[ -n "$MAX_REVIEW_ITER" ]]; then
         echo "    --max-review-iter $MAX_REVIEW_ITER \\"
     fi
@@ -432,34 +479,34 @@ if [[ "$DRY_RUN" == true ]]; then
     if [[ "$HAS_CONSTRAINTS" == true ]]; then
         echo "    --user-constraints $PROJECT_DIR/ADAPTATION_REQUIREMENTS.md \\"
     fi
-    if [[ -n "$NO_AUTO_FLAG" ]]; then
-        echo "    $NO_AUTO_FLAG \\"
+    if [[ ${#NO_AUTO_ARGS[@]} -gt 0 ]]; then
+        echo "    --server-no-auto-start \\"
     fi
-    echo "    $EXTRA_ARGS"
+    echo "    ${EXTRA_ARGS[*]}"
     exit 0
 fi
 
 # ── Launch E2E test ──
 echo ""
 echo -e "${CYAN}── Launching E2E test (YAML-driven workflow V3) ──${NC}"
-REVIEW_FLAG=""
+REVIEW_ARGS=()
 if [[ "$REVIEW_GATE" == true ]]; then
-    REVIEW_FLAG="--review-gate"
+    REVIEW_ARGS+=("--review-gate")
 fi
 
-KEEP_FLAG=""
+KEEP_ARGS=()
 if [[ "$KEEP_TEMP" == true ]]; then
-    KEEP_FLAG="--keep-temp-dir"
+    KEEP_ARGS+=("--keep-temp-dir")
 fi
 
-CONSTRAINTS_FLAG=""
+CONSTRAINTS_ARGS=()
 if [[ "$HAS_CONSTRAINTS" == true ]]; then
-    CONSTRAINTS_FLAG="--user-constraints $PROJECT_DIR/ADAPTATION_REQUIREMENTS.md"
+    CONSTRAINTS_ARGS+=("--user-constraints" "$PROJECT_DIR/ADAPTATION_REQUIREMENTS.md")
 fi
 
-WORKFLOW_FLAG=""
+WORKFLOW_ARGS=()
 if [[ -n "$WORKFLOW_PATH" ]]; then
-    WORKFLOW_FLAG="--workflow-path $WORKFLOW_PATH"
+    WORKFLOW_ARGS+=("--workflow-path" "$WORKFLOW_PATH")
 fi
 
 cd "$REPO_ROOT"
@@ -468,15 +515,16 @@ cd "$REPO_ROOT"
     --server-url "$SERVER_URL" \
     "${MODE_ARGS[@]}" \
     --max-phase5-iter "$MAX_ITER" \
+    "${RETENTION_ARGS[@]}" \
     "${REVIEW_POLICY_ARGS[@]}" \
     --opencode-readiness "$PYTHON_OPENCODE_READINESS" \
     --opencode-message-timeout "$OPENCODE_MESSAGE_TIMEOUT" \
-    $KEEP_FLAG \
-    $REVIEW_FLAG \
-    $CONSTRAINTS_FLAG \
-    $NO_AUTO_FLAG \
-    $WORKFLOW_FLAG \
-    $EXTRA_ARGS
+    "${KEEP_ARGS[@]}" \
+    "${REVIEW_ARGS[@]}" \
+    "${CONSTRAINTS_ARGS[@]}" \
+    "${NO_AUTO_ARGS[@]}" \
+    "${WORKFLOW_ARGS[@]}" \
+    "${EXTRA_ARGS[@]}"
 
 EXIT_CODE=$?
 

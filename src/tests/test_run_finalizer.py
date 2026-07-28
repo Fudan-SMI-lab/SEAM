@@ -16,6 +16,7 @@ from harness.run import (
     ReportAllocationError,
     ReportAllocationErrorKind,
     RunArtifactUpdate,
+    RunFinalizationRequest,
     allocate_report_directory,
     finalize_run,
 )
@@ -213,6 +214,42 @@ def test_successful_sidecars_cannot_turn_failed_workflow_into_pass(
     assert result.exit_code == 1
     assert result.summary.overall_status == "FAIL"
     assert result.summary.errors == ("RuntimeError: migration failed",)
+
+
+def test_required_retention_manifest_failure_blocks_pass_publication(
+    tmp_path: Path,
+) -> None:
+    # Given a frozen PASS whose required retention manifest cannot be persisted.
+    def fail_manifest(_outcome: TerminalOutcome) -> RunArtifactUpdate:
+        raise FinalizationHookError(detail="retention manifest unavailable")
+
+    request = finalization_request(
+        tmp_path,
+        FinalizerScenario(
+            hooks=FinalizationHooks(post_cleanup_manifest=fail_manifest),
+        ),
+    )
+    request = RunFinalizationRequest(
+        identity=request.identity,
+        execution=request.execution,
+        initial_artifacts=request.initial_artifacts,
+        hooks=request.hooks,
+        authoritative_outcome=request.authoritative_outcome,
+        observability=request.observability,
+        continuation=request.continuation,
+        required_stages=frozenset({FinalizationStage.POST_CLEANUP_MANIFEST}),
+        summary_required=request.summary_required,
+    )
+
+    # When finalization reaches the required manifest stage.
+    result = finalize_run(request)
+
+    # Then workflow truth stays PASS but no successful run is published.
+    assert result.outcome is TerminalOutcome.PASSED
+    assert result.finalization_failed is True
+    assert result.exit_code == 1
+    assert result.summary_path is None
+    assert not (tmp_path / "summary.json").exists()
 
 
 def test_interrupted_summary_rewrite_preserves_previous_bytes(

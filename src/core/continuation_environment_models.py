@@ -164,12 +164,61 @@ class ExistingContainerAttachment:
     ownership_label: str | None
 
 
+@final
+@dataclass(frozen=True, slots=True)
+class _FrameworkContainerDeleteProof:
+    original_owner_run_id: str
+    lineage_root_run_id: str
+    ownership_token: str
+    ownership_label: str
+
+
 @dataclass(frozen=True, slots=True)
 class FrameworkContainerDeleteEligible:
     original_owner_run_id: str
     lineage_root_run_id: str
     ownership_token: str
     ownership_label: str
+    _proof: _FrameworkContainerDeleteProof | None = field(
+        default=None, repr=False, compare=False
+    )
+
+
+def _verified_framework_container_delete_eligibility(
+    original_owner_run_id: str,
+    lineage_root_run_id: str,
+    ownership_token: str,
+    ownership_label: str,
+) -> FrameworkContainerDeleteEligible:
+    return FrameworkContainerDeleteEligible(
+        original_owner_run_id,
+        lineage_root_run_id,
+        ownership_token,
+        ownership_label,
+        _FrameworkContainerDeleteProof(
+            original_owner_run_id,
+            lineage_root_run_id,
+            ownership_token,
+            ownership_label,
+        ),
+    )
+
+
+def _framework_container_delete_eligibility_is_verified(
+    eligibility: FrameworkContainerDeleteEligible,
+) -> bool:
+    proof = eligibility._proof
+    return proof is not None and (
+        eligibility.original_owner_run_id,
+        eligibility.lineage_root_run_id,
+        eligibility.ownership_token,
+        eligibility.ownership_label,
+    ) == (
+        proof.original_owner_run_id,
+        proof.lineage_root_run_id,
+        proof.ownership_token,
+        proof.ownership_label,
+    )
 
 
 @dataclass(frozen=True, slots=True)

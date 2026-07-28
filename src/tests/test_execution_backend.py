@@ -31,6 +31,11 @@ from core.continuation_environment import (
     RetainedEnvironmentProbeRequest,
 )
 from core.workflow_executor import WorkflowExecutor
+from core.resource_retention import (
+    ContainerDeletionError,
+    CurrentRunContainerDeleteAuthority,
+    _authorized_container_cleanup,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS_DIR = ROOT / "workflows"
@@ -861,6 +866,77 @@ class TestWorkflowExecutorAutoBackend:
 
 
 class TestWorkflowExecutorCleanup:
+    def test_v3_can_defer_backend_preflight_until_cleanup_is_owned(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given a V3 container workflow whose lifecycle must own preflight resources.
+        workflow = WorkflowDefinition(
+            name="deferred-preflight",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+            execution_backend=ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+        )
+
+        # When the executor is constructed with V3 preflight deferral.
+        with patch.object(ContainerBackend, "preflight") as preflight:
+            executor = WorkflowExecutor(
+                workflow,
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                project_dir=str(tmp_path),
+                output_dir=str(tmp_path),
+                container_delete_authority=CurrentRunContainerDeleteAuthority(
+                    "run-safe-17",
+                    "run-safe-17",
+                    "owner-token",
+                    "seam.owner=run-safe-17",
+                ),
+                defer_execution_backend_preflight=True,
+            )
+
+        # Then construction owns the backend without creating a container yet.
+        assert isinstance(executor.exec_backend, ContainerBackend)
+        preflight.assert_not_called()
+
+    @pytest.mark.parametrize(("deferred", "expected_calls"), [(False, 1), (True, 0)])
+    def test_v3_can_defer_backend_cleanup_without_changing_default(
+        self,
+        tmp_path: Path,
+        deferred: bool,
+        expected_calls: int,
+    ) -> None:
+        # Given an explicit backend and an empty workflow execution.
+        backend = MagicMock()
+        workflow = WorkflowDefinition(
+            name="deferred-cleanup",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
+            exec_backend=backend,
+            defer_execution_backend_cleanup=deferred,
+        )
+
+        # When the executor reaches its normal terminal path.
+        _ = executor.execute({})
+
+        # Then only active V3 deferral suppresses the legacy eager cleanup call.
+        assert backend.cleanup.call_count == expected_calls
+
     @patch("core.execution_backend.ContainerBackend")
     def test_cleanup_called_for_container_backend(self, MockBackend, tmp_path: Path):
         cfg = ExecutionBackendConfig.from_dict(
@@ -957,6 +1033,145 @@ class TestWorkflowExecutorCleanup:
         )
         executor._cleanup_execution_backend()
         assert any("cleanup failed" in r.message for r in caplog.records)
+
+    def test_owned_delete_failure_records_stopped_state(self):
+        # Given a backend bound to the exact current-run delete capability.
+        authority = CurrentRunContainerDeleteAuthority(
+            "run-safe-17",
+            "run-safe-17",
+            "owner-token",
+            "seam.owner=run-safe-17",
+        )
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            authority,
+        )
+        backend._container_id = "immutable-id"
+
+        # When stop succeeds but immutable-ID removal fails.
+        with patch("core.execution_backend.subprocess.run") as run:
+            run.side_effect = [
+                MagicMock(
+                    returncode=0,
+                    stdout=(
+                        'running|immutable-id|{"seam.owner":"run-safe-17",'
+                        '"seam.owner-token":"owner-token"}\n'
+                    ),
+                    stderr="",
+                ),
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="remove denied"),
+            ]
+            with _authorized_container_cleanup(authority):
+                with pytest.raises(ContainerDeletionError) as raised:
+                    _ = backend.delete_container(authority)
+
+        # Then both owned commands ran and the partial post-state is truthful.
+        assert raised.value.post_state == "stopped"
+        assert [call.args[0][1] for call in run.call_args_list] == [
+            "inspect",
+            "stop",
+            "rm",
+        ]
+
+    def test_mismatched_delete_capability_has_no_runtime_side_effect(self):
+        # Given a backend and a distinct caller-constructed capability.
+        owned = CurrentRunContainerDeleteAuthority(
+            "run-safe-17",
+            "run-safe-17",
+            "owner-token",
+            "seam.owner=run-safe-17",
+        )
+        fabricated = CurrentRunContainerDeleteAuthority(
+            "run-safe-17",
+            "run-safe-17",
+            "owner-token",
+            "seam.owner=run-safe-17",
+        )
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            owned,
+        )
+        backend._container_id = "immutable-id"
+
+        # When deletion is attempted with the equal-looking but wrong identity.
+        with patch("core.execution_backend.subprocess.run") as run:
+            with _authorized_container_cleanup(fabricated):
+                with pytest.raises(ContainerDeletionError, match="does not match"):
+                    _ = backend.delete_container(fabricated)
+
+        # Then stop and remove remain structurally prohibited.
+        run.assert_not_called()
+
+    def test_v3_backend_refuses_destructive_environment_recreation(self) -> None:
+        # Given a V3 image backend bound to retained-resource authority.
+        authority = CurrentRunContainerDeleteAuthority(
+            "run-safe-17",
+            "run-safe-17",
+            "owner-token",
+            "seam.owner=run-safe-17",
+        )
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            authority,
+        )
+        backend._container_id = "immutable-id"
+
+        # When workflow execution requests a destructive environment reset.
+        with patch("core.execution_backend.subprocess.run") as run:
+            with pytest.raises(RuntimeError, match="retention.*recreation"):
+                _ = backend.recreate_execution_environment("repair requested")
+
+        # Then deletion before finalization is structurally unreachable.
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("returncode", "status", "error_type"),
+        (
+            (1, "", ContainerNotFoundError),
+            (0, "stopped", ContainerNotRunningError),
+        ),
+    )
+    def test_v3_backend_refuses_implicit_container_replacement(
+        self,
+        returncode: int,
+        status: str,
+        error_type: type[RuntimeError],
+    ) -> None:
+        # Given a V3 image backend whose retained identity is unavailable.
+        authority = CurrentRunContainerDeleteAuthority(
+            "run-safe-17",
+            "run-safe-17",
+            "owner-token",
+            "seam.owner=run-safe-17",
+        )
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            authority,
+        )
+        backend._container_id = "immutable-id"
+
+        # When normal backend reuse revalidates that identity.
+        with patch("core.execution_backend.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=returncode,
+                stdout=status,
+                stderr="missing",
+            )
+            with pytest.raises(error_type):
+                _ = backend._ensure_container()
+
+        # Then one read-only inspect occurs and no replacement is created.
+        assert len(run.call_args_list) == 1
+        assert run.call_args.args[0][1] == "inspect"
 
 
 # ── ContainerBackend: host-to-container path rewriting ─────────────────────

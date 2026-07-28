@@ -23,7 +23,9 @@ from .e2e_v3_continuation_shell_cases import (
     test_v3_launcher_defers_session_diagnostics_until_after_ownership as test_v3_launcher_defers_session_diagnostics_until_after_ownership,
     test_v3_launcher_checked_out_bytes_parse_directly as test_v3_launcher_checked_out_bytes_parse_directly,
     test_v3_launcher_canonicalizes_relative_continuation_summary as test_v3_launcher_canonicalizes_relative_continuation_summary,
+    test_v3_launcher_forwards_container_retention as test_v3_launcher_forwards_container_retention,
     test_v3_launcher_forwards_continuation_without_project as test_v3_launcher_forwards_continuation_without_project,
+    test_v3_launcher_rejects_conflicting_container_retention as test_v3_launcher_rejects_conflicting_container_retention,
     test_v3_launcher_rejects_invalid_run_mode as test_v3_launcher_rejects_invalid_run_mode,
 )
 
@@ -46,6 +48,7 @@ def test_root_module_v3_entrypoint_shows_help() -> None:
     assert "--project-dir" in completed.stdout
     assert "--opencode-readiness" in completed.stdout
     assert "--opencode-message-timeout" in completed.stdout
+    assert "--container-retention {retain,delete}" in completed.stdout
 
 
 def test_root_module_v3_entrypoint_propagates_parser_failure() -> None:
@@ -95,6 +98,53 @@ def test_v3_parser_accepts_workflow_path() -> None:
 
     assert completed.returncode == 0, completed.stderr
     assert "--workflow-path" in completed.stdout
+
+
+def test_v3_container_retention_defaults_to_retain() -> None:
+    # Given a normal direct V3 invocation without a retention override.
+    code = (
+        "import sys; sys.path.insert(0, 'src'); "
+        "from tests.e2e.e2e_test_v3 import build_parser; "
+        "args = build_parser().parse_args(['--project-dir', '.']); "
+        "print(args.container_retention)"
+    )
+
+    # When the real argparse boundary materializes defaults.
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=EXECUTION_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    # Then container retention defaults to retain.
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "retain"
+
+
+def test_v3_parser_rejects_duplicate_container_retention() -> None:
+    # Given duplicate retention options at the direct Python boundary.
+    code = (
+        "import sys; sys.path.insert(0, 'src'); "
+        "from tests.e2e.e2e_test_v3 import build_parser; "
+        "build_parser().parse_args(["
+        "'--project-dir', '.', '--container-retention', 'retain', "
+        "'--container-retention', 'delete'])"
+    )
+
+    # When the real parser receives the ambiguous policy.
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=EXECUTION_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    # Then ambiguity is rejected rather than using the final value.
+    assert completed.returncode == 2
+    assert "only once" in completed.stderr
 
 
 def test_v2_entrypoint_unaffected() -> None:
@@ -162,7 +212,7 @@ def test_v3_parser_server_url_default_is_none() -> None:
     )
 
 
-@pytest.mark.parametrize("expected_exit", [0, 1])
+@pytest.mark.parametrize("expected_exit", [0, 1, 2])
 def test_v3_main_return_becomes_process_exit(expected_exit: int) -> None:
     # Given a V3 coordinator returning a frozen finalization exit code.
     code = (

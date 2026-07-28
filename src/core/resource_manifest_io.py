@@ -135,11 +135,21 @@ def build_backend_facts(
         ),
         (
             "retention.requested",
-            Evidence(None, derived, namespace, "Task 17 policy is not resolved"),
+            Evidence(
+                request.retention_requested,
+                configured,
+                namespace,
+                "Task 17 policy is not resolved",
+            ),
         ),
         (
             "retention.effective",
-            Evidence(None, derived, namespace, "Task 17 policy is not resolved"),
+            Evidence(
+                request.retention_effective,
+                derived,
+                namespace,
+                "Task 17 policy is not resolved",
+            ),
         ),
         ("lifecycle.status", Evidence("capturing", derived, "host")),
     )
