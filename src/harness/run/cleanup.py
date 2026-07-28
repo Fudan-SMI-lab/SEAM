@@ -25,6 +25,13 @@ class CleanupObserver(Protocol):
 
     def record_cleaned_sessions(self, count: int, /) -> None: ...
 
+    def record_cleanup_failure(
+        self,
+        resource: str,
+        error_type: str,
+        detail: str,
+    ) -> None: ...
+
 
 @unique
 class CleanupResource(str, Enum):
@@ -97,8 +104,8 @@ class ResourceCleanup:
             raise FinalizationHookError(detail="; ".join(map(str, failures)))
         return EMPTY_ARTIFACT_UPDATE
 
-    @staticmethod
     def _failure(
+        self,
         resource: CleanupResource,
         error: Exception,
     ) -> ResourceCleanupFailure:
@@ -109,4 +116,14 @@ class ResourceCleanup:
             failure.error_type,
             failure.detail,
         )
+        observer = self.context.observer
+        if observer is not None:
+            try:
+                observer.record_cleanup_failure(
+                    resource.value,
+                    failure.error_type,
+                    failure.detail,
+                )
+            except Exception:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK - diagnostic sink boundary
+                logger.warning("Cleanup failure telemetry could not be recorded")
         return failure

@@ -4,8 +4,6 @@ import logging
 import re
 from pathlib import Path
 
-from typing_extensions import assert_never
-
 from core.run_manifest import RunId
 from core.run_outcome import TerminalOutcome
 from core.requested_cleanup_error import RequestedContainerCleanupError
@@ -23,12 +21,12 @@ from .models import (
     FinalizationStage,
     ReportAllocationError,
     ReportAllocationErrorKind,
-    RunArtifacts,
     RunFinalizationRequest,
     RunSummary,
     SidecarWriteError,
 )
 from .sidecars import write_diagnostics, write_summary
+from .summary_builder import build_summary, read_trace_status
 
 logger = logging.getLogger("harness.run.finalizer")
 _SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -68,57 +66,15 @@ def _freeze_outcome(request: RunFinalizationRequest) -> TerminalOutcome:
             return authoritative.terminal_outcome
 
 
-def _build_summary(
-    request: RunFinalizationRequest,
-    artifacts: RunArtifacts,
-    outcome: TerminalOutcome,
-) -> RunSummary:
-    identity = request.identity
-    execution = request.execution
-    total_duration_seconds = (
-        execution.total_duration_seconds
-        if execution.duration_source is None
-        else execution.duration_source()
-    )
-    match outcome:
-        case TerminalOutcome.FAILED:
-            overall_status = "FAIL"
-        case TerminalOutcome.PASSED | TerminalOutcome.PASSED_WITH_REVIEWS:
-            overall_status = "PASS"
-        case unreachable:
-            assert_never(unreachable)
-    return RunSummary(
-        run_id=str(identity.run_id),
-        base_url=identity.base_url,
-        workflow_path=identity.workflow_path,
-        output_dir=identity.output_dir,
-        temp_dir=identity.temp_dir,
-        keep_temp_dir=execution.keep_temp_dir,
-        requested_max_phase5_iter=execution.requested_max_phase5_iter,
-        effective_max_phase5_iter=execution.effective_max_phase5_iter,
-        phases=execution.phases,
-        session_count=execution.session_count,
-        command_count=execution.command_count,
-        overall_status=overall_status,
-        total_duration_seconds=round(total_duration_seconds, 3),
-        artifact_dir=artifacts.artifact_dir,
-        telemetry_paths=dict(artifacts.telemetry_paths),
-        before_snapshot_path=artifacts.before_snapshot_path,
-        after_snapshot_path=artifacts.after_snapshot_path,
-        entry_script=artifacts.entry_script,
-        errors=execution.errors,
-        review_timeout_observability=request.observability,
-    )
-
-
 def build_run_summary(request: RunFinalizationRequest) -> RunSummary:
     validation = validate_initial_artifacts(
         Path(request.identity.output_dir), request.initial_artifacts
     )
-    return _build_summary(
+    return build_summary(
         request,
         validation.receipts.to_artifacts(),
         _freeze_outcome(request),
+        read_trace_status(request),
     )
 
 
@@ -189,11 +145,25 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
                     str(exc),
                 )
             )
+    trace_status = read_trace_status(request)
+    diagnostics.extend(
+        FinalizationDiagnostic(
+            FinalizationStage.TRACE_EXPORT,
+            "TraceExportDiagnostic",
+            error,
+        )
+        for error in trace_status.errors
+    )
     frozen = freeze_artifacts(report_dir, receipts)
     _append_artifact_diagnostics(
         diagnostics, FinalizationStage.ARTIFACT_FREEZE, frozen.errors
     )
-    summary = _build_summary(request, frozen.receipts.to_artifacts(), outcome)
+    summary = build_summary(
+        request,
+        frozen.receipts.to_artifacts(),
+        outcome,
+        trace_status,
+    )
     summary_path = report_dir / "summary.json"
     persisted_summary_path: str | None = None
     if not finalization_failed:

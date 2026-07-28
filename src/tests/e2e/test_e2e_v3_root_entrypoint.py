@@ -28,6 +28,18 @@ from .e2e_v3_continuation_shell_cases import (
     test_v3_launcher_rejects_conflicting_container_retention as test_v3_launcher_rejects_conflicting_container_retention,
     test_v3_launcher_rejects_invalid_run_mode as test_v3_launcher_rejects_invalid_run_mode,
 )
+from .e2e_v3_trace_entrypoint_cases import (
+    test_legacy_and_v2_entrypoints_exclude_trace_policy as test_legacy_and_v2_entrypoints_exclude_trace_policy,
+    test_terminal_continuation_forwards_trace_policy as test_terminal_continuation_forwards_trace_policy,
+    test_v3_parser_preserves_default_on_and_explicit_off as test_v3_parser_preserves_default_on_and_explicit_off,
+    test_v3_main_forwards_trace_policy as test_v3_main_forwards_trace_policy,
+    test_v3_public_help_exposes_trace_policy as test_v3_public_help_exposes_trace_policy,
+)
+from .e2e_v3_trace_shell_cases import (
+    test_v3_launcher_forwards_trace_policy as test_v3_launcher_forwards_trace_policy,
+    test_v3_launcher_omits_trace_policy_by_default as test_v3_launcher_omits_trace_policy_by_default,
+    test_v3_launcher_rejects_conflicting_trace_policy as test_v3_launcher_rejects_conflicting_trace_policy,
+)
 
 
 MIGRATION_UTILS_ROOT = Path(__file__).resolve().parents[2]

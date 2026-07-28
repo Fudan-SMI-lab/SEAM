@@ -11,6 +11,7 @@ import sys
 import tempfile
 import traceback
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import ClassVar
@@ -41,7 +42,7 @@ from core.resource_retention_manifest import (
     create_retention_manifest,
 )
 from core.run_manifest import RunId
-from core.run_outcome import RunOutcome, WorkflowTerminal
+from core.run_outcome import RunOutcome, TerminalOutcome, WorkflowTerminal
 from core.v3_runtime_report import V3RuntimeReport
 from core.v3_runtime_report_integration import (
     RuntimeReportingInputs,
@@ -80,6 +81,7 @@ from harness.run import (
     V3RunLifecycle,
     allocate_report_directory,
     build_telemetry_sidecars,
+    compose_trace_hooks,
     finalize_run,
     persist_python_snapshot,
 )
@@ -90,6 +92,10 @@ from harness.run.v3_retention import (
 from harness.run.v3_runtime_reporting import (
     V3RuntimeReportRecorder,
     print_runtime_report,
+)
+from harness.run.v3_trace_integration import (
+    V3TraceIntegrationRequest,
+    create_v3_trace_lifecycle,
 )
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
@@ -357,6 +363,17 @@ def print_summary(
         print(f"- Entry script: {summary.entry_script}")
     if summary.artifact_dir:
         print(f"- Copied artifacts: {summary.artifact_dir}")
+    print("- Agent trace:")
+    print(f"  - Requested: {'yes' if summary.trace.requested else 'no'}")
+    print(f"  - Enabled: {'yes' if summary.trace.enabled else 'no'}")
+    print(f"  - Complete: {'yes' if summary.trace.complete else 'no'}")
+    print(f"  - Path: {summary.trace.path or 'unavailable'}")
+    print("  - Errors:")
+    if summary.trace.errors:
+        for trace_error in summary.trace.errors:
+            print(f"    - {trace_error}")
+    else:
+        print("    - none")
     print("- Phase timings:")
     for phase in summary.phases:
         suffix = f" - {phase.error}" if phase.error else ""
@@ -532,6 +549,7 @@ def run_terminal_continuation(
                 opencode_message_timeout=request.opencode.message_timeout,
                 continuation=continuation,
                 container_retention=request.invocation.container_retention,
+                save_agent_trace=request.invocation.save_agent_trace,
             )
     except (
         ContinuationError,
@@ -565,6 +583,7 @@ def run_e2e_v3(
     opencode_message_timeout: int = 120,
     continuation: PreparedTerminalContinuation | None = None,
     container_retention: ContainerRetention = ContainerRetention.RETAIN,
+    save_agent_trace: bool | None = None,
 ) -> int:
     _install_sqlite_fallback_if_needed()
 
@@ -635,6 +654,7 @@ def run_e2e_v3(
     errors: list[str] = []
     phase_results: list[PhaseStatus] = []
     observer: TelemetryObserver | None = None
+    session_mgr = None
     telemetry_bridge: TelemetryBridge | None = None
     agent_io_logger: AgentIOLogger | None = None
     traceback_text: str | None = None
@@ -1056,6 +1076,28 @@ def run_e2e_v3(
     )
     counts = lifecycle.counts()
     finalization_hooks = lifecycle.hooks()
+    trace_destination = (
+        continuation.evidence.namespace.trace_dir
+        if continuation is not None
+        else output_dir / "trace"
+    )
+
+    trace_lifecycle = create_v3_trace_lifecycle(
+        V3TraceIntegrationRequest(
+            cli_value=save_agent_trace,
+            destination=trace_destination,
+            session=session_mgr,
+            overflow_roots=(temp_dir,) if temp_dir is not None else (),
+            telemetry=observer,
+        )
+    )
+    finalization_hooks = replace(
+        finalization_hooks,
+        trace_export=compose_trace_hooks(
+            trace_lifecycle,
+            finalization_hooks.trace_export,
+        ),
+    )
     phase2_environment = None
     if executor is not None:
         phase2_value = executor.state.get("phase_2_venv_create")
@@ -1117,7 +1159,7 @@ def run_e2e_v3(
             verify_final_child_evidence,
         )
 
-        def seal_and_verify_child(_outcome):
+        def seal_and_verify_child(_outcome: TerminalOutcome) -> RunArtifactUpdate:
             nonlocal continuation_evidence_sealed
             _ = seal_child_evidence(
                 continuation.evidence,
@@ -1129,7 +1171,10 @@ def run_e2e_v3(
 
         finalization_hooks = FinalizationHooks(
             evidence_replay=finalization_hooks.evidence_replay,
-            trace_export=seal_and_verify_child,
+            trace_export=compose_trace_hooks(
+                finalization_hooks.trace_export,
+                seal_and_verify_child,
+            ),
             authorized_cleanup=finalization_hooks.authorized_cleanup,
             post_cleanup_manifest=finalization_hooks.post_cleanup_manifest,
         )
@@ -1192,6 +1237,7 @@ def run_e2e_v3(
                 if runtime_report_recorder is not None
                 else None
             ),
+            trace_status_source=trace_lifecycle.read,
         )
     )
     print_summary(
@@ -1237,6 +1283,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="retain",
         action=_SingleContainerRetentionAction,
     )
+    trace_policy = parser.add_mutually_exclusive_group()
+    _ = trace_policy.add_argument(
+        "--save-agent-trace", dest="save_agent_trace", action="store_true"
+    )
+    _ = trace_policy.add_argument(
+        "--no-save-agent-trace", dest="save_agent_trace", action="store_false"
+    )
+    parser.set_defaults(save_agent_trace=None)
     run_mode = parser.add_mutually_exclusive_group(required=True)
     _ = run_mode.add_argument("--project-dir", type=Path, default=None)
     _ = run_mode.add_argument("--continue-from", type=Path, default=None)
@@ -1317,6 +1371,7 @@ def main() -> int:
                     user_constraints=user_constraints_text,
                     framework_config_path=args.framework_config,
                     container_retention=ContainerRetention(args.container_retention),
+                    save_agent_trace=args.save_agent_trace,
                 ),
                 opencode=V3OpenCodeOptions(
                     readiness=args.opencode_readiness,
@@ -1342,6 +1397,7 @@ def main() -> int:
         opencode_readiness=args.opencode_readiness,
         opencode_message_timeout=args.opencode_message_timeout,
         container_retention=ContainerRetention(args.container_retention),
+        save_agent_trace=args.save_agent_trace,
     )
 
 

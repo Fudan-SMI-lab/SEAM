@@ -14,6 +14,11 @@ from core.runtime_observability_models import (
     EMPTY_OBSERVABILITY_SUMMARY,
     ObservabilitySummary,
 )
+from .trace_lifecycle_models import (
+    TRACE_NOT_REQUESTED,
+    TraceLifecycleStatus,
+    TraceStatusSource,
+)
 
 DurationSource: TypeAlias = Callable[[], float]
 RuntimeReportSource: TypeAlias = Callable[[], V3RuntimeReport | None]
@@ -117,6 +122,7 @@ class RunSummary:
     after_snapshot_path: str | None
     entry_script: str | None
     errors: tuple[str, ...]
+    trace: TraceLifecycleStatus = TRACE_NOT_REQUESTED
     review_timeout_observability: ObservabilitySummary = EMPTY_OBSERVABILITY_SUMMARY
 
 
@@ -201,6 +207,7 @@ class RunFinalizationRequest:
     required_stages: frozenset[FinalizationStage] = frozenset()
     summary_required: bool = False
     runtime_report_source: RuntimeReportSource | None = None
+    trace_status_source: TraceStatusSource | None = None
 
     @property
     def frozen_outcome(self) -> RunOutcome | None:

@@ -140,6 +140,7 @@ def test_v3_summary_bytes_and_exit_mapping_are_stable(
         "after_snapshot_path",
         "entry_script",
         "errors",
+        "trace",
         "review_timeout_observability",
     ]
     assert summary.overall_status == expected_status

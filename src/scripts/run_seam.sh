@@ -54,6 +54,8 @@ Options:
   --no-keep-temp              Don't keep output project directory (default: keep)
   --container-retention POLICY
                               Container policy: retain or delete (default: retain)
+  --save-agent-trace          Export raw OpenCode agent trace (default: disabled)
+  --no-save-agent-trace       Explicitly disable raw OpenCode agent trace
   --agent NAME                Override auto-detected agent name
   --output-dir DIR            Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --server-no-auto-start       Disable auto-start of OpenCode server
@@ -96,6 +98,7 @@ REVIEW_FAIL_CLOSED=""
 CONTINUE_FROM=""
 PROJECT_ARG=""
 CONTAINER_RETENTION=""
+SAVE_AGENT_TRACE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -144,6 +147,22 @@ while [[ $# -gt 0 ]]; do
             fi
             CONTAINER_RETENTION="$2"
             shift 2
+            ;;
+        --save-agent-trace)
+            if [[ -n "$SAVE_AGENT_TRACE" && "$SAVE_AGENT_TRACE" != true ]]; then
+                echo -e "${RED}Error: conflicting agent trace options.${NC}" >&2
+                exit 1
+            fi
+            SAVE_AGENT_TRACE=true
+            shift
+            ;;
+        --no-save-agent-trace)
+            if [[ -n "$SAVE_AGENT_TRACE" && "$SAVE_AGENT_TRACE" != false ]]; then
+                echo -e "${RED}Error: conflicting agent trace options.${NC}" >&2
+                exit 1
+            fi
+            SAVE_AGENT_TRACE=false
+            shift
             ;;
         --max-review-iter)
             if [[ "$HAS_MAX_REVIEW_ITER" == true ]]; then
@@ -248,6 +267,11 @@ if [[ -z "$CONTAINER_RETENTION" ]]; then
     CONTAINER_RETENTION="retain"
 fi
 FORWARD_ARGS+=("--container-retention" "$CONTAINER_RETENTION")
+if [[ "$SAVE_AGENT_TRACE" == true ]]; then
+    FORWARD_ARGS+=("--save-agent-trace")
+elif [[ "$SAVE_AGENT_TRACE" == false ]]; then
+    FORWARD_ARGS+=("--no-save-agent-trace")
+fi
 
 if [[ -n "$PROJECT_ARG" && -n "$CONTINUE_FROM" ]]; then
     echo -e "${RED}Error: PROJECT_PATH and --continue-from are mutually exclusive.${NC}" >&2

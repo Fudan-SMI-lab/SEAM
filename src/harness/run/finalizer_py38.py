@@ -20,6 +20,7 @@ if sys.version_info < (3, 10):
         RunSummary,
         TerminalOutcome,
     )
+    from .trace_lifecycle_models import TRACE_NOT_REQUESTED
 
     _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -161,15 +162,30 @@ if sys.version_info < (3, 10):
                 )
                 if stage in request.required_stages:
                     finalization_failed = True
+        trace_status = (
+            request.trace_status_source()
+            if request.trace_status_source is not None
+            else TRACE_NOT_REQUESTED
+        )
+        diagnostics.extend(
+            FinalizationDiagnostic(
+                stage=request.hooks.ordered()[1][0],
+                error_type="TraceExportDiagnostic",
+                detail=error,
+            )
+            for error in trace_status.errors
+        )
         summary = RunSummary(
             run_id=request.identity.run_id,
             output_dir=request.identity.output_dir,
             overall_status="FAIL" if outcome is TerminalOutcome.FAILED else "PASS",
             telemetry_paths=dict(artifacts.telemetry_paths),
             errors=request.execution.errors,
+            trace=trace_status,
         )
         summary_path = report_dir / "summary.json"
         payload = summary._asdict()
+        payload["trace"] = trace_status._asdict()
         if request.continuation is not None:
             payload["continuation"] = request.continuation._asdict()
         persisted_summary_path: typing.Optional[str] = None

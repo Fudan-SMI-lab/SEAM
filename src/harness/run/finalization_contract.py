@@ -4,6 +4,12 @@ import sys
 import typing
 from enum import Enum, unique
 
+from .trace_lifecycle_models import (
+    TRACE_NOT_REQUESTED,
+    TraceLifecycleStatus,
+    TraceStatusSource,
+)
+
 if sys.version_info >= (3, 10):
     from core.run_outcome import RunOutcome as RunOutcome
     from core.run_outcome import TerminalOutcome as TerminalOutcome
@@ -147,6 +153,7 @@ else:
         continuation: typing.Optional[ContinuationRunSummary] = None
         required_stages: typing.FrozenSet[FinalizationStage] = frozenset()
         summary_required: bool = False
+        trace_status_source: typing.Optional[TraceStatusSource] = None
 
     class FinalizationDiagnostic(typing.NamedTuple):
         stage: FinalizationStage
@@ -159,6 +166,7 @@ else:
         overall_status: str
         telemetry_paths: typing.Dict[str, str]
         errors: typing.Tuple[str, ...]
+        trace: TraceLifecycleStatus = TRACE_NOT_REQUESTED
 
     class FinalizationResult(typing.NamedTuple):
         outcome: TerminalOutcome
@@ -196,4 +204,5 @@ __all__ = (
     "RunOutcome",
     "RunSummary",
     "TerminalOutcome",
+    "TraceLifecycleStatus",
 )

@@ -40,6 +40,7 @@ OPENCODE_MESSAGE_TIMEOUT=120
 OPENCODE_DIAGNOSE_ONLY=false
 PYTHON_OPENCODE_READINESS="message"
 CONTAINER_RETENTION=""
+SAVE_AGENT_TRACE=""
 
 # ── Color helpers ──
 RED='\033[0;31m'
@@ -80,6 +81,8 @@ Options:
   --no-keep-temp         Don't keep output project directory (default: keep)
   --container-retention POLICY
                           Container policy: retain or delete (default: retain)
+  --save-agent-trace      Export raw OpenCode agent trace (default: disabled)
+  --no-save-agent-trace   Explicitly disable raw OpenCode agent trace
   --agent NAME           Override auto-detected agent name
   --output-dir DIR       Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --workflow PATH        Path to workflow YAML file (overrides default auto selector)
@@ -133,6 +136,22 @@ while [[ $# -gt 0 ]]; do
             fi
             CONTAINER_RETENTION="$2"
             shift 2
+            ;;
+        --save-agent-trace)
+            if [[ -n "$SAVE_AGENT_TRACE" && "$SAVE_AGENT_TRACE" != true ]]; then
+                echo -e "${RED}Error: conflicting agent trace options.${NC}" >&2
+                exit 1
+            fi
+            SAVE_AGENT_TRACE=true
+            shift
+            ;;
+        --no-save-agent-trace)
+            if [[ -n "$SAVE_AGENT_TRACE" && "$SAVE_AGENT_TRACE" != false ]]; then
+                echo -e "${RED}Error: conflicting agent trace options.${NC}" >&2
+                exit 1
+            fi
+            SAVE_AGENT_TRACE=false
+            shift
             ;;
         --max-iter)             MAX_ITER="$2"; shift 2 ;;
         --max-review-iter)
@@ -192,6 +211,10 @@ while [[ $# -gt 0 ]]; do
             for extra_arg in "${EXTRA_PARTS[@]}"; do
                 if [[ "$extra_arg" == "--container-retention" || "$extra_arg" == --container-retention=* ]]; then
                     echo -e "${RED}Error: --container-retention cannot be supplied through --extra.${NC}" >&2
+                    exit 1
+                fi
+                if [[ "$extra_arg" == "--save-agent-trace" || "$extra_arg" == "--no-save-agent-trace" ]]; then
+                    echo -e "${RED}Error: agent trace policy cannot be supplied through --extra.${NC}" >&2
                     exit 1
                 fi
             done
@@ -297,6 +320,7 @@ echo -e "${GREEN}Review max override:${NC} ${MAX_REVIEW_ITER:-(unset; resolve af
 echo -e "${GREEN}Review fail-closed override:${NC} ${REVIEW_FAIL_CLOSED:-(unset; resolve after workflow selection)}"
 echo -e "${GREEN}Keep tmp:${NC}  $KEEP_TEMP"
 echo -e "${GREEN}Container retention:${NC} $CONTAINER_RETENTION"
+echo -e "${GREEN}Agent trace:${NC} ${SAVE_AGENT_TRACE:-(default off)}"
 echo -e "${GREEN}Auto-start:${NC} $( [[ "$SERVER_NO_AUTO_START" == true ]] && echo 'false' || echo 'true' )"
 echo -e "${GREEN}OpenCode readiness:${NC} $OPENCODE_READINESS"
 echo -e "${GREEN}Root:${NC}      $REPO_ROOT"
@@ -437,6 +461,12 @@ else
     MODE_ARGS+=("--project-dir" "$PROJECT_DIR" "--output-dir" "$OUTPUT_PROJECTS_DIR")
 fi
 RETENTION_ARGS=("--container-retention" "$CONTAINER_RETENTION")
+TRACE_ARGS=()
+if [[ "$SAVE_AGENT_TRACE" == true ]]; then
+    TRACE_ARGS+=("--save-agent-trace")
+elif [[ "$SAVE_AGENT_TRACE" == false ]]; then
+    TRACE_ARGS+=("--no-save-agent-trace")
+fi
 if [[ "$REVIEW_FAIL_CLOSED" == true ]]; then
     REVIEW_POLICY_ARGS+=("--review-fail-closed")
 elif [[ "$REVIEW_FAIL_CLOSED" == false ]]; then
@@ -459,6 +489,11 @@ if [[ "$DRY_RUN" == true ]]; then
     fi
     echo "    --max-phase5-iter $MAX_ITER \\"
     echo "    --container-retention $CONTAINER_RETENTION \\"
+    if [[ "$SAVE_AGENT_TRACE" == true ]]; then
+        echo "    --save-agent-trace \\"
+    elif [[ "$SAVE_AGENT_TRACE" == false ]]; then
+        echo "    --no-save-agent-trace \\"
+    fi
     if [[ -n "$MAX_REVIEW_ITER" ]]; then
         echo "    --max-review-iter $MAX_REVIEW_ITER \\"
     fi
@@ -516,6 +551,7 @@ cd "$REPO_ROOT"
     "${MODE_ARGS[@]}" \
     --max-phase5-iter "$MAX_ITER" \
     "${RETENTION_ARGS[@]}" \
+    "${TRACE_ARGS[@]}" \
     "${REVIEW_POLICY_ARGS[@]}" \
     --opencode-readiness "$PYTHON_OPENCODE_READINESS" \
     --opencode-message-timeout "$OPENCODE_MESSAGE_TIMEOUT" \

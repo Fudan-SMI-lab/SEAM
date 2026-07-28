@@ -124,6 +124,14 @@ class _ContinuationRunSummary(_FrozenModel):
     attachment_mode: _Status
 
 
+class _TraceLifecycleSummary(_FrozenModel):
+    requested: bool = False
+    enabled: bool = False
+    complete: bool = False
+    path: _Text | None = None
+    errors: tuple[str, ...] = ()
+
+
 class RunSummaryDocument(_FrozenModel):
     run_id: _SafeId
     base_url: _Text
@@ -145,6 +153,7 @@ class RunSummaryDocument(_FrozenModel):
     entry_script: _Text | None
     errors: tuple[str, ...]
     review_timeout_observability: _ObservabilitySummary
+    trace: _TraceLifecycleSummary = _TraceLifecycleSummary()
     continuation: _ContinuationRunSummary | None = None
     runtime: V3RuntimeReport | None = None
 

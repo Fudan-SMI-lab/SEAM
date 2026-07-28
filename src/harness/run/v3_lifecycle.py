@@ -30,6 +30,24 @@ _EXCLUDED_SNAPSHOT_DIRS: Final = frozenset(
 )
 
 
+class CleanupFailureAction(Protocol):
+    def __call__(
+        self,
+        resource: str,
+        error_type: str,
+        detail: str,
+    ) -> None: ...
+
+
+def _ignore_cleanup_failure(
+    resource: str,
+    error_type: str,
+    detail: str,
+) -> None:
+    del resource, error_type, detail
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class RunCounts:
     session_count: int
@@ -43,6 +61,7 @@ class ObserverSidecar:
     record_cleanup_requested: Action
     cleanup_sessions: CountSource
     record_cleaned_sessions: CountAction
+    record_cleanup_failure: CleanupFailureAction = _ignore_cleanup_failure
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +79,11 @@ class ObserverSource(Protocol):
 
     def save_metrics(self) -> Mapping[str, str]: ...
 
-    def record_event(self, event_type: str, **details: bool) -> None: ...
+    def record_event(
+        self,
+        event_type: str,
+        **details: str | int | bool,
+    ) -> None: ...
 
     def cleanup_all(self) -> int: ...
 
@@ -102,6 +125,14 @@ def build_telemetry_sidecars(sources: V3TelemetrySources) -> TelemetrySidecars:
             cleanup_sessions=source.cleanup_all,
             record_cleaned_sessions=lambda count: source.set_metadata(
                 "cleaned_sessions", count
+            ),
+            record_cleanup_failure=lambda resource, error_type, detail: (
+                source.record_event(
+                    "cleanup_failed",
+                    resource=resource,
+                    error_type=error_type,
+                    detail=detail,
+                )
             ),
         )
     bridge: BridgeSidecar | None = None

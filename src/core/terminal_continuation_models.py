@@ -100,6 +100,7 @@ class V3InvocationOptions:
     user_constraints: str
     framework_config_path: str | None
     container_retention: ContainerRetention = ContainerRetention.RETAIN
+    save_agent_trace: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
