@@ -10,7 +10,13 @@ import pytest
 
 import harness.server.lifecycle as server_lifecycle
 import harness.session.manager as manager_module
-from core.execution_env_context import Phase5ReferenceRequest
+from core.continuation_environment_models import RetainedEnvironmentProbeRequest
+from core.continuation_environment_probe import probe_retained_environment
+from core.execution_env_context import (
+    EnvironmentProbe,
+    EnvironmentProbeRequest,
+    Phase5ReferenceRequest,
+)
 from core.resource_manifest import (
     ResourceManifestStore,
     ResourceManifestUpdate,
@@ -73,7 +79,28 @@ def create_runtime_parent(
             _ = (trace_dir / "manifest.json").write_bytes(spec.parent_trace_payload)
         if not spec.environment_required:
             return original_seal(store, expected_revision, terminal_status)
-        captured = store.context.capture_local_environment("execution-python")
+        observed = probe_retained_environment(
+            RetainedEnvironmentProbeRequest(interpreter_path=sys.executable)
+        )
+        captured = store.context._capture_environment_probe(
+            EnvironmentProbeRequest(
+                probe_id="probe-execution-python",
+                environment_id="execution-python",
+                namespace=observed.namespace,
+                probe=EnvironmentProbe(
+                    status="ok",
+                    interpreter_realpath=observed.interpreter_realpath,
+                    sys_executable=observed.sys_executable,
+                    sys_prefix=observed.sys_prefix,
+                    sys_base_prefix=observed.sys_base_prefix,
+                    python_implementation=observed.python_implementation,
+                    python_version=observed.python_version,
+                    platform=observed.platform_system,
+                    architecture=observed.platform_architecture,
+                    package_inventory_hash=observed.package_inventory_hash,
+                ),
+            )
+        )
         references = ()
         if spec.phase5_environment_reference:
             references = (
