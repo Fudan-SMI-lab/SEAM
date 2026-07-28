@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="README.en.md">English</a> |
-  <a href="README.zh.md">简体中文</a> 
+  <a href="README.md">简体中文</a>
 </p>
 
 
@@ -48,14 +48,36 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 
 项目根目录下的 `ADAPTATION_REQUIREMENTS.md` 会自动加载；非标准约束可以通过 `--extra '--user-constraints PATH'` 传入。
 
+#### 已验证的 V3 公共契约
+
+`run_seam.sh` 是日常入口，默认选择 `src/workflows/seam_auto_default.yaml`。高级自动化可直接调用 Python 入口；它必须且只能提供 `--project-dir` 或 `--continue-from` 之一。下面的示例由 `src/tests/test_documented_cli_contracts.py` 使用真实解析器执行验证。
+
+<!-- cli-contract:readme-zh-direct -->
+```bash
+PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
+  --project-dir /absolute/path/to/cuda-project \
+  --workflow-path src/workflows/seam_auto_default.yaml \
+  --server-url http://127.0.0.1:4098 \
+  --review-gate \
+  --container-retention retain
+```
+
+- Review Gate 默认关闭；启用后，有效验证加显式 `accept` 才是普通 PASS。严格模式是最终有效默认值，只有 `reject_exhausted` 可由 `--no-review-fail-closed` 放宽为 `passed_with_reviews`；unknown、session error、improvement error 和验证失败仍然 FAIL。
+- `--continue-from` 只接受显式的终态父运行 `summary.json`。它会创建全新子会话和独立子证据，父报告保持不可变；不是崩溃恢复，也不恢复进行中的 Agent 或 Phase 状态。当前普通直接运行尚未生成 continuation 所需的 sealed root run manifest，因此不要宣称任意直接运行都可继续。
+- 容器默认保留。`delete` 只对 SEAM 明确拥有且现场复核通过的 image 容器生效；外部或用户容器永不删除。已通过的运行若请求清理但清理失败，迁移结果仍是 PASS，但最终进程退出码为 2。
+- `--save-agent-trace` 是默认关闭的可选旁路。它递归导出 OpenCode 可访问的原始数据，不脱敏、不截断已接受的数据，但受容量和图边界限制；不可访问、分页、未知或不支持的数据会明确标为 partial。它不能导出提供方隐藏的 reasoning，也不改变 continuation authority 或冻结的 `RunOutcome`。普通可选 trace 失败不改变退出码，但 continuation 的 required evidence publication 失败会使 finalization 退出 1。
+- Replay 只显示同一进程中已接受的真实 Phase 5 receipt 所对应的命令。SEAM 不自动执行 replay，也不保证确定性复现。
+
+完整 CLI、continuation 矩阵、产物树、超时语义和可选集成检查见 [`src/docs/E2E_TESTING.md`](src/docs/E2E_TESTING.md)；原始 trace 完整性和 schema-v2 关联边界见 [`src/docs/full_agent_io_logging_design.md`](src/docs/full_agent_io_logging_design.md)。
+
 运行后：
-*   是否跑通：终端最后会直接显示 `E2E TEST PASSED` / `E2E PASS` 或失败信息；也可以通过 `./e2e-reports/src/<时间戳>/summary.json`获取更具体的信息
+*   是否跑通：终端最后会显示 `E2E TEST PASSED`、`E2E PASS`、`E2E FINALIZATION FAILED` 或失败信息；权威详情位于 `./e2e-reports/src/e2e-v3-<run-id>/summary.json`。迁移 FAIL 退出 1；仅在迁移已 PASS 且请求的授权清理失败时退出 2。
     
 *   迁移的代码库：默认写入 SEAM 仓库同级目录 `../output_projects/<项目名>_<时间戳>/`；也可以用环境变量 `MIGRATION_OUTPUT_PROJECTS_ROOT` 改默认根目录，或用 `--output-dir` 显式指定本次输出项目根目录。
     
 *   迁移报告：会在迁移后的代码库下创建`migration_reports/`文件夹, 用于查看迁移后项目本身的验收结果、性能、custom-op迁移情况、构建日志等。
     
-*   详细运行时log：在迁移后项目的 `.sm-artifacts/` 下；如果运行失败，可以把运行报告和 `.sm-artifacts/` 一起反馈给我们排查。
+*   详细运行时 log：工作证据位于迁移项目的 `.sm-artifacts/`，最终报告目录还包含 telemetry、resource manifest、可选 raw trace 和 finalization diagnostics。请一并提供对应的 `summary.json`；不要把 `.sm-artifacts` 当作 continuation checkpoint。
     
 *   .memory .skill 等文件夹会更新，是SEAM的自进化学习的经验记忆和技能素材，非必要勿删。
     

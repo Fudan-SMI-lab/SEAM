@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="README.en.md">English</a> |
-  <a href="README.zh.md">简体中文</a>
+  <a href="README.md">简体中文</a>
 </p>
 
 
@@ -46,14 +46,36 @@ When `--workflow` is not passed, the launcher uses `src/workflows/seam_auto_defa
 
 The project-root `ADAPTATION_REQUIREMENTS.md` file is loaded automatically. For custom constraints in another file, pass `--extra '--user-constraints PATH'`.
 
+#### Verified V3 public contract
+
+Use `run_seam.sh` for normal runs; it defaults to `src/workflows/seam_auto_default.yaml`. Advanced automation may call the Python entrypoint directly, which requires exactly one of `--project-dir` and `--continue-from`. The real parser executes the following example in `src/tests/test_documented_cli_contracts.py`.
+
+<!-- cli-contract:readme-en-direct -->
+```bash
+PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
+  --project-dir /absolute/path/to/cuda-project \
+  --workflow-path src/workflows/seam_auto_default.yaml \
+  --server-url http://127.0.0.1:4098 \
+  --review-gate \
+  --container-retention retain
+```
+
+- Review Gate is disabled by default. When enabled, valid execution plus an explicit `accept` is a normal PASS. Strict mode is the final effective default. Only `reject_exhausted` can become `passed_with_reviews` under `--no-review-fail-closed`; unknown, session error, improvement error, and validation failure remain FAIL.
+- `--continue-from` accepts only an explicit terminal parent `summary.json`. It creates fresh child sessions and separate child evidence while keeping the parent report immutable. It is not crash recovery and never restores an in-flight Agent or phase. Ordinary direct runs currently do not create the sealed root run manifest required by continuation, so not every direct report is eligible.
+- Containers are retained by default. `delete` applies only to a positively owned SEAM image container after live revalidation; external and user containers are never deleted. If an otherwise passing run requests authorized cleanup and cleanup fails, the migration remains PASS but final process exit is 2.
+- `--save-agent-trace` is an opt-in, default-off side channel. It recursively exports raw OpenCode data that SEAM can access, without redaction or truncation of accepted data, within explicit graph and byte bounds. Inaccessible, paginated, unknown, or unsupported data is marked partial. Provider-hidden reasoning is unavailable, and trace never changes continuation authority or the frozen `RunOutcome`. Ordinary optional trace failure does not change process exit, but failed required evidence publication in continuation finalization exits 1.
+- Replay is display-only guidance from the accepted actual Phase 5 receipt in the same process. SEAM never auto-executes it and does not promise deterministic reproduction.
+
+See [`src/docs/E2E_TESTING.md`](src/docs/E2E_TESTING.md) for the complete CLI, continuation matrix, artifact tree, timeout semantics, and optional integration checks. See [`src/docs/full_agent_io_logging_design.md`](src/docs/full_agent_io_logging_design.md) for raw-trace completeness and schema-v2 correlation boundaries.
+
 Execution Results:
-*   **Run status**: The terminal will display `E2E TEST PASSED` / `E2E PASS` or error messages upon completion. For full details, check `./e2e-reports/src/<timestamp>/summary.json`.
+*   **Run status**: The terminal displays `E2E TEST PASSED`, `E2E PASS`, `E2E FINALIZATION FAILED`, or a failure. Authoritative details are in `./e2e-reports/src/e2e-v3-<run-id>/summary.json`. Migration failure exits 1; exit 2 is reserved for requested authorized-cleanup failure after a migration PASS.
 
 *   **Migrated project**: Outputs are saved by default under the sibling directory `../output_projects/<project_name>_<timestamp>/`. You can override the default root with `MIGRATION_OUTPUT_PROJECTS_ROOT`, or pass `--output-dir` for this run.
 
 *   **Migration report**: A folder named `migration_reports/` will be generated inside the migrated project, containing acceptance results, performance data, custom operator migration logs and build records.
 
-*   **Runtime logs**: Detailed logs are stored under `.sm-artifacts/` in the migrated project. Please share the migration report and `.sm-artifacts` folder with us for troubleshooting if errors occur.
+*   **Runtime logs**: Working evidence is stored under `.sm-artifacts/` in the migrated project. The final report also contains telemetry, the resource manifest, optional raw trace, and finalization diagnostics. Share the matching `summary.json` when troubleshooting; `.sm-artifacts` is not a continuation checkpoint.
 
 *   **Self-evolution directories**: Folders such as `.memory` and `.skill` store accumulated experience and reusable assets for SEAM's self-evolution mechanism. **Do not delete them unnecessarily**.
 
