@@ -18,6 +18,8 @@ from tests.terminal_run_continuation_hydration_support import (
 )
 from tests.terminal_run_continuation_test_support import tree_bytes
 
+pytestmark = pytest.mark.integration
+
 
 class _ChildExecutionFailure(RuntimeError):
     __slots__ = ("detail",)

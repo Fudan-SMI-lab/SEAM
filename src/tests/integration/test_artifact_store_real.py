@@ -9,6 +9,8 @@ import pytest
 
 from core.artifact_store import ArtifactStore
 
+pytestmark = pytest.mark.integration
+
 
 def _directory_link(link: Path, target: Path) -> None:
     if os.name == "nt":
