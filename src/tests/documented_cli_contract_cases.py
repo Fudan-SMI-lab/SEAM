@@ -73,6 +73,9 @@ def test_documented_trace_boundaries_are_truthful() -> None:
     }
 
 
+@pytest.mark.integration
+@pytest.mark.opencode
+@pytest.mark.slow
 def test_optional_real_opencode_phase_0_to_3(tmp_path: Path) -> None:
     run_optional_real_opencode(tmp_path)
 
@@ -118,5 +121,8 @@ def test_generic_cpu_docker_contract_never_pulls(
     assert all(call[1] != "pull" for call in calls)
 
 
+@pytest.mark.docker
+@pytest.mark.integration
+@pytest.mark.slow
 def test_optional_generic_cpu_docker(tmp_path: Path) -> None:
     run_optional_generic_cpu_docker(tmp_path)
