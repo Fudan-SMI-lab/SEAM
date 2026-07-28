@@ -1,563 +1,201 @@
-# V2 Full Agent I/O Logging Design
+# V3 OpenCode raw trace、完整性与关联边界
 
-> 目标: 在不影响 `migration_utils` 现有 YAML 工作流、验证 schema、Phase 输出和报告生成逻辑的前提下，确保每一次 OpenCode Agent 调用的完整输入和完整返回都可审计、可回放、可定位。
+本文记录当前已经实现的 V3 raw recursive OpenCode trace。它取代旧的 `agent_io.jsonl + payloads` 方案作为 V3 session/tool 原始证据说明，但不删除 legacy full-I/O sidecar 的兼容能力。两者是不同产物，不能互换路径或完整性声明。
 
----
+## 1. 启用方式和非目标
 
-## 1. 背景与现状
+Raw trace 默认关闭，只有显式 `--save-agent-trace` 才启用。省略 flag 表示用户未请求且未启用；`--no-save-agent-trace` 表示用户显式请求关闭。两个 flag 互斥。
 
-`migration_utils` 目前存在多条执行路径，Agent 输入输出的持久化能力不一致：
-
-| 执行路径 | 当前保存情况 | 主要问题 |
-|---|---|---|
-| V1 `StateMachineOrchestrator` | `raw_payload` 保存完整 `prompt`、`response`、`parsed_output` | V1 行为较完整，但不是 V2 YAML 主路径 |
-| V2 `PhaseRunner` | raw artifact 注入 `_meta.prompt` 和 `_meta.response` | 只覆盖 `PhaseRunner` 路径，不覆盖所有 `WorkflowExecutor` 子流程 |
-| V2 `WorkflowExecutor` | raw/validated artifact 主要保存解析后的 phase output | 不保证保存完整 prompt；若 Agent 返回可解析 JSON，原始 response 也会丢失 |
-| V2 `TelemetryObserver` | `telemetry.json` 保存 500 字 command/response preview 和长度 | 适合统计，不适合完整审计 |
-| Phase 5 `RepairLoopEngine` | 保存 stdout/stderr、classification raw_response、repair instruction/response | 对修复循环较完整，但不覆盖所有普通 LLM phase |
-
-因此，若只依赖现有 `raw/*.json` 或 `telemetry.json`，无法稳定回答：
-
-- 某个 Agent 在某个 phase 第 N 次到底收到了什么完整 prompt？
-- Agent 完整返回了什么？
-- 哪个 session、哪个 role、哪个 phase、哪个 retry 触发了这次请求？
-- 失败时请求是否发出、返回是否为空、是否被 JSON 修正 prompt 覆盖？
-
----
-
-## 2. 设计目标
-
-### 2.1 必须满足
-
-1. **完整性**: 保存每次 `send_command()` 的完整输入文本和完整返回文本。
-2. **旁路性**: 不改变 `send_command()` 返回值，不改变 phase output，不影响 validator。
-3. **覆盖面**: 覆盖主 phase、sub-workflow、repair、review、JSON correction、experience query/refine 等经 `SessionManagerLike.send_command()` 发送的调用。
-4. **可关联**: 每条记录必须能关联到 `run_id`、`phase_id`、`session_id`、sequence、时间、耗时和状态。
-5. **安全开关**: 默认可关闭或可配置，避免在不需要时产生超大日志或保存敏感内容。
-6. **失败可见**: 即使 Agent 调用抛异常，也要记录 prompt、错误、耗时和空 response。
-7. **不污染上下文**: 完整 I/O 不能写入 canonical phase output，避免 Phase 6 或后续 phase 读入大段 prompt/response。
-
-### 2.2 非目标
-
-1. 不替代 OpenCode server 自身的 `/session/:id/message` 历史。
-2. 不记录 HTTP 原始 header/body、认证信息或底层网络 trace。
-3. 不强行解析 Agent 内部 reasoning 或 tool call，除非它已经包含在 OpenCode 返回文本中。
-4. 不改变 Agent prompt 内容，不引入额外 Agent 调用。
-
----
-
-## 3. 推荐方案: TelemetryObserver 旁路 Full I/O Sink
-
-推荐在 `tests/e2e/e2e_observer.py` 的 `TelemetryObserver.send_command()` 中增加一个旁路式 full I/O writer。
-
-原因：
-
-- V2 E2E 中 `WorkflowExecutor` 的 `session_mgr` 是 `TelemetryObserver`，因此普通 LLM phase、sub-workflow LLM phase、review、correction prompt 都会经过该方法。
-- 该层已经掌握 `phase_id`、`sequence`、`session_id`、duration、status、command_length、response_length。
-- 修改该层不会影响 `WorkflowExecutor`、`PhaseRunner`、`RepairLoopEngine` 的业务返回值。
-- 现有 `telemetry.json` 仍保留 preview 统计；新增 full I/O 文件作为审计 sidecar。
-
----
-
-## 4. 输出目录设计
-
-### 4.1 主输出位置
-
-建议写入 E2E report 目录：
-
-```text
-SEAM/e2e-reports/src/<YYYYMMDD_HHMMSS>/agent_io/
-├── agent_io.jsonl
-├── payloads/
-│   ├── 000001_prompt.txt
-│   ├── 000001_response.txt
-│   ├── 000002_prompt.txt
-│   └── 000002_response.txt
-└── index.json
+<!-- cli-contract:trace-direct -->
+```bash
+PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
+  --project-dir /absolute/path/to/cuda-project \
+  --workflow-path src/workflows/seam_auto_default.yaml \
+  --save-agent-trace \
+  --container-retention retain
 ```
 
-### 4.2 迁移项目内副本
+Trace 是 finalization 的 observational side channel：
 
-可选地复制到迁移项目 artifact 目录：
+- 不修改 OpenCode prompt、Agent response、Phase output 或 validator。
+- 不选择 continuation parent，不参与 hydration 或 terminal anchor。
+- 不读取或恢复 checkpoint/state。
+- 不控制 `RunOutcome` 或 review acceptance。普通 optional trace 失败不改退出码；continuation required evidence publication 失败可使 finalization exit 1。
+- 不执行 replay，也不为 replay 提供 authority。
+- 不尝试导出 provider-hidden reasoning；只有 OpenCode endpoint 实际返回且 SEAM 可访问的数据可持久化。
 
-```text
-output_projects/<project>_<timestamp>/.sm-artifacts/<run_id>/agent_io/
-```
+Trace export、server/session cleanup 或可选 telemetry 失败会形成诊断和 partial/error status，但不会把冻结的 PASS 改成 FAIL。Continuation child 将 trace export/evidence sealing 作为 required finalization 组合的一部分时，required publication 失败可使 finalization exit 1；这仍不改写原 `RunOutcome`。
 
-建议实现上只在 report 目录写主日志；如果需要随 `.sm-artifacts` 一起归档，再在结束阶段复制一份或创建 `agent_io_path` 引用即可。
+## 2. Raw、unredacted 和 bounded 的准确含义
 
-### 4.3 为什么不直接写入 `raw/phase_*.json`
+对通过 parser、identity 和安全边界的 accessible endpoint data，导出器保存原始 JSON 值，不脱敏、不改写未知字段、不压缩成 preview，也不截断已经接受的 payload。Duplicate JSON key、malformed schema、unknown part/tool state 和 arbitrary metadata 不会被静默正规化。
 
-不推荐把完整 I/O 写入每个 phase raw artifact 的原因：
+“完整”只表示在本次 feature/capability 和 bounds 下，所有可访问数据都已成功捕获。它不表示 OpenCode provider 持有的所有内部状态，更不表示能取得模型供应商隐藏的 chain-of-thought。
 
-- `WorkflowExecutor` 的 raw/validated 目前保存 phase output，强行注入 `_meta` 容易污染 schema 和后续上下文。
-- Phase 6 会读取前序 artifact，若 `_meta` 进入 canonical 会造成 prompt 上下文膨胀。
-- 某些请求不是完整 phase（如 correction prompt、experience query、review retry），没有天然的 phase output 文件名。
-- JSON 文件内嵌超长 prompt/response 不利于快速 grep 和增量追加。
+默认 hard bounds：
 
----
+| 维度 | 上限 |
+| --- | ---: |
+| sessions | 10,000 |
+| child edges | 100,000 |
+| graph depth | 256 |
+| session ID | 4,096 characters |
+| 单个 local overflow file | 64 MiB |
+| 总 trace artifacts | 512 MiB |
+| manifest | 64 MiB |
+| overflow references | 100,000 |
+| retained errors | 100,000 |
 
-## 5. 日志格式设计
+超过任一上限时，导出器不会截断后宣称 complete。它拒绝越界数据或停止扩展对应范围，记录明确 reason，并使 manifest partial/error。Destination 在 publish 前必须不存在；全部 session/overflow artifacts 在 private sibling staging tree 中写入，`manifest.json` 完成后才整体原子发布。未发布 staging 会清理，清理失败也进入诊断。
 
-### 5.1 `agent_io.jsonl`
+## 3. OpenCode v1.18.5 feature detection
 
-每次 `send_command()` 追加一行 JSON，保存元数据和 payload 文件引用：
+Capability 来自 endpoint 状态和 body schema，不从 version 字符串单独猜测。
+
+| 能力 | 1.18.5 integrated V1 行为 | 不完整或错误边界 |
+| --- | --- | --- |
+| Health/version | health 200、`healthy=true`、version `1.18.5` | 非 pinned version 为 unsupported；malformed pinned response 为 error |
+| Feature doc | `GET /doc` | 404/405 为 unsupported；其他非 200 为 error |
+| Message history | `GET /session/{sessionID}/message`，不发送正 `limit` | positive limit、pagination cursor、foreign session 或 malformed history 不能称为完整 |
+| Direct children | `GET /session/{sessionID}/children` | 404/405 为 unsupported；401/403/429/5xx 为 error |
+| Fallback listing | direct children 不支持时读取无分页 `GET /session` 并按 `parentID` 过滤 | 只补充 accessible child records，不把 direct capability 改写成 supported，也不让整体变 complete |
+
+V1 message history 是 authoritative persisted message projection；V2 durable history 只做 optional enrichment。Direct children 返回 immediate children，recursive graph 由 exporter 按 seed order 和 response order 做 deterministic breadth-first traversal。
+
+Feature state 使用 supported、unsupported、unknown；组合 contract 使用 compatible、partial、unsupported、error。404/405 的 clean unsupported 不等于空 complete，transport/auth/rate-limit/server/malformed 错误也不 silent fallback。
+
+## 4. Recursive session artifact
+
+每个访问到的 session artifact 保留：
+
+- exact root/current/parent session identity 和 raw `Session.Info`。
+- original successful response text 及 endpoint status/header metadata。
+- complete no-positive-limit V1 message history，或准确 pagination/transport gap。
+- messages、parts、tool states、unknown JSON values 和 raw contract projection。
+- direct child capability 与 fallback capture 分开记录。
+- safe local overflow copy，或原 `outputPath` reference 加 unavailable reason。
+- schema-v2 correlation records，仅在 active V3 提供 typed correlation context 时。
+
+Overflow 文件只有在 absolute、无 traversal、无 symlink/junction、普通文件、位于显式 allowed local root 且未超过上限时才复制。Remote、relative、outside-root、linked、identity changed、unavailable 或 oversized path 保留 reference/reason，不伪装为 captured bytes。Artifact 名来自 hash，不直接使用 hostile session ID 或 source path。
+
+Manifest 记录每个 session 的 completeness、capability、artifact path/size/SHA-256、child edges、overflow inventory、errors、global counts 和 inventory digest。Summary 只保留 bounded trace status/path/correlation，不复制 raw session、message、reasoning、tool 或 parent payload。
+
+## 5. Complete、partial、unsupported 和 error
+
+下面的结构化边界由 documentation contract test 读取：
+
+<!-- trace-contract:boundaries:start -->
+| Condition | Required state |
+| --- | --- |
+| `direct_children_unsupported_with_fallback` | `partial` |
+| `provider_hidden_reasoning` | `unavailable` |
+| `trace_controls_run_outcome` | `false` |
+| `trace_controls_continuation` | `false` |
+<!-- trace-contract:boundaries:end -->
+
+以下情况可使 trace truthful partial：
+
+- direct children endpoint unsupported，即使 fallback listing 找到 children。
+- message 或 fallback listing paginated。
+- unknown message part、tool state 或 unsupported schema extension。
+- task lineage 缺失、contradictory parent、cycle、duplicate ID 或 foreign root。
+- `outputPath` overflow 不可读取、不安全或超过 bounds。
+- session、edge、depth、manifest、artifact、reference 或 error 上限触发。
+- correlation orphan、duplicate、cross-run relation 或 required parent trace reference gap。
+
+Pinned contract body malformed、identity splice、auth/rate-limit、HTTP 5xx、transport failure、destination safety failure和 transactional publication failure属于 error/incompatible 证据。它们不会被转成空列表或 complete。
+
+只有所有 required accessible history、session identities、direct child facts、safe overflow 和 correlation 都满足当前 contract 时，manifest 才能 `complete=true`。Provider 不公开的 reasoning 不是可访问数据，但文档和 manifest 不因此声称已捕获隐藏内容。
+
+## 6. Schema versioning
+
+| 调用方式 | raw trace schema | session schema | correlation |
+| --- | ---: | ---: | --- |
+| standalone legacy exporter，无 typed context | 1 | 1 | 无 |
+| active V3 correlated export | 2 | 2 | `seam.trace-correlation` version 1 |
+
+Schema v2 是 additive correlation envelope。它不更改 raw endpoint JSON、Task 21 traversal 或 schema-v1 standalone compatibility。
+
+## 7. Correlation records
+
+`manifest.json.correlation` 使用明确 typed IDs，不从 log prose、filename、mtime 或 display strings 反推：
+
+| Group | 关联边界 |
+| --- | --- |
+| `run_scope` | run、immediate parent run、lineage root、optional parent trace identity |
+| `phase_executions` | run、phase、deterministic phase execution ID |
+| `phase5_attempts` | accepted attempt ID 和 attempt number |
+| `review_rounds` | Phase 5 iteration、logical review round、framework invocation、session |
+| `framework_invocations` | framework invocation、phase execution、session |
+| `transport_attempts` | logical invocation、physical attempt/number、event phase、framework invocation、session |
+| `sessions` | role/scope、root/current/immediate parent session |
+| `tool_calls` | root/current session、message、part、OpenCode `callID`、tool name、optional task child session |
+
+每条 record 绑定一个 run ID。Session/tool correlation 在既有 BFS 访问时投影，不二次 fetch 或重复序列化 session。Timeout observability 带 run、phase、framework、transport、session identity；它不改变 timeout 或 retry policy。
+
+Correlation 的 `complete=false` 可由 orphan、duplicate、cross-run、contradictory phase/review/attempt/parent、malformed tool link、cycle 或 parent reference gap 引起。Manifest 会同时保持 raw source/export errors 和独立 correlation diagnostics。
+
+`authority.correlation=false` 是 schema 明示边界。删除、篡改或缺失 correlation 不得选择 parent、hydrate canonical、修改 checkpoint/anchor、重写 `RunOutcome` 或改变 normal exit mapping。
+
+精确字段定义见 [`trace_correlation_schema.md`](trace_correlation_schema.md)。
+
+## 8. Continuation parent trace reference
+
+Child 可以包含 `run_scope.parent_trace`，但只保存 Task 14 已验证 parent report inventory 中的 identity：
 
 ```json
 {
-  "schema_version": "1.0",
-  "run_id": "e2e-v2-facab82c7f63",
-  "sequence": 12,
-  "phase_id": "phase_5_validation",
-  "session_id": "ses_xxx",
-  "role": "code_adapter",
-  "agent": "Sisyphus",
-  "lifecycle": "persistent",
-  "started_at": "2026-04-30T09:30:00.123456+00:00",
-  "ended_at": "2026-04-30T09:31:02.789000+00:00",
-  "duration_seconds": 62.665,
-  "timeout_seconds": 3600,
-  "status": "passed",
-  "error": null,
-  "command_length": 18244,
-  "response_length": 9120,
-  "command_sha256": "...",
-  "response_sha256": "...",
-  "command_path": "agent_io/payloads/000012_prompt.txt",
-  "response_path": "agent_io/payloads/000012_response.txt",
-  "command_preview": "first 500 chars...",
-  "response_preview": "first 500 chars..."
+  "run_id": "parent-run-001",
+  "manifest_path": "/absolute/path/to/e2e-reports/parent-run-001/trace/manifest.json",
+  "sha256": "<immutable-parent-manifest-digest>",
+  "size_bytes": 1234
 }
 ```
 
-### 5.2 Payload 文本文件
+Child exporter 不打开、复制、重写、嵌入或赋权 parent trace/session payload。Parent raw payload 不进入 prompt、canonical output、checkpoint、summary 或 child trace。Reference 也不是 continuation authority；continuation 仍由 terminal summary、sealed run/resource manifests、workflow/workspace、anchor 和 accepted receipt 决定。
 
-完整 prompt/response 分开落盘：
+## 9. 与其他 artifacts 的关系
 
-```text
-agent_io/payloads/000012_prompt.txt
-agent_io/payloads/000012_response.txt
-```
+| Artifact | 内容 | 完整性/authority |
+| --- | --- | --- |
+| `telemetry.json` | sessions、commands、events、preview、duration | 轻量 observability，不是 full raw payload |
+| `phase_observability.json` | phase/framework/transport timeout 和 correlation facts | optional observational sidecar |
+| `.sm-artifacts/.../raw/` | workflow phase raw output | 不是 OpenCode recursive history，不是 continuation checkpoint |
+| `.sm-artifacts/.../validated/` | canonical phase output | 后续 workflow/evidence 使用，不注入 trace payload |
+| legacy `agent_io/` | 某些 observer 路径的 command/response sidecar | optional、路径覆盖有限，不等同 raw recursive trace |
+| `trace/manifest.json` | graph、inventory、completeness、schema-v2 correlation | observational，authority flags 为 false |
+| `trace/sessions/<session-artifact>.json` | raw accessible session/message/part/tool data | unredacted within bounds；partial 状态必须保留 |
+| `trace/overflows/<overflow-artifact>` | safe accessible local overflow bytes | 不可访问或越界 reference 保持 partial |
+| `summary.json.trace` | bounded status/path/correlation projection | 不包含 raw parent/child payload，不控制 outcome |
 
-优点：
+旧文档中的 `SM_ADAPT_FULL_AGENT_IO_MAX_BYTES=0`、默认 redaction、`agent_io.jsonl` 主路径、自动 replay 或“完整隐藏 reasoning”都不是当前 raw trace contract。若 legacy sidecar 存在，必须按 legacy optional artifact 标注，不能作为 V3 trace 的规范路径。
 
-- JSONL 轻量、可快速扫描。
-- 大文本不影响 JSONL 可读性。
-- 文件 hash 可验证完整性。
-- 失败时 response 文件可以为空，但仍保留 prompt。
+## 10. 安全和操作要求
 
-### 5.3 `index.json`
+- Raw trace 不脱敏，可能包含用户输入、路径、tool arguments 和 OpenCode 返回的敏感内容。只在受控 report root 显式启用，按敏感证据管理。
+- 文档示例不包含 credentials、API keys、ownership labels 或 deletion capability。
+- Trace capture 是 read-only OpenCode integration，不执行 tool payload、overflow text、replay command 或 parent content。
+- Capture bounds 是拒绝和 truthful partial 边界，不是 silent truncation。
+- Retention/deletion policy 与 trace 独立。Trace 既不能授权删除，也不能阻止真实 ownership checker 拒绝删除。
+- Mandatory tests 使用 scripted OpenCode client 和 hardware-free fixtures；不要求 live service、network、Docker、credentials 或 accelerator。
 
-结束时可生成聚合索引，便于人读：
+## 11. 验证入口
 
-```json
-{
-  "schema_version": "1.0",
-  "run_id": "e2e-v2-facab82c7f63",
-  "generated_at": "...",
-  "total_calls": 23,
-  "by_phase": {
-    "phase_0_env_detect": [1],
-    "phase_5_validation": [8, 9, 10, 11, 12]
-  },
-  "by_session": {
-    "ses_xxx": [1, 2, 3]
-  }
-}
-```
-
-`index.json` 不是必要路径；第一版可只实现 `agent_io.jsonl + payloads/`。
-
----
-
-## 6. 配置开关
-
-### 6.1 环境变量
-
-第一优先级使用环境变量，便于不改 CLI 即可启用：
+Parser、default-off tri-state、example shape、conflict 和 optional-skip contract：
 
 ```bash
-SM_ADAPT_FULL_AGENT_IO=1
-SM_ADAPT_FULL_AGENT_IO_MAX_BYTES=0
-SM_ADAPT_FULL_AGENT_IO_REDACT=1
+PYTHONPATH=src python -m pytest src/tests/test_documented_cli_contracts.py -q
 ```
 
-含义：
-
-| 变量 | 默认值 | 说明 |
-|---|---:|---|
-| `SM_ADAPT_FULL_AGENT_IO` | `0` | 是否启用完整 Agent I/O 落盘 |
-| `SM_ADAPT_FULL_AGENT_IO_MAX_BYTES` | `0` | 单个 prompt/response 最大保存字节数；`0` 表示不限 |
-| `SM_ADAPT_FULL_AGENT_IO_REDACT` | `1` | 是否启用基础敏感信息脱敏 |
-
-### 6.2 YAML 配置
-
-第二阶段可加入 `framework_defaults.yaml`：
-
-```yaml
-framework:
-  artifacts:
-    full_agent_io:
-      enabled: false
-      max_bytes_per_payload: 0
-      redact: true
-      write_payload_files: true
-```
-
-环境变量优先级高于 YAML，方便临时调试。
-
----
-
-## 7. 代码改动设计
-
-### 7.1 新增 `AgentIOLogger`
-
-建议新增文件：
+Recursive exporter、OpenCode feature detection、limits、transactionality 和 schema-v2 correlation 的确定性 suites 位于：
 
 ```text
-src/core/agent_io_logger.py
+src/tests/test_opencode_contract.py
+src/tests/test_opencode_trace_client.py
+src/tests/test_trace_exporter.py
+src/tests/test_trace_lifecycle.py
+src/tests/test_trace_correlation.py
+src/tests/e2e/test_e2e_v3_runtime_features.py
 ```
 
-职责：
-
-- 创建 `agent_io/` 和 `payloads/` 目录。
-- 原子追加 `agent_io.jsonl`。
-- 写完整 prompt/response payload。
-- 计算 sha256。
-- 进行可选脱敏和可选截断。
-
-接口草案：
-
-```python
-class AgentIOLogger:
-    def __init__(self, output_dir: str, run_id: str = "", enabled: bool = False, max_bytes: int = 0, redact: bool = True):
-        ...
-
-    def record(
-        self,
-        *,
-        sequence: int,
-        phase_id: str | None,
-        session_id: str,
-        role: str | None,
-        agent: str | None,
-        lifecycle: str | None,
-        started_at: str,
-        ended_at: str,
-        duration_seconds: float,
-        timeout_seconds: int,
-        status: str,
-        command: str,
-        response: str,
-        error: str | None,
-    ) -> dict[str, str]:
-        ...
-```
-
-返回值可包含 `jsonl_path`、`command_path`、`response_path`，供 telemetry metadata 引用。
-
-### 7.2 修改 `TelemetryObserver`
-
-文件：
-
-```text
-src/tests/e2e/e2e_observer.py
-```
-
-新增可选构造参数：
-
-```python
-def __init__(self, session_mgr, output_dir, agent_io_logger=None):
-    self._agent_io_logger = agent_io_logger
-```
-
-在 `send_command()` 的 `finally` 中，保留现有 `CommandMetric` 逻辑，同时旁路写完整 I/O：
-
-```python
-if self._agent_io_logger is not None:
-    record_paths = self._agent_io_logger.record(
-        sequence=self._command_sequence,
-        phase_id=active_phase,
-        session_id=session_id,
-        role=metric.role if metric else None,
-        agent=getattr(metric, "agent", None),
-        lifecycle=metric.lifecycle if metric else None,
-        started_at=started_at,
-        ended_at=_utc_now(),
-        duration_seconds=duration_seconds,
-        timeout_seconds=timeout,
-        status=status,
-        command=command,
-        response=response,
-        error=error_message,
-    )
-```
-
-注意：当前 `SessionMetric` 没有 `agent` 字段，如果需要记录 agent，可扩展 dataclass；否则先记录 `role/lifecycle/session_id`。
-
-### 7.3 修改 `e2e_test.py` / `e2e_test_v2.py`
-
-文件：
-
-```text
-src/tests/e2e/e2e_test.py
-src/tests/e2e/e2e_test_v2.py
-```
-
-在创建 `TelemetryObserver` 前初始化 logger：
-
-```python
-agent_io_logger = AgentIOLogger.from_env(output_dir=str(output_dir), run_id=run_id)
-observer = TelemetryObserver(session_mgr, output_dir, agent_io_logger=agent_io_logger)
-```
-
-在 `summary.json` 中加入路径引用：
-
-```json
-"agent_io_paths": {
-  "jsonl": ".../agent_io/agent_io.jsonl",
-  "payload_dir": ".../agent_io/payloads"
-}
-```
-
-如果不想改 `RunSummary` dataclass，第一版也可以把路径写入 `telemetry.json.metadata.agent_io_path`。
-
-### 7.4 可选修改 `HookManager.copy_artifacts`
-
-如果希望 `.sm-artifacts` 副本也包含 `agent_io/`，有两种做法：
-
-1. 结束时把 report 目录下 `agent_io/` 复制到 `{project_dir}/.sm-artifacts/{run_id}/agent_io/`。
-2. 直接将 `AgentIOLogger` 的输出目录设置为 `{project_dir}/.sm-artifacts/{run_id}/agent_io/`，再由现有 `copy_artifacts()` 复制到 report 目录。
-
-推荐第二种，但需要 `TelemetryObserver` 初始化时拿到 `artifact_store.artifact_dir`。如果为了最小改动，第一版可先写 report 目录。
-
----
-
-## 8. 脱敏策略
-
-完整 Agent I/O 可能包含路径、token、API key、私有模型路径或用户输入，因此需要基础脱敏。
-
-### 8.1 默认脱敏规则
-
-保存前对 prompt/response 做以下替换：
-
-| 类型 | 示例 | 替换 |
-|---|---|---|
-| Bearer token | `Bearer abc...` | `Bearer <REDACTED>` |
-| API key | `sk-...` | `<REDACTED_API_KEY>` |
-| 环境变量密钥 | `HF_TOKEN=...` | `HF_TOKEN=<REDACTED>` |
-| 密码字段 | `password: xxx` | `password: <REDACTED>` |
-
-### 8.2 不建议脱敏的内容
-
-- 普通文件路径：迁移审计需要路径定位。
-- stdout/stderr：除非命中明确敏感模式。
-- Agent 返回中的诊断文字：除非命中明确敏感模式。
-
----
-
-## 9. 性能与容量控制
-
-### 9.1 容量风险
-
-大型迁移任务中，单次 prompt 可能超过几十 KB，response 可能超过数百 KB；Phase 5 多轮修复会进一步放大日志。
-
-### 9.2 控制措施
-
-1. 默认关闭 full I/O，仅按需开启。
-2. 支持 `max_bytes_per_payload` 截断。
-3. JSONL 只保存 metadata 和文件引用，大文本放 payload 文件。
-4. 可选后处理压缩：运行结束后将 `agent_io/payloads/` 打包为 `payloads.tar.gz`。
-5. 保留 `command_sha256` 和 `response_sha256`，即使截断也能标记 `truncated=true`。
-
----
-
-## 10. 与现有 artifact 的关系
-
-| 文件 | 定位 | 是否保存完整 I/O | 保留原因 |
-|---|---|---|---|
-| `telemetry.json` | 统计与可视化 | 否，只保存 preview | 保持轻量 |
-| `raw/*.json` | phase 原始输出 | 视执行路径而定 | 保持现有 phase artifact 语义 |
-| `validated/*.json` | schema 通过后的 canonical 输出 | 否 | 供后续 phase 消费，必须干净 |
-| `execution_journal.jsonl` | phase 时间线 | 否 | 快速定位 phase 状态 |
-| `agent_io/agent_io.jsonl` | 完整 Agent 调用审计索引 | 是，引用 payload | 新增主审计源 |
-| `agent_io/payloads/*.txt` | 完整 prompt/response | 是 | 可回放、可排查 |
-
----
-
-## 11. 运行时查询方式
-
-### 11.1 查看某个 phase 的所有 Agent 调用
-
-```bash
-python - <<'PY'
-import json
-from pathlib import Path
-
-path = Path('e2e-reports/src/<timestamp>/agent_io/agent_io.jsonl')
-for line in path.read_text().splitlines():
-    item = json.loads(line)
-    if item.get('phase_id') == 'phase_5_validation':
-        print(item['sequence'], item['session_id'], item['status'], item['command_path'], item['response_path'])
-PY
-```
-
-### 11.2 打开某次 prompt/response
-
-```bash
-less e2e-reports/src/<timestamp>/agent_io/payloads/000012_prompt.txt
-less e2e-reports/src/<timestamp>/agent_io/payloads/000012_response.txt
-```
-
-### 11.3 与 phase artifact 对齐
-
-1. 从 `summary.json` 找 `run_id` 和 `temp_dir`。
-2. 从 `phase_results.json` 找失败 phase。
-3. 从 `agent_io.jsonl` 按 `phase_id` 找 sequence。
-4. 从 `execution_journal.jsonl` 和 `raw/*.json` 查 phase output / stdout / stderr。
-
----
-
-## 12. 验证计划
-
-### 12.1 单元测试
-
-新增测试文件：
-
-```text
-src/tests/test_agent_io_logger.py
-```
-
-测试点：
-
-- disabled 时不创建文件。
-- enabled 时写入 `agent_io.jsonl` 和 payload 文件。
-- prompt/response hash 正确。
-- 异常场景保存 prompt、error，response 为空。
-- max bytes 截断时标记 `command_truncated` / `response_truncated`。
-- 脱敏规则生效。
-
-### 12.2 集成测试
-
-扩展 `e2e_smoke_test.py` 或新增轻量 fake session：
-
-- 设置 `SM_ADAPT_FULL_AGENT_IO=1`。
-- 运行最小 workflow。
-- 断言 `agent_io/agent_io.jsonl` 存在。
-- 断言调用次数等于 `observer.command_count`。
-- 断言第一条记录可打开 prompt/response 文件。
-- 断言 `validated/*.json` 不包含完整 prompt/response。
-
-### 12.3 手工验收
-
-```bash
-SM_ADAPT_FULL_AGENT_IO=1 bash scripts/run_e2e.sh 05_InsectID --dry-run
-```
-
-如果 dry-run 不触发 Agent，则使用最小 test project：
-
-```bash
-SM_ADAPT_FULL_AGENT_IO=1 python -m tests.e2e.e2e_test_v2 \
-  --server-url http://127.0.0.1:4098 \
-  --project-dir src/test_project_template \
-  --max-phase5-iter 1 \
-  --keep-temp-dir
-```
-
-验收标准：
-
-- `summary.json` 仍能生成。
-- `telemetry.json` 仍保持 preview 格式。
-- `agent_io/agent_io.jsonl` 包含完整调用索引。
-- `payloads/*_prompt.txt` 和 `payloads/*_response.txt` 存在。
-- `validated/*.json` 不包含 `_meta` 或完整 prompt/response。
-
----
-
-## 13. 分阶段实施计划
-
-### Phase A: 最小可用实现
-
-1. 新增 `core/agent_io_logger.py`。
-2. 扩展 `TelemetryObserver` 构造函数和 `send_command()`。
-3. 在 `e2e_test.py` / `e2e_test_v2.py` 通过 env 创建 logger。
-4. 写入 `agent_io.jsonl + payloads/`。
-5. 添加单元测试。
-
-风险低，覆盖面高，不改 workflow 行为。
-
-### Phase B: 配置化与归档
-
-1. 支持 `framework_defaults.yaml` 配置。
-2. 在 `summary.json` 或 `telemetry.json.metadata` 写入 `agent_io_path`。
-3. 将 `agent_io/` 复制到 `.sm-artifacts/<run_id>/agent_io/` 或在 report 目录保留主副本。
-
-### Phase C: 高级审计能力
-
-1. 生成 `index.json`。
-2. 提供 `scripts/show_agent_io.py` 查询工具。
-3. 支持压缩归档。
-4. 可选对接 OpenCode server `/session/:id/message` 做补充抓取。
-
----
-
-## 14. 推荐最终目录结构
-
-```text
-e2e-reports/src/<timestamp>/
-├── summary.json
-├── phase_results.json
-├── telemetry.json
-├── before_snapshot.json
-├── after_snapshot.json
-├── agent_io/
-│   ├── agent_io.jsonl
-│   ├── index.json                  # optional
-│   └── payloads/
-│       ├── 000001_prompt.txt
-│       ├── 000001_response.txt
-│       ├── 000002_prompt.txt
-│       └── 000002_response.txt
-└── .sm-artifacts/
-    └── <run_id>/
-        ├── execution_journal.jsonl
-        ├── raw/
-        ├── validated/
-        └── reports/
-```
-
----
-
-## 15. 关键决策
-
-1. **不把完整 I/O 注入 canonical**: 避免后续 phase 上下文膨胀和 schema 污染。
-2. **不依赖 OpenCode server session history**: server 历史可作为外部补充，但本项目必须自持审计日志。
-3. **Telemetry 保持轻量，full I/O 单独 sidecar**: 保留现有 telemetry 消费方式。
-4. **默认关闭、按需开启**: 避免磁盘膨胀和敏感信息意外落盘。
-5. **优先拦截 `send_command()`**: 覆盖面最大，业务侵入最小。
-
----
-
-## 16. 结论
-
-要让 V2 稳定具备类似 V1 的完整 Agent 输入输出追踪能力，最佳方案是在 `TelemetryObserver.send_command()` 层新增可配置的 `AgentIOLogger` 旁路日志。
-
-该方案满足：
-
-- 对 V2 工作流零语义影响。
-- 对 schema/validator 零影响。
-- 对 Phase 6 上下文零污染。
-- 覆盖所有经 observer 转发的 Agent 请求。
-- 与现有 `summary.json`、`telemetry.json`、`.sm-artifacts` 形成互补。
-
-第一版建议只实现 `SM_ADAPT_FULL_AGENT_IO=1` 环境变量开关和 `agent_io.jsonl + payloads/`，确认稳定后再接入 YAML 配置、索引文件和压缩归档。
-
----
-
-## 17. V3 raw trace correlation schema
-
-Task 23 的 OpenCode raw trace/continuation correlation 是独立旁路 schema，
-不会把 parent trace 或完整 session payload 注入 prompt、canonical output、
-checkpoint 或 outcome。字段、版本、parent digest/path reference、完整性诊断和
-`summary.trace.correlation` 的精确定义见
-[`trace_correlation_schema.md`](trace_correlation_schema.md)。
+Real OpenCode Phase 0-3 和 generic CPU Docker 只作为 [`E2E_TESTING.md`](E2E_TESTING.md) 中的显式 opt-in、non-gating checks；环境不可用时 clean skip。
