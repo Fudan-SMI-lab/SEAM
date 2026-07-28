@@ -6,6 +6,10 @@ from typing import NoReturn, Protocol
 
 from harness.session.trace_export_models import TraceGraphClient
 from harness.session.trace_seeds import TraceSeed
+from harness.run.trace_correlation import (
+    V3TraceCorrelationInputs,
+    build_v3_trace_correlation,
+)
 
 from .trace_lifecycle import (
     TraceCapturePolicy,
@@ -34,6 +38,7 @@ class V3TraceIntegrationRequest:
     session: TraceSessionSource | None
     overflow_roots: tuple[Path, ...]
     telemetry: TraceTelemetrySink | None
+    correlation_inputs: V3TraceCorrelationInputs | None = None
 
 
 def create_v3_trace_lifecycle(
@@ -60,6 +65,7 @@ def create_v3_trace_lifecycle(
 
         client_source = trace_client
         seeds_source = trace_seeds
+    correlation_inputs = request.correlation_inputs
     return TraceLifecycle(
         TraceLifecycleRequest(
             policy=TraceCapturePolicy.from_cli(request.cli_value),
@@ -68,8 +74,17 @@ def create_v3_trace_lifecycle(
             seeds_source=seeds_source,
             overflow_roots=request.overflow_roots,
             telemetry=request.telemetry,
+            correlation_source=(
+                (lambda: build_v3_trace_correlation(correlation_inputs))
+                if correlation_inputs is not None
+                else None
+            ),
         )
     )
 
 
-__all__ = ("V3TraceIntegrationRequest", "create_v3_trace_lifecycle")
+__all__ = (
+    "V3TraceCorrelationInputs",
+    "V3TraceIntegrationRequest",
+    "create_v3_trace_lifecycle",
+)

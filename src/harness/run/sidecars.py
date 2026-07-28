@@ -80,7 +80,13 @@ def write_summary(
     runtime_report: V3RuntimeReport | None = None,
 ) -> str:
     payload = asdict(summary)
-    payload["trace"] = summary.trace._asdict()
+    trace_payload = summary.trace._asdict()
+    correlation = summary.trace.correlation
+    if correlation is not None:
+        trace_payload["correlation"] = correlation._asdict()
+    else:
+        trace_payload.pop("correlation", None)
+    payload["trace"] = trace_payload
     if continuation is not None:
         payload["continuation"] = asdict(continuation)
     if runtime_report is not None:

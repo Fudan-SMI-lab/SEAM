@@ -11,6 +11,7 @@ from harness.session.trace_export_io import (
     write_atomic,
 )
 from harness.session.trace_export_manifest import write_trace_manifest
+from harness.session.trace_correlation_models import TraceCorrelationProjection
 from harness.session.trace_export_models import (
     OverflowCopyRequest,
     OverflowStatus,
@@ -234,5 +235,6 @@ class TraceExportIndex:
     def write_manifest(
         self,
         seeds: dict[str, tuple[TraceSeed, ...]],
+        correlation: TraceCorrelationProjection | None = None,
     ) -> StoredArtifact:
-        return write_trace_manifest(self, seeds)
+        return write_trace_manifest(self, seeds, correlation)

@@ -27,6 +27,7 @@ class TraceExportTransaction:
             overflow_roots=request.overflow_roots,
             captured_at=request.captured_at,
             max_overflow_bytes=request.max_overflow_bytes,
+            correlation=request.correlation,
         )
         self._committed = False
         self._parent_identity: tuple[int, int, int] | None = None

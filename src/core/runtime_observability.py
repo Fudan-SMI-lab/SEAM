@@ -15,6 +15,13 @@ from core.runtime_observability_models import (
     TimeoutDetails,
     TimeoutScope,
 )
+from core.run_manifest import RunId
+from core.run_outcome import PhaseId
+from core.trace_correlation_models import (
+    make_phase_execution_id,
+    make_review_round_id,
+    make_transport_attempt_id,
+)
 from harness.session.events import (
     TransportAttemptCompleted,
     TransportAttemptErrored,
@@ -43,8 +50,16 @@ class RuntimeObservability:
             self._dropped_event_count += 1
             return None
         review_round = completion.review_round
+        run_id = RunId(completion.correlation.run_id)
+        phase_id = PhaseId(completion.scope.phase_id)
         details = ReviewDetails(
             record_id=completion.record_id,
+            run_id=str(run_id),
+            phase_execution_id=str(make_phase_execution_id(run_id, phase_id)),
+            review_round_id=str(
+                make_review_round_id(run_id, phase_id, review_round.round_number)
+            ),
+            framework_invocation_id=completion.correlation.command_id,
             phase_id=completion.scope.phase_id,
             phase5_iteration=completion.scope.phase5_iteration,
             logical_round=review_round.round_number,
@@ -108,6 +123,19 @@ class RuntimeObservability:
             return None
         details = TimeoutDetails(
             record_id=record_id,
+            run_id=scope.run_id,
+            phase_execution_id=str(
+                make_phase_execution_id(RunId(scope.run_id), PhaseId(scope.sub_phase))
+            ),
+            framework_invocation_id=(
+                str(scope.framework_invocation_id)
+                if scope.framework_invocation_id is not None
+                else None
+            ),
+            transport_invocation_id=str(event.invocation_id),
+            transport_attempt_id=str(
+                make_transport_attempt_id(str(event.invocation_id), event.attempt)
+            ),
             event_phase=event.phase.value,
             agent=scope.agent,
             sub_phase=scope.sub_phase,

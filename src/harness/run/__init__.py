@@ -32,7 +32,7 @@ if sys.version_info >= (3, 10):
     )
     from .resource_manifest_hook import resource_manifest_finalization_hook
     from .sidecars import copy_run_artifacts, write_json_text
-    from .trace_lifecycle_models import TraceLifecycleStatus
+    from .trace_lifecycle_models import TraceCorrelationSummary, TraceLifecycleStatus
     from .trace_lifecycle import (
         TraceCapturePolicy,
         TraceLifecycle,
@@ -84,6 +84,7 @@ if sys.version_info >= (3, 10):
         "TelemetrySidecars",
         "TerminalOutcome",
         "TraceCapturePolicy",
+        "TraceCorrelationSummary",
         "TraceLifecycle",
         "TraceLifecycleRequest",
         "TraceLifecycleStatus",
@@ -117,7 +118,7 @@ else:
     )
     from .finalizer_py38 import finalize_run
     from .resource_manifest_hook import resource_manifest_finalization_hook
-    from .trace_lifecycle_models import TraceLifecycleStatus
+    from .trace_lifecycle_models import TraceCorrelationSummary, TraceLifecycleStatus
 
     __all__ = (
         "ContinuationRunSummary",
@@ -133,6 +134,7 @@ else:
         "RunOutcome",
         "RunSummary",
         "TerminalOutcome",
+        "TraceCorrelationSummary",
         "TraceLifecycleStatus",
         "finalize_run",
         "resource_manifest_finalization_hook",

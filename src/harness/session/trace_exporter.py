@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import final
 
 from harness.session.opencode_contract import JsonObject, JsonValue
@@ -26,6 +27,18 @@ from harness.session.trace_export_traversal import (
 )
 from harness.session.trace_export_transaction import TraceExportTransaction
 from harness.session.trace_seeds import TraceSeed
+from harness.session.trace_correlation import (
+    SessionCorrelationInput,
+    TraceCorrelationProjector,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ExportCaptureState:
+    seeds: dict[str, tuple[TraceSeed, ...]]
+    traversal: GraphTraversal
+    correlation: TraceCorrelationProjector | None
+
 
 __all__ = [
     "TraceExportError",
@@ -51,37 +64,61 @@ class TraceExporter:
             index = TraceExportIndex(transaction.request)
             seeds = self._seed_map(request.seeds, index)
             traversal = GraphTraversal(seeds, index)
+            projector = (
+                TraceCorrelationProjector(request.correlation)
+                if request.correlation is not None
+                else None
+            )
+            state = _ExportCaptureState(seeds, traversal, projector)
             while traversal.queue:
                 queued = traversal.queue.popleft()
                 if queued.session_id in traversal.visited:
                     continue
                 traversal.visited.add(queued.session_id)
-                self._capture_session(
-                    queued,
-                    seeds.get(queued.session_id, ()),
-                    traversal,
-                )
-            _ = index.write_manifest(seeds)
+                self._capture_session(queued, state)
+            projection = (
+                projector.finish(tuple(index.errors)) if projector is not None else None
+            )
+            _ = index.write_manifest(seeds, projection)
             transaction.commit()
             error_codes = tuple(str(item["code"]) for item in index.errors)
             return TraceExportResult(
                 manifest_path=request.destination / "manifest.json",
                 complete=not index.errors
-                and all(record.get("complete") is True for record in index.sessions),
+                and all(record.get("complete") is True for record in index.sessions)
+                and (projection is None or projection.complete),
                 session_count=len(index.sessions),
                 errors=error_codes,
+                correlation_complete=(
+                    projection.complete if projection is not None else None
+                ),
+                correlation_errors=(
+                    tuple(item.code for item in projection.diagnostics)
+                    if projection is not None
+                    else ()
+                ),
             )
 
     def _capture_session(
         self,
         queued: QueuedSession,
-        seeds: tuple[TraceSeed, ...],
-        traversal: GraphTraversal,
+        state: _ExportCaptureState,
     ) -> None:
+        traversal = state.traversal
+        seeds = state.seeds.get(queued.session_id, ())
         index = traversal.index
         try:
             retrieval = self._client.retrieve_session_graph(queued.session_id)
         except (OSError, RuntimeError, UnicodeError) as exc:
+            if state.correlation is not None:
+                _ = state.correlation.record_session(
+                    SessionCorrelationInput(
+                        queued.session_id,
+                        queued.path,
+                        seeds,
+                        None,
+                    )
+                )
             index.add_error("session_retrieval_error", queued.session_id, str(exc))
             failure_reasons: list[JsonValue] = ["session_retrieval_error"]
             failure_errors: list[JsonValue] = [str(exc)]
@@ -131,6 +168,18 @@ class TraceExporter:
                 (*retrieval.errors, *index.error_codes_for(queued.session_id))
             )
         )
+        correlation = (
+            state.correlation.record_session(
+                SessionCorrelationInput(
+                    queued.session_id,
+                    queued.path,
+                    seeds,
+                    retrieval,
+                )
+            )
+            if state.correlation is not None
+            else None
+        )
         payload = session_payload(
             SessionPayloadInput(
                 session_id=queued.session_id,
@@ -140,6 +189,7 @@ class TraceExporter:
                 retrieval=retrieval,
                 reasons=tuple(reasons),
                 errors=session_errors,
+                correlation=correlation,
             )
         )
         artifact = index.write_session_payload(queued.session_id, payload, reasons)

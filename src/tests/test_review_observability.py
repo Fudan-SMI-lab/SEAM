@@ -211,6 +211,10 @@ def test_review_event_is_published_to_telemetry_and_phase_artifact(
         assert '"review_count": 1' in output
         assert '"duration_seconds": 4.25' in output
         assert '"outcome": "accepted"' in output
+        assert '"run_id": "run-9"' in output
+        assert '"phase_execution_id": "run-9:phase:phase_5_validation"' in output
+        assert '"review_round_id": "run-9:phase_5_validation:review:2"' in output
+        assert '"framework_invocation_id": "review-command-2"' in output
     assert (
         finalization.summary.telemetry_paths["phase_observability_json"]
         == paths["phase_observability_json"]

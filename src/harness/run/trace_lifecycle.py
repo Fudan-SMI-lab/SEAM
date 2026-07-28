@@ -11,16 +11,18 @@ from harness.session.opencode_contract import JsonValue
 from harness.session.trace_export_models import TraceGraphClient
 from harness.session.trace_exporter import TraceExportRequest, TraceExporter
 from harness.session.trace_seeds import TraceSeed
+from harness.session.trace_correlation_models import TraceCorrelationContext
 
 from .models import (
     EMPTY_ARTIFACT_UPDATE,
     FinalizationHook,
     RunArtifactUpdate,
 )
-from .trace_lifecycle_models import TraceLifecycleStatus
+from .trace_lifecycle_models import TraceCorrelationSummary, TraceLifecycleStatus
 
 TraceClientSource = Callable[[], TraceGraphClient]
 TraceSeedSource = Callable[[], tuple[TraceSeed, ...]]
+TraceCorrelationSource = Callable[[], TraceCorrelationContext]
 logger = logging.getLogger("harness.run.trace_lifecycle")
 
 
@@ -50,6 +52,7 @@ class TraceLifecycleRequest:
     seeds_source: TraceSeedSource
     overflow_roots: tuple[Path, ...] = ()
     telemetry: TraceTelemetrySink | None = None
+    correlation_source: TraceCorrelationSource | None = None
 
 
 @final
@@ -86,11 +89,17 @@ class TraceLifecycle:
                 )
                 self._publish()
                 return EMPTY_ARTIFACT_UPDATE
+            correlation = (
+                self._request.correlation_source()
+                if self._request.correlation_source is not None
+                else None
+            )
             result = TraceExporter(self._request.client_source()).export(
                 TraceExportRequest(
                     destination=self._request.destination,
                     seeds=seeds,
                     overflow_roots=self._request.overflow_roots,
+                    correlation=correlation,
                 )
             )
         except Exception as exc:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK - optional exporter boundary
@@ -104,12 +113,28 @@ class TraceLifecycle:
             self._publish()
             return EMPTY_ARTIFACT_UPDATE
         manifest_path = result.manifest_path
+        correlation_status = None
+        if correlation is not None:
+            scope = correlation.scope
+            correlation_status = TraceCorrelationSummary(
+                schema_version=1,
+                complete=result.correlation_complete is True,
+                run_id=str(scope.run_id),
+                parent_run_id=(
+                    str(scope.parent_run_id)
+                    if scope.parent_run_id is not None
+                    else None
+                ),
+                lineage_root_run_id=str(scope.lineage_root_run_id),
+                diagnostics=result.correlation_errors,
+            )
         self._status = TraceLifecycleStatus(
             requested=True,
             enabled=True,
             complete=result.complete,
             path=str(manifest_path),
             errors=result.errors,
+            correlation=correlation_status,
         )
         self._publish()
         return RunArtifactUpdate(
@@ -132,6 +157,15 @@ class TraceLifecycle:
             "path": status.path,
             "errors": list(status.errors),
         }
+        if status.correlation is not None:
+            payload["correlation"] = {
+                "schema_version": status.correlation.schema_version,
+                "complete": status.correlation.complete,
+                "run_id": status.correlation.run_id,
+                "parent_run_id": status.correlation.parent_run_id,
+                "lineage_root_run_id": status.correlation.lineage_root_run_id,
+                "diagnostics": list(status.correlation.diagnostics),
+            }
         try:
             telemetry.set_metadata("agent_trace", payload)
             telemetry.record_event("agent_trace_status", **payload)

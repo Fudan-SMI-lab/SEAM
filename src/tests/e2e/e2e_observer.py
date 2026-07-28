@@ -17,6 +17,7 @@ from core.runtime_observability_models import (
     ReviewCompletion,
     TimeoutScope,
 )
+from core.trace_correlation_models import FrameworkInvocationId
 from harness.session.events import TransportAttemptEvent, TransportObserver
 
 
@@ -106,6 +107,7 @@ class TelemetryObserver:
     _run_started_monotonic: float
     _command_sequence: int
     _active_phase: str | None
+    _active_framework_invocation_id: FrameworkInvocationId | None
     _sessions: dict[str, SessionMetric]
     _commands: list[CommandMetric]
     _phases: dict[str, PhaseMetric]
@@ -127,6 +129,7 @@ class TelemetryObserver:
         self._run_started_monotonic = time.monotonic()
         self._command_sequence = 0
         self._active_phase = None
+        self._active_framework_invocation_id = None
         self._sessions = {}
         self._commands = []
         self._phases = {}
@@ -242,6 +245,7 @@ class TelemetryObserver:
                 run_id=run_id,
                 agent=session.role if session is not None else "unknown_agent",
                 sub_phase=self._active_phase or "unknown_sub_phase",
+                framework_invocation_id=self._active_framework_invocation_id,
             ),
             event,
         )
@@ -342,6 +346,11 @@ class TelemetryObserver:
         retries: int = 2,
     ) -> str:
         self._command_sequence += 1
+        framework_invocation_id = FrameworkInvocationId(
+            f"framework-{self._command_sequence:06d}"
+        )
+        previous_invocation_id = self._active_framework_invocation_id
+        self._active_framework_invocation_id = framework_invocation_id
         started_at = _utc_now()
         started_monotonic = time.monotonic()
         active_phase = self._active_phase
@@ -428,6 +437,7 @@ class TelemetryObserver:
                 response_length=len(response),
                 error=error_message,
             )
+            self._active_framework_invocation_id = previous_invocation_id
 
     def cleanup_all(self) -> int:
         cleaned = self._session_mgr.cleanup_all()

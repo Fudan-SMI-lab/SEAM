@@ -94,6 +94,7 @@ from harness.run.v3_runtime_reporting import (
     print_runtime_report,
 )
 from harness.run.v3_trace_integration import (
+    V3TraceCorrelationInputs,
     V3TraceIntegrationRequest,
     create_v3_trace_lifecycle,
 )
@@ -600,7 +601,10 @@ def run_e2e_v3(
         resolve_review_policy,
         workflow_review_defaults,
     )
-    from core.runtime_observability_models import EMPTY_OBSERVABILITY_SUMMARY
+    from core.runtime_observability_models import (
+        EMPTY_OBSERVABILITY_SUMMARY,
+        ObservabilitySummary,
+    )
     from core.telemetry_bridge import TelemetryBridge
     from core.validator_engine import ValidatorEngine
     from core.workflow_executor import WorkflowExecutor
@@ -1082,6 +1086,13 @@ def run_e2e_v3(
         else output_dir / "trace"
     )
 
+    def trace_observability_source() -> ObservabilitySummary:
+        return (
+            observer.observability_summary
+            if observer is not None
+            else EMPTY_OBSERVABILITY_SUMMARY
+        )
+
     trace_lifecycle = create_v3_trace_lifecycle(
         V3TraceIntegrationRequest(
             cli_value=save_agent_trace,
@@ -1089,6 +1100,12 @@ def run_e2e_v3(
             session=session_mgr,
             overflow_roots=(temp_dir,) if temp_dir is not None else (),
             telemetry=observer,
+            correlation_inputs=V3TraceCorrelationInputs(
+                run_id=run_id,
+                outcome=authoritative_outcome,
+                observability_source=trace_observability_source,
+                continuation=continuation,
+            ),
         )
     )
     finalization_hooks = replace(

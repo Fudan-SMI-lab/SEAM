@@ -64,6 +64,10 @@ class ContinuationError(Exception):
 
 class _ReviewDetails(_FrozenModel):
     record_id: _Text
+    run_id: _Text | None = None
+    phase_execution_id: _Text | None = None
+    review_round_id: _Text | None = None
+    framework_invocation_id: _Text | None = None
     phase_id: _Text
     phase5_iteration: Annotated[int, Field(ge=1)]
     logical_round: Annotated[int, Field(ge=1)]
@@ -81,6 +85,11 @@ class _ReviewDetails(_FrozenModel):
 
 class _TimeoutDetails(_FrozenModel):
     record_id: _Text
+    run_id: _Text | None = None
+    phase_execution_id: _Text | None = None
+    framework_invocation_id: _Text | None = None
+    transport_invocation_id: _Text | None = None
+    transport_attempt_id: _Text | None = None
     event_phase: _Text
     agent: _Text
     sub_phase: _Text
@@ -124,12 +133,22 @@ class _ContinuationRunSummary(_FrozenModel):
     attachment_mode: _Status
 
 
+class _TraceCorrelationSummary(_FrozenModel):
+    schema_version: Literal[1] = 1
+    complete: bool
+    run_id: _SafeId
+    parent_run_id: _SafeId | None
+    lineage_root_run_id: _SafeId
+    diagnostics: tuple[str, ...]
+
+
 class _TraceLifecycleSummary(_FrozenModel):
     requested: bool = False
     enabled: bool = False
     complete: bool = False
     path: _Text | None = None
     errors: tuple[str, ...] = ()
+    correlation: _TraceCorrelationSummary | None = None
 
 
 class RunSummaryDocument(_FrozenModel):

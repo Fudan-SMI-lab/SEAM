@@ -8,6 +8,7 @@ from typing import TypedDict
 from typing_extensions import override
 
 from core.run_outcome import ReviewRound
+from core.trace_correlation_models import FrameworkInvocationId
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +85,7 @@ class TimeoutScope:
     run_id: str
     agent: str
     sub_phase: str
+    framework_invocation_id: FrameworkInvocationId | None = None
 
     def __post_init__(self) -> None:
         identifiers = (self.run_id, self.agent, self.sub_phase)
@@ -95,6 +97,10 @@ class TimeoutScope:
 
 class ReviewDetails(TypedDict):
     record_id: str
+    run_id: str
+    phase_execution_id: str
+    review_round_id: str
+    framework_invocation_id: str
     phase_id: str
     phase5_iteration: int
     logical_round: int
@@ -112,6 +118,11 @@ class ReviewDetails(TypedDict):
 
 class TimeoutDetails(TypedDict):
     record_id: str
+    run_id: str
+    phase_execution_id: str
+    framework_invocation_id: str | None
+    transport_invocation_id: str
+    transport_attempt_id: str
     event_phase: str
     agent: str
     sub_phase: str

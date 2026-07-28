@@ -123,6 +123,11 @@ def test_request_timeout_attempts_agree_across_console_telemetry_and_artifact(
         assert '"configured_timeout_seconds": 987654.0' in output
         assert '"retry_decision": "stop"' in output
         assert '"reason": "retries_exhausted"' in output
+        assert '"run_id": "run-9"' in output
+        assert '"phase_execution_id": "run-9:phase:review_result"' in output
+        assert '"framework_invocation_id": "framework-000001"' in output
+        assert '"transport_invocation_id": "transport-000001"' in output
+        assert '"transport_attempt_id": "transport-000001:attempt-3"' in output
         assert "secret prompt" not in output
     assert "attempt=3/3" in caplog.text
     assert "exhausted=true" in caplog.text

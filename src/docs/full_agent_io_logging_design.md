@@ -551,3 +551,13 @@ e2e-reports/src/<timestamp>/
 - 与现有 `summary.json`、`telemetry.json`、`.sm-artifacts` 形成互补。
 
 第一版建议只实现 `SM_ADAPT_FULL_AGENT_IO=1` 环境变量开关和 `agent_io.jsonl + payloads/`，确认稳定后再接入 YAML 配置、索引文件和压缩归档。
+
+---
+
+## 17. V3 raw trace correlation schema
+
+Task 23 的 OpenCode raw trace/continuation correlation 是独立旁路 schema，
+不会把 parent trace 或完整 session payload 注入 prompt、canonical output、
+checkpoint 或 outcome。字段、版本、parent digest/path reference、完整性诊断和
+`summary.trace.correlation` 的精确定义见
+[`trace_correlation_schema.md`](trace_correlation_schema.md)。

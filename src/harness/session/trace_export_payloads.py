@@ -109,9 +109,9 @@ def session_payload(source: SessionPayloadInput) -> JsonObject:
         }
     else:
         raw_value = raw_contract
-    return {
+    payload: JsonObject = {
         "schema": "seam.opencode.raw-session",
-        "schema_version": 1,
+        "schema_version": 2 if source.correlation is not None else 1,
         "session_id": source.session_id,
         "session_info": source.session_info,
         "session_info_capture": _endpoint_value(source.session_info_capture),
@@ -133,6 +133,9 @@ def session_payload(source: SessionPayloadInput) -> JsonObject:
         "errors": list(source.errors),
         "reasons": list(source.reasons),
     }
+    if source.correlation is not None:
+        payload["correlation"] = source.correlation
+    return payload
 
 
 def children_value(retrieval: SessionGraphRetrieval) -> JsonObject:

@@ -12,6 +12,8 @@ from harness.session.trace_export_models import (
     TraceExportRequest,
     TraceWriteError,
 )
+from harness.session.trace_correlation_models import TraceCorrelationProjection
+from harness.session.trace_correlation_payloads import projection_value
 from harness.session.trace_seeds import TraceSeed
 
 MAX_MANIFEST_BYTES: Final = 64 * 1024 * 1024
@@ -33,10 +35,11 @@ class ManifestIndex(Protocol):
 def write_trace_manifest(
     source: ManifestIndex,
     seeds: dict[str, tuple[TraceSeed, ...]],
+    correlation: TraceCorrelationProjection | None = None,
 ) -> StoredArtifact:
     path = source.request.destination / "manifest.json"
     try:
-        content = encode_json(_manifest(source, seeds))
+        content = encode_json(_manifest(source, seeds, correlation))
         if len(content) > MAX_MANIFEST_BYTES:
             raise TraceExportError(path, "manifest size limit exceeded")
         return write_atomic(path, content)
@@ -47,9 +50,12 @@ def write_trace_manifest(
 def _manifest(
     source: ManifestIndex,
     seeds: dict[str, tuple[TraceSeed, ...]],
+    correlation: TraceCorrelationProjection | None,
 ) -> JsonObject:
-    complete = not source.errors and all(
-        record.get("complete") is True for record in source.sessions
+    complete = (
+        not source.errors
+        and all(record.get("complete") is True for record in source.sessions)
+        and (correlation is None or correlation.complete)
     )
     capabilities: JsonObject = {
         session_id: value for session_id, value in source.capabilities.items()
@@ -77,6 +83,8 @@ def _manifest(
         "history": "v1",
         "provider_hidden_reasoning": "not_claimed",
     }
+    if correlation is not None:
+        authority["correlation"] = False
     raw_policy: JsonObject = {
         "redacted": False,
         "truncated_by_exporter": False,
@@ -87,9 +95,9 @@ def _manifest(
     sessions: list[JsonValue] = list(source.sessions)
     overflows: list[JsonValue] = list(source.overflows)
     errors: list[JsonValue] = list(source.errors)
-    return {
+    manifest: JsonObject = {
         "schema": "seam.opencode.raw-trace",
-        "schema_version": 1,
+        "schema_version": 2 if correlation is not None else 1,
         "captured_at": source.request.captured_at
         or datetime.now(timezone.utc).isoformat(),
         "capture_scope": "accessible_opencode_v1",
@@ -106,3 +114,6 @@ def _manifest(
         ),
         "errors": errors,
     }
+    if correlation is not None:
+        manifest["correlation"] = projection_value(correlation)
+    return manifest

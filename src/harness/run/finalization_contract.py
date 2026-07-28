@@ -6,6 +6,7 @@ from enum import Enum, unique
 
 from .trace_lifecycle_models import (
     TRACE_NOT_REQUESTED,
+    TraceCorrelationSummary,
     TraceLifecycleStatus,
     TraceStatusSource,
 )
@@ -204,5 +205,6 @@ __all__ = (
     "RunOutcome",
     "RunSummary",
     "TerminalOutcome",
+    "TraceCorrelationSummary",
     "TraceLifecycleStatus",
 )

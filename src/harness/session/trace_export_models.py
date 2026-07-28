@@ -9,6 +9,7 @@ from typing_extensions import override
 
 from harness.session.opencode_contract import JsonObject
 from harness.session.opencode_trace_models import EndpointCapture, SessionGraphRetrieval
+from harness.session.trace_correlation_models import TraceCorrelationContext
 from harness.session.trace_seeds import TraceSeed
 
 
@@ -48,12 +49,14 @@ class TraceExportRequest:
         "overflow_roots",
         "captured_at",
         "max_overflow_bytes",
+        "correlation",
     )
     destination: Path
     seeds: tuple[TraceSeed, ...]
     overflow_roots: tuple[Path, ...]
     captured_at: str | None
     max_overflow_bytes: int
+    correlation: TraceCorrelationContext | None
 
     def __init__(
         self,
@@ -62,22 +65,33 @@ class TraceExportRequest:
         overflow_roots: tuple[Path, ...] = (),
         captured_at: str | None = None,
         max_overflow_bytes: int = DEFAULT_MAX_OVERFLOW_BYTES,
+        correlation: TraceCorrelationContext | None = None,
     ) -> None:
         object.__setattr__(self, "destination", destination)
         object.__setattr__(self, "seeds", seeds)
         object.__setattr__(self, "overflow_roots", overflow_roots)
         object.__setattr__(self, "captured_at", captured_at)
         object.__setattr__(self, "max_overflow_bytes", max_overflow_bytes)
+        object.__setattr__(self, "correlation", correlation)
 
 
 @final
 @frozen_dataclass(frozen=True)
 class TraceExportResult:
-    __slots__ = ("manifest_path", "complete", "session_count", "errors")
+    __slots__ = (
+        "manifest_path",
+        "complete",
+        "session_count",
+        "errors",
+        "correlation_complete",
+        "correlation_errors",
+    )
     manifest_path: Path
     complete: bool
     session_count: int
     errors: tuple[str, ...]
+    correlation_complete: bool | None
+    correlation_errors: tuple[str, ...]
 
 
 @final
@@ -101,6 +115,7 @@ class SessionPayloadInput:
         "retrieval",
         "reasons",
         "errors",
+        "correlation",
     )
     session_id: str
     session_info: JsonObject | None
@@ -109,6 +124,7 @@ class SessionPayloadInput:
     retrieval: SessionGraphRetrieval
     reasons: tuple[str, ...]
     errors: tuple[str, ...]
+    correlation: JsonObject | None
 
 
 @final
