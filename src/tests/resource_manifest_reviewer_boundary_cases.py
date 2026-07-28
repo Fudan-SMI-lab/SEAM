@@ -16,6 +16,11 @@ from core.resource_manifest import (
     ResourceManifestUpdate,
     capture_local_environment,
 )
+from core.resource_manifest_paths import (
+    ResourceDirectoryBinding,
+    bind_resource_directory,
+    require_bound_resource_directory,
+)
 from harness.run import FinalizationHooks, finalize_run
 from harness.run.finalizer import finalize_run as task5_finalize_run
 from harness.run.resource_manifest_hook import resource_manifest_finalization_hook
@@ -121,7 +126,9 @@ def test_store_rejects_report_directory_swap(tmp_path: Path) -> None:
         with pytest.raises(ResourceManifestError) as refusal:
             _ = store.write(ResourceManifestUpdate(expected_revision=1))
     finally:
-        if original.is_symlink() or (os.name == "nt" and original.exists()):
+        if original.is_symlink():
+            original.unlink()
+        elif os.name == "nt" and original.exists():
             os.rmdir(original)
         if moved.exists():
             shutil.rmtree(moved)
@@ -129,6 +136,28 @@ def test_store_rejects_report_directory_swap(tmp_path: Path) -> None:
     # Then the store refuses the redirected namespace.
     assert refusal.value.kind is ResourceManifestErrorKind.UNSAFE_PATH
     assert not (outside / "resource-manifest.v1.json").exists()
+
+
+def test_bound_report_directory_accepts_non_reparse_attribute_churn(
+    tmp_path: Path,
+) -> None:
+    # Given an unchanged report directory whose non-reparse Windows attribute changed.
+    report_dir = tmp_path / "reports" / "run-safe"
+    report_dir.mkdir(parents=True)
+    binding = bind_resource_directory(report_dir, report_dir.parent)
+    churned = ResourceDirectoryBinding(
+        binding.path,
+        binding.device,
+        binding.inode,
+        binding.mode,
+        binding.attributes ^ 0x10000000,
+    )
+
+    # When the bound directory identity is revalidated.
+    resolved = require_bound_resource_directory(churned)
+
+    # Then irrelevant attribute churn does not fabricate a replacement.
+    assert resolved == binding.path
 
 
 @pytest.mark.skipif(

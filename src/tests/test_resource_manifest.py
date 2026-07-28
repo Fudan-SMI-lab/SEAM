@@ -42,6 +42,7 @@ from tests.resource_manifest_oracle_runtime_cases import (
 )
 from tests.resource_manifest_reviewer_boundary_cases import (
     test_backend_names_are_typed_variants as test_backend_names_are_typed_variants,
+    test_bound_report_directory_accepts_non_reparse_attribute_churn as test_bound_report_directory_accepts_non_reparse_attribute_churn,
     test_local_capture_supports_maximum_environment_id as test_local_capture_supports_maximum_environment_id,
     test_probe_status_rejects_incompatible_fields as test_probe_status_rejects_incompatible_fields,
     test_store_rejects_report_directory_swap as test_store_rejects_report_directory_swap,

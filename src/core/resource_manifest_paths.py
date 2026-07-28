@@ -175,13 +175,13 @@ def require_bound_resource_directory(binding: ResourceDirectoryBinding) -> Path:
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_mode,
-        getattr(metadata, "st_file_attributes", 0),
+        getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT,
     )
     expected = (
         binding.device,
         binding.inode,
         binding.mode,
-        binding.attributes,
+        binding.attributes & _WINDOWS_REPARSE_POINT,
     )
     if _is_link_or_junction(binding.path) or current != expected:
         raise _unsafe("bound report directory identity changed")
