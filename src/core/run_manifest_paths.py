@@ -94,15 +94,28 @@ def _matches_metadata(identity: PathIdentity, metadata: os.stat_result) -> bool:
         identity.device == metadata.st_dev
         and identity.inode == metadata.st_ino
         and identity.mode == metadata.st_mode
-        and identity.attributes == attributes
+        and identity.attributes & _WINDOWS_REPARSE_POINT
+        == attributes & _WINDOWS_REPARSE_POINT
         and identity.size == metadata.st_size
         and identity.modified_ns == metadata.st_mtime_ns
     )
 
 
+def _matches_path_identity(expected: PathIdentity, actual: PathIdentity) -> bool:
+    return (
+        expected.device == actual.device
+        and expected.inode == actual.inode
+        and expected.mode == actual.mode
+        and expected.attributes & _WINDOWS_REPARSE_POINT
+        == actual.attributes & _WINDOWS_REPARSE_POINT
+        and expected.size == actual.size
+        and expected.modified_ns == actual.modified_ns
+    )
+
+
 def _require_identity(identity: PathIdentity) -> None:
     current = _path_identity(identity.path)
-    if _is_reparse(current) or current[1:] != identity[1:]:
+    if _is_reparse(current) or not _matches_path_identity(identity, current):
         raise _containment_error(f"tree entry changed during access: {identity.path}")
 
 

@@ -10,6 +10,8 @@ from .continuation_evidence_models import ChildEvidenceNamespace, ProjectSnapsho
 from .run_manifest import EvidenceDigest, Sha256Digest
 from .run_manifest_paths import copy_real_tree, digest_inventory
 
+_WINDOWS_REPARSE_POINT = 0x400
+
 
 class JsonEvidenceRecord(Protocol):
     def model_dump_json(self, *, by_alias: bool, indent: int) -> str: ...
@@ -47,6 +49,17 @@ def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
     )
 
 
+def _identities_match(
+    expected: tuple[int, int, int, int, int, int],
+    actual: tuple[int, int, int, int, int, int],
+) -> bool:
+    return (
+        expected[:3] == actual[:3]
+        and expected[3] & _WINDOWS_REPARSE_POINT == actual[3] & _WINDOWS_REPARSE_POINT
+        and expected[4:] == actual[4:]
+    )
+
+
 class _ProjectDirectory(NamedTuple):
     path: Path
     identity: tuple[int, int, int, int, int, int]
@@ -54,7 +67,7 @@ class _ProjectDirectory(NamedTuple):
 
 def _is_link(metadata: os.stat_result) -> bool:
     return stat.S_ISLNK(metadata.st_mode) or bool(
-        getattr(metadata, "st_file_attributes", 0) & 0x400
+        getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
     )
 
 
@@ -64,7 +77,7 @@ def _require_directories(directories: tuple[_ProjectDirectory, ...]) -> None:
         if (
             _is_link(metadata)
             or not stat.S_ISDIR(metadata.st_mode)
-            or _identity(metadata) != directory.identity
+            or not _identities_match(directory.identity, _identity(metadata))
         ):
             raise OSError(
                 f"project directory changed during snapshot: {directory.path}"
@@ -79,13 +92,16 @@ def _digest_entry(
     _require_directories(directories)
     before = path.lstat()
     with path.open("rb") as handle:
-        if _identity(os.fstat(handle.fileno())) != _identity(before):
+        if not _identities_match(
+            _identity(before), _identity(os.fstat(handle.fileno()))
+        ):
             raise OSError(f"project file changed before read: {relative_path}")
         content = handle.read()
         after = os.fstat(handle.fileno())
         _require_directories(directories)
-    if _identity(after) != _identity(before) or _identity(path.lstat()) != _identity(
-        before
+    expected = _identity(before)
+    if not _identities_match(expected, _identity(after)) or not _identities_match(
+        expected, _identity(path.lstat())
     ):
         raise OSError(f"project file changed during read: {relative_path}")
     return EvidenceDigest(
@@ -113,7 +129,7 @@ def snapshot_project_baseline(workspace: Path) -> ProjectSnapshot:
             relative_path = entry.relative_to(root).as_posix()
             if _is_link(metadata):
                 target = os.readlink(entry).encode("utf-8", errors="surrogatepass")
-                if _identity(entry.lstat()) != _identity(metadata):
+                if not _identities_match(_identity(metadata), _identity(entry.lstat())):
                     raise OSError(f"project link changed during snapshot: {entry}")
                 links.append(
                     EvidenceDigest(
@@ -175,7 +191,9 @@ def write_exclusive_record(
             current_identity = _identity(path.lstat())
         except FileNotFoundError:
             current_identity = None
-        if current_identity == created_identity:
+        if current_identity is not None and _identities_match(
+            created_identity, current_identity
+        ):
             path.unlink()
         raise
     return EvidenceDigest(

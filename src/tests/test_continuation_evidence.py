@@ -27,6 +27,9 @@ from tests.continuation_evidence_security_cases import (
     test_seal_failure_is_a_typed_continuation_evidence_error as test_seal_failure_is_a_typed_continuation_evidence_error,
     test_sealed_root_detects_external_evidence_drift_without_prepared_state as test_sealed_root_detects_external_evidence_drift_without_prepared_state,
 )
+from tests.run_manifest_path_identity_cases import (
+    test_project_snapshot_accepts_non_reparse_directory_attribute_churn as test_project_snapshot_accepts_non_reparse_directory_attribute_churn,
+)
 
 CHILD_RUN_ID = RunId("child-run-20260728-000001-a1b2c3")
 
