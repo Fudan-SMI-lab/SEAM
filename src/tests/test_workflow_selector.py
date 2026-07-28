@@ -774,8 +774,8 @@ class TestResolveWorkflowFromSelector:
         }
         _write_yaml(selector, selector_data)
 
-        # Simulate what extract_json_response handles: fenced JSON block
-        response = f"I think we should use:\n```json\n{{\"selected_workflow\": \"{str(wf)}\"}}\n```"
+        selection = json.dumps({"selected_workflow": str(wf)})
+        response = f"I think we should use:\n```json\n{selection}\n```"
         session_mgr = FakeSessionManager(agent_response=response)
         prompt_loader = FakePromptLoader()
 

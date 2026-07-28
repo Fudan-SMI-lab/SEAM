@@ -39,11 +39,15 @@ def test_default_outputs_are_outside_execution_root() -> None:
     assert result.parent == legacy_workspace_root()
 
 
-def test_default_outputs_env_override() -> None:
+def test_default_outputs_env_override(tmp_path: Path) -> None:
     """MIGRATION_OUTPUT_PROJECTS_ROOT env var overrides the default."""
-    with mock.patch.dict(os.environ, {"MIGRATION_OUTPUT_PROJECTS_ROOT": "/custom/output/path"}):
+    custom_output = tmp_path / "custom" / "output"
+    with mock.patch.dict(
+        os.environ,
+        {"MIGRATION_OUTPUT_PROJECTS_ROOT": str(custom_output)},
+    ):
         result = default_output_projects_root()
-    assert result == Path("/custom/output/path")
+    assert result == custom_output.resolve()
 
 
 def test_default_outputs_env_override_resolves_home() -> None:
