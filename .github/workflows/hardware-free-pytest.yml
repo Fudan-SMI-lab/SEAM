@@ -1,0 +1,40 @@
+name: Hardware-free pytest
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  hardware-free:
+    name: Hardware-free pytest gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare evidence directory
+        run: mkdir -p ../../.omo/evidence
+      - name: Install dev extras
+        run: python -m pip install '.[dev]'
+      - name: Run hardware-free suite
+        run: python -m pytest tests -q -m 'not opencode and not docker and not slow' --junitxml=../../.omo/evidence/task-26-seam-runtime-continuation-trace.xml
+      - name: Upload failed-test evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-free-pytest-junit
+          path: ../.omo/evidence/task-26-seam-runtime-continuation-trace.xml
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7

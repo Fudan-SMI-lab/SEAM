@@ -78,7 +78,7 @@ Multi-Platform Support:
 
 Quickstart:
   # Clone, install, and start OpenCode server
-  pip install -e ".[dev]"
+  python -m pip install -e "./src[dev]"
   opencode serve --port 4098 --hostname 127.0.0.1 &
 
   # Run a migration

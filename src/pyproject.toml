@@ -1,4 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "sm-adapt"
 version = "2.0.0"
 requires-python = ">=3.8"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4,<9",
+    "PyYAML>=6.0,<7",
+    "pydantic>=2.8,<3",
+    "typing_extensions>=4.12,<5",
+    "tomli>=2.0,<3; python_version < '3.11'",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "core*",
+    "harness*",
+    "migrator*",
+    "rule_strategies*",
+    "scripts*",
+    "validators*",
+    "workflows*",
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers"
+markers = [
+    "integration: crosses process, filesystem, or component boundaries; remains hardware-free unless combined with another marker",
+    "opencode: requires a live OpenCode service and usable model credentials",
+    "docker: requires a local Docker-compatible daemon and a pre-existing generic CPU image",
+    "slow: may provision an alternate runtime or exceed the mandatory gate's runtime budget",
+    "e2e: exercises a public SEAM workflow end to end and does not imply external hardware",
+]
