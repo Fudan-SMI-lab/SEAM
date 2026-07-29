@@ -87,7 +87,7 @@ def test_later_failure_keeps_phase5_attempt_and_anchors_later_phase(
 
 def test_terminal_anchor_rejects_missing_phase() -> None:
     # Given / When / Then
-    with pytest.raises(OutcomeContractError, match="cannot be empty"):
+    with pytest.raises(OutcomeContractError, match="valid identifier"):
         _ = TerminalAnchor(phase_id=PhaseId(""))
 
 
