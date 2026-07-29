@@ -102,22 +102,21 @@ class BackendExecution(_FrozenModel):
 
     @model_validator(mode="after")
     def require_exact_backend_identity(self) -> Self:
-        match self.kind:
-            case BackendKind.LOCAL:
-                valid = (
-                    self.namespace == "host"
-                    and self.runtime is None
-                    and self.container_id is None
-                    and not self.container_retained
-                )
-            case BackendKind.CONTAINER:
-                valid = (
-                    bool(self.runtime)
-                    and bool(self.container_id)
-                    and self.namespace == f"container:{self.container_id}"
-                )
-            case unreachable:
-                assert_never(unreachable)
+        if self.kind is BackendKind.LOCAL:
+            valid = (
+                self.namespace == "host"
+                and self.runtime is None
+                and self.container_id is None
+                and not self.container_retained
+            )
+        elif self.kind is BackendKind.CONTAINER:
+            valid = (
+                bool(self.runtime)
+                and bool(self.container_id)
+                and self.namespace == f"container:{self.container_id}"
+            )
+        else:
+            assert_never(self.kind)
         if not valid or not self.host_cwd or not self.backend_cwd:
             raise PydanticCustomError("invalid_backend", "incomplete backend identity")
         return self
@@ -254,7 +253,7 @@ class Phase5ReservationMarker(_FrozenModel):
         return self
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Phase5AttemptReservation:
     run_id: str
     reservation_nonce: str
@@ -265,7 +264,7 @@ class Phase5AttemptReservation:
     receipt_path: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ShellAttemptExecution:
     reservation: Phase5AttemptReservation
     invocation: ShellInvocation

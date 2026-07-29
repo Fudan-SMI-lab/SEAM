@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,6 @@ from core.phase5_attempt_receipt import (
     AttemptReceiptErrorKind,
     CustomOpGateEvidence,
     CustomOpGateStatus,
-    Phase5AttemptId,
     accept_attempt_receipt,
     artifact_file_receipt,
     finalize_attempt_receipt,
@@ -191,6 +189,12 @@ def test_missing_receipt_and_mismatched_attempt_identity_fail_closed(
         custom_op_gate=CustomOpGateEvidence(status=CustomOpGateStatus.INACTIVE),
         review=review(ReviewOutcome.DISABLED),
     )
+    other_path = save_attempt(store, tmp_path, exit_code=0)
+    _ = finalize_attempt_receipt(
+        other_path,
+        custom_op_gate=CustomOpGateEvidence(status=CustomOpGateStatus.INACTIVE),
+        review=review(ReviewOutcome.DISABLED),
+    )
 
     # When either authority is used.
     with pytest.raises(AttemptReceiptError) as missing_error:
@@ -198,10 +202,7 @@ def test_missing_receipt_and_mismatched_attempt_identity_fail_closed(
     with pytest.raises(AttemptReceiptError) as identity_error:
         _ = accept_attempt_receipt(
             receipt_path,
-            replace(
-                authority(store, receipt_path),
-                attempt_id=Phase5AttemptId("phase_5_validation-attempt-9"),
-            ),
+            authority(store, other_path),
         )
 
     # Then both fail with precise reasons.

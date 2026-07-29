@@ -8,6 +8,12 @@ from typing import Final
 
 from pydantic import ValidationError
 
+from core.continuation_lock_identity import (
+    BoundedReadError,
+    BoundedReadErrorKind,
+    read_verified_bytes,
+)
+
 from core.phase5_attempt_models import (
     ArtifactFileReceipt,
     AttemptReceiptError,
@@ -30,7 +36,6 @@ from core.phase5_attempt_models import (
 )
 from core.phase5_attempt_authority import (
     Phase5AttemptAuthority,
-    phase5_attempt_authority,
     receipt_matches_authority,
 )
 
@@ -57,7 +62,6 @@ __all__ = (
     "artifact_file_receipt",
     "finalize_attempt_receipt",
     "load_attempt_receipt",
-    "phase5_attempt_authority",
     "receipt_matches_authority",
     "sha256_file",
 )
@@ -135,17 +139,23 @@ def write_attempt_receipt(
 
 
 def load_attempt_receipt(path: Path) -> Phase5AttemptReceipt:
-    if path.is_symlink():
-        raise AttemptReceiptError(AttemptReceiptErrorKind.UNSAFE_PATH, str(path))
-    if not path.is_file():
-        raise AttemptReceiptError(AttemptReceiptErrorKind.MISSING, str(path))
-    if path.stat().st_size > _MAX_RECEIPT_BYTES:
-        raise AttemptReceiptError(AttemptReceiptErrorKind.MALFORMED, str(path))
     try:
-        return Phase5AttemptReceipt.model_validate_json(
-            path.read_text(encoding="utf-8")
+        content = read_verified_bytes(path, _MAX_RECEIPT_BYTES)
+        return Phase5AttemptReceipt.model_validate_json(content)
+    except BoundedReadError as exc:
+        kind = (
+            AttemptReceiptErrorKind.MISSING
+            if exc.kind is BoundedReadErrorKind.MISSING
+            else AttemptReceiptErrorKind.UNSAFE_PATH
+            if exc.kind
+            in {
+                BoundedReadErrorKind.UNSAFE,
+                BoundedReadErrorKind.CHANGED,
+            }
+            else AttemptReceiptErrorKind.MALFORMED
         )
-    except (OSError, UnicodeError, ValidationError) as exc:
+        raise AttemptReceiptError(kind, str(path)) from exc
+    except (UnicodeError, ValidationError) as exc:
         raise AttemptReceiptError(
             AttemptReceiptErrorKind.MALFORMED, f"{path}: {exc}"
         ) from exc
@@ -207,10 +217,9 @@ def accept_attempt_receipt(
         )
     marker_path = path.parent / f".{receipt.attempt_id}.reserved"
     try:
-        marker = Phase5ReservationMarker.model_validate_json(
-            marker_path.read_text(encoding="utf-8")
-        )
-    except (OSError, UnicodeError, ValidationError) as exc:
+        marker_content = read_verified_bytes(marker_path, 4096)
+        marker = Phase5ReservationMarker.model_validate_json(marker_content)
+    except (BoundedReadError, UnicodeError, ValidationError) as exc:
         raise AttemptReceiptError(
             AttemptReceiptErrorKind.IDENTITY_MISMATCH, str(marker_path)
         ) from exc
@@ -252,4 +261,15 @@ def accept_attempt_receipt(
             )
     accepted = _updated_receipt(receipt, receipt.custom_op_gate, receipt.review, True)
     write_attempt_receipt(path, accepted, receipt)
+    try:
+        current_marker = read_verified_bytes(marker_path, 4096)
+    except BoundedReadError as exc:
+        raise AttemptReceiptError(
+            AttemptReceiptErrorKind.IDENTITY_MISMATCH, str(marker_path)
+        ) from exc
+    if current_marker != marker_content:
+        raise AttemptReceiptError(
+            AttemptReceiptErrorKind.IDENTITY_MISMATCH, str(marker_path)
+        )
+    marker_path.unlink()
     return accepted
