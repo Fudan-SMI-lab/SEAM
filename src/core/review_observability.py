@@ -18,7 +18,7 @@ REVIEW_RECEIPT_STATE_KEY: Final = "_review_observability_receipt"
 logger = logging.getLogger("core.review_observability")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewCommandReceipt:
     session_id: str
     command_id: str
@@ -41,7 +41,7 @@ class ReviewCommandReceipt:
             raise ObservabilityContractError("review receipt duration must be finite")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewTransition:
     phase_id: str
     phase5_iteration: int
@@ -51,7 +51,7 @@ class ReviewTransition:
     improvement_status: ImprovementStatus
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewObserverDiagnostic:
     observer_type: str
     error_type: str

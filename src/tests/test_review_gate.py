@@ -18,6 +18,7 @@ from tests.review_gate_isolation_cases import (
 from tests.review_gate_runtime_cases import (
     test_active_v3_review_exhaustion_stops_before_fourth_judgment,
     test_legacy_repair_loop_preserves_passed_with_reviews_on_reject_exhaustion,
+    test_public_v2_review_rejections_keep_legacy_success,
 )
 from tests.review_gate_state_cases import (
     test_active_v3_review_reject_increments_current_loop_counter,
@@ -45,6 +46,7 @@ __all__ = (
     "test_logical_reject_then_accept_records_two_rounds",
     "test_non_verdict_terminal_states_close_one_logical_round",
     "test_post_improvement_validation_failure_consumes_one_repair_cycle",
+    "test_public_v2_review_rejections_keep_legacy_success",
     "test_review_boundary_records_one_round_after_transport_and_parse_handling",
     "test_repeated_reviewer_interruptions_do_not_advance_state",
     "test_reviewer_timeout_propagates_without_added_retry",

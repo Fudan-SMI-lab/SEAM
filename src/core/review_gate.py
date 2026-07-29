@@ -11,7 +11,7 @@ DEFAULT_MAX_REVIEW_ROUNDS: Final = 3
 REVIEW_GATE_STATE_KEY: Final = "_review_gate"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewGateConfigurationError(Exception):
     max_rounds: int
 
@@ -20,7 +20,7 @@ class ReviewGateConfigurationError(Exception):
         return f"max review rounds must be positive, got {self.max_rounds}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewGateClosedError(Exception):
     outcome: ReviewOutcome
 
@@ -29,7 +29,7 @@ class ReviewGateClosedError(Exception):
         return f"review gate is closed with outcome {self.outcome.value}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewGateTransitionError(Exception):
     reason: str
 
@@ -38,12 +38,12 @@ class ReviewGateTransitionError(Exception):
         return self.reason
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ImprovementApplied:
     selected_phase: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ImprovementFailed:
     reason: str
 
@@ -51,7 +51,7 @@ class ImprovementFailed:
 ImprovementResult = ImprovementApplied | ImprovementFailed
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewGate:
     """Immutable logical review-round state machine."""
 
@@ -73,19 +73,18 @@ class ReviewGate:
     def record_judgment(self, verdict: ReviewVerdict) -> ReviewGate:
         self._ensure_open()
         round_number = len(self.rounds) + 1
-        match verdict:
-            case ReviewVerdict.ACCEPT:
-                outcome = ReviewOutcome.ACCEPTED
-            case ReviewVerdict.REJECT:
-                outcome = (
-                    ReviewOutcome.REJECT_EXHAUSTED
-                    if round_number == self.max_rounds
-                    else ReviewOutcome.REJECTED
-                )
-            case ReviewVerdict.UNKNOWN:
-                outcome = ReviewOutcome.UNKNOWN
-            case _:
-                assert_never(verdict)
+        if verdict is ReviewVerdict.ACCEPT:
+            outcome = ReviewOutcome.ACCEPTED
+        elif verdict is ReviewVerdict.REJECT:
+            outcome = (
+                ReviewOutcome.REJECT_EXHAUSTED
+                if round_number == self.max_rounds
+                else ReviewOutcome.REJECTED
+            )
+        elif verdict is ReviewVerdict.UNKNOWN:
+            outcome = ReviewOutcome.UNKNOWN
+        else:
+            assert_never(verdict)
         review_round = ReviewRound(
             round_number=round_number,
             max_rounds=self.max_rounds,
