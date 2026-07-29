@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 import core.continuation_lock as continuation_lock
+import core.continuation_project_lock as continuation_project_lock
 from core.continuation_lock_identity import LockPathSnapshot
 from core.continuation import (
     ContinuationError,
@@ -159,11 +160,10 @@ def test_lock_keeps_owner_handle_open_for_claim_lifetime(
     with claim_terminal_parent(
         ContinuationRequest(summary_path=parent.summary_path, child_run_id=CHILD_RUN_ID)
     ):
-        assert len(opened) == 1
-        assert not opened[0].closed
+        assert sum(not handle.closed for handle in opened) == 1
 
     # Then release closes the retained owner handle.
-    assert opened[0].closed
+    assert all(handle.closed for handle in opened)
 
 
 def test_active_lock_revalidates_path_after_handle_check(
@@ -174,7 +174,7 @@ def test_active_lock_revalidates_path_after_handle_check(
     parent = create_parent_run(tmp_path)
     lock_path = _lock_path(parent.project_dir, parent.reports_root)
     replacement = b'{"owner":"replacement"}\n'
-    original_snapshot = continuation_lock.read_lock_path_snapshot
+    original_snapshot = continuation_project_lock.read_lock_path_snapshot
     snapshot_calls = 0
 
     def mismatched_snapshot(path: Path, maximum_bytes: int) -> LockPathSnapshot:
@@ -195,7 +195,7 @@ def test_active_lock_revalidates_path_after_handle_check(
         owner = current_project_owner_lock()
         assert owner is not None
         monkeypatch.setattr(
-            continuation_lock,
+            continuation_project_lock,
             "read_lock_path_snapshot",
             mismatched_snapshot,
         )
