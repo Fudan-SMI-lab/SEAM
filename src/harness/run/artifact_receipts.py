@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
-
-from typing_extensions import override
+from typing import Union
+from typing_extensions import TypeAlias, override
 
 from .finalization_contract import RunArtifactUpdate
 from .models import FinalizationStage, RunArtifacts
@@ -17,7 +16,7 @@ from .artifact_paths import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactProvenanceError(ValueError):
     path: str
     detail: str
@@ -27,10 +26,10 @@ class ArtifactProvenanceError(ValueError):
         return f"{self.path}: {self.detail}"
 
 
-ArtifactReceiptError: TypeAlias = SidecarValidationError | ArtifactProvenanceError
+ArtifactReceiptError: TypeAlias = Union[SidecarValidationError, ArtifactProvenanceError]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactReceiptUpdate:
     artifact_dir: ArtifactReceipt | None = None
     telemetry: tuple[tuple[str, ArtifactReceipt], ...] = ()
@@ -39,7 +38,7 @@ class ArtifactReceiptUpdate:
     entry_script: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactReceipts:
     artifact_dir: ArtifactReceipt | None = None
     telemetry: tuple[tuple[str, ArtifactReceipt], ...] = ()
@@ -74,13 +73,13 @@ class ArtifactReceipts:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactReceiptValidation:
     receipts: ArtifactReceipts
     errors: tuple[ArtifactReceiptError, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactUpdateValidation:
     update: ArtifactReceiptUpdate
     errors: tuple[ArtifactReceiptError, ...]

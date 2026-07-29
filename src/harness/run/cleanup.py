@@ -42,7 +42,7 @@ class CleanupResource(str, Enum):
     TEMP_DIRECTORY = "temporary directory cleanup"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ResourceCleanupFailure:
     resource: CleanupResource
     error_type: str
@@ -53,7 +53,7 @@ class ResourceCleanupFailure:
         return f"{self.resource.value} ({self.error_type}): {self.detail}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CleanupContext:
     temp_dir: Path | None
     keep_temp_dir: bool
@@ -62,7 +62,7 @@ class CleanupContext:
     server_process: subprocess.Popen[bytes] | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ResourceCleanup:
     context: CleanupContext
 
