@@ -27,6 +27,7 @@ from .events import (
 )
 from .opencode_contract import JsonObject
 from .opencode_trace_client import OpenCodeTraceClient
+from .http_body import HTTPBodyTooLarge, read_bounded_http_body
 from .trace_seeds import SessionLifecycle, TraceSeed, TraceSeedRegistry
 
 logger = logging.getLogger("harness.session.manager")
@@ -84,10 +85,10 @@ def _env_int(name: str, default: int) -> int:
 
 
 class IdleOutcome(str, Enum):
-    IDLE = "idle"                  # 非 running 且 TODO 非未完成态
+    IDLE = "idle"  # 非 running 且 TODO 非未完成态
     TODO_PENDING = "todo_pending"  # 非 running 但 TODO 明确未完成（仅 _todo == True）
-    TIMEOUT = "timeout"            # 超时仍未收敛
-    RUNNING = "running"            # 退出时仍 running
+    TIMEOUT = "timeout"  # 超时仍未收敛
+    RUNNING = "running"  # 退出时仍 running
 
 
 class SessionManagerError(RuntimeError):
@@ -160,7 +161,11 @@ def _parse_last_json_object(text: str) -> dict[str, Any]:
             continue
 
         absolute_end = start + end
-        if best is None or absolute_end > best[1] or (absolute_end == best[1] and start < best[0]):
+        if (
+            best is None
+            or absolute_end > best[1]
+            or (absolute_end == best[1] and start < best[0])
+        ):
             best = (start, absolute_end, parsed)
 
     return best[2] if best is not None else {}
@@ -396,7 +401,9 @@ class MigrationSessionManager:
             working_directory=record.working_dir,
         )
         if initial_prompt:
-            self._send_message_raw(session_id, initial_prompt, agent=record.agent, timeout=120)
+            self._send_message_raw(
+                session_id, initial_prompt, agent=record.agent, timeout=120
+            )
         return session_id
 
     def attach_session(
@@ -546,7 +553,9 @@ class MigrationSessionManager:
         timeout: int | float | None = None,
         retries: int = 2,
     ) -> dict[str, Any]:
-        text = self.send_command(session_id, command, agent=agent, timeout=timeout, retries=retries)
+        text = self.send_command(
+            session_id, command, agent=agent, timeout=timeout, retries=retries
+        )
         parsed = extract_json_response(text)
         if parsed:
             return parsed
@@ -693,7 +702,10 @@ class MigrationSessionManager:
                 return True
 
         for part in data.get("parts", []):
-            if isinstance(part, dict) and str(part.get("type", "")).lower() == "compaction":
+            if (
+                isinstance(part, dict)
+                and str(part.get("type", "")).lower() == "compaction"
+            ):
                 return True
 
         text = self._extract_message_text(data).lower()
@@ -710,7 +722,10 @@ class MigrationSessionManager:
                 return True
             if "incomplete todo" in text or "unfinished todo" in text:
                 return True
-            if any(token in text for token in ("[x]", "done", "completed", "resolved", "closed")):
+            if any(
+                token in text
+                for token in ("[x]", "done", "completed", "resolved", "closed")
+            ):
                 return False
             return None
         if isinstance(payload, list):
@@ -837,15 +852,21 @@ class MigrationSessionManager:
         return unique
 
     def _sqlite_table_names(self, conn: sqlite3.Connection) -> set[str]:
-        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
         return {str(row[0]) for row in rows if row and row[0]}
 
     @staticmethod
     def _normalize_sql_name(name: str) -> str:
         return name.replace("_", "").lower()
 
-    def _resolve_sql_column(self, columns: list[str], candidates: set[str]) -> str | None:
-        normalized_candidates = {self._normalize_sql_name(candidate) for candidate in candidates}
+    def _resolve_sql_column(
+        self, columns: list[str], candidates: set[str]
+    ) -> str | None:
+        normalized_candidates = {
+            self._normalize_sql_name(candidate) for candidate in candidates
+        }
         for column in columns:
             if self._normalize_sql_name(str(column)) in normalized_candidates:
                 return str(column)
@@ -932,14 +953,18 @@ class MigrationSessionManager:
                 return self._sqlite_message_completion_state(row, data_column)
         return None
 
-    def _sqlite_message_completion_state(self, row: sqlite3.Row, data_column: str) -> bool | None:
+    def _sqlite_message_completion_state(
+        self, row: sqlite3.Row, data_column: str
+    ) -> bool | None:
         payload = self._sqlite_json_value(row[data_column])
         if not isinstance(payload, dict):
             return None
         if self._is_compaction_payload(payload):
             return True
 
-        role = str(payload.get("role", row["role"] if "role" in row.keys() else "")).lower()
+        role = str(
+            payload.get("role", row["role"] if "role" in row.keys() else "")
+        ).lower()
         if role and role != "assistant":
             return None
 
@@ -967,7 +992,11 @@ class MigrationSessionManager:
 
     def _sqlite_payload_has_completed_time(self, payload: dict[str, Any]) -> bool:
         time_value = payload.get("time")
-        if isinstance(time_value, dict) and time_value.get("completed") not in (None, "", 0):
+        if isinstance(time_value, dict) and time_value.get("completed") not in (
+            None,
+            "",
+            0,
+        ):
             return True
         for key in ("time_completed", "timeCompleted", "completed_at", "completedAt"):
             if payload.get(key) not in (None, "", 0):
@@ -975,9 +1004,18 @@ class MigrationSessionManager:
         info = payload.get("info")
         if isinstance(info, dict):
             info_time = info.get("time")
-            if isinstance(info_time, dict) and info_time.get("completed") not in (None, "", 0):
+            if isinstance(info_time, dict) and info_time.get("completed") not in (
+                None,
+                "",
+                0,
+            ):
                 return True
-            for key in ("time_completed", "timeCompleted", "completed_at", "completedAt"):
+            for key in (
+                "time_completed",
+                "timeCompleted",
+                "completed_at",
+                "completedAt",
+            ):
                 if info.get(key) not in (None, "", 0):
                     return True
         return False
@@ -987,7 +1025,9 @@ class MigrationSessionManager:
             if not db_path.is_file():
                 continue
             try:
-                with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.2) as conn:
+                with sqlite3.connect(
+                    f"file:{db_path}?mode=ro", uri=True, timeout=0.2
+                ) as conn:
                     conn.row_factory = sqlite3.Row
                     conn.execute("PRAGMA query_only=ON")
                     tables = self._sqlite_table_names(conn)
@@ -996,7 +1036,9 @@ class MigrationSessionManager:
 
                     session_row_seen = False
                     session_not_running = False
-                    session_tables = [name for name in ("session", "sessions") if name in tables]
+                    session_tables = [
+                        name for name in ("session", "sessions") if name in tables
+                    ]
                     for table_name in session_tables:
                         columns = [
                             row[1]
@@ -1093,7 +1135,9 @@ class MigrationSessionManager:
                     )
                     if assistant_state is True:
                         return True
-                    if assistant_state is False and (session_row_seen or session_not_running):
+                    if assistant_state is False and (
+                        session_row_seen or session_not_running
+                    ):
                         return False
             except sqlite3.Error:
                 continue
@@ -1267,9 +1311,13 @@ class MigrationSessionManager:
         interval_s: float = 1.0,
     ) -> None:
         started = time.time()
-        hard_error_timeout = DEFAULT_HARD_ERROR_WAIT_TIMEOUT if timeout is None else min(
-            self._effective_wait_timeout(timeout),
-            DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+        hard_error_timeout = (
+            DEFAULT_HARD_ERROR_WAIT_TIMEOUT
+            if timeout is None
+            else min(
+                self._effective_wait_timeout(timeout),
+                DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+            )
         )
         deadline = started + hard_error_timeout
         saw_observation = False
@@ -1682,9 +1730,7 @@ class MigrationSessionManager:
                     nudge_count,
                     self._last_todo_summary or "unknown",
                 )
-                raise TimeoutError(
-                    "Session stopped with incomplete todos after nudges"
-                )
+                raise TimeoutError("Session stopped with incomplete todos after nudges")
 
             # 等待稳定窗后二次确认；窗内回到 running 由下方分支处理。
             # 此处尚未决定发送 nudge：模型可能仍在生成（例如 todo 处于
@@ -1750,7 +1796,9 @@ class MigrationSessionManager:
         ):
             raise TimeoutError("Session still running or has incomplete todos")
         recovered_text = self._last_message_text_tolerant(session_id)
-        if not self._is_usable_refetched_text(recovered_text, previous_text, command_text):
+        if not self._is_usable_refetched_text(
+            recovered_text, previous_text, command_text
+        ):
             return ""
         return recovered_text
 
@@ -1764,7 +1812,9 @@ class MigrationSessionManager:
     ) -> dict[str, Any]:
         url = self._base_url + (path if path.startswith("/") else f"/{path}")
         if query:
-            url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+            url += "?" + urllib.parse.urlencode(
+                {k: v for k, v in query.items() if v is not None}
+            )
         headers = {"Accept": "application/json"}
         payload = None
         if body is not None:
@@ -1784,7 +1834,18 @@ class MigrationSessionManager:
             else:
                 request_timeout = self._timeout
             with urllib.request.urlopen(request, timeout=request_timeout) as response:
-                raw = response.read()
+                try:
+                    raw = read_bounded_http_body(response)
+                except HTTPBodyTooLarge as exc:
+                    return {
+                        "ok": False,
+                        "status": response.status,
+                        "error": str(exc),
+                        "details": "",
+                        "headers": {},
+                        "raw_body": "",
+                        "body_too_large": True,
+                    }
                 response_headers = {
                     str(key): str(value)
                     for key, value in (getattr(response, "headers", None) or {}).items()
@@ -1810,7 +1871,22 @@ class MigrationSessionManager:
                     "raw_body": text,
                 }
         except urllib.error.HTTPError as exc:
-            details = exc.read().decode(errors="replace") if exc.fp else ""
+            try:
+                details = (
+                    read_bounded_http_body(exc).decode(errors="replace")
+                    if exc.fp
+                    else ""
+                )
+            except HTTPBodyTooLarge as body_error:
+                return {
+                    "ok": False,
+                    "status": exc.code,
+                    "error": str(body_error),
+                    "details": "",
+                    "headers": {},
+                    "raw_body": "",
+                    "body_too_large": True,
+                }
             return {
                 "ok": False,
                 "status": exc.code,

@@ -30,8 +30,8 @@ class FakeResponse:
         self._payload = payload.encode()
         self.status = status
 
-    def read(self) -> bytes:
-        return self._payload
+    def read(self, size: int = -1) -> bytes:
+        return self._payload if size < 0 else self._payload[:size]
 
     def __enter__(self) -> FakeResponse:
         return self
