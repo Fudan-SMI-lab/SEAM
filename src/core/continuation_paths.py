@@ -60,17 +60,15 @@ def canonical_existing_path(
         raise
     except OSError as exc:
         raise _error(error_kind, f"path is unavailable: {exc}") from exc
-    match path_kind:
-        case PathKind.FILE:
-            if not stat.S_ISREG(metadata.st_mode):
-                raise _error(error_kind, "path is not a regular file")
-            return canonical
-        case PathKind.DIRECTORY:
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise _error(error_kind, "path is not a regular directory")
-            return canonical
-        case _ as unreachable:
-            assert_never(unreachable)
+    if path_kind is PathKind.FILE:
+        if not stat.S_ISREG(metadata.st_mode):
+            raise _error(error_kind, "path is not a regular file")
+        return canonical
+    if path_kind is PathKind.DIRECTORY:
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise _error(error_kind, "path is not a regular directory")
+        return canonical
+    assert_never(path_kind)
 
 
 class ExplicitSummarySnapshot(NamedTuple):

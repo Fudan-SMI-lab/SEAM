@@ -57,21 +57,19 @@ class _TerminalExpectation(NamedTuple):
 
 
 def _terminal_expectation(status: TerminalParentStatus) -> _TerminalExpectation:
-    match status:
-        case TerminalParentStatus.PASS:
-            return _TerminalExpectation(
-                "passed",
-                frozenset({"passed", "passed_with_reviews"}),
-                frozenset({"passed", "skipped"}),
-            )
-        case TerminalParentStatus.FAIL:
-            return _TerminalExpectation(
-                "failed",
-                frozenset({"failed"}),
-                frozenset({"passed", "failed", "skipped"}),
-            )
-        case _ as unreachable:
-            assert_never(unreachable)
+    if status is TerminalParentStatus.PASS:
+        return _TerminalExpectation(
+            "passed",
+            frozenset({"passed", "passed_with_reviews"}),
+            frozenset({"passed", "skipped"}),
+        )
+    if status is TerminalParentStatus.FAIL:
+        return _TerminalExpectation(
+            "failed",
+            frozenset({"failed"}),
+            frozenset({"passed", "failed", "skipped"}),
+        )
+    assert_never(status)
 
 
 def _require_summary_identity(summary_path: Path, summary: RunSummaryDocument) -> Path:
@@ -140,33 +138,15 @@ def _open_run_manifest(
             context, run_id, workflow_digest
         ).read()
     except RunManifestError as exc:
-        match exc.kind:
-            case ManifestErrorKind.WORKFLOW_MISMATCH:
-                raise _error(
-                    ContinuationErrorKind.WORKFLOW_MISMATCH,
-                    f"authoritative run manifest is invalid: {exc.kind.value}",
-                ) from exc
-            case (
-                ManifestErrorKind.DUPLICATE_RUN
-                | ManifestErrorKind.MISSING_MANIFEST
-                | ManifestErrorKind.MALFORMED
-                | ManifestErrorKind.PARENT_MISMATCH
-                | ManifestErrorKind.READ_ONLY
-                | ManifestErrorKind.VERSION_MISMATCH
-                | ManifestErrorKind.IMMUTABLE_FIELD
-                | ManifestErrorKind.EVIDENCE_MUTATION
-                | ManifestErrorKind.WRITE_INTERRUPTED
-                | ManifestErrorKind.AUTHORITY_BOUNDARY
-                | ManifestErrorKind.CONTAINMENT
-                | ManifestErrorKind.CONCURRENT_WRITE
-                | ManifestErrorKind.SEALED
-            ):
-                raise _error(
-                    ContinuationErrorKind.AUTHORITY_INVALID,
-                    f"authoritative run manifest is invalid: {exc.kind.value}",
-                ) from exc
-            case _ as unreachable:
-                assert_never(unreachable)
+        if exc.kind is ManifestErrorKind.WORKFLOW_MISMATCH:
+            raise _error(
+                ContinuationErrorKind.WORKFLOW_MISMATCH,
+                f"authoritative run manifest is invalid: {exc.kind.value}",
+            ) from exc
+        raise _error(
+            ContinuationErrorKind.AUTHORITY_INVALID,
+            f"authoritative run manifest is invalid: {exc.kind.value}",
+        ) from exc
     if not manifest.evidence_sealed:
         raise _error(
             ContinuationErrorKind.AUTHORITY_INVALID,
