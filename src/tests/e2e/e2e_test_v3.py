@@ -86,6 +86,7 @@ from harness.run import (
     persist_python_snapshot,
 )
 from harness.run.finalizer import build_run_summary
+from harness.run.workflow_result_projection import project_workflow_result
 from harness.run.v3_retention import (
     _compose_v3_retention_hooks,
 )
@@ -846,15 +847,12 @@ def run_e2e_v3(
             if workflow.execution_backend is not None
             else "local"
         )
-        match raw_backend_mode:
-            case "auto":
-                requested_backend = "auto"
-            case "container":
-                requested_backend = "container"
-            case "local":
-                requested_backend = "local"
-            case _:
-                requested_backend = "local"
+        if raw_backend_mode == "auto":
+            requested_backend = "auto"
+        elif raw_backend_mode == "container":
+            requested_backend = "container"
+        else:
+            requested_backend = "local"
         retention_policy = resolve_v3_container_retention(
             workflow,
             container_retention,
@@ -925,11 +923,11 @@ def run_e2e_v3(
             defer_execution_backend_preflight=True,
         )
 
-        match executor.exec_backend:
-            case ContainerBackend() as retention_backend:
-                pass
-            case _:
-                retention_backend = None
+        retention_backend = (
+            executor.exec_backend
+            if isinstance(executor.exec_backend, ContainerBackend)
+            else None
+        )
         retention_recorder = RetentionLifecycleRecorder()
         retention_cleanup = ContainerRetentionFinalizer(
             retention_policy,
@@ -995,37 +993,13 @@ def run_e2e_v3(
         telemetry_bridge.set_metadata("workflow_name", workflow.name)
         telemetry_bridge.set_metadata("workflow_version", workflow.version)
 
-        phase_order_map = {
-            p.id: i for i, p in enumerate(executor.workflow.phases or [])
-        }
-        for pid, pr in executor.phase_results.items():
-            idx = phase_order_map.get(pid, 999)
-            status_str = str(pr.get("status", "unknown"))
-            mapped_status = {
-                "success": "passed",
-                "failure": "failed",
-                "skipped": "skipped",
-            }.get(status_str, status_str)
-            error_msg = (
-                pr.get("output_summary", "")[:500] if status_str == "failure" else None
-            )
-            phase_results.append(
-                PhaseStatus(
-                    phase_number=idx + 1,
-                    phase_id=pid,
-                    label=pid,
-                    status=mapped_status,
-                    duration_seconds=round(pr.get("duration", 0.0), 3),
-                    error=error_msg,
-                )
-            )
-        phase_results.sort(key=lambda p: p.phase_number)
-
-        phase_3_output = executor.state.get("phase_3_entry_script")
-        if isinstance(phase_3_output, dict):
-            run_command = phase_3_output.get("run_command")
-            if isinstance(run_command, str) and run_command.strip():
-                entry_script = run_command
+        projection = project_workflow_result(
+            tuple(phase.id for phase in executor.workflow.phases or ()),
+            executor.phase_results,
+            executor.state,
+        )
+        phase_results.extend(projection.phases)
+        entry_script = projection.entry_script
 
     except Exception as exc:
         errors.append(f"{exc.__class__.__name__}: {exc}")
