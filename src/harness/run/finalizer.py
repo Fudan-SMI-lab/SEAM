@@ -4,6 +4,8 @@ import logging
 import re
 from pathlib import Path
 
+from core.agent_io_logger import redact_sensitive_text
+
 from core.run_manifest import RunId
 from core.run_outcome import TerminalOutcome
 from core.requested_cleanup_error import RequestedContainerCleanupError
@@ -59,11 +61,10 @@ def allocate_report_directory(
 
 
 def _freeze_outcome(request: RunFinalizationRequest) -> TerminalOutcome:
-    match request.frozen_outcome:
-        case None:
-            return TerminalOutcome.FAILED
-        case authoritative:
-            return authoritative.terminal_outcome
+    authoritative = request.frozen_outcome
+    if authoritative is None:
+        return TerminalOutcome.FAILED
+    return authoritative.terminal_outcome
 
 
 def build_run_summary(request: RunFinalizationRequest) -> RunSummary:
@@ -96,14 +97,15 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
                 report_dir, hook(outcome), before, stage
             )
         except RequestedContainerCleanupError as exc:
+            detail = redact_sensitive_text(str(exc))
             logger.warning(
                 "Finalization hook %s failed with %s: %s",
                 stage.value,
                 type(exc).__name__,
-                exc,
+                detail,
             )
             diagnostics.append(
-                FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
+                FinalizationDiagnostic(stage, type(exc).__name__, detail)
             )
             if stage is FinalizationStage.AUTHORIZED_CLEANUP:
                 requested_cleanup_failed = True
@@ -111,14 +113,15 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
                 finalization_failed = True
             continue
         except Exception as exc:
+            detail = redact_sensitive_text(str(exc))
             logger.warning(
                 "Finalization hook %s failed with %s: %s",
                 stage.value,
                 type(exc).__name__,
-                exc,
+                detail,
             )
             diagnostics.append(
-                FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
+                FinalizationDiagnostic(stage, type(exc).__name__, detail)
             )
             if stage in request.required_stages:
                 finalization_failed = True
@@ -133,16 +136,17 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
         try:
             runtime_report = request.runtime_report_source()
         except Exception as exc:
+            detail = redact_sensitive_text(str(exc))
             logger.warning(
                 "Runtime reporting failed with %s: %s",
                 type(exc).__name__,
-                exc,
+                detail,
             )
             diagnostics.append(
                 FinalizationDiagnostic(
                     FinalizationStage.RUNTIME_REPORT,
                     type(exc).__name__,
-                    str(exc),
+                    detail,
                 )
             )
     trace_status = read_trace_status(request)

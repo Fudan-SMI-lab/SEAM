@@ -10,7 +10,11 @@ if sys.version_info < (3, 10):
     import typing
     from pathlib import Path
 
+    from core.atomic_file import atomic_write_bytes
+    from core.continuation_lock_identity import read_verified_bytes
+    from core.evidence_limits import MAX_EVIDENCE_FILE_BYTES
     from core.requested_cleanup_error import RequestedContainerCleanupError
+    from core.secret_redaction import redact_sensitive_text
 
     from .finalization_contract import (
         FinalizationDiagnostic,
@@ -32,7 +36,7 @@ if sys.version_info < (3, 10):
     def _fingerprint(path: Path, directory: bool) -> str:
         digest = hashlib.sha256()
         if not directory:
-            digest.update(path.read_bytes())
+            digest.update(read_verified_bytes(path, MAX_EVIDENCE_FILE_BYTES))
             return digest.hexdigest()
         for parent, directories, files in os.walk(str(path), followlinks=False):
             directories.sort()
@@ -50,7 +54,11 @@ if sys.version_info < (3, 10):
                     raise OSError("linked artifact file")
                 digest.update(child.relative_to(path).as_posix().encode())
                 digest.update(b"F")
-                digest.update(hashlib.sha256(child.read_bytes()).digest())
+                digest.update(
+                    hashlib.sha256(
+                        read_verified_bytes(child, MAX_EVIDENCE_FILE_BYTES)
+                    ).digest()
+                )
         return digest.hexdigest()
 
     def _snapshot_report(report_dir: Path) -> typing.Dict[str, str]:
@@ -150,7 +158,9 @@ if sys.version_info < (3, 10):
                         finalization_failed = True
             except RequestedContainerCleanupError as exc:
                 diagnostics.append(
-                    FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
+                    FinalizationDiagnostic(
+                        stage, type(exc).__name__, redact_sensitive_text(str(exc))
+                    )
                 )
                 if stage.value == "authorized_cleanup":
                     requested_cleanup_failed = True
@@ -158,7 +168,9 @@ if sys.version_info < (3, 10):
                     finalization_failed = True
             except (Exception,) as exc:
                 diagnostics.append(
-                    FinalizationDiagnostic(stage, type(exc).__name__, str(exc))
+                    FinalizationDiagnostic(
+                        stage, type(exc).__name__, redact_sensitive_text(str(exc))
+                    )
                 )
                 if stage in request.required_stages:
                     finalization_failed = True
@@ -191,9 +203,11 @@ if sys.version_info < (3, 10):
         persisted_summary_path: typing.Optional[str] = None
         if not finalization_failed:
             try:
-                _ = summary_path.write_text(
-                    json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
+                atomic_write_bytes(
+                    summary_path,
+                    (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(
+                        "utf-8"
+                    ),
                 )
                 persisted_summary_path = str(summary_path)
             except OSError:
@@ -202,9 +216,12 @@ if sys.version_info < (3, 10):
         diagnostics_path: typing.Optional[Path] = None
         if diagnostics:
             diagnostics_path = report_dir / "finalization_diagnostics.json"
-            _ = diagnostics_path.write_text(
-                json.dumps([item._asdict() for item in diagnostics], indent=2) + "\n",
-                encoding="utf-8",
+            atomic_write_bytes(
+                diagnostics_path,
+                (
+                    json.dumps([item._asdict() for item in diagnostics], indent=2)
+                    + "\n"
+                ).encode("utf-8"),
             )
         return FinalizationResult(
             outcome=outcome,
