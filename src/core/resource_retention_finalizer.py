@@ -33,7 +33,7 @@ def _continuation_evidence_unavailable() -> bool:
     return False
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContainerRetentionFinalizer:
     policy: V3ContainerRetentionPolicy
     backend: RetentionBackend | None
@@ -88,21 +88,18 @@ class ContainerRetentionFinalizer:
                 "running",
                 "delete policy has no ownership authority",
             )
-        match authority:
-            case ContinuationContainerDeleteAuthority(owner_lock=lock):
-                if not project_owner_lock_is_active(lock):
-                    error = ContainerDeletionError(
-                        backend.container_id,
-                        "running",
-                        "running",
-                        "active project owner lock required",
-                    )
-                    self._record_failure(entry, error)
-                    raise error
-            case CurrentRunContainerDeleteAuthority():
-                pass
-            case unreachable:
-                assert_never(unreachable)
+        if isinstance(authority, ContinuationContainerDeleteAuthority):
+            if not project_owner_lock_is_active(authority.owner_lock):
+                error = ContainerDeletionError(
+                    backend.container_id,
+                    "running",
+                    "running",
+                    "active project owner lock required",
+                )
+                self._record_failure(entry, error)
+                raise error
+        elif not isinstance(authority, CurrentRunContainerDeleteAuthority):
+            assert_never(authority)
         container_id = backend.container_id
         try:
             with _authorized_container_cleanup(authority):

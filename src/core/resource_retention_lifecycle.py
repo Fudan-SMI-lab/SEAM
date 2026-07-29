@@ -39,7 +39,7 @@ class RetentionManifestBinding(Protocol):
     def identity(self) -> ResourceManifestIdentity: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RetentionLifecycleRecord:
     requested: ContainerRetention
     effective: ContainerRetention

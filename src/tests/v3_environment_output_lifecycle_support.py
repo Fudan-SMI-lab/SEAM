@@ -12,7 +12,6 @@ from core.resource_retention import (
     ContainerDeletionError,
     ContainerDeletionReceipt,
     ContainerRetention,
-    CurrentRunContainerDeleteAuthority,
     V3ContainerRetentionPolicy,
 )
 from core.resource_retention_finalizer import (
@@ -21,6 +20,7 @@ from core.resource_retention_finalizer import (
     _authorized_retention_finalization,
 )
 from core.resource_retention_manifest import RetentionManifestFinalizer
+from tests.resource_retention_test_support import current_run_delete_authority
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,47 +62,44 @@ def seal_lifecycle(
     post_state: str = "not_applicable",
 ) -> None:
     recorder = RetentionLifecycleRecorder()
-    authority = CurrentRunContainerDeleteAuthority(
-        original_owner_run_id="run-safe-1",
-        lineage_root_run_id="run-safe-1",
-        ownership_token="measured-owner-token",
-        ownership_label="seam.owner=run-safe-1",
-    )
-    match cleanup:
-        case ContainerCleanupStatus.NOT_APPLICABLE:
-            policy = V3ContainerRetentionPolicy(
-                requested=ContainerRetention.RETAIN,
-                effective=ContainerRetention.RETAIN,
-                owner_kind="unknown",
-                delete_authority=None,
-            )
-            backend = None
-        case ContainerCleanupStatus.RETAINED:
-            policy = V3ContainerRetentionPolicy(
-                requested=ContainerRetention.RETAIN,
-                effective=ContainerRetention.RETAIN,
-                owner_kind="framework",
-                delete_authority=None,
-            )
-            backend = _MeasuredLifecycleBackend(
-                tuple(shlex.split(entry_command)),
-                post_state,
-                False,
-            )
-        case ContainerCleanupStatus.DELETED | ContainerCleanupStatus.FAILED:
-            policy = V3ContainerRetentionPolicy(
-                requested=ContainerRetention.DELETE,
-                effective=ContainerRetention.DELETE,
-                owner_kind="framework",
-                delete_authority=authority,
-            )
-            backend = _MeasuredLifecycleBackend(
-                tuple(shlex.split(entry_command)),
-                post_state,
-                cleanup is ContainerCleanupStatus.FAILED,
-            )
-        case unreachable:
-            assert_never(unreachable)
+    authority = current_run_delete_authority("run-safe-1")
+    if cleanup is ContainerCleanupStatus.NOT_APPLICABLE:
+        policy = V3ContainerRetentionPolicy(
+            requested=ContainerRetention.RETAIN,
+            effective=ContainerRetention.RETAIN,
+            owner_kind="unknown",
+            delete_authority=None,
+        )
+        backend = None
+    elif cleanup is ContainerCleanupStatus.RETAINED:
+        policy = V3ContainerRetentionPolicy(
+            requested=ContainerRetention.RETAIN,
+            effective=ContainerRetention.RETAIN,
+            owner_kind="framework",
+            delete_authority=None,
+        )
+        backend = _MeasuredLifecycleBackend(
+            tuple(shlex.split(entry_command)),
+            post_state,
+            False,
+        )
+    elif (
+        cleanup is ContainerCleanupStatus.DELETED
+        or cleanup is ContainerCleanupStatus.FAILED
+    ):
+        policy = V3ContainerRetentionPolicy(
+            requested=ContainerRetention.DELETE,
+            effective=ContainerRetention.DELETE,
+            owner_kind="framework",
+            delete_authority=authority,
+        )
+        backend = _MeasuredLifecycleBackend(
+            tuple(shlex.split(entry_command)),
+            post_state,
+            cleanup is ContainerCleanupStatus.FAILED,
+        )
+    else:
+        assert_never(cleanup)
     finalizer = ContainerRetentionFinalizer(
         policy,
         backend,
