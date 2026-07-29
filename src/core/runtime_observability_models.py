@@ -10,8 +10,16 @@ from typing_extensions import override
 from core.run_outcome import ReviewRound
 from core.trace_correlation_models import FrameworkInvocationId
 
+_MAX_IDENTIFIER_CHARS = 128
 
-@dataclass(frozen=True, slots=True)
+
+def _identifiers_are_valid(values: tuple[str, ...]) -> bool:
+    return all(
+        value.strip() and len(value) <= _MAX_IDENTIFIER_CHARS for value in values
+    )
+
+
+@dataclass(frozen=True)
 class ObservabilityContractError(ValueError):
     detail: str
 
@@ -27,7 +35,7 @@ class ImprovementStatus(str, Enum):
     FAILED = "failed"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CommandCorrelation:
     run_id: str
     session_id: str
@@ -35,13 +43,13 @@ class CommandCorrelation:
 
     def __post_init__(self) -> None:
         values = (self.run_id, self.session_id, self.command_id)
-        if not all(value.strip() for value in values):
+        if not _identifiers_are_valid(values):
             raise ObservabilityContractError(
                 "correlation identifiers must be non-empty"
             )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewScope:
     phase_id: str
     phase5_iteration: int
@@ -52,13 +60,13 @@ class ReviewScope:
         if self.phase5_iteration < 1:
             raise ObservabilityContractError("phase5_iteration must be positive")
         identifiers = (self.phase_id, self.reviewer_agent, self.sub_phase)
-        if not all(identifier.strip() for identifier in identifiers):
+        if not _identifiers_are_valid(identifiers):
             raise ObservabilityContractError(
                 "review scope identifiers must be non-empty"
             )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewCompletion:
     correlation: CommandCorrelation
     scope: ReviewScope
@@ -80,7 +88,7 @@ class ReviewCompletion:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TimeoutScope:
     run_id: str
     agent: str
@@ -89,7 +97,7 @@ class TimeoutScope:
 
     def __post_init__(self) -> None:
         identifiers = (self.run_id, self.agent, self.sub_phase)
-        if not all(identifier.strip() for identifier in identifiers):
+        if not _identifiers_are_valid(identifiers):
             raise ObservabilityContractError(
                 "timeout scope identifiers must be non-empty"
             )
@@ -153,7 +161,7 @@ class ObservabilityArtifact(TypedDict):
     timeouts: list[TimeoutDetails]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ObservabilitySummary:
     schema_version: str = "1.0"
     review_count: int = 0

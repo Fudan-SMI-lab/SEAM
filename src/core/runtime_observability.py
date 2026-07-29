@@ -15,6 +15,7 @@ from core.runtime_observability_models import (
     TimeoutDetails,
     TimeoutScope,
 )
+from core.atomic_file import atomic_write_bytes
 from core.run_manifest import RunId
 from core.run_outcome import PhaseId
 from core.trace_correlation_models import (
@@ -98,22 +99,24 @@ class RuntimeObservability:
         scope: TimeoutScope,
         event: TransportAttemptEvent,
     ) -> TimeoutDetails | None:
-        match event:
-            case TransportAttemptTimedOut():
-                self._timeout_attempts.add((str(event.invocation_id), event.attempt))
-            case TransportAttemptsExhausted():
-                key = (str(event.invocation_id), event.attempt)
-                if key not in self._timeout_attempts:
-                    self._dropped_event_count += 1
-                    return None
-            case (
-                TransportAttemptStarted()
-                | TransportAttemptCompleted()
-                | TransportAttemptErrored()
-            ):
+        if isinstance(event, TransportAttemptTimedOut):
+            self._timeout_attempts.add((str(event.invocation_id), event.attempt))
+        elif isinstance(event, TransportAttemptsExhausted):
+            key = (str(event.invocation_id), event.attempt)
+            if key not in self._timeout_attempts:
+                self._dropped_event_count += 1
                 return None
-            case _:
-                assert_never(event)
+        elif isinstance(
+            event,
+            (
+                TransportAttemptStarted,
+                TransportAttemptCompleted,
+                TransportAttemptErrored,
+            ),
+        ):
+            return None
+        else:
+            assert_never(event)
         record_id = (
             f"{scope.run_id}:transport:{event.invocation_id}:"
             f"{event.attempt}:{event.phase.value}"
@@ -208,9 +211,8 @@ class RuntimeObservability:
         if not self._reviews and not self._timeouts:
             return None
         payload = asdict(summary or self.summary())
-        temporary_path = self._output_path.with_suffix(".json.tmp")
-        _ = temporary_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8"
+        atomic_write_bytes(
+            self._output_path,
+            json.dumps(payload, indent=2, ensure_ascii=True).encode("utf-8"),
         )
-        _ = temporary_path.replace(self._output_path)
         return str(self._output_path)
