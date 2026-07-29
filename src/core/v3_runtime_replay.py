@@ -18,6 +18,7 @@ from core.replay_public import (
 )
 from core.resource_manifest import ResourceManifest
 from core.resource_manifest import FactProvenance
+from core.run_outcome import AcceptedAttemptId
 from core.v3_runtime_report_facts import authenticated_fact
 from core.v3_runtime_report_models import RuntimeReplayReport, RuntimeReportRequest
 
@@ -59,8 +60,8 @@ def _container_observation(manifest: ResourceManifest) -> ContainerObservation |
 
 
 def _unavailable(
-    reason: str,
-    accepted_attempt_id: str | None,
+    reason: ReplayUnavailableReason,
+    accepted_attempt_id: AcceptedAttemptId | None,
 ) -> RuntimeReplayReport:
     return RuntimeReplayReport(
         available=False,
@@ -79,39 +80,32 @@ def build_replay_report(
 ) -> RuntimeReplayReport:
     outcome = request.outcome
     accepted_attempt_id = (
-        str(outcome.accepted_attempt_id)
+        outcome.accepted_attempt_id
         if outcome is not None and outcome.accepted_attempt_id is not None
         else None
     )
     if outcome is None:
-        return _unavailable("run_outcome_unavailable", None)
+        return _unavailable(ReplayUnavailableReason.RUN_OUTCOME_UNAVAILABLE, None)
     source = request.accepted_receipt
     if source is None:
         return _unavailable(
-            ReplayUnavailableReason.RECEIPT_MISSING.value,
+            ReplayUnavailableReason.RECEIPT_MISSING,
             accepted_attempt_id,
         )
     if str(source.receipt_path.resolve()) != source.authority.receipt_path:
         return _unavailable(
-            ReplayUnavailableReason.RECEIPT_MALFORMED.value,
+            ReplayUnavailableReason.RECEIPT_MALFORMED,
             accepted_attempt_id,
         )
     try:
         receipt = load_attempt_receipt(source.receipt_path)
     except AttemptReceiptError as exc:
-        match exc.kind:  # noqa  # noqa: MATCH_OK - statically exhaustive
-            case AttemptReceiptErrorKind.MISSING:
-                reason = ReplayUnavailableReason.RECEIPT_MISSING
-            case (
-                AttemptReceiptErrorKind.MALFORMED
-                | AttemptReceiptErrorKind.UNSAFE_PATH
-                | AttemptReceiptErrorKind.IDENTITY_MISMATCH
-                | AttemptReceiptErrorKind.NOT_ACCEPTABLE
-                | AttemptReceiptErrorKind.INTEGRITY_MISMATCH
-                | AttemptReceiptErrorKind.STALE_TRANSITION
-            ):
-                reason = ReplayUnavailableReason.RECEIPT_MALFORMED
-        return _unavailable(reason.value, accepted_attempt_id)
+        reason = (
+            ReplayUnavailableReason.RECEIPT_MISSING
+            if exc.kind is AttemptReceiptErrorKind.MISSING
+            else ReplayUnavailableReason.RECEIPT_MALFORMED
+        )
+        return _unavailable(reason, accepted_attempt_id)
     rendered = render_replay(
         receipt,
         outcome,
@@ -124,7 +118,7 @@ def build_replay_report(
     )
     return RuntimeReplayReport(
         available=rendered.available,
-        reason=rendered.reason.value if rendered.reason is not None else None,
+        reason=rendered.reason,
         accepted_attempt_id=accepted_attempt_id,
         validation_command=(
             public_validation_command(receipt) if validation_visible else None

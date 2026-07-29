@@ -12,7 +12,6 @@ from core.execution_env_context import (
 from core.phase5_attempt_receipt import (
     BackendKind,
     Phase5AttemptReceipt,
-    phase5_attempt_authority,
 )
 from core.resource_manifest import (
     BackendFactRequest,
@@ -28,7 +27,7 @@ from core.resource_manifest import (
     Phase5ReferenceRequest,
 )
 from core.v3_runtime_report import AcceptedReplaySource
-from tests.phase5_receipt_test_support import accepted_receipt
+from tests.phase5_receipt_test_support import accepted_receipt, issued_authority
 from tests.v3_environment_output_lifecycle_support import (
     seal_lifecycle as seal_lifecycle,
 )
@@ -169,7 +168,7 @@ def replay_source(
     )
     receipt_path = tmp_path / "accepted-phase5.receipt.json"
     _ = receipt_path.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    authority = phase5_attempt_authority(receipt_path, receipt)
+    authority = issued_authority(receipt_path, receipt)
     return receipt, AcceptedReplaySource(receipt_path=receipt_path, authority=authority)
 
 

@@ -9,7 +9,6 @@ import pytest
 from core.phase5_attempt_receipt import (
     BackendKind,
     EnvironmentVariable,
-    phase5_attempt_authority,
 )
 from core.resource_retention import ContainerCleanupStatus
 from core.v3_runtime_report import (
@@ -18,7 +17,11 @@ from core.v3_runtime_report import (
     build_runtime_report,
 )
 from core.v3_runtime_report_integration import _bind_environment
-from tests.phase5_receipt_test_support import accepted_receipt, run_outcome
+from tests.phase5_receipt_test_support import (
+    accepted_receipt,
+    issued_authority,
+    run_outcome,
+)
 from tests.v3_environment_output_test_support import (
     RUN_ID,
     add_base_environment,
@@ -59,7 +62,7 @@ def test_accepted_attempt_requires_same_run_environment_binding(tmp_path: Path) 
     )
     path = tmp_path / "cross-run.receipt.json"
     _ = path.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    source = AcceptedReplaySource(path, phase5_attempt_authority(path, receipt))
+    source = AcceptedReplaySource(path, issued_authority(path, receipt))
 
     # When integration considers the cross-run authority.
     _bind_environment(store, source)
@@ -115,7 +118,7 @@ def test_public_replay_loads_once_and_redacts_secrets_and_controls(
     )
     path = tmp_path / "secret.receipt.json"
     _ = path.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    source = AcceptedReplaySource(path, phase5_attempt_authority(path, receipt))
+    source = AcceptedReplaySource(path, issued_authority(path, receipt))
     seal_lifecycle(store, cleanup=ContainerCleanupStatus.NOT_APPLICABLE)
     loads = 0
 
@@ -167,7 +170,7 @@ def test_public_replay_redacts_compound_credentials_and_unicode_controls(
     )
     path = tmp_path / "compound-secret.receipt.json"
     _ = path.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
-    source = AcceptedReplaySource(path, phase5_attempt_authority(path, receipt))
+    source = AcceptedReplaySource(path, issued_authority(path, receipt))
     seal_lifecycle(store, cleanup=ContainerCleanupStatus.NOT_APPLICABLE)
 
     # When public replay guidance is projected.

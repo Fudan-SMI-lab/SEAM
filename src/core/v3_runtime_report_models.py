@@ -5,7 +5,8 @@ from enum import Enum, unique
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints
+from typing_extensions import Annotated
 
 from core.phase5_attempt_receipt import Phase5AttemptAuthority
 from core.resource_manifest import (
@@ -13,7 +14,10 @@ from core.resource_manifest import (
     FactStatus,
     ResourceManifestStore,
 )
-from core.run_outcome import RunOutcome
+from core.replay import ReplayUnavailableReason
+from core.run_outcome import AcceptedAttemptId, RunOutcome, TerminalOutcome
+
+BoundedReportText = Annotated[str, StringConstraints(max_length=4096)]
 
 
 class _FrozenModel(BaseModel):
@@ -53,19 +57,27 @@ class RuntimeAccessReport(_FrozenModel):
 
 class RuntimeReplayReport(_FrozenModel):
     available: bool
-    reason: str | None
-    accepted_attempt_id: str | None
-    validation_command: str | None
-    command: str | None
-    cwd: str | None
-    nondeterminism_notice: str
+    reason: ReplayUnavailableReason | None
+    accepted_attempt_id: AcceptedAttemptId | None
+    validation_command: BoundedReportText | None
+    command: BoundedReportText | None
+    cwd: BoundedReportText | None
+    nondeterminism_notice: BoundedReportText
     auto_execute: bool = False
+
+
+@unique
+class RuntimeOutcomeStatus(str, Enum):
+    UNAVAILABLE = "unavailable"
+    PASSED = TerminalOutcome.PASSED.value
+    PASSED_WITH_REVIEWS = TerminalOutcome.PASSED_WITH_REVIEWS.value
+    FAILED = TerminalOutcome.FAILED.value
 
 
 class V3RuntimeReport(_FrozenModel):
     schema_version: str = "1.0"
     manifest_path: str | None
-    outcome_status: str
+    outcome_status: RuntimeOutcomeStatus
     execution: tuple[RuntimeFact, ...]
     launcher: tuple[RuntimeFact, ...]
     environments: tuple[RuntimeEnvironmentReport, ...]
@@ -78,13 +90,13 @@ class V3RuntimeReport(_FrozenModel):
     diagnostics: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class AcceptedReplaySource:
     receipt_path: Path
     authority: Phase5AttemptAuthority
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RuntimeReportRequest:
     manifest_store: ResourceManifestStore | None
     outcome: RunOutcome | None
