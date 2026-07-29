@@ -31,7 +31,7 @@ class TraceSessionSource(Protocol):
     def trace_seeds(self) -> tuple[TraceSeed, ...]: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class V3TraceIntegrationRequest:
     cli_value: bool | None
     destination: Path

@@ -32,7 +32,7 @@ class TraceTelemetrySink(Protocol):
     def record_event(self, event_type: str, **details: JsonValue) -> None: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TraceCapturePolicy:
     requested: bool
     enabled: bool
@@ -44,7 +44,7 @@ class TraceCapturePolicy:
         return cls(requested=True, enabled=value)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TraceLifecycleRequest:
     policy: TraceCapturePolicy
     destination: Path
@@ -177,7 +177,7 @@ class TraceLifecycle:
             )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _ComposedTraceHook:
     first: FinalizationHook
     second: FinalizationHook
