@@ -7,6 +7,13 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from .continuation_lock_identity import (
+    BoundedReadError,
+    BoundedReadErrorKind,
+    fsync_parent,
+    read_verified_bytes,
+)
+
 from .run_manifest_models import (
     ManifestErrorKind,
     RunManifest,
@@ -14,6 +21,7 @@ from .run_manifest_models import (
 )
 
 atomic_replace = os.replace
+_MAX_MANIFEST_BYTES = 1024 * 1024
 
 
 class ManifestPayload(NamedTuple):
@@ -32,8 +40,10 @@ def validated_payload(manifest: RunManifest) -> ManifestPayload:
 
 def read_manifest(path: Path) -> RunManifest:
     try:
-        content = path.read_bytes()
-    except FileNotFoundError as exc:
+        content = read_verified_bytes(path, _MAX_MANIFEST_BYTES)
+    except BoundedReadError as exc:
+        if exc.kind is not BoundedReadErrorKind.MISSING:
+            raise RunManifestError(ManifestErrorKind.MALFORMED, str(exc)) from exc
         raise RunManifestError(
             ManifestErrorKind.MISSING_MANIFEST, f"missing manifest: {path.name}"
         ) from exc
@@ -52,6 +62,7 @@ def atomic_write(path: Path, payload: ManifestPayload) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         atomic_replace(temp_path, path)
+        fsync_parent(path)
     except OSError as exc:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink()
