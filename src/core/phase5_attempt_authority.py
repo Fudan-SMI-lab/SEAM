@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, replace
-from pathlib import Path
+from typing import NoReturn, Protocol, final
+
+from typing_extensions import override
 
 from core.phase5_attempt_models import (
     Phase5AttemptId,
@@ -12,14 +13,103 @@ from core.phase5_attempt_models import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+class _AuthorityIssuer(Protocol):
+    def authority_is_registered(
+        self, authority: Phase5AttemptAuthority
+    ) -> bool: ...
+
+
+class _RejectingIssuer:
+    def authority_is_registered(
+        self, authority: Phase5AttemptAuthority
+    ) -> bool:
+        _ = authority
+        return False
+
+
+_REJECTING_ISSUER = _RejectingIssuer()
+
+
+class Phase5AuthorityError(TypeError): ...
+
+
+@final
 class Phase5AttemptAuthority:
-    run_id: str
-    attempt_id: Phase5AttemptId
-    reservation_nonce: str
-    receipt_path: str
-    immutable_digest: Sha256Digest
-    finalized_digest: Sha256Digest | None = None
+    __slots__ = (
+        "_attempt_id",
+        "_finalized_digest",
+        "_immutable_digest",
+        "_issuer",
+        "_receipt_path",
+        "_reservation_nonce",
+        "_run_id",
+    )
+    _attempt_id: Phase5AttemptId
+    _finalized_digest: Sha256Digest | None
+    _immutable_digest: Sha256Digest
+    _issuer: _AuthorityIssuer
+    _receipt_path: str
+    _reservation_nonce: str
+    _run_id: str
+
+    def __init__(self) -> None:
+        self._attempt_id = Phase5AttemptId("")
+        self._finalized_digest = None
+        self._immutable_digest = Sha256Digest("")
+        self._issuer = _REJECTING_ISSUER
+        self._receipt_path = ""
+        self._reservation_nonce = ""
+        self._run_id = ""
+        raise Phase5AuthorityError(
+            "Phase5AttemptAuthority is issued by Phase5ArtifactStore"
+        )
+
+    @override
+    def __setattr__(
+        self,
+        name: str,
+        value: str | Phase5AttemptId | Sha256Digest | None,
+    ) -> None:
+        if hasattr(self, name):
+            raise AttributeError("Phase5AttemptAuthority is immutable")
+        object.__setattr__(self, name, value)
+
+    def __copy__(self) -> NoReturn:
+        raise Phase5AuthorityError("Phase5AttemptAuthority cannot be copied")
+
+    def __deepcopy__(self, _memo: dict[int, Phase5AttemptAuthority]) -> NoReturn:
+        raise Phase5AuthorityError("Phase5AttemptAuthority cannot be copied")
+
+    @override
+    def __reduce__(self) -> NoReturn:
+        raise Phase5AuthorityError("Phase5AttemptAuthority cannot be serialized")
+
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+
+    @property
+    def attempt_id(self) -> Phase5AttemptId:
+        return self._attempt_id
+
+    @property
+    def reservation_nonce(self) -> str:
+        return self._reservation_nonce
+
+    @property
+    def receipt_path(self) -> str:
+        return self._receipt_path
+
+    @property
+    def immutable_digest(self) -> Sha256Digest:
+        return self._immutable_digest
+
+    @property
+    def finalized_digest(self) -> Sha256Digest | None:
+        return self._finalized_digest
+
+    def is_registered(self) -> bool:
+        return self._issuer.authority_is_registered(self)
 
 
 def immutable_receipt_digest(receipt: Phase5AttemptReceipt) -> Sha256Digest:
@@ -54,44 +144,15 @@ def finalized_receipt_digest(receipt: Phase5AttemptReceipt) -> Sha256Digest:
     return Sha256Digest(hashlib.sha256(payload).hexdigest())
 
 
-def phase5_attempt_authority(
-    path: Path, receipt: Phase5AttemptReceipt
-) -> Phase5AttemptAuthority:
-    return Phase5AttemptAuthority(
-        run_id=receipt.run_id,
-        attempt_id=receipt.attempt_id,
-        reservation_nonce=receipt.reservation_nonce,
-        receipt_path=str(path.resolve()),
-        immutable_digest=immutable_receipt_digest(receipt),
-        finalized_digest=(
-            finalized_receipt_digest(receipt) if receipt.complete else None
-        ),
-    )
-
-
 def receipt_matches_authority(
     receipt: Phase5AttemptReceipt, authority: Phase5AttemptAuthority
 ) -> bool:
     return (
-        receipt.run_id == authority.run_id
+        authority.is_registered()
+        and receipt.run_id == authority.run_id
         and receipt.attempt_id == authority.attempt_id
         and receipt.reservation_nonce == authority.reservation_nonce
         and immutable_receipt_digest(receipt) == authority.immutable_digest
         and authority.finalized_digest is not None
         and finalized_receipt_digest(receipt) == authority.finalized_digest
     )
-
-
-def advance_finalized_authority(
-    path: Path,
-    receipt: Phase5AttemptReceipt,
-    authority: Phase5AttemptAuthority | None,
-) -> Phase5AttemptAuthority | None:
-    finalized = phase5_attempt_authority(path, receipt)
-    if (
-        authority is None
-        or finalized.immutable_digest != authority.immutable_digest
-        or finalized.finalized_digest is None
-    ):
-        return None
-    return replace(authority, finalized_digest=finalized.finalized_digest)

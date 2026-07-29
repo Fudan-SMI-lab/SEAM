@@ -5,8 +5,7 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any
-
+from typing import final
 from pydantic import ValidationError
 
 from core.phase5_artifact_io import (
@@ -14,7 +13,9 @@ from core.phase5_artifact_io import (
     rollback_created,
     write_text_exclusive,
 )
-from core.phase5_attempt_authority import advance_finalized_authority
+from core.agent_io_logger import redact_sensitive_text
+from core.phase5_artifact_metadata import complete_metadata, sanitized_invocation
+from core.phase5_authority_registry import Phase5AuthorityRegistry
 from core.phase5_attempt_receipt import (
     AttemptReceiptError,
     AttemptReceiptErrorKind,
@@ -28,18 +29,29 @@ from core.phase5_attempt_receipt import (
     ShellArtifactsReceipt,
     ShellAttemptExecution,
     sha256_file,
-    phase5_attempt_authority,
     artifact_file_receipt,
     write_attempt_receipt,
 )
 from core.run_outcome import ReviewOutcome
+from harness.session.opencode_contract import JsonObject
 
 
+@final
 class Phase5ArtifactStore:
+    artifact_dir: str
+    run_id: str
+
     def __init__(self, artifact_dir: str, run_id: str) -> None:
         self.artifact_dir = artifact_dir
         self.run_id = run_id
-        self._authorities: dict[str, Phase5AttemptAuthority] = {}
+        self._authority_registry = Phase5AuthorityRegistry()
+
+    def _register_authority(
+        self,
+        path: Path,
+        receipt: Phase5AttemptReceipt,
+    ) -> Phase5AttemptAuthority:
+        return self._authority_registry.register(path, receipt)
 
     def reserve_attempt(self) -> Phase5AttemptReservation:
         artifact_dir = Path(self.artifact_dir).resolve() / "shell_attempts"
@@ -94,7 +106,7 @@ class Phase5ArtifactStore:
         stdout_source_path: str | None = None,
         stderr_source_path: str | None = None,
         execution: ShellAttemptExecution | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         artifact_dir = os.path.abspath(
             os.path.join(self.artifact_dir, "shell_attempts")
         )
@@ -159,10 +171,11 @@ class Phase5ArtifactStore:
         except (OSError, AttemptReceiptError):
             rollback_created(created)
             raise
-        metadata: dict[str, Any] = {
+        durable_invocation = sanitized_invocation(execution)
+        base_metadata: JsonObject = {
             "phase_id": phase_id,
             "attempt": attempt,
-            "command": command,
+            "command": redact_sensitive_text(command),
             "cwd": cwd or "",
             "backend_workdir": backend_workdir or "",
             "exit_code": exit_code,
@@ -179,21 +192,7 @@ class Phase5ArtifactStore:
             "complete": True,
             "timestamp": time.time(),
         }
-        if execution is not None:
-            metadata.update(
-                {
-                    "attempt_id": execution.reservation.attempt_id,
-                    "run_id": execution.reservation.run_id,
-                    "reservation_nonce": execution.reservation.reservation_nonce,
-                    "argv": list(execution.invocation.argv),
-                    "environment_delta": [
-                        variable.model_dump()
-                        for variable in execution.invocation.environment_delta
-                    ],
-                    "backend": execution.backend.model_dump(),
-                    "receipt_path": execution.reservation.receipt_path,
-                }
-            )
+        metadata = complete_metadata(base_metadata, execution, durable_invocation)
         try:
             write_text_exclusive(Path(meta_path), json.dumps(metadata, indent=2))
             created.append(Path(meta_path))
@@ -202,6 +201,7 @@ class Phase5ArtifactStore:
             raise
         if execution is None:
             return metadata
+        assert durable_invocation is not None
         receipt_path = Path(execution.reservation.receipt_path)
         try:
             artifacts = ShellArtifactsReceipt(
@@ -214,7 +214,7 @@ class Phase5ArtifactStore:
                 reservation_nonce=execution.reservation.reservation_nonce,
                 attempt_id=execution.reservation.attempt_id,
                 attempt_number=execution.reservation.attempt_number,
-                invocation=execution.invocation,
+                invocation=durable_invocation,
                 backend=execution.backend,
                 artifacts=artifacts,
                 shell_exit_code=exit_code,
@@ -232,35 +232,19 @@ class Phase5ArtifactStore:
             receipt_path.unlink(missing_ok=True)
             rollback_created(created)
             raise
-        authority = phase5_attempt_authority(
-            Path(execution.reservation.receipt_path), draft
-        )
-        self._authorities[authority.receipt_path] = authority
+        _ = self._register_authority(Path(execution.reservation.receipt_path), draft)
         return metadata
 
     def authority_for(self, receipt_path: str) -> Phase5AttemptAuthority | None:
-        return self._authorities.get(str(Path(receipt_path).resolve()))
+        return self._authority_registry.authority_for(receipt_path)
 
     def authority_for_attempt(
         self,
         attempt_id: str,
     ) -> Phase5AttemptAuthority | None:
-        matches = tuple(
-            authority
-            for authority in self._authorities.values()
-            if authority.attempt_id == attempt_id
-        )
-        return matches[0] if len(matches) == 1 else None
+        return self._authority_registry.authority_for_attempt(attempt_id)
 
     def record_finalized_authority(
         self, receipt_path: str, receipt: Phase5AttemptReceipt
     ) -> None:
-        key = str(Path(receipt_path).resolve())
-        authority = advance_finalized_authority(
-            Path(receipt_path), receipt, self._authorities.get(key)
-        )
-        if authority is None:
-            raise AttemptReceiptError(
-                AttemptReceiptErrorKind.IDENTITY_MISMATCH, receipt_path
-            )
-        self._authorities[key] = authority
+        self._authority_registry.finalize(receipt_path, receipt)
