@@ -4,10 +4,10 @@ import hashlib
 from dataclasses import dataclass
 from enum import Enum, unique
 from pathlib import Path
-from typing import Final, TypeAlias, final
+from typing import Final, final
 
 from pydantic import JsonValue, TypeAdapter
-from typing_extensions import override
+from typing_extensions import TypeAlias, override
 
 from core.continuation_models import ResolvedTerminalParent
 from core.run_manifest import (
@@ -58,7 +58,7 @@ class ContinuationHydrationError(Exception):
         return f"{self.kind.value}: {self.detail}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ParentAcceptedAttemptReference:
     parent_run_id: RunId
     attempt_id: AcceptedAttemptId
@@ -105,7 +105,7 @@ class ParentAcceptedAttemptReference:
             )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class InheritedPhaseResult:
     phase_id: PhaseId
     state_key: str
@@ -113,13 +113,13 @@ class InheritedPhaseResult:
     inherited: bool = True
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class InheritedStateValue:
     state_key: str
     canonical_json: bytes
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContinuationHydration:
     state_entries: tuple[InheritedStateValue, ...]
     phase_results: tuple[InheritedPhaseResult, ...]
@@ -174,7 +174,7 @@ class ContinuationHydration:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContinuationHydrationRequest:
     parent: ResolvedTerminalParent
     summary_path: Path

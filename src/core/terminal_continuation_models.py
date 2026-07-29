@@ -28,7 +28,7 @@ class TerminalContinuationErrorKind(str, Enum):
     PROMPT_CONTEXT_TOO_LARGE = "prompt_context_too_large"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TerminalContinuationError(Exception):
     kind: TerminalContinuationErrorKind
     detail: str
@@ -38,7 +38,7 @@ class TerminalContinuationError(Exception):
         return f"{self.kind.value}: {self.detail}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContinuationPromptFacts:
     parent_run_id: str
     child_run_id: str
@@ -69,7 +69,7 @@ class ContinuationPromptFacts:
         return f"SEAM_CONTINUATION_CONTEXT={rendered}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PreparedTerminalContinuation:
     parent: ResolvedTerminalParent
     workflow: WorkflowDefinition
@@ -79,21 +79,21 @@ class PreparedTerminalContinuation:
     prompt_facts: ContinuationPromptFacts
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class V3ServerRunOptions:
     base_url: str | None
     auto_start: bool
     port: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class V3ReviewRunOptions:
     max_phase5_iter: int
     enabled: bool
     overrides: ReviewCliOverrides | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class V3InvocationOptions:
     keep_temp_dir: bool
     agent_name: str | None
@@ -103,13 +103,13 @@ class V3InvocationOptions:
     save_agent_trace: bool | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class V3OpenCodeOptions:
     readiness: str
     message_timeout: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TerminalContinuationRunRequest:
     summary_path: Path
     server: V3ServerRunOptions
@@ -118,7 +118,7 @@ class TerminalContinuationRunRequest:
     opencode: V3OpenCodeOptions
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TerminalEnvironmentVerificationRequest:
     parent: ResolvedTerminalParent
     hydration: ContinuationHydration
