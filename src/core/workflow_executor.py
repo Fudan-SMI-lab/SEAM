@@ -18,11 +18,13 @@ import tempfile
 import time
 import traceback
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from typing_extensions import assert_never
+
+if TYPE_CHECKING:
+    from core.types import ExecutionBackendConfig
 
 from core.types import (
     PhaseDefinition,
@@ -30,13 +32,15 @@ from core.types import (
     PhaseHooks,
     SubWorkflowDefinition,
     TransitionDefinition,
-    PhaseType,
-    HookDefinition,
-    HookResult,
     RuntimeSkillsConfig,
 )
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.variable_resolver import VariableResolver
+from core.workflow_condition_policy import ConditionRequest, evaluate_condition
+from core.workflow_dispatch_policy import select_dispatch_route
+from core.workflow_stagnation_policy import StagnationState, reduce_stagnation
+from core.workflow_stop_policy import StopCondition, select_stop_status
+from core.workflow_transition_policy import TransitionRequest, plan_next_phase
 from core.session_registry import SessionRegistry
 from core.accelerator_context import extract_accelerator_context
 from core.hook_manager import HookManager
@@ -67,9 +71,7 @@ from core.phase5_attempt_runtime import (
     finalize_latest_phase5_receipt,
 )
 from harness.session.manager import extract_json_response
-from migrator.rule_based import RuleBasedMigrator
 from migrator.rule_based_ppu import PPURuleBasedMigrator
-from migrator.rule_based_report_only import ReportOnlyRuleBasedMigrator
 from core.runtime_artifacts import (
     write_operator_repair_context_artifact,
     write_repair_runtime_artifacts,
@@ -245,169 +247,6 @@ class SessionCommandError(RuntimeError):
         self.payload = payload or {"ok": False, "error": message}
 
 
-# ---------------------------------------------------------------------------
-# Safe boolean-expression evaluator (no exec/eval of untrusted code)
-# ---------------------------------------------------------------------------
-
-_ALLOWED_OPS = frozenset(("==", "!=", ">", "<", ">=", "<=", "and", "or", "not", "in"))
-
-
-def _safe_eval_bool(expr: str, env: dict[str, Any]) -> bool:
-    """Evaluate a simple boolean expression using a restricted tokenizer.
-
-    Supports: comparison operators, logical and/or/not, membership (in),
-    parentheses, string/number/bool literals, and variable references (resolved
-    from *env*).
-
-    Grammar (simplified):
-        expr  := term ( ('and'|'or') term )*
-        term  := 'not' term | comparison
-        comparison := primary ( ('=='|'!='|'>'|'<'|'>='|'<='|'in') primary )?
-        primary := '(' expr ')' | literal | IDENT
-    """
-    tokens = _tokenize(expr)
-    pos = 0
-
-    def peek() -> str | None:
-        return tokens[pos] if pos < len(tokens) else None
-
-    def consume(expected: str | None = None) -> str:
-        nonlocal pos
-        tok = tokens[pos]
-        pos += 1
-        if expected and tok != expected:
-            raise ValueError(f"Expected '{expected}', got '{tok}'")
-        return tok
-
-    def parse_expr() -> Any:
-        left = parse_term()
-        while peek() in ("and", "or"):
-            op = consume()
-            right = parse_term()
-            if op == "and":
-                left = bool(left) and bool(right)
-            else:
-                left = bool(left) or bool(right)
-        return left
-
-    def parse_term() -> Any:
-        if peek() == "not":
-            consume()
-            val = parse_term()
-            return not bool(val)
-        return parse_comparison()
-
-    def parse_comparison() -> Any:
-        left = parse_primary()
-        op = peek()
-        if op in ("==", "!=", ">", "<", ">=", "<=", "in"):
-            consume()
-            right = parse_primary()
-            if op == "==":
-                return left == right
-            if op == "!=":
-                return left != right
-            if op == ">":
-                return left > right
-            if op == "<":
-                return left < right
-            if op == ">=":
-                return left >= right
-            if op == "<=":
-                return left <= right
-            if op == "in":
-                return left in right
-        return left
-
-    def parse_primary() -> Any:
-        tok = peek()
-        if tok == "(":
-            consume("(")
-            val = parse_expr()
-            consume(")")
-            return val
-        # Literals
-        if tok is None:
-            raise ValueError("Unexpected end of expression")
-        if tok == "true":
-            consume()
-            return True
-        if tok == "false":
-            consume()
-            return False
-        if tok == "null" or tok == "none":
-            consume()
-            return None
-        # Number
-        try:
-            float(tok)
-            consume()
-            v = float(tok)
-            return int(v) if v == int(v) else v
-        except (ValueError, TypeError):
-            pass
-        # Quoted string
-        if (tok.startswith('"') and tok.endswith('"')) or (
-            tok.startswith("'") and tok.endswith("'")
-        ):
-            consume()
-            return tok[1:-1]
-        # Variable lookup
-        consume()
-        if tok in env:
-            return env[tok]
-        return tok  # fallback: treat as string
-
-    if not tokens:
-        return False
-    result = parse_expr()
-    return bool(result)
-
-
-def _tokenize(expr: str) -> list[str]:
-    """Split a boolean expression into tokens."""
-    tokens: list[str] = []
-    i = 0
-    expr = expr.strip()
-    while i < len(expr):
-        # Skip whitespace
-        if expr[i].isspace():
-            i += 1
-            continue
-        # Quoted strings
-        if expr[i] in ('"', "'"):
-            quote = expr[i]
-            j = i + 1
-            while j < len(expr) and expr[j] != quote:
-                if expr[j] == "\\":
-                    j += 1
-                j += 1
-            tokens.append(expr[i : j + 1])
-            i = j + 1
-            continue
-        # Multi-char operators
-        if expr[i : i + 2] in ("==", "!=", ">=", "<="):
-            tokens.append(expr[i : i + 2])
-            i += 2
-            continue
-        # Single-char operators / parens
-        if expr[i] in ("(", ")", ">", "<"):
-            tokens.append(expr[i])
-            i += 1
-            continue
-        # Words / numbers
-        j = i
-        while j < len(expr) and (expr[j].isalnum() or expr[j] in "._-"):
-            j += 1
-        if j > i:
-            tokens.append(expr[i:j])
-            i = j
-            continue
-        # Skip unknown chars
-        i += 1
-    return tokens
-
-
 class WorkflowExecutor:
     """Core YAML-driven workflow execution engine.
 
@@ -479,9 +318,9 @@ class WorkflowExecutor:
         self._runtime_skill_resolver: RuntimeSkillResolver | None = None
 
         # Execution state
-        self.phase_results: dict[str, dict[str, Any]] = (
-            {}
-        )  # phase_id -> {status, duration, ...}
+        self.phase_results: dict[
+            str, dict[str, Any]
+        ] = {}  # phase_id -> {status, duration, ...}
         self.state: dict[str, dict[str, Any]] = {}  # phase_id -> canonical output
         self.state_provenance: dict[str, dict[str, Any]] = {}
         if continuation is not None:
@@ -636,7 +475,7 @@ class WorkflowExecutor:
         from harness.session.manager import extract_json_response as _extract
 
         candidates_text = "\n".join(
-            f"  {i+1}. {img}" for i, img in enumerate(candidates)
+            f"  {i + 1}. {img}" for i, img in enumerate(candidates)
         )
 
         guidance = (
@@ -798,8 +637,7 @@ class WorkflowExecutor:
             review_fail_closed=workflow_globals.get("review_fail_closed") is not False,
             max_review_rounds=(
                 max_review_rounds_value
-                if type(max_review_rounds_value) is int
-                and max_review_rounds_value > 0
+                if type(max_review_rounds_value) is int and max_review_rounds_value > 0
                 else 3
             ),
         )
@@ -940,10 +778,7 @@ class WorkflowExecutor:
 
             duration = time.time() - start_t
 
-            if (
-                v3_enabled
-                and phase.id == "phase_5_validation"
-            ):
+            if v3_enabled and phase.id == "phase_5_validation":
                 decision = phase5_decision_from_runtime(
                     output,
                     phase5_runtime_config,
@@ -1471,20 +1306,20 @@ class WorkflowExecutor:
         loop_state: dict | None = None,
         step_outputs: dict | None = None,
     ) -> bool:
-        """Evaluate a condition expression.
+        workflow_globals: dict[str, Any] = dict(self.workflow.globals or {})
+        request = ConditionRequest(
+            condition,
+            state,
+            workflow_globals,
+            context,
+            loop_vars or {},
+            loop_state or {},
+            step_outputs or {},
+        )
 
-        Supports:
-          - ${...} template resolution via VariableResolver
-          - $.field_name shorthand for loop_state / step_outputs lookup
-          - Boolean operators: ==, !=, >, <, >=, <=, and, or, not, in
-        """
-        # Step 1: Resolve ${...} templates. For embedded templates inside a
-        # boolean expression, preserve strings as literals so empty values do
-        # not turn `${context.X} != ''` into the malformed expression `!= ''`.
-        template_pattern = getattr(self.resolver, "_pattern", None)
-        if template_pattern is not None and template_pattern.fullmatch(condition):
-            resolved = self.resolver.resolve(
-                condition,
+        def resolve_template(value: str) -> Any:
+            return self.resolver.resolve(
+                value,
                 state=state,
                 globals=self.workflow.globals,
                 context=context,
@@ -1492,24 +1327,10 @@ class WorkflowExecutor:
                 loop_state=loop_state,
                 step_outputs=step_outputs,
             )
-        elif "${" in condition and template_pattern is not None:
 
-            def template_repl(match: re.Match) -> str:
-                value = self.resolver._resolve_expr(  # noqa: SLF001 - condition evaluator needs literal-preserving substitution.
-                    match.group(1).strip(),
-                    state=state,
-                    globals=self.workflow.globals,
-                    context=context,
-                    loop_vars=loop_vars,
-                    loop_state=loop_state,
-                    step_outputs=step_outputs,
-                )
-                return json.dumps(value, ensure_ascii=False, default=str)
-
-            resolved = template_pattern.sub(template_repl, condition)
-        else:
-            resolved = self.resolver.resolve(
-                condition,
+        def resolve_expression(value: str) -> Any:
+            return self.resolver._resolve_expr(  # noqa: SLF001
+                value,
                 state=state,
                 globals=self.workflow.globals,
                 context=context,
@@ -1517,65 +1338,15 @@ class WorkflowExecutor:
                 loop_state=loop_state,
                 step_outputs=step_outputs,
             )
-        if not isinstance(resolved, str):
-            return bool(resolved)
 
-        # Step 2: Handle $.field_name shorthand (not ${} format)
-        expr = resolved
-        if "$." in expr:
-
-            def dollar_repl(m: re.Match) -> str:
-                field = m.group(1)
-                # Lookup order: step_outputs (current iter) → globals → context
-                # → loop_state (outer, stale-safe)
-                # step_outputs first so current-iteration script_exit_code wins
-                # over previous iteration's value in outer loop_state
-                for src in (
-                    step_outputs or {},
-                    self.workflow.globals or {},
-                    context or {},
-                    loop_state or {},
-                ):
-                    if field in src:
-                        val = src[field]
-                        return json.dumps(val) if not isinstance(val, str) else val
-                return repr(field)
-
-            expr = re.sub(r"\$\.(\w+)", dollar_repl, expr)
-
-        # If entire expression was a single ${...} and resolved to a bool-like
-        # value, shortcut
-        if expr in (True, False):
-            return bool(expr)
-        if expr.lower() in ("true", "1"):
-            return True
-        if expr.lower() in ("false", "0", ""):
-            return False
-
-        # Step 3: Safe boolean evaluation
-        env: dict[str, Any] = {}
-        # Seed environment from state summaries
-        for k, v in state.items():
-            if isinstance(v, dict):
-                env[k] = v
-            else:
-                env[k] = v
-        env.update(self.workflow.globals or {})
-        env.update(context or {})
-        if loop_state:
-            env.update(loop_state)
-        if loop_vars:
-            env.update(loop_vars)
-        if step_outputs:
-            env.update(step_outputs)
-
-        try:
-            return _safe_eval_bool(expr, env)
-        except Exception as exc:
+        decision = evaluate_condition(request, resolve_template, resolve_expression)
+        if decision.evaluation_error is not None:
             logger.warning(
-                "Condition eval failed '%s' → %s (treating as True)", condition, exc
+                "Condition eval failed '%s' → %s (treating as True)",
+                condition,
+                decision.evaluation_error,
             )
-            return True  # default to proceed
+        return decision.matched
 
     # ── Input mapping resolution ────────────────────────────────────────
 
@@ -3347,11 +3118,12 @@ class WorkflowExecutor:
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".out", delete=False
-            ) as out_f, tempfile.NamedTemporaryFile(
-                mode="w", suffix=".err", delete=False
-            ) as err_f:
-                out_path = out_f.name
-                err_path = err_f.name
+            ) as out_f:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".err", delete=False
+                ) as err_f:
+                    out_path = out_f.name
+                    err_path = err_f.name
 
             start_t = time.time()
             env_for_subprocess = None
@@ -4139,25 +3911,22 @@ class WorkflowExecutor:
             loop_state=loop_state,
             step_outputs=step_outputs,
         )
-        if isinstance(route_value, dict):
-            # If the resolution itself returned a dict, try to extract a string
-            route_value = str(route_value.get("value", route_value.get("role", "")))
-        route_key = str(route_value)
-
-        # 2. Look up in phase.routes (stored in params.routes or phase.transitions)
-        routes = params.get("routes", {})
-        if not routes and hasattr(phase, "transitions") and phase.transitions:
-            routes = phase.transitions
-
-        # 3. Return target if found
-        target = routes.get(route_key)
-        if target:
-            logger.info("Dispatch routing: '%s' → '%s'", route_key, target)
-            return target
-
-        # 4. Not found — warn
+        decision = select_dispatch_route(
+            route_value,
+            params.get("routes", {}),
+            phase.transitions or {},
+        )
+        if decision.target:
+            logger.info(
+                "Dispatch routing: '%s' → '%s'",
+                decision.route_key,
+                decision.target,
+            )
+            return decision.target
         logger.warning(
-            "Dispatch route '%s' not found in %s", route_key, list(routes.keys())
+            "Dispatch route '%s' not found in %s",
+            decision.route_key,
+            list(decision.available_routes),
         )
         return None
 
@@ -4214,9 +3983,7 @@ class WorkflowExecutor:
         else:
             max_iterations = self.framework_config.get("max_iterations", 10)
 
-        global_review_enabled = (self.workflow.globals or {}).get(
-            "review_gate_enabled"
-        )
+        global_review_enabled = (self.workflow.globals or {}).get("review_gate_enabled")
         review_gate_enabled = bool(
             global_review_enabled
             if isinstance(global_review_enabled, bool)
@@ -4232,6 +3999,9 @@ class WorkflowExecutor:
         review_gate = (
             ReviewGate(max_rounds=max_review_iterations)
             if review_gate_enabled
+            and isinstance(
+                (self.workflow.globals or {}).get("review_fail_closed"), bool
+            )
             else None
         )
         loop_state["review_gate_enabled"] = review_gate_enabled
@@ -4300,7 +4070,10 @@ class WorkflowExecutor:
             gate_value = step_outputs.get(REVIEW_GATE_STATE_KEY)
             if isinstance(gate_value, ReviewGate):
                 review_gate = gate_value
-            if isinstance(review_receipt, ReviewCommandReceipt) and review_gate is not None:
+            if (
+                isinstance(review_receipt, ReviewCommandReceipt)
+                and review_gate is not None
+            ):
                 improvement = step_outputs.get("review_improvement")
                 improvement_status = ImprovementStatus.NOT_REQUIRED
                 if isinstance(improvement, dict):
@@ -4320,9 +4093,7 @@ class WorkflowExecutor:
                         improvement_status=improvement_status,
                     ),
                 )
-            finalize_latest_phase5_receipt(
-                loop_state, state, self.artifact_store
-            )
+            finalize_latest_phase5_receipt(loop_state, state, self.artifact_store)
             self._stamp_pending_experience_verifications(loop_state, iteration)
             verification_signal = self._record_pending_experience_verification(
                 loop_state, step_outputs, iteration
@@ -4537,30 +4308,20 @@ class WorkflowExecutor:
                             break
                         if review_gate is None or review_gate.outcome is None:
                             break
-                        match review_gate.outcome:
-                            case ReviewOutcome.REJECTED:
-                                if (
-                                    len(review_gate.rounds)
-                                    <= review_round_count_before
-                                ):
-                                    final_status = "failure"
-                                    break
-                            case ReviewOutcome.ACCEPTED:
-                                final_status = "success"
-                                break
-                            case (
-                                ReviewOutcome.REJECT_EXHAUSTED
-                                | ReviewOutcome.UNKNOWN
-                                | ReviewOutcome.SESSION_ERROR
-                                | ReviewOutcome.IMPROVEMENT_ERROR
-                            ):
-                                final_status = review_gate.outcome.value
-                                break
-                            case ReviewOutcome.DISABLED:
+                        review_outcome = review_gate.outcome
+                        if review_outcome is ReviewOutcome.REJECTED:
+                            if len(review_gate.rounds) <= review_round_count_before:
                                 final_status = "failure"
                                 break
-                            case _:
-                                assert_never(review_gate.outcome)
+                        elif review_outcome is ReviewOutcome.ACCEPTED:
+                            final_status = "success"
+                            break
+                        elif review_outcome is ReviewOutcome.DISABLED:
+                            final_status = "failure"
+                            break
+                        else:
+                            final_status = review_outcome.value
+                            break
                     break
 
         else:
@@ -4721,7 +4482,9 @@ class WorkflowExecutor:
         if not isinstance(selected_phase, str) or not selected_phase:
             return ImprovementFailed(reason="improvement selector chose no path")
         if result.get("status") == "failure" or selected_phase not in outputs:
-            return ImprovementFailed(reason=f"selected improvement failed: {selected_phase}")
+            return ImprovementFailed(
+                reason=f"selected improvement failed: {selected_phase}"
+            )
         return ImprovementApplied(selected_phase=selected_phase)
 
     # ── Sub-workflow runner ─────────────────────────────────────────────
@@ -5074,27 +4837,26 @@ class WorkflowExecutor:
                                 reason="review rejection has no improvement block"
                             )
                         )
-                        match improvement_result:
-                            case ImprovementApplied(selected_phase=selected_phase):
-                                step_outputs["review_improvement"] = {
-                                    "selected_phase": selected_phase,
-                                    "status": "success",
-                                }
-                            case ImprovementFailed(reason=reason):
-                                step_outputs["review_improvement"] = {
-                                    "reason": reason,
-                                    "status": ReviewOutcome.IMPROVEMENT_ERROR.value,
-                                }
-                                gate_value = step_outputs.get(REVIEW_GATE_STATE_KEY)
-                                if isinstance(gate_value, ReviewGate):
-                                    failed_gate = gate_value.record_improvement_error()
-                                    step_outputs[REVIEW_GATE_STATE_KEY] = failed_gate
-                                    step_outputs["review_outcome"] = (
-                                        ReviewOutcome.IMPROVEMENT_ERROR
-                                    )
-                                phase_status = ReviewOutcome.IMPROVEMENT_ERROR.value
-                            case _:
-                                assert_never(improvement_result)
+                        if isinstance(improvement_result, ImprovementApplied):
+                            step_outputs["review_improvement"] = {
+                                "selected_phase": improvement_result.selected_phase,
+                                "status": "success",
+                            }
+                        elif isinstance(improvement_result, ImprovementFailed):
+                            step_outputs["review_improvement"] = {
+                                "reason": improvement_result.reason,
+                                "status": ReviewOutcome.IMPROVEMENT_ERROR.value,
+                            }
+                            gate_value = step_outputs.get(REVIEW_GATE_STATE_KEY)
+                            if isinstance(gate_value, ReviewGate):
+                                failed_gate = gate_value.record_improvement_error()
+                                step_outputs[REVIEW_GATE_STATE_KEY] = failed_gate
+                                step_outputs["review_outcome"] = (
+                                    ReviewOutcome.IMPROVEMENT_ERROR
+                                )
+                            phase_status = ReviewOutcome.IMPROVEMENT_ERROR.value
+                        else:
+                            assert_never(improvement_result)
 
                 else:
                     logger.warning("Unknown sub-phase type '%s'", phase_type)
@@ -5961,44 +5723,17 @@ class WorkflowExecutor:
         loop_state: dict,
         globals: dict,
     ) -> str | None:
-        """Evaluate stop conditions in order. Return matched status or None."""
-        for cond_def in stop_conditions:
-            if not isinstance(cond_def, dict):
-                continue
-            cond_expr = cond_def.get("condition", "")
-            target_status = cond_def.get("status", "stop")
-
-            # Resolve $.field references
-            expr = cond_expr
-            if "$." in expr:
-
-                def repl(m: re.Match) -> str:
-                    field_name = m.group(1)
-                    for src in (loop_state, globals):
-                        if field_name in src:
-                            val = src[field_name]
-                            return json.dumps(val) if not isinstance(val, str) else val
-                    return repr(field_name)
-
-                expr = re.sub(r"\$\.(\w+)", repl, expr)
-
-            # Evaluate
-            env: dict[str, Any] = {}
-            env.update(globals)
-            env.update(loop_state)
-            # If expression is a simple literal, just eval
-            if expr.lower() == "true":
-                return target_status
-            if expr.lower() == "false":
-                continue
-
-            try:
-                if _safe_eval_bool(expr, env):
-                    return target_status
-            except Exception as exc:
-                logger.warning("Stop condition eval failed '%s': %s", cond_expr, exc)
-
-        return None
+        conditions = tuple(
+            StopCondition(
+                str(item.get("condition", "")), str(item.get("status", "stop"))
+            )
+            for item in stop_conditions
+            if isinstance(item, dict)
+        )
+        decision = select_stop_status(conditions, loop_state, globals)
+        for error in decision.evaluation_errors:
+            logger.warning("Stop condition eval failed '%s'", error)
+        return decision.status
 
     # ── Stagnation detection ────────────────────────────────────────────
 
@@ -6009,17 +5744,17 @@ class WorkflowExecutor:
         threshold: int = 3,
     ) -> bool:
         """Detect if the same error has occurred *threshold* times in a row."""
-        normalized = self._normalize_error_signature(error_signature)
-        last_sig = loop_state.get("last_error_signature", "")
-
-        if normalized == last_sig and normalized:
-            count = loop_state.get("stagnation_count", 0) + 1
-            loop_state["stagnation_count"] = count
-        else:
-            loop_state["stagnation_count"] = 1
-            loop_state["last_error_signature"] = normalized
-
-        return loop_state.get("stagnation_count", 0) >= threshold
+        decision = reduce_stagnation(
+            error_signature,
+            StagnationState(
+                str(loop_state.get("last_error_signature", "")),
+                int(loop_state.get("stagnation_count", 0)),
+            ),
+            threshold,
+        )
+        loop_state["last_error_signature"] = decision.state.last_error_signature
+        loop_state["stagnation_count"] = decision.state.stagnation_count
+        return decision.stagnated
 
     @staticmethod
     def _normalize_error_signature(text: str) -> str:
@@ -6047,77 +5782,24 @@ class WorkflowExecutor:
           5. Default: next phase in workflow.phases list
           6. None (terminate)
         """
-        # 1. Check TransitionDefinition
-        transition = current_phase.transition
-        if transition is not None:
-            if status == "success" and transition.on_success:
-                target = transition.on_success
-                if target in ("phase_7a_evaluate", "phase_7b_refine"):
-                    p7_cfg = getattr(
+        phases = self.workflow.phases or []
+        return plan_next_phase(
+            TransitionRequest(
+                current_phase.id,
+                status,
+                current_phase.transition,
+                current_phase.transitions or {},
+                tuple(phase.id for phase in phases),
+                self.phase_index,
+                bool(
+                    getattr(
                         getattr(self.workflow, "experience", None),
                         "phase7_enabled",
                         True,
                     )
-                    if not p7_cfg:
-                        return "complete"
-                return target
-            if status == "failure" and transition.on_failure:
-                return transition.on_failure
-            if status == "skipped" and transition.on_skip:
-                return transition.on_skip
-            if status == "stagnation" and transition.on_stagnation:
-                return transition.on_stagnation
-            if status == "reject_exhausted" and transition.on_reject_exhausted:
-                return transition.on_reject_exhausted
-
-        # 2. Check transitions dict
-        if current_phase.transitions:
-            status_keys = {
-                "success": ("success", "on_success"),
-                "failure": ("failure", "on_failure"),
-                "skipped": ("skipped", "on_skip"),
-                "stagnation": ("stagnation", "on_stagnation"),
-                "reject_exhausted": ("reject_exhausted", "on_reject_exhausted"),
-            }
-            for key in status_keys.get(status, (status,)):
-                target = current_phase.transitions.get(key)
-                if target:
-                    if target in ("phase_7a_evaluate", "phase_7b_refine"):
-                        p7_cfg = getattr(
-                            getattr(self.workflow, "experience", None),
-                            "phase7_enabled",
-                            True,
-                        )
-                        if not p7_cfg:
-                            return "complete"
-                    return target
-
-        # 3. Fail closed when a phase fails without an explicit recovery route.
-        if status == "failure":
-            return None
-
-        # 4. Fail closed for all non-standard terminal statuses (stagnation,
-        #    reject_exhausted, accept, …) that lack an explicit transition.
-        #    Only `success` and `skipped` are allowed to fall through to the
-        #    default next-phase lookup.
-        if status not in ("success", "skipped"):
-            return None
-
-        # 5. Default: next phase in list
-        idx = self.phase_index.get(current_phase.id, -1)
-        phases = self.workflow.phases or []
-        if idx >= 0 and idx + 1 < len(phases):
-            next_id = phases[idx + 1].id
-            if next_id in ("phase_7a_evaluate", "phase_7b_refine"):
-                p7_cfg = getattr(
-                    getattr(self.workflow, "experience", None), "phase7_enabled", True
-                )
-                if not p7_cfg:
-                    return "complete"
-            return next_id
-
-        # 6. Last phase → terminate
-        return None
+                ),
+            )
+        )
 
     def _build_experience_query_context(
         self,
@@ -6142,8 +5824,6 @@ class WorkflowExecutor:
             "root_cause": "",
             "suggested_fix": "",
         }
-
-        phase_id = phase.id
 
         phase3_contract = state.get("phase_3_entry_script")
         phase35_static = state.get("phase_35_static_validate")

@@ -1,4 +1,5 @@
 """Mock-based tests for WorkflowExecutor."""
+
 import logging
 import json
 import pytest
@@ -43,7 +44,9 @@ def write_runtime_skill(root: Path, name: str, content: str | None = None) -> Pa
     skill_dir = root / ".memory" / "skills" / name
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
-    skill_path.write_text(content or f"# {name}\n\nUse this guidance.", encoding="utf-8")
+    skill_path.write_text(
+        content or f"# {name}\n\nUse this guidance.", encoding="utf-8"
+    )
     return skill_path
 
 
@@ -56,14 +59,29 @@ def temp_dir():
 @pytest.fixture
 def basic_workflow(temp_dir):
     return WorkflowDefinition(
-        name="test", version="1.0",
+        name="test",
+        version="1.0",
         phases=[
-            PhaseDefinition(id="phase_a", name="A", prompt_template="test.md", output_schema={},
-                           type="llm", agent="main_engineer", validator=None,
-                           transitions={"on_success": "phase_b"}),
-            PhaseDefinition(id="phase_b", name="B", prompt_template="test.md", output_schema={},
-                           type="llm", agent="main_engineer", validator=None,
-                           transitions={"on_success": "complete"}),
+            PhaseDefinition(
+                id="phase_a",
+                name="A",
+                prompt_template="test.md",
+                output_schema={},
+                type="llm",
+                agent="main_engineer",
+                validator=None,
+                transitions={"on_success": "phase_b"},
+            ),
+            PhaseDefinition(
+                id="phase_b",
+                name="B",
+                prompt_template="test.md",
+                output_schema={},
+                type="llm",
+                agent="main_engineer",
+                validator=None,
+                transitions={"on_success": "complete"},
+            ),
         ],
         terminals=["complete", "failed"],
         agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
@@ -77,8 +95,13 @@ def executor(basic_workflow, temp_dir):
     prompt_loader = MagicMock()
     validator_engine = MagicMock()
     return WorkflowExecutor(
-        basic_workflow, session_mgr, artifact_store, prompt_loader, validator_engine,
-        project_dir=temp_dir, output_dir=temp_dir
+        basic_workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator_engine,
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
 
 
@@ -101,7 +124,9 @@ class TestExecute:
         result = executor.execute({"PROJECT_DIR": temp_dir})
         assert isinstance(result, dict)
 
-    def test_constraint_summary_phase_skips_and_continues_without_constraints(self, temp_dir):
+    def test_constraint_summary_phase_skips_and_continues_without_constraints(
+        self, temp_dir
+    ):
         workflow = WorkflowDefinition(
             name="constraint-skip",
             version="1.0",
@@ -139,7 +164,9 @@ class TestExecute:
                 ),
             ],
             terminals=["complete", "failed"],
-            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            agents={
+                "main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}
+            },
         )
         executor = WorkflowExecutor(
             workflow,
@@ -155,8 +182,14 @@ class TestExecute:
         result = executor.execute({"PROJECT_DIR": temp_dir, "USER_CONSTRAINTS": ""})
 
         assert result["status"] == "complete"
-        assert executor.phase_results["phase_1_5_constraint_summary"]["status"] == "skipped"
-        assert executor.phase_results["phase_1_5_constraint_summary"]["reason"] == "condition_false"
+        assert (
+            executor.phase_results["phase_1_5_constraint_summary"]["status"]
+            == "skipped"
+        )
+        assert (
+            executor.phase_results["phase_1_5_constraint_summary"]["reason"]
+            == "condition_false"
+        )
         assert executor.phase_results["phase_2_venv_create"]["status"] == "success"
 
 
@@ -227,20 +260,34 @@ class TestConditionEvaluation:
 class TestResolveInputMapping:
     def test_basic_mapping(self, executor):
         phase = PhaseDefinition(
-            id="test", name="test", prompt_template="x", output_schema={},
-            input_mapping={"project": "${context.PROJECT_DIR}", "max": "${globals.max}"},
+            id="test",
+            name="test",
+            prompt_template="x",
+            output_schema={},
+            input_mapping={
+                "project": "${context.PROJECT_DIR}",
+                "max": "${globals.max}",
+            },
         )
         result = executor._resolve_input_mapping(
-            phase, state={},
+            phase,
+            state={},
             context={"PROJECT_DIR": "/tmp/test"},
-            loop_vars=None, loop_state=None, loop_history=None, step_outputs=None,
+            loop_vars=None,
+            loop_state=None,
+            loop_history=None,
+            step_outputs=None,
         )
         assert result["project"] == "/tmp/test"
         executor.workflow.globals = {"max": 5}
         result = executor._resolve_input_mapping(
-            phase, state={},
+            phase,
+            state={},
             context={"PROJECT_DIR": "/tmp/test"},
-            loop_vars=None, loop_state=None, loop_history=None, step_outputs=None,
+            loop_vars=None,
+            loop_state=None,
+            loop_history=None,
+            step_outputs=None,
         )
         assert result["max"] == 5
 
@@ -248,7 +295,10 @@ class TestResolveInputMapping:
 class TestTransitionResolution:
     def test_on_success(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"success": "b", "failure": "fail"},
         )
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
@@ -256,7 +306,10 @@ class TestTransitionResolution:
 
     def test_on_failure(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"success": "b", "failure": "error_recovery"},
         )
         next_id = executor._get_next_phase_id(phase, "failure", {}, {})
@@ -264,8 +317,15 @@ class TestTransitionResolution:
 
     def test_yaml_shaped_transition_keys(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
-            transitions={"on_success": "b", "on_failure": "error_recovery", "on_skip": "skip_target"},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
+            transitions={
+                "on_success": "b",
+                "on_failure": "error_recovery",
+                "on_skip": "skip_target",
+            },
         )
         assert executor._get_next_phase_id(phase, "success", {}, {}) == "b"
         assert executor._get_next_phase_id(phase, "failure", {}, {}) == "error_recovery"
@@ -333,7 +393,10 @@ class TestTransitionResolution:
 
     def test_stagnation_explicit_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"stagnation": "error_recovery"},
         )
         executor.phase_index = {"a": 0}
@@ -344,7 +407,10 @@ class TestTransitionResolution:
 
     def test_reject_exhausted_explicit_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"reject_exhausted": "review_cleanup"},
         )
         executor.phase_index = {"a": 0}
@@ -355,7 +421,10 @@ class TestTransitionResolution:
 
     def test_on_stagnation_yaml_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"on_stagnation": "stagnation_recovery"},
         )
         executor.phase_index = {"a": 0}
@@ -366,7 +435,10 @@ class TestTransitionResolution:
 
     def test_on_reject_exhausted_yaml_dict_routing_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transitions={"on_reject_exhausted": "review_cleanup"},
         )
         executor.phase_index = {"a": 0}
@@ -377,7 +449,10 @@ class TestTransitionResolution:
 
     def test_transition_definition_on_stagnation_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transition=TransitionDefinition(on_stagnation="stagnation_recovery"),
         )
         executor.phase_index = {"a": 0}
@@ -388,7 +463,10 @@ class TestTransitionResolution:
 
     def test_transition_definition_on_reject_exhausted_honored(self, executor):
         phase = PhaseDefinition(
-            id="a", name="A", prompt_template="x", output_schema={},
+            id="a",
+            name="A",
+            prompt_template="x",
+            output_schema={},
             transition=TransitionDefinition(on_reject_exhausted="exhausted_cleanup"),
         )
         executor.phase_index = {"a": 0}
@@ -400,20 +478,34 @@ class TestTransitionResolution:
 
 class TestShellPhase:
     def test_shell_success(self, executor, temp_dir):
-        phase = PhaseDefinition(id="shell", name="S", prompt_template="", output_schema={},
-                               type="shell", on_failure="continue")
+        phase = PhaseDefinition(
+            id="shell",
+            name="S",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="continue",
+        )
         setattr(phase, "command", "echo hello")
 
         state = {}
         loop_state = {}
-        status, output = executor._execute_shell_phase(phase, state, {}, loop_state=loop_state)
+        status, output = executor._execute_shell_phase(
+            phase, state, {}, loop_state=loop_state
+        )
 
         assert status == "success"
         assert loop_state.get("script_exit_code") == 0
 
     def test_shell_failure_continue(self, executor, temp_dir):
-        phase = PhaseDefinition(id="shell", name="S", prompt_template="", output_schema={},
-                               type="shell", on_failure="continue")
+        phase = PhaseDefinition(
+            id="shell",
+            name="S",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="continue",
+        )
         setattr(phase, "command", "exit 1")
 
         status, output = executor._execute_shell_phase(phase, {}, {}, loop_state={})
@@ -467,7 +559,9 @@ class TestStopConditions:
 
 
 def _executor_for_experience_context(tmp_path: Path) -> WorkflowExecutor:
-    workflow = WorkflowDefinition(name="experience_context", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="experience_context", version="1.0", phases=[], terminals=[]
+    )
     artifact_store = MagicMock()
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
@@ -505,7 +599,9 @@ def test_experience_query_context_uses_direct_script_stderr(tmp_path: Path):
     assert "direct failure text" in query_ctx["error_stderr"]
 
 
-def test_experience_query_context_preserves_nested_run_entry_script_stderr(tmp_path: Path):
+def test_experience_query_context_preserves_nested_run_entry_script_stderr(
+    tmp_path: Path,
+):
     executor = _executor_for_experience_context(tmp_path)
     phase = PhaseDefinition(
         id="analyze_error",
@@ -564,8 +660,12 @@ def test_failure_evidence_falls_back_to_stdout_diagnostics(executor: WorkflowExe
     assert "RuntimeError: child failed on stdout" in evidence
 
 
-def test_failure_evidence_bounds_stdout_and_omits_full_output(executor: WorkflowExecutor):
-    long_stdout = "prefix\n" + ("noise-line\n" * 2_000) + "RuntimeError: final concise failure\n"
+def test_failure_evidence_bounds_stdout_and_omits_full_output(
+    executor: WorkflowExecutor,
+):
+    long_stdout = (
+        "prefix\n" + ("noise-line\n" * 2_000) + "RuntimeError: final concise failure\n"
+    )
 
     evidence = executor._build_failure_evidence(
         {
@@ -582,7 +682,11 @@ def test_failure_evidence_bounds_stdout_and_omits_full_output(executor: Workflow
 
 def test_failure_evidence_no_user_output_remains_sane(executor: WorkflowExecutor):
     evidence = executor._build_failure_evidence(
-        {"script_command": "python silent.py", "script_exit_code": 1, "script_duration": 0.01}
+        {
+            "script_command": "python silent.py",
+            "script_exit_code": 1,
+            "script_duration": 0.01,
+        }
     )
 
     assert "Command: python silent.py" in evidence
@@ -646,8 +750,9 @@ def test_fixer_runtime_artifact_uses_stdout_when_stderr_empty(tmp_path: Path):
     assert "Exit Code: 2" in runtime_error
 
 
-
-def test_phase5_entry_shell_persists_complete_stderr_artifact_and_prompt_paths(tmp_path: Path):
+def test_phase5_entry_shell_persists_complete_stderr_artifact_and_prompt_paths(
+    tmp_path: Path,
+):
     marker = "IMPORTANT_ROOT_CAUSE_BEFORE_TAIL"
     script = tmp_path / "long_stderr.py"
     script.write_text(
@@ -657,7 +762,9 @@ def test_phase5_entry_shell_persists_complete_stderr_artifact_and_prompt_paths(t
         "sys.exit(3)\n",
         encoding="utf-8",
     )
-    workflow = WorkflowDefinition(name="full-shell-artifacts", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="full-shell-artifacts", version="1.0", phases=[], terminals=[]
+    )
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
     executor = WorkflowExecutor(
         workflow,
@@ -730,7 +837,9 @@ def test_phase5_entry_shell_persists_complete_stderr_artifact_and_prompt_paths(t
 
 
 def test_fixer_context_includes_latest_complete_shell_artifact_paths(tmp_path: Path):
-    workflow = WorkflowDefinition(name="fixer-shell-artifacts", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="fixer-shell-artifacts", version="1.0", phases=[], terminals=[]
+    )
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
     executor = WorkflowExecutor(
         workflow,
@@ -777,6 +886,7 @@ def test_fixer_context_includes_latest_complete_shell_artifact_paths(tmp_path: P
     assert input_ctx["latest_complete_meta_artifact_path"] == artifacts["meta_path"]
     assert Path(str(input_ctx["latest_complete_stderr_artifact_path"])).is_absolute()
 
+
 def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
     """Generic workflow name infers generic_accelerator policy."""
     executor = _executor_for_experience_context(tmp_path)
@@ -794,7 +904,9 @@ def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
         state={
             "phase_3_entry_script": {
                 "entry_script_kind": "custom_op_full_validation",
-                "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+                "required_report_paths": [
+                    "migration_reports/custom_op_final_gate.json"
+                ],
             }
         },
         context={},
@@ -810,7 +922,9 @@ def test_experience_query_context_marks_native_custom_op_gate(tmp_path: Path):
 
 def test_npu_workflow_keeps_legacy_custom_op_evidence_policy(tmp_path: Path):
     """Legacy NPU workflow name must still produce NPU-specific policy string."""
-    workflow = WorkflowDefinition(name="npu_migration_v2", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="npu_migration_v2", version="1.0", phases=[], terminals=[]
+    )
     artifact_store = MagicMock()
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
@@ -837,7 +951,9 @@ def test_npu_workflow_keeps_legacy_custom_op_evidence_policy(tmp_path: Path):
         state={
             "phase_3_entry_script": {
                 "entry_script_kind": "custom_op_full_validation",
-                "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+                "required_report_paths": [
+                    "migration_reports/custom_op_final_gate.json"
+                ],
             }
         },
         context={},
@@ -853,7 +969,9 @@ def test_npu_workflow_keeps_legacy_custom_op_evidence_policy(tmp_path: Path):
 
 def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
     """PPU workflow name infers PPU policy string."""
-    workflow = WorkflowDefinition(name="ppu_migration_v2", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="ppu_migration_v2", version="1.0", phases=[], terminals=[]
+    )
     artifact_store = MagicMock()
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
@@ -880,7 +998,9 @@ def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
         state={
             "phase_3_entry_script": {
                 "entry_script_kind": "custom_op_full_validation",
-                "required_report_paths": ["migration_reports/custom_op_final_gate.json"],
+                "required_report_paths": [
+                    "migration_reports/custom_op_final_gate.json"
+                ],
             }
         },
         context={},
@@ -895,7 +1015,9 @@ def test_ppu_workflow_gets_ppu_evidence_policy(tmp_path: Path):
 
 
 class TestRuntimeSkillPromptAssembly:
-    def _executor_for_runtime_skills(self, workflow, skill_root: Path, experience_store=None):
+    def _executor_for_runtime_skills(
+        self, workflow, skill_root: Path, experience_store=None
+    ):
         session_mgr = MagicMock()
         artifact_store = MagicMock()
         prompt_loader = MagicMock()
@@ -957,7 +1079,9 @@ class TestRuntimeSkillPromptAssembly:
         assert "Agent guidance" in sent_prompt
         assert "Phase guidance" in sent_prompt
 
-    def test_dynamic_experience_skips_promoted_skill_already_explicit(self, tmp_path: Path):
+    def test_dynamic_experience_skips_promoted_skill_already_explicit(
+        self, tmp_path: Path
+    ):
         duplicate_path = write_runtime_skill(tmp_path, "duplicate-skill")
         phase = PhaseDefinition(
             id="phase_with_experience",
@@ -974,7 +1098,9 @@ class TestRuntimeSkillPromptAssembly:
             version="1.0",
             phases=[phase],
             terminals=["complete"],
-            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            agents={
+                "main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}
+            },
         )
         query_result = {
             "selected_experiences": [
@@ -1012,7 +1138,9 @@ class TestRuntimeSkillPromptAssembly:
         ]
         assert len(query_result["selected_experiences"]) == 2
 
-        with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
+        with patch(
+            "core.experience_query.ExperienceQuerier.query", return_value=query_result
+        ):
             executor._execute_llm_phase(phase, {}, {})
 
         sent_prompt = session_mgr.send_command.call_args[0][1]
@@ -1023,25 +1151,29 @@ class TestRuntimeSkillPromptAssembly:
         assert "Dynamic Duplicate Guidance" not in sent_prompt
 
 
-
 def test_experience_action_cards_include_readable_paths():
     from core.experience_injector import ExperienceInjector
 
-    injected = ExperienceInjector().inject(None, {
-        "selected_experiences": [{
-            "id": "dep-exp",
-            "type": "document",
-            "title": "Dependency Fix",
-            "target_roles": ["dependency_fixer"],
-            "target_phases": ["phase_5_validation"],
-            "relevance_score": 0.9,
-            "reasoning": "same torch-npu failure",
-            "file_path": "/tmp/dep.md",
-            "asset_paths": ["/tmp/rule.yaml"],
-            "root_cause": "should stay compact at non-critical relevance",
-            "fix_steps": ["Do not inject this by default"],
-        }]
-    })
+    injected = ExperienceInjector().inject(
+        None,
+        {
+            "selected_experiences": [
+                {
+                    "id": "dep-exp",
+                    "type": "document",
+                    "title": "Dependency Fix",
+                    "target_roles": ["dependency_fixer"],
+                    "target_phases": ["phase_5_validation"],
+                    "relevance_score": 0.9,
+                    "reasoning": "same torch-npu failure",
+                    "file_path": "/tmp/dep.md",
+                    "asset_paths": ["/tmp/rule.yaml"],
+                    "root_cause": "should stay compact at non-critical relevance",
+                    "fix_steps": ["Do not inject this by default"],
+                }
+            ]
+        },
+    )
 
     assert "## Relevant Past Experiences" in injected
     assert "### Experience Card 1: Dependency Fix" in injected
@@ -1104,7 +1236,9 @@ def test_fix_prompt_inherits_analyze_error_selected_experiences(tmp_path: Path):
         '{"repair_role": "code_adapter", "category": "code", "root_cause": "cuda call", "suggested_fix": "use npu"}',
         '{"fixed": true}',
     ]
-    prompt_loader.load_prompt.side_effect = lambda template, ctx: f"{template}\n{ctx.get('experience_action_cards', '')}"
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: (
+        f"{template}\n{ctx.get('experience_action_cards', '')}"
+    )
 
     executor = WorkflowExecutor(
         workflow,
@@ -1117,21 +1251,25 @@ def test_fix_prompt_inherits_analyze_error_selected_experiences(tmp_path: Path):
         experience_store=MagicMock(),
     )
     query_result = {
-        "selected_experiences": [{
-            "id": "code-exp",
-            "type": "skill",
-            "title": "CUDA Call Fix",
-            "target_roles": ["code_adapter"],
-            "target_phases": ["phase_5_validation"],
-            "relevance_score": 0.88,
-            "reasoning": "same cuda call",
-            "file_path": str(tmp_path / "skills" / "cuda" / "SKILL.md"),
-        }],
+        "selected_experiences": [
+            {
+                "id": "code-exp",
+                "type": "skill",
+                "title": "CUDA Call Fix",
+                "target_roles": ["code_adapter"],
+                "target_phases": ["phase_5_validation"],
+                "relevance_score": 0.88,
+                "reasoning": "same cuda call",
+                "file_path": str(tmp_path / "skills" / "cuda" / "SKILL.md"),
+            }
+        ],
         "summary": "selected",
         "warning": "",
     }
 
-    with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
+    with patch(
+        "core.experience_query.ExperienceQuerier.query", return_value=query_result
+    ):
         result = executor._run_sub_workflow(
             sub_workflow,
             loop_vars={"entry_script": "python main.py"},
@@ -1152,7 +1290,9 @@ def test_fix_prompt_inherits_analyze_error_selected_experiences(tmp_path: Path):
     assert "used_experience_ids" in fix_prompt
 
 
-def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_path: Path):
+def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(
+    tmp_path: Path,
+):
     write_runtime_skill(tmp_path, "operator-runtime-skill")
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -1178,7 +1318,10 @@ def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_p
                 "prompt_template": "repair_operator_fixer",
                 "agent": "operator_fixer",
                 "retrieve_experience": True,
-                "runtime_skills": {"include": ["operator-runtime-skill"], "missing": "ignore"},
+                "runtime_skills": {
+                    "include": ["operator-runtime-skill"],
+                    "missing": "ignore",
+                },
             },
         ],
     )
@@ -1286,7 +1429,9 @@ def test_operator_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_p
     assert "Read /skills/custom-op/SKILL.md" in card_text
 
 
-def test_operator_fix_session_error_fails_subworkflow_without_validated_artifact(tmp_path: Path):
+def test_operator_fix_session_error_fails_subworkflow_without_validated_artifact(
+    tmp_path: Path,
+):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -1363,9 +1508,16 @@ def test_operator_fix_session_error_fails_subworkflow_without_validated_artifact
 
     assert result["status"] == "failure"
     assert result["step_outputs"]["repair_dispatch"]["dispatched_to"] == "fix_operator"
-    assert "Compaction response is incomplete" in result["step_outputs"]["fix_operator"]["error"]
-    saved_phase_ids = [call.args[0] for call in artifact_store.save_phase_output.call_args_list]
-    validated_phase_ids = [call.args[0] for call in artifact_store.mark_validated.call_args_list]
+    assert (
+        "Compaction response is incomplete"
+        in result["step_outputs"]["fix_operator"]["error"]
+    )
+    saved_phase_ids = [
+        call.args[0] for call in artifact_store.save_phase_output.call_args_list
+    ]
+    validated_phase_ids = [
+        call.args[0] for call in artifact_store.mark_validated.call_args_list
+    ]
     assert "fix_operator" not in saved_phase_ids
     assert "fix_operator" not in validated_phase_ids
 
@@ -1449,8 +1601,11 @@ def test_operator_fix_empty_response_retries_in_fresh_session(tmp_path: Path):
     assert result["step_outputs"]["fix_operator"]["fixed"] is True
     session_mgr.create_session.assert_called_once()
     called_sessions = [call.args[0] for call in session_mgr.send_command.call_args_list]
-    assert called_sessions == ["session:error_analyzer", "session:operator_fixer", "session:operator_fixer_retry"]
-
+    assert called_sessions == [
+        "session:error_analyzer",
+        "session:operator_fixer",
+        "session:operator_fixer_retry",
+    ]
 
 
 def _run_single_llm_subphase(
@@ -1506,7 +1661,9 @@ def _run_single_llm_subphase(
     return session_mgr
 
 
-def test_fix_operator_without_explicit_timeout_uses_finite_default_and_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+def test_fix_operator_without_explicit_timeout_uses_finite_default_and_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
     caplog.set_level(logging.INFO, logger="core.workflow_executor")
 
     session_mgr = _run_single_llm_subphase(
@@ -1628,7 +1785,9 @@ def test_analyze_error_without_explicit_timeout_uses_finite_default(tmp_path: Pa
     assert session_mgr.send_command.call_args.kwargs["timeout"] == 600
 
 
-def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(tmp_path: Path):
+def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(
+    tmp_path: Path,
+):
     session_mgr = _run_single_llm_subphase(
         tmp_path,
         {
@@ -1643,10 +1802,9 @@ def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_expl
     assert session_mgr.send_command.call_args.kwargs["timeout"] is None
 
 
-
-
-
-def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(tmp_path: Path):
+def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(
+    tmp_path: Path,
+):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -1663,7 +1821,10 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
                 "id": "repair_dispatch",
                 "type": "dispatch",
                 "route_field": "${error_analysis.repair_role}",
-                "routes": {"code_adapter": "fix_code", "operator_fixer": "fix_operator"},
+                "routes": {
+                    "code_adapter": "fix_code",
+                    "operator_fixer": "fix_operator",
+                },
             },
             {
                 "id": "fix_code",
@@ -1699,12 +1860,14 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.send_command.side_effect = [
-        json.dumps({
-            "repair_role": "code_adapter",
-            "category": "pathing",
-            "root_cause": "stale Path.relative_to(PROJECT_DIR) failure",
-            "suggested_fix": "adjust path handling",
-        }),
+        json.dumps(
+            {
+                "repair_role": "code_adapter",
+                "category": "pathing",
+                "root_cause": "stale Path.relative_to(PROJECT_DIR) failure",
+                "suggested_fix": "adjust path handling",
+            }
+        ),
         json.dumps({"fixed": True}),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
@@ -1737,13 +1900,15 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
                 "closed_pass_entries=0; remaining_entries=4; custom_call_count_total=0; zero_call_detected=true"
             ),
         },
-        loop_history=[{
-            "iteration": 1,
-            "status": "success",
-            "error_category": "pathing",
-            "repair_role": "code_adapter",
-            "agent_diagnostics": "Remaining failure is custom-op/operator evidence incompleteness",
-        }],
+        loop_history=[
+            {
+                "iteration": 1,
+                "status": "success",
+                "error_category": "pathing",
+                "repair_role": "code_adapter",
+                "agent_diagnostics": "Remaining failure is custom-op/operator evidence incompleteness",
+            }
+        ],
         loop_state={},
     )
 
@@ -1754,7 +1919,9 @@ def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(t
     assert called_sessions == ["session:error_analyzer", "session:operator_fixer"]
 
 
-def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(tmp_path: Path):
+def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(
+    tmp_path: Path,
+):
     phase = PhaseDefinition(
         id="analyze_error",
         name="Analyze",
@@ -1764,7 +1931,9 @@ def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(tm
         agent="error_analyzer",
     )
     executor = WorkflowExecutor(
-        WorkflowDefinition(name="plain_pathing", version="1.0", phases=[], terminals=[]),
+        WorkflowDefinition(
+            name="plain_pathing", version="1.0", phases=[], terminals=[]
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -1793,7 +1962,9 @@ def test_workflow_executor_plain_dependency_pathing_is_not_forced_to_operator(tm
     assert normalized["repair_role"] == "code_adapter"
 
 
-def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tmp_path: Path):
+def test_workflow_executor_disable_custom_op_injection_disables_force_routing(
+    tmp_path: Path,
+):
     phase = PhaseDefinition(
         id="analyze_error",
         name="Analyze",
@@ -1828,7 +1999,9 @@ def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tm
         },
         {
             "failure_log": "Custom-op final evidence gate failed: full_migration_status is FULL_MIGRATION_INCOMPLETE",
-            "entry_script_contract": json.dumps({"entry_script_kind": "custom_op_full_validation"}),
+            "entry_script_contract": json.dumps(
+                {"entry_script_kind": "custom_op_full_validation"}
+            ),
             "previous_outputs": "",
         },
         {},
@@ -1837,9 +2010,15 @@ def test_workflow_executor_disable_custom_op_injection_disables_force_routing(tm
     assert normalized["category"] == "pathing"
     assert normalized["repair_role"] == "code_adapter"
 
-def test_phase5_entry_command_does_not_expand_environment_variables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_phase5_entry_command_does_not_expand_environment_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target_script = tmp_path / "expanded_target.py"
-    target_script.write_text("from pathlib import Path\nPath('expanded-ran').write_text('yes')\n", encoding="utf-8")
+    target_script.write_text(
+        "from pathlib import Path\nPath('expanded-ran').write_text('yes')\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("PY_SCRIPT", str(target_script))
     workflow = WorkflowDefinition(
         name="entry-no-shell-expansion",
@@ -1927,10 +2106,15 @@ def test_phase5_entry_command_does_not_expand_globs_or_tilde(tmp_path: Path) -> 
 
     assert status == "success"
     assert output["exit_code"] == 0
-    assert json.loads((tmp_path / "args.json").read_text(encoding="utf-8")) == ["*.txt", "~"]
+    assert json.loads((tmp_path / "args.json").read_text(encoding="utf-8")) == [
+        "*.txt",
+        "~",
+    ]
 
 
-def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: Path) -> None:
+def test_phase5_entry_command_preserves_safe_single_process_execution(
+    tmp_path: Path,
+) -> None:
     train_script = tmp_path / "train.py"
     train_script.write_text(
         "import argparse\nfrom pathlib import Path\nparser = argparse.ArgumentParser()\nparser.add_argument('--config')\nargs = parser.parse_args()\nPath('safe-command-ok').write_text(args.config)\n",
@@ -1982,7 +2166,9 @@ def test_phase5_entry_command_preserves_safe_single_process_execution(tmp_path: 
     assert loop_state["script_stderr"] == ""
 
 
-def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_phase5_env_prefix_local_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target_script = tmp_path / "env_target.py"
     target_script.write_text(
         "import os\nfrom pathlib import Path\nPath('env_ok').write_text(os.environ.get('MPLBACKEND', 'missing'))\n",
@@ -2019,8 +2205,7 @@ def test_phase5_env_prefix_local_execution(tmp_path: Path, monkeypatch: pytest.M
         context={},
         loop_vars={
             "entry_script": (
-                "MPLBACKEND=Agg "
-                f"{sys.executable.replace(chr(92), '/')} env_target.py"
+                f"MPLBACKEND=Agg {sys.executable.replace(chr(92), '/')} env_target.py"
             )
         },
         loop_state={},
@@ -2128,11 +2313,15 @@ def test_phase5_entry_script_action_allows_env_prefix_command() -> None:
 
     assert result is not None
     assert result["applied"] is True
-    assert state["phase_3_entry_script"]["run_command"] == "MPLBACKEND=Agg python3 new.py"
+    assert (
+        state["phase_3_entry_script"]["run_command"] == "MPLBACKEND=Agg python3 new.py"
+    )
     assert loop_vars["entry_script"] == "MPLBACKEND=Agg python3 new.py"
 
 
-def test_analyzer_environment_reset_skips_fixer_and_reruns_validation(tmp_path: Path) -> None:
+def test_analyzer_environment_reset_skips_fixer_and_reruns_validation(
+    tmp_path: Path,
+) -> None:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2187,38 +2376,46 @@ def test_analyzer_environment_reset_skips_fixer_and_reruns_validation(tmp_path: 
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
-    session_mgr.send_command.return_value = json.dumps({
-        "repair_role": "code_adapter",
-        "category": "environment",
-        "root_cause": "base container package pollution",
-        "suggested_fix": "reset the framework-owned image container",
-        "environment_action": {
-            "needed": True,
-            "action": "recreate_execution_environment",
-            "reason": "vendor torch polluted",
-            "scope": "execution_environment",
-        },
-    })
+    session_mgr.send_command.return_value = json.dumps(
+        {
+            "repair_role": "code_adapter",
+            "category": "environment",
+            "root_cause": "base container package pollution",
+            "suggested_fix": "reset the framework-owned image container",
+            "environment_action": {
+                "needed": True,
+                "action": "recreate_execution_environment",
+                "reason": "vendor torch polluted",
+                "scope": "execution_environment",
+            },
+        }
+    )
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
     cfg = ExecutionBackendConfig.from_dict(
         {"mode": "container", "source": "image", "image": "test:latest"}
     )
     backend = ContainerBackend(cfg)
     backend._container_id = "old-cid"
-    backend.run = MagicMock(side_effect=[
-        ExecResult(exit_code=1, stdout="", stderr="polluted torch", duration=0.1),
-        ExecResult(exit_code=0, stdout="ok", stderr="", duration=0.1),
-    ])
-    backend.recreate_execution_environment = MagicMock(return_value={
-        "old_container_id": "old-cid",
-        "new_container_id": "new-cid",
-        "source": "image",
-        "image": "test:latest",
-        "reason": "vendor torch polluted",
-        "preserved_notes": [],
-        "lost_notes": [],
-    })
-    backend.probe_environment = MagicMock(return_value={"status": "ok", "container_id": "new-cid"})
+    backend.run = MagicMock(
+        side_effect=[
+            ExecResult(exit_code=1, stdout="", stderr="polluted torch", duration=0.1),
+            ExecResult(exit_code=0, stdout="ok", stderr="", duration=0.1),
+        ]
+    )
+    backend.recreate_execution_environment = MagicMock(
+        return_value={
+            "old_container_id": "old-cid",
+            "new_container_id": "new-cid",
+            "source": "image",
+            "image": "test:latest",
+            "reason": "vendor torch polluted",
+            "preserved_notes": [],
+            "lost_notes": [],
+        }
+    )
+    backend.probe_environment = MagicMock(
+        return_value={"status": "ok", "container_id": "new-cid"}
+    )
     executor = WorkflowExecutor(
         workflow,
         session_mgr,
@@ -2246,10 +2443,14 @@ def test_analyzer_environment_reset_skips_fixer_and_reruns_validation(tmp_path: 
 
     assert result["status"] == "success"
     assert backend.run.call_count == 2
-    backend.recreate_execution_environment.assert_called_once_with(reason="vendor torch polluted")
+    backend.recreate_execution_environment.assert_called_once_with(
+        reason="vendor torch polluted"
+    )
     backend.probe_environment.assert_called_once()
     assert session_mgr.send_command.call_count == 1
-    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == ["session:error_analyzer"]
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == [
+        "session:error_analyzer"
+    ]
     assert result["loop_state"]["environment_reset_count"] == 1
     assert result["loop_history"][0]["status"] == "environment_reset"
     assert result["loop_history"][0]["environment_action"]["applied"] is True
@@ -2257,7 +2458,9 @@ def test_analyzer_environment_reset_skips_fixer_and_reruns_validation(tmp_path: 
     assert result["loop_state"]["script_exit_code"] == 0
 
 
-def test_analyzer_environment_reset_refreshes_prompt_execution_context(tmp_path: Path) -> None:
+def test_analyzer_environment_reset_refreshes_prompt_execution_context(
+    tmp_path: Path,
+) -> None:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2313,25 +2516,34 @@ def test_analyzer_environment_reset_refreshes_prompt_execution_context(tmp_path:
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.send_command.side_effect = [
-        json.dumps({
-            "repair_role": "code_adapter",
-            "category": "environment",
-            "root_cause": "framework-created container environment drifted",
-            "suggested_fix": "recreate the execution environment",
-            "environment_action": {
-                "needed": True,
-                "action": "recreate_execution_environment",
-                "reason": "reset requested by analyzer",
-                "scope": "execution_environment",
-            },
-        }),
-        json.dumps({
-            "repair_role": "unknown_role",
-            "category": "validation",
-            "root_cause": "validation still fails after reset",
-            "suggested_fix": "stop after proving refreshed prompt context",
-            "environment_action": {"needed": False, "action": "none", "reason": "", "scope": ""},
-        }),
+        json.dumps(
+            {
+                "repair_role": "code_adapter",
+                "category": "environment",
+                "root_cause": "framework-created container environment drifted",
+                "suggested_fix": "recreate the execution environment",
+                "environment_action": {
+                    "needed": True,
+                    "action": "recreate_execution_environment",
+                    "reason": "reset requested by analyzer",
+                    "scope": "execution_environment",
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "repair_role": "unknown_role",
+                "category": "validation",
+                "root_cause": "validation still fails after reset",
+                "suggested_fix": "stop after proving refreshed prompt context",
+                "environment_action": {
+                    "needed": False,
+                    "action": "none",
+                    "reason": "",
+                    "scope": "",
+                },
+            }
+        ),
     ]
 
     def load_prompt(template: str, ctx: dict[str, object]) -> str:
@@ -2346,10 +2558,16 @@ def test_analyzer_environment_reset_refreshes_prompt_execution_context(tmp_path:
     backend = ContainerBackend(cfg)
     backend.set_project_dir(str(tmp_path))
     backend._container_id = "old-cid"
-    backend.run = MagicMock(side_effect=[
-        ExecResult(exit_code=1, stdout="", stderr="first validation failure", duration=0.1),
-        ExecResult(exit_code=1, stdout="", stderr="second validation failure", duration=0.1),
-    ])
+    backend.run = MagicMock(
+        side_effect=[
+            ExecResult(
+                exit_code=1, stdout="", stderr="first validation failure", duration=0.1
+            ),
+            ExecResult(
+                exit_code=1, stdout="", stderr="second validation failure", duration=0.1
+            ),
+        ]
+    )
 
     def recreate_environment(reason: str = "") -> dict[str, object]:
         backend._container_id = "new-cid"
@@ -2364,7 +2582,9 @@ def test_analyzer_environment_reset_refreshes_prompt_execution_context(tmp_path:
         }
 
     backend.recreate_execution_environment = MagicMock(side_effect=recreate_environment)
-    backend.probe_environment = MagicMock(return_value={"status": "ok", "container_id": "new-cid"})
+    backend.probe_environment = MagicMock(
+        return_value={"status": "ok", "container_id": "new-cid"}
+    )
     executor = WorkflowExecutor(
         workflow,
         session_mgr,
@@ -2392,7 +2612,9 @@ def test_analyzer_environment_reset_refreshes_prompt_execution_context(tmp_path:
 
     assert result["status"] == "failure"
     assert backend.run.call_count == 2
-    backend.recreate_execution_environment.assert_called_once_with(reason="reset requested by analyzer")
+    backend.recreate_execution_environment.assert_called_once_with(
+        reason="reset requested by analyzer"
+    )
     assert len(captured_contexts) == 2
     first_context, second_context = captured_contexts
     assert first_context["container_name_or_id"] == "old-cid"
@@ -2451,7 +2673,9 @@ def test_environment_reset_cap_blocks_second_reset_request(tmp_path: Path) -> No
     backend.recreate_execution_environment.assert_not_called()
 
 
-def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validated(tmp_path: Path) -> None:
+def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validated(
+    tmp_path: Path,
+) -> None:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2476,14 +2700,23 @@ def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validate
         version="1.0",
         phases=[],
         terminals=["complete"],
-        agents={"error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}},
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}
+        },
         sub_workflows={"repair_loop": sub_workflow},
     )
     session_mgr = MagicMock()
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
     validator = ValidatorEngine()
-    validator.register_validator("always_fail", lambda _data: {"passed": False, "errors": ["invalid repair classification"], "warnings": []})
+    validator.register_validator(
+        "always_fail",
+        lambda _data: {
+            "passed": False,
+            "errors": ["invalid repair classification"],
+            "warnings": [],
+        },
+    )
     artifact_store.artifact_dir = str(tmp_path / ".sm-artifacts" / "testrun")
     artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
     session_mgr.get_or_create.return_value = "session:error_analyzer"
@@ -2516,14 +2749,20 @@ def test_subworkflow_llm_exhausted_validation_retries_fail_without_mark_validate
     )
 
     assert result["status"] == "failure"
-    assert result["step_outputs"]["analyze_error"]["validation_errors"] == ["invalid repair classification"]
-    artifact_store.save_phase_output.assert_called_once_with("analyze_error", result["step_outputs"]["analyze_error"])
+    assert result["step_outputs"]["analyze_error"]["validation_errors"] == [
+        "invalid repair classification"
+    ]
+    artifact_store.save_phase_output.assert_called_once_with(
+        "analyze_error", result["step_outputs"]["analyze_error"]
+    )
     artifact_store.mark_validated.assert_not_called()
     executor._execute_shell_phase.assert_not_called()
     assert session_mgr.send_command.call_count == 3
 
 
-def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validated(tmp_path: Path) -> None:
+def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validated(
+    tmp_path: Path,
+) -> None:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2543,7 +2782,9 @@ def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validate
         version="1.0",
         phases=[],
         terminals=["complete"],
-        agents={"error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}},
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}
+        },
         sub_workflows={"repair_loop": sub_workflow},
     )
     session_mgr = MagicMock()
@@ -2554,7 +2795,9 @@ def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validate
         "repair_classification",
         lambda data: {
             "passed": data.get("repair_role") == "code_adapter",
-            "errors": [] if data.get("repair_role") == "code_adapter" else ["missing valid repair role"],
+            "errors": []
+            if data.get("repair_role") == "code_adapter"
+            else ["missing valid repair role"],
             "warnings": [],
         },
     )
@@ -2591,11 +2834,18 @@ def test_subworkflow_llm_validation_retry_then_valid_succeeds_and_marks_validate
     assert result["step_outputs"]["analyze_error"]["repair_role"] == "code_adapter"
     assert result["step_outputs"]["analyze_error"]["category"] == "code"
     assert "validation_errors" not in result["step_outputs"]["analyze_error"]
-    artifact_store.save_phase_output.assert_called_once_with("analyze_error", result["step_outputs"]["analyze_error"])
-    artifact_store.mark_validated.assert_called_once_with("analyze_error", result["step_outputs"]["analyze_error"])
+    artifact_store.save_phase_output.assert_called_once_with(
+        "analyze_error", result["step_outputs"]["analyze_error"]
+    )
+    artifact_store.mark_validated.assert_called_once_with(
+        "analyze_error", result["step_outputs"]["analyze_error"]
+    )
     assert session_mgr.send_command.call_count == 2
 
-def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp_path: Path):
+
+def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(
+    tmp_path: Path,
+):
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -2679,7 +2929,9 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
         loop_state={},
     )
 
-    assert result["step_outputs"]["repair_dispatch"]["dispatched_to"] == "fix_dependency"
+    assert (
+        result["step_outputs"]["repair_dispatch"]["dispatched_to"] == "fix_dependency"
+    )
     fix_prompt = session_mgr.send_command.call_args_list[-1][0][1]
     # Dependency fixer prompt now includes constraint_summary, No CPU Fallback, and Native Operator Handoff
     assert "No CPU Fallback (CRITICAL)" in fix_prompt
@@ -2704,7 +2956,9 @@ def test_dependency_fix_phase_writes_runtime_artifacts_and_sends_slim_prompt(tmp
     assert "Read /skills/dependency/SKILL.md" in card_text
 
 
-def test_slim_repair_prompt_phase_predicate_covers_direct_and_improvement_roles() -> None:
+def test_slim_repair_prompt_phase_predicate_covers_direct_and_improvement_roles() -> (
+    None
+):
     for phase_id in (
         "fix_dependency",
         "imp_fix_dependency",
@@ -2716,7 +2970,9 @@ def test_slim_repair_prompt_phase_predicate_covers_direct_and_improvement_roles(
     assert not WorkflowExecutor._is_slim_repair_prompt_phase("imp_fix_code")
 
 
-def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt(tmp_path: Path):
+def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt(
+    tmp_path: Path,
+):
     write_runtime_skill(tmp_path, "improvement-operator-runtime-skill")
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
@@ -2735,7 +2991,10 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
                 "prompt_template": "repair_operator_fixer",
                 "agent": "operator_fixer",
                 "retrieve_experience": True,
-                "runtime_skills": {"include": ["improvement-operator-runtime-skill"], "missing": "ignore"},
+                "runtime_skills": {
+                    "include": ["improvement-operator-runtime-skill"],
+                    "missing": "ignore",
+                },
             },
         ],
     )
@@ -2744,7 +3003,9 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
         version="1.0",
         phases=[],
         terminals=["complete"],
-        agents={"operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"}},
+        agents={
+            "operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"}
+        },
         sub_workflows={"repair_loop": sub_workflow},
     )
     session_mgr = MagicMock()
@@ -2795,7 +3056,10 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
         loop_state={},
     )
 
-    assert result["step_outputs"]["improvement_dispatch"]["dispatched_to"] == "imp_fix_operator"
+    assert (
+        result["step_outputs"]["improvement_dispatch"]["dispatched_to"]
+        == "imp_fix_operator"
+    )
     fix_prompt = session_mgr.send_command.call_args_list[-1][0][1]
     assert "This is a generic operator-incompatibility repair" in fix_prompt
     assert "cuda_custom_op_skill_test_prompt.md" not in fix_prompt
@@ -2829,6 +3093,7 @@ def test_improvement_operator_fix_writes_runtime_artifacts_and_sends_slim_prompt
     assert "## Experience Card 1" in card_text
     assert "Read /skills/runtime-card/SKILL.md" in card_text
 
+
 def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path):
     import sys as _sys
 
@@ -2843,7 +3108,7 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
                 "id": "run_entry_script",
                 "type": "shell",
                 "command": (
-                    f"{python} -c \"import pathlib, sys; "
+                    f'{python} -c "import pathlib, sys; '
                     f"p=pathlib.Path('{(tmp_path / 'flag').as_posix()}'); sys.exit(0 if p.exists() else 1)\""
                 ),
                 "on_failure": "continue",
@@ -2885,34 +3150,42 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
         sub_workflows={"repair_loop": sub_workflow},
     )
     store = ExperienceStore(str(tmp_path))
-    store.upsert_index({
-        "id": "code-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "CUDA Call Fix",
-        "target_roles": ["code_adapter"],
-        "target_phases": ["phase_5_validation"],
-    })
-    store.upsert_index({
-        "id": "ignored-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "Irrelevant Fix",
-        "target_roles": ["code_adapter"],
-        "target_phases": ["phase_5_validation"],
-    })
-    store.upsert_catalog_entry({
-        "id": "code-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "CUDA Call Fix",
-    })
-    store.upsert_catalog_entry({
-        "id": "ignored-exp",
-        "type": "skill",
-        "status": "promoted",
-        "title": "Irrelevant Fix",
-    })
+    store.upsert_index(
+        {
+            "id": "code-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "CUDA Call Fix",
+            "target_roles": ["code_adapter"],
+            "target_phases": ["phase_5_validation"],
+        }
+    )
+    store.upsert_index(
+        {
+            "id": "ignored-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "Irrelevant Fix",
+            "target_roles": ["code_adapter"],
+            "target_phases": ["phase_5_validation"],
+        }
+    )
+    store.upsert_catalog_entry(
+        {
+            "id": "code-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "CUDA Call Fix",
+        }
+    )
+    store.upsert_catalog_entry(
+        {
+            "id": "ignored-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "Irrelevant Fix",
+        }
+    )
     telemetry_bridge = TelemetryBridge(str(tmp_path / "telemetry"))
     session_mgr = MagicMock()
     artifact_store = MagicMock()
@@ -2926,13 +3199,15 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
         if session_id == "session:error_analyzer":
             return '{"repair_role": "code_adapter", "category": "code", "root_cause": "cuda", "suggested_fix": "use npu"}'
         (tmp_path / "flag").write_text("fixed", encoding="utf-8")
-        return json.dumps({
-            "fixed": True,
-            "used_experience_ids": ["code-exp"],
-            "experience_actions_taken": {"code-exp": ["replaced cuda call"]},
-            "ignored_experience_ids": ["ignored-exp"],
-            "ignored_reasons": {"ignored-exp": "not relevant to this CUDA call"},
-        })
+        return json.dumps(
+            {
+                "fixed": True,
+                "used_experience_ids": ["code-exp"],
+                "experience_actions_taken": {"code-exp": ["replaced cuda call"]},
+                "ignored_experience_ids": ["ignored-exp"],
+                "ignored_reasons": {"ignored-exp": "not relevant to this CUDA call"},
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
@@ -2956,7 +3231,9 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
         "warning": "",
     }
 
-    with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
+    with patch(
+        "core.experience_query.ExperienceQuerier.query", return_value=query_result
+    ):
         result = executor._execute_loop_phase(
             PhaseDefinition(
                 id="phase_5_validation",
@@ -2972,13 +3249,19 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
 
     first_history = result["loop_history"][0]
     assert first_history["experience_usage"]["used_experience_ids"] == ["code-exp"]
-    assert first_history["experience_usage"]["ignored_experience_ids"] == ["ignored-exp"]
-    assert first_history["experience_usage"]["by_phase"]["fix_code"]["ignored_reasons"] == {
-        "ignored-exp": "not relevant to this CUDA call"
-    }
+    assert first_history["experience_usage"]["ignored_experience_ids"] == [
+        "ignored-exp"
+    ]
+    assert first_history["experience_usage"]["by_phase"]["fix_code"][
+        "ignored_reasons"
+    ] == {"ignored-exp": "not relevant to this CUDA call"}
     assert result["loop_history"][1]["experience_verification"]["passed"] is True
-    assert result["loop_history"][1]["experience_verification"]["source_phase_ids"] == ["fix_code"]
-    assert result["loop_state"]["experience_verifications"][0]["experience_ids"] == ["code-exp"]
+    assert result["loop_history"][1]["experience_verification"]["source_phase_ids"] == [
+        "fix_code"
+    ]
+    assert result["loop_state"]["experience_verifications"][0]["experience_ids"] == [
+        "code-exp"
+    ]
     catalog_by_id = {entry["id"]: entry for entry in store.read_catalog()}
     legacy_by_id = {entry["id"]: entry for entry in store.read_index()}
     assert catalog_by_id["code-exp"]["usage"]["selected_count"] == 1
@@ -2993,11 +3276,23 @@ def test_fix_phase_reports_experience_usage_and_updates_counters(tmp_path: Path)
     assert "experience_used" in event_types
     assert "experience_ignored" in event_types
     assert "experience_verification" in event_types
-    selected_event = next(event for event in telemetry_bridge._events if event["event_type"] == "experience_selected")
-    assert selected_event["details"]["action_card_count"] == 2
-    assert "CUDA Call Fix" in selected_event["details"]["action_cards"][0]
-    ignored_event = next(event for event in telemetry_bridge._events if event["event_type"] == "experience_ignored")
-    assert ignored_event["details"]["ignored_reasons"] == {
+    selected_event = next(
+        event
+        for event in telemetry_bridge._events
+        if event["event_type"] == "experience_selected"
+    )
+    selected_details = selected_event["details"]
+    assert isinstance(selected_details, dict)
+    assert selected_details["action_card_count"] == 2
+    assert "CUDA Call Fix" in selected_details["action_cards"][0]
+    ignored_event = next(
+        event
+        for event in telemetry_bridge._events
+        if event["event_type"] == "experience_ignored"
+    )
+    ignored_details = ignored_event["details"]
+    assert isinstance(ignored_details, dict)
+    assert ignored_details["ignored_reasons"] == {
         "ignored-exp": "not relevant to this CUDA call"
     }
 
@@ -3012,7 +3307,7 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
             {
                 "id": "run_entry_script",
                 "type": "shell",
-                "command": "python -c \"import sys; sys.exit(1)\"",
+                "command": 'python -c "import sys; sys.exit(1)"',
                 "on_failure": "continue",
             },
             {
@@ -3052,8 +3347,22 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
         sub_workflows={"repair_loop": sub_workflow},
     )
     store = ExperienceStore(str(tmp_path))
-    store.upsert_index({"id": "code-exp", "type": "skill", "status": "promoted", "title": "CUDA Call Fix"})
-    store.upsert_catalog_entry({"id": "code-exp", "type": "skill", "status": "promoted", "title": "CUDA Call Fix"})
+    store.upsert_index(
+        {
+            "id": "code-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "CUDA Call Fix",
+        }
+    )
+    store.upsert_catalog_entry(
+        {
+            "id": "code-exp",
+            "type": "skill",
+            "status": "promoted",
+            "title": "CUDA Call Fix",
+        }
+    )
     session_mgr = MagicMock()
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
@@ -3065,13 +3374,17 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
             return '{"repair_role": "code_adapter", "category": "code", "root_cause": "cuda", "suggested_fix": "use npu"}'
-        return json.dumps({
-            "fixed": False,
-            "used_experience_ids": ["code-exp"],
-            "experience_actions_taken": {"code-exp": ["attempted cuda replacement"]},
-            "ignored_experience_ids": [],
-            "ignored_reasons": {},
-        })
+        return json.dumps(
+            {
+                "fixed": False,
+                "used_experience_ids": ["code-exp"],
+                "experience_actions_taken": {
+                    "code-exp": ["attempted cuda replacement"]
+                },
+                "ignored_experience_ids": [],
+                "ignored_reasons": {},
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
@@ -3086,12 +3399,16 @@ def test_failed_next_validation_records_experience_verification_failure(tmp_path
         experience_store=store,
     )
     query_result = {
-        "selected_experiences": [{"id": "code-exp", "type": "skill", "title": "CUDA Call Fix"}],
+        "selected_experiences": [
+            {"id": "code-exp", "type": "skill", "title": "CUDA Call Fix"}
+        ],
         "summary": "selected",
         "warning": "",
     }
 
-    with patch("core.experience_query.ExperienceQuerier.query", return_value=query_result):
+    with patch(
+        "core.experience_query.ExperienceQuerier.query", return_value=query_result
+    ):
         result = executor._execute_loop_phase(
             PhaseDefinition(
                 id="phase_5_validation",
@@ -3128,7 +3445,7 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
             {
                 "id": "run_entry_script",
                 "type": "shell",
-                "command": "python -c \"import sys; sys.exit(1)\"",
+                "command": 'python -c "import sys; sys.exit(1)"',
                 "on_failure": "continue",
             },
             {
@@ -3184,17 +3501,43 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
-    analyzer_outputs = iter([
-        {"repair_role": "dependency_fixer", "category": "dependency", "root_cause": "missing", "suggested_fix": "install"},
-        {"repair_role": "operator_fixer", "category": "operator", "root_cause": "unsupported", "suggested_fix": "replace op"},
-    ])
+    analyzer_outputs = iter(
+        [
+            {
+                "repair_role": "dependency_fixer",
+                "category": "dependency",
+                "root_cause": "missing",
+                "suggested_fix": "install",
+            },
+            {
+                "repair_role": "operator_fixer",
+                "category": "operator",
+                "root_cause": "unsupported",
+                "suggested_fix": "replace op",
+            },
+        ]
+    )
 
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
             return json.dumps(next(analyzer_outputs))
         elif session_id == "session:dependency_fixer":
-            return json.dumps({"fixed": True, "summary": "Installed torch_npu; dependency closure verified; no handoff needed", "modified_files": ["requirements.txt"], "agent_diagnostics": {"verified": True}})
-        return json.dumps({"fixed": True, "summary": "Replaced unsupported op", "modified_files": ["model.py"], "agent_diagnostics": {"verified": True}})
+            return json.dumps(
+                {
+                    "fixed": True,
+                    "summary": "Installed torch_npu; dependency closure verified; no handoff needed",
+                    "modified_files": ["requirements.txt"],
+                    "agent_diagnostics": {"verified": True},
+                }
+            )
+        return json.dumps(
+            {
+                "fixed": True,
+                "summary": "Replaced unsupported op",
+                "modified_files": ["model.py"],
+                "agent_diagnostics": {"verified": True},
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
@@ -3230,7 +3573,10 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert "fixer_outputs" in history[0]
     fixer0 = history[0]["fixer_outputs"]
     assert "fix_dependency" in fixer0
-    assert fixer0["fix_dependency"]["summary"] == "Installed torch_npu; dependency closure verified; no handoff needed"
+    assert (
+        fixer0["fix_dependency"]["summary"]
+        == "Installed torch_npu; dependency closure verified; no handoff needed"
+    )
     assert fixer0["fix_dependency"]["modified_files"] == ["requirements.txt"]
     assert fixer0["fix_dependency"]["agent_diagnostics"] == {"verified": "True"}
     assert "fixer_outputs" in history[1]
@@ -3248,16 +3594,24 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
     assert "runtime_error_artifact_path" in prompt_contexts["fix_operator_prompt"]
     assert "runtime_card_artifact_path" in prompt_contexts["fix_operator_prompt"]
     assert "operator_custom_op_guidance" in prompt_contexts["fix_operator_prompt"]
-    assert "operator_repair_context_artifact_path" not in prompt_contexts["fix_operator_prompt"]
+    assert (
+        "operator_repair_context_artifact_path"
+        not in prompt_contexts["fix_operator_prompt"]
+    )
 
     formatted = executor._format_error_analyzer_history(
         history,
         step_outputs={},
-        state={"error_analysis": {"category": "operator", "repair_role": "operator_fixer"}},
+        state={
+            "error_analysis": {"category": "operator", "repair_role": "operator_fixer"}
+        },
     )
     assert "| Iter 1 | success |" in formatted
     assert "dependency | dependency_fixer |" in formatted
-    assert "| Iter 2 | success |" in formatted and "operator | operator_fixer |" in formatted
+    assert (
+        "| Iter 2 | success |" in formatted
+        and "operator | operator_fixer |" in formatted
+    )
     assert "Latest error category: operator (repair role: operator_fixer)" in formatted
     assert "Installed torch_npu" in formatted
     assert "Replaced unsupported op" in formatted
@@ -3270,7 +3624,10 @@ def test_loop_history_preserves_per_iteration_error_analysis_role(tmp_path: Path
         step_outputs={},
         state={},
     )
-    assert "| Iter 1 | success | 0.1 | unknown | (none) | (none) | (none) |" in legacy_formatted
+    assert (
+        "| Iter 1 | success | 0.1 | unknown | (none) | (none) | (none) |"
+        in legacy_formatted
+    )
 
 
 def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Path):
@@ -3290,7 +3647,7 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
                 "id": "run_entry_script",
                 "type": "shell",
                 "command": (
-                    f"{python} -c \"import pathlib, sys; "
+                    f'{python} -c "import pathlib, sys; '
                     f"p=pathlib.Path('{(tmp_path / 'flag').as_posix()}'); sys.exit(0 if p.exists() else 1)\""
                 ),
                 "on_failure": "continue",
@@ -3342,20 +3699,24 @@ def test_last_iteration_post_repair_canonical_rerun_allows_success(tmp_path: Pat
     # The fix_dependency LLM creates the flag so the canonical re-run passes.
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
-            return json.dumps({
-                "repair_role": "dependency_fixer",
-                "category": "dependency",
-                "root_cause": "missing flag",
-                "suggested_fix": "create flag file",
-            })
+            return json.dumps(
+                {
+                    "repair_role": "dependency_fixer",
+                    "category": "dependency",
+                    "root_cause": "missing flag",
+                    "suggested_fix": "create flag file",
+                }
+            )
         # dependency_fixer: create the flag file so re-run succeeds
         flag_path = tmp_path / "flag"
         flag_path.write_text("fixed", encoding="utf-8")
-        return json.dumps({
-            "fixed": True,
-            "summary": "Created flag file",
-            "modified_files": [str(flag_path)],
-        })
+        return json.dumps(
+            {
+                "fixed": True,
+                "summary": "Created flag file",
+                "modified_files": [str(flag_path)],
+            }
+        )
 
     session_mgr.send_command.side_effect = respond
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
@@ -3409,12 +3770,17 @@ def test_collect_fixer_outputs_extracts_summary_modified_files_and_diagnostics()
         "analyze_error": {"category": "dependency"},
         "irrelevant": "not a dict",
     }
-    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+    result = WorkflowExecutor._collect_fixer_outputs(
+        WorkflowExecutor.__new__(WorkflowExecutor), step_outputs
+    )
 
     assert result is not None
     assert "fix_dependency" in result
     assert result["fix_dependency"]["summary"] == "Installed torch_npu==2.1.0"
-    assert result["fix_dependency"]["modified_files"] == ["requirements.txt", "setup.cfg"]
+    assert result["fix_dependency"]["modified_files"] == [
+        "requirements.txt",
+        "setup.cfg",
+    ]
     assert result["fix_dependency"]["agent_diagnostics"] == {"verified": "True"}
     assert "fix_code" in result
     assert result["fix_code"]["summary"] == "Replaced .cuda() calls"
@@ -3425,8 +3791,13 @@ def test_collect_fixer_outputs_extracts_summary_modified_files_and_diagnostics()
 
 
 def test_collect_fixer_outputs_returns_none_when_no_fixers():
-    step_outputs = {"analyze_error": {"category": "operator"}, "script_stderr": "error text"}
-    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+    step_outputs = {
+        "analyze_error": {"category": "operator"},
+        "script_stderr": "error text",
+    }
+    result = WorkflowExecutor._collect_fixer_outputs(
+        WorkflowExecutor.__new__(WorkflowExecutor), step_outputs
+    )
     assert result is None
 
 
@@ -3445,7 +3816,9 @@ def test_collect_fixer_outputs_preserves_structured_handoff_and_remaining_fields
         }
     }
 
-    result = WorkflowExecutor._collect_fixer_outputs(WorkflowExecutor.__new__(WorkflowExecutor), step_outputs)
+    result = WorkflowExecutor._collect_fixer_outputs(
+        WorkflowExecutor.__new__(WorkflowExecutor), step_outputs
+    )
 
     assert result is not None
     assert result["fix_code"]["handoff"] == {
@@ -3453,9 +3826,17 @@ def test_collect_fixer_outputs_preserves_structured_handoff_and_remaining_fields
         "reason": "requires domain follow-up",
         "blocking": True,
     }
-    assert result["fix_code"]["validation_result"] == {"passed": False, "errors": ["still fails"]}
-    assert result["fix_code"]["remaining_error_summary"] == "One blocker remains after this fixer"
-    assert result["fix_code"]["remaining_blockers"] == [{"kind": "runtime", "detail": "missing adapter"}]
+    assert result["fix_code"]["validation_result"] == {
+        "passed": False,
+        "errors": ["still fails"],
+    }
+    assert (
+        result["fix_code"]["remaining_error_summary"]
+        == "One blocker remains after this fixer"
+    )
+    assert result["fix_code"]["remaining_blockers"] == [
+        {"kind": "runtime", "detail": "missing adapter"}
+    ]
 
 
 def test_format_error_analyzer_history_renders_fixer_outputs():
@@ -3521,7 +3902,10 @@ def test_format_error_analyzer_history_renders_structured_handoff_for_analyzer()
                         "reason": "needs targeted follow-up",
                         "blocking": True,
                     },
-                    "validation_result": {"passed": False, "errors": ["blocker remains"]},
+                    "validation_result": {
+                        "passed": False,
+                        "errors": ["blocker remains"],
+                    },
                     "remaining_error_summary": "The runtime blocker is still present",
                 }
             },
@@ -3529,11 +3913,19 @@ def test_format_error_analyzer_history_renders_structured_handoff_for_analyzer()
     ]
 
     executor = WorkflowExecutor.__new__(WorkflowExecutor)
-    formatted = executor._format_error_analyzer_history(history, step_outputs={}, state={})
+    formatted = executor._format_error_analyzer_history(
+        history, step_outputs={}, state={}
+    )
 
     assert "## Previous Fixer Outputs" in formatted
-    assert "Handoff: role=generic_specialist; reason=needs targeted follow-up; blocking=True" in formatted
-    assert "Validation Result: {\"passed\": false, \"errors\": [\"blocker remains\"]}" in formatted
+    assert (
+        "Handoff: role=generic_specialist; reason=needs targeted follow-up; blocking=True"
+        in formatted
+    )
+    assert (
+        'Validation Result: {"passed": false, "errors": ["blocker remains"]}'
+        in formatted
+    )
     assert "Remaining Error Summary: The runtime blocker is still present" in formatted
 
 
@@ -3566,7 +3958,9 @@ def test_format_history_summary_renders_fixer_outputs():
     executor = WorkflowExecutor.__new__(WorkflowExecutor)
     formatted = executor._format_history_summary(history)
 
-    assert "| Iteration | Status | Duration | Summary | Agent Diagnostics |" in formatted
+    assert (
+        "| Iteration | Status | Duration | Summary | Agent Diagnostics |" in formatted
+    )
     assert "| 1 | failure | 1.5 | Installed torch_npu |" in formatted
     assert "| 2 | success | 2.0 | Added AscendC kernel | operator fixed |" in formatted
 
@@ -3574,7 +3968,9 @@ def test_format_history_summary_renders_fixer_outputs():
     assert "(No previous repair attempts)" in empty
 
 
-def _entry_script_revision_workflow(max_iterations: int = 3, max_revisions: int = 2) -> WorkflowDefinition:
+def _entry_script_revision_workflow(
+    max_iterations: int = 3, max_revisions: int = 2
+) -> WorkflowDefinition:
     sub_workflow = SubWorkflowDefinition(
         id="repair_loop",
         type="loop",
@@ -3625,7 +4021,9 @@ def _entry_script_revision_workflow(max_iterations: int = 3, max_revisions: int 
     )
 
 
-def _entry_script_revision_executor(tmp_path: Path, workflow: WorkflowDefinition) -> WorkflowExecutor:
+def _entry_script_revision_executor(
+    tmp_path: Path, workflow: WorkflowDefinition
+) -> WorkflowExecutor:
     session_mgr = MagicMock()
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
@@ -3648,31 +4046,38 @@ def _entry_script_revision_executor(tmp_path: Path, workflow: WorkflowDefinition
     return executor
 
 
-def test_entry_script_action_revises_next_loop_command_without_consuming_repair_iteration(tmp_path: Path):
+def test_entry_script_action_revises_next_loop_command_without_consuming_repair_iteration(
+    tmp_path: Path,
+):
     workflow = _entry_script_revision_workflow(max_iterations=1, max_revisions=2)
     executor = _entry_script_revision_executor(tmp_path, workflow)
     revised_script = tmp_path / "final_evidence_validate.py"
-    revised_script.write_text("from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8")
+    revised_script.write_text(
+        "from pathlib import Path\nPath('entry-ok').write_text('ok')\n",
+        encoding="utf-8",
+    )
     revised_command = (
         f'{sys.executable.replace(chr(92), "/")} "{revised_script.as_posix()}"'
     )
-    executor.session_mgr.send_command.return_value = json.dumps({
-        "repair_role": "",
-        "category": "validation",
-        "root_cause": "Phase 3 command used the wrong script",
-        "suggested_fix": "Regenerate the command",
-        "entry_script_action": {
-            "needed": True,
-            "action": "regenerate",
-            "reason": "Use the generated validation script",
-            "entry_script_path": str(revised_script),
-            "run_command": revised_command,
-        },
-    })
+    executor.session_mgr.send_command.return_value = json.dumps(
+        {
+            "repair_role": "",
+            "category": "validation",
+            "root_cause": "Phase 3 command used the wrong script",
+            "suggested_fix": "Regenerate the command",
+            "entry_script_action": {
+                "needed": True,
+                "action": "regenerate",
+                "reason": "Use the generated validation script",
+                "entry_script_path": str(revised_script),
+                "run_command": revised_command,
+            },
+        }
+    )
     state = {
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
-            "run_command": f"{sys.executable} -c \"import sys; sys.exit(1)\"",
+            "run_command": f'{sys.executable} -c "import sys; sys.exit(1)"',
             "phase5_entry_script_revision_allowed": True,
         }
     }
@@ -3700,47 +4105,65 @@ def test_entry_script_action_revises_next_loop_command_without_consuming_repair_
     assert result["loop_state"]["entry_script"] == revised_command
     assert result["loop_state"]["entry_script_revision_count"] == 1
     assert result["loop_state"]["entry_script_revision_requests"][0]["applied"] is True
-    assert result["loop_state"]["entry_script_revision_requests"][0]["revision_number"] == 1
+    assert (
+        result["loop_state"]["entry_script_revision_requests"][0]["revision_number"]
+        == 1
+    )
     assert len(result["loop_history"]) == 1
     assert result["loop_history"][0]["iteration"] == 1
     assert "entry_script_action" not in result["loop_history"][0]
     assert "analyze_error" not in result["loop_history"][0]["step_outputs_summary"]
     assert "fix_code" not in result["loop_history"][0]["step_outputs_summary"]
-    called_sessions = [call.args[0] for call in executor.session_mgr.send_command.call_args_list]
+    called_sessions = [
+        call.args[0] for call in executor.session_mgr.send_command.call_args_list
+    ]
     assert called_sessions == ["session:error_analyzer"]
 
 
-def test_entry_script_action_with_repair_role_dispatches_after_command_revision(tmp_path: Path):
+def test_entry_script_action_with_repair_role_dispatches_after_command_revision(
+    tmp_path: Path,
+):
     workflow = _entry_script_revision_workflow(max_iterations=1, max_revisions=2)
     executor = _entry_script_revision_executor(tmp_path, workflow)
     revised_script = tmp_path / "final_evidence_validate.py"
-    revised_script.write_text("from pathlib import Path\nPath('entry-ok').write_text('ok')\n", encoding="utf-8")
+    revised_script.write_text(
+        "from pathlib import Path\nPath('entry-ok').write_text('ok')\n",
+        encoding="utf-8",
+    )
     revised_command = (
         f'{sys.executable.replace(chr(92), "/")} "{revised_script.as_posix()}"'
     )
 
     def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
-            return json.dumps({
-                "repair_role": "code_adapter",
-                "category": "validation",
-                "root_cause": "Phase 3 command and source both need repair",
-                "suggested_fix": "Revise command, then edit source",
-                "entry_script_action": {
-                    "needed": True,
-                    "action": "modify",
-                    "reason": "Use the generated validation script",
-                    "entry_script_path": str(revised_script),
-                    "run_command": revised_command,
-                },
-            })
-        return json.dumps({"fixed": True, "summary": "Updated validation source", "modified_files": [str(revised_script)]})
+            return json.dumps(
+                {
+                    "repair_role": "code_adapter",
+                    "category": "validation",
+                    "root_cause": "Phase 3 command and source both need repair",
+                    "suggested_fix": "Revise command, then edit source",
+                    "entry_script_action": {
+                        "needed": True,
+                        "action": "modify",
+                        "reason": "Use the generated validation script",
+                        "entry_script_path": str(revised_script),
+                        "run_command": revised_command,
+                    },
+                }
+            )
+        return json.dumps(
+            {
+                "fixed": True,
+                "summary": "Updated validation source",
+                "modified_files": [str(revised_script)],
+            }
+        )
 
     executor.session_mgr.send_command.side_effect = respond
     state = {
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
-            "run_command": f"{sys.executable} -c \"import sys; sys.exit(1)\"",
+            "run_command": f'{sys.executable} -c "import sys; sys.exit(1)"',
             "phase5_entry_script_revision_allowed": True,
         }
     }
@@ -3762,13 +4185,20 @@ def test_entry_script_action_with_repair_role_dispatches_after_command_revision(
     assert result["status"] == "success"
     assert state["phase_3_entry_script"]["run_command"] == revised_command
     assert result["loop_history"][0]["entry_script_action"]["applied"] is True
-    assert result["loop_history"][0]["fixer_outputs"]["fix_code"]["summary"] == "Updated validation source"
+    assert (
+        result["loop_history"][0]["fixer_outputs"]["fix_code"]["summary"]
+        == "Updated validation source"
+    )
     assert (tmp_path / "entry-ok").read_text(encoding="utf-8") == "ok"
-    called_sessions = [call.args[0] for call in executor.session_mgr.send_command.call_args_list]
+    called_sessions = [
+        call.args[0] for call in executor.session_mgr.send_command.call_args_list
+    ]
     assert called_sessions == ["session:error_analyzer", "session:code_adapter"]
 
 
-def test_entry_script_action_max_revision_limit_records_without_applying(tmp_path: Path):
+def test_entry_script_action_max_revision_limit_records_without_applying(
+    tmp_path: Path,
+):
     workflow = _entry_script_revision_workflow(max_iterations=2, max_revisions=1)
     executor = _entry_script_revision_executor(tmp_path, workflow)
     first_revision_script = tmp_path / "first_revision.py"
@@ -3784,23 +4214,31 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
     def respond_with_iterator(session_id: str, _prompt: str, timeout: int = 600) -> str:
         if session_id == "session:error_analyzer":
             command = next(analyzer_outputs)
-            return json.dumps({
-                "repair_role": "code_adapter",
-                "category": "validation",
-                "root_cause": "entry command mismatch",
-                "suggested_fix": "revise command",
-                "entry_script_action": {
-                    "needed": True,
-                    "action": "modify",
-                    "reason": "adjust command",
-                    "entry_script_path": "",
-                    "run_command": command,
-                },
-            })
+            return json.dumps(
+                {
+                    "repair_role": "code_adapter",
+                    "category": "validation",
+                    "root_cause": "entry command mismatch",
+                    "suggested_fix": "revise command",
+                    "entry_script_action": {
+                        "needed": True,
+                        "action": "modify",
+                        "reason": "adjust command",
+                        "entry_script_path": "",
+                        "run_command": command,
+                    },
+                }
+            )
         return json.dumps({"fixed": True})
 
     executor.session_mgr.send_command.side_effect = respond_with_iterator
-    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": f"{sys.executable} -c \"import sys; sys.exit(1)\"", "phase5_entry_script_revision_allowed": True}}
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "old.py",
+            "run_command": f'{sys.executable} -c "import sys; sys.exit(1)"',
+            "phase5_entry_script_revision_allowed": True,
+        }
+    }
 
     result = executor._execute_loop_phase(
         PhaseDefinition(
@@ -3823,9 +4261,14 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
     assert requests[1]["blocked_reason"] == "max_revisions_exceeded"
     assert state["phase_3_entry_script"]["run_command"] == first_revision
     assert result["loop_history"][1]["entry_script_action"]["applied"] is False
-    assert result["loop_history"][1]["entry_script_action"]["blocked_reason"] == "max_revisions_exceeded"
+    assert (
+        result["loop_history"][1]["entry_script_action"]["blocked_reason"]
+        == "max_revisions_exceeded"
+    )
     assert result["loop_history"][1]["repair_role"] == "code_adapter"
-    called_sessions = [call.args[0] for call in executor.session_mgr.send_command.call_args_list]
+    called_sessions = [
+        call.args[0] for call in executor.session_mgr.send_command.call_args_list
+    ]
     assert called_sessions == [
         "session:error_analyzer",
         "session:code_adapter",
@@ -3835,8 +4278,15 @@ def test_entry_script_action_max_revision_limit_records_without_applying(tmp_pat
 
 
 def test_entry_script_action_blocks_when_phase3_contract_flag_false(tmp_path: Path):
-    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
-    state = {"phase_3_entry_script": {"entry_script_path": "old.py", "run_command": "python old.py"}}
+    executor = _entry_script_revision_executor(
+        tmp_path, _entry_script_revision_workflow()
+    )
+    state = {
+        "phase_3_entry_script": {
+            "entry_script_path": "old.py",
+            "run_command": "python old.py",
+        }
+    }
     loop_vars = {"entry_script": "python old.py"}
     loop_state: dict[str, object] = {
         "entry_script_revision_count": 0,
@@ -3888,8 +4338,12 @@ def test_entry_script_action_blocks_when_phase3_contract_flag_false(tmp_path: Pa
         "MPLBACKEND=Agg bash new.py",
     ],
 )
-def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_command: str):
-    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+def test_entry_script_action_blocks_unsafe_revised_command(
+    tmp_path: Path, run_command: str
+):
+    executor = _entry_script_revision_executor(
+        tmp_path, _entry_script_revision_workflow()
+    )
     state = {
         "phase_3_entry_script": {
             "entry_script_path": "old.py",
@@ -3926,7 +4380,9 @@ def test_entry_script_action_blocks_unsafe_revised_command(tmp_path: Path, run_c
     assert state["phase_3_entry_script"]["run_command"] == "python old.py"
 
 
-def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_required(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_required(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -3937,7 +4393,12 @@ def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_req
         agent="main_engineer",
     )
     executor = WorkflowExecutor(
-        WorkflowDefinition(name="phase3-custom-op-required", version="1.0", phases=[phase], terminals=[]),
+        WorkflowDefinition(
+            name="phase3-custom-op-required",
+            version="1.0",
+            phases=[phase],
+            terminals=[],
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -3959,7 +4420,9 @@ def test_workflow_executor_phase3_legacy_output_fails_when_custom_op_context_req
     assert any("required_report_paths" in error for error in result["errors"])
 
 
-def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -3970,7 +4433,9 @@ def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context
         agent="main_engineer",
     )
     executor = WorkflowExecutor(
-        WorkflowDefinition(name="phase3-legacy", version="1.0", phases=[phase], terminals=[]),
+        WorkflowDefinition(
+            name="phase3-legacy", version="1.0", phases=[phase], terminals=[]
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -3991,7 +4456,9 @@ def test_workflow_executor_phase3_legacy_output_passes_without_custom_op_context
     assert result["passed"] is True
 
 
-def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_op_context(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_op_context(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -4002,7 +4469,12 @@ def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_o
         agent="main_engineer",
     )
     executor = WorkflowExecutor(
-        WorkflowDefinition(name="phase3-negative-custom-op", version="1.0", phases=[phase], terminals=[]),
+        WorkflowDefinition(
+            name="phase3-negative-custom-op",
+            version="1.0",
+            phases=[phase],
+            terminals=[],
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -4028,7 +4500,9 @@ def test_workflow_executor_phase3_negative_custom_op_notes_do_not_force_custom_o
         assert result["passed"] is True
 
 
-def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_op_context(tmp_path: Path) -> None:
+def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_op_context(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -4039,7 +4513,12 @@ def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_o
         agent="main_engineer",
     )
     executor = WorkflowExecutor(
-        WorkflowDefinition(name="phase3-structured-custom-op", version="1.0", phases=[phase], terminals=[]),
+        WorkflowDefinition(
+            name="phase3-structured-custom-op",
+            version="1.0",
+            phases=[phase],
+            terminals=[],
+        ),
         MagicMock(),
         MagicMock(),
         MagicMock(),
@@ -4095,7 +4574,9 @@ def test_workflow_executor_phase3_structured_custom_op_surface_controls_custom_o
     assert contract_output["entry_script_kind"] == "custom_op_full_validation"
 
 
-def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tmp_path: Path) -> None:
+def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_35_static_validate",
         name="Static Validate",
@@ -4119,27 +4600,31 @@ def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tm
     validator.register_validator("entry_static", validate_entry_static)
     session_mgr.get_or_create.return_value = "session:main"
     session_mgr.send_command.side_effect = [
-        json.dumps({
-            "validation_passed": True,
-            "issues": [],
-            "fix_plan": "Legacy static pass shape.",
-        }),
-        json.dumps({
-            "validation_passed": True,
-            "issues": [],
-            "fix_plan": "Full custom-op static pass shape.",
-            "custom_op_requirements_checked": True,
-            "script_source_driven_inventory": True,
-            "script_emits_fine_grained_units": True,
-            "script_maps_public_api_to_units": True,
-            "script_discovers_full_inventory": True,
-            "script_records_native_operator_symbols": True,
-            "script_runs_project_api_custom_ops": True,
-            "script_rejects_report_only_success": True,
-            "script_requires_project_local_artifacts": True,
-            "script_requires_numeric_performance": True,
-            "script_checks_no_fallback": True,
-        }),
+        json.dumps(
+            {
+                "validation_passed": True,
+                "issues": [],
+                "fix_plan": "Legacy static pass shape.",
+            }
+        ),
+        json.dumps(
+            {
+                "validation_passed": True,
+                "issues": [],
+                "fix_plan": "Full custom-op static pass shape.",
+                "custom_op_requirements_checked": True,
+                "script_source_driven_inventory": True,
+                "script_emits_fine_grained_units": True,
+                "script_maps_public_api_to_units": True,
+                "script_discovers_full_inventory": True,
+                "script_records_native_operator_symbols": True,
+                "script_runs_project_api_custom_ops": True,
+                "script_rejects_report_only_success": True,
+                "script_requires_project_local_artifacts": True,
+                "script_requires_numeric_performance": True,
+                "script_checks_no_fallback": True,
+            }
+        ),
     ]
     prompt_loader.load_prompt.return_value = "prompt"
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
@@ -4167,7 +4652,9 @@ def test_workflow_executor_phase35_injects_custom_op_marker_before_validation(tm
     assert session_mgr.send_command.call_count == 2
 
 
-def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mark_validated(tmp_path: Path) -> None:
+def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mark_validated(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_35_static_validate",
         name="Static Validate",
@@ -4195,7 +4682,9 @@ def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mar
         "fix_plan": "Legacy static pass shape.",
     }
     session_mgr.get_or_create.return_value = "session:main"
-    session_mgr.send_command.side_effect = [json.dumps(legacy_static_output) for _ in range(3)]
+    session_mgr.send_command.side_effect = [
+        json.dumps(legacy_static_output) for _ in range(3)
+    ]
     prompt_loader.load_prompt.return_value = "prompt"
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
@@ -4217,14 +4706,21 @@ def test_workflow_executor_phase35_exhausted_validation_retries_fail_without_mar
 
     assert status == "failure"
     assert output["custom_op_static_required"] is True
-    assert any("custom-op static validation missing booleans" in error for error in output["validation_errors"])
+    assert any(
+        "custom-op static validation missing booleans" in error
+        for error in output["validation_errors"]
+    )
     artifact_store.save_phase_output.assert_called_once()
     artifact_store.mark_validated.assert_not_called()
     assert session_mgr.send_command.call_count == 3
 
 
-def test_entry_script_action_needed_false_string_does_not_apply_or_count(tmp_path: Path):
-    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+def test_entry_script_action_needed_false_string_does_not_apply_or_count(
+    tmp_path: Path,
+):
+    executor = _entry_script_revision_executor(
+        tmp_path, _entry_script_revision_workflow()
+    )
     state = {"phase_3_entry_script": {"run_command": "python old.py"}}
     loop_vars = {"entry_script": "python old.py"}
     step_outputs: dict[str, object] = {}
@@ -4272,8 +4768,12 @@ def test_entry_script_action_needed_string_normalization():
         assert normalize(action)["needed"] is False
 
 
-def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_context(tmp_path: Path):
-    prompt_content = (Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery.md").read_text(encoding="utf-8")
+def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_context(
+    tmp_path: Path,
+):
+    prompt_content = (
+        Path(__file__).resolve().parent.parent / "prompts" / "phase_error_recovery.md"
+    ).read_text(encoding="utf-8")
     assert "entry_script_contract" in prompt_content
     assert "entry_script_action" in prompt_content
     assert '"needed": false' in prompt_content
@@ -4283,7 +4783,9 @@ def test_analyze_error_prompt_has_entry_script_action_schema_and_contract_contex
     assert "Source edits must be handled by the selected repair agent" in prompt_content
     assert "reason freely" not in prompt_content
 
-    executor = _entry_script_revision_executor(tmp_path, _entry_script_revision_workflow())
+    executor = _entry_script_revision_executor(
+        tmp_path, _entry_script_revision_workflow()
+    )
     input_ctx: dict[str, str] = {}
     executor._inject_sub_workflow_context(
         input_ctx,
@@ -4449,7 +4951,9 @@ def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
     _ = artifact_path.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
     build_log = project_dir / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
-    _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libop_1.so\n", encoding="utf-8")
+    _ = build_log.write_text(
+        "g++ op_kernel.o -lascendcl -o libop_1.so\n", encoding="utf-8"
+    )
     _ = (project_dir / "migration_reports" / "migration_manifest.json").write_text(
         json.dumps({"required_units": ["op_1"]}),
         encoding="utf-8",
@@ -4462,13 +4966,17 @@ def _custom_op_gate_workflow(max_iterations: int = 1) -> WorkflowDefinition:
         version="1.0",
         phases=[],
         terminals=["complete"],
-        agents={"error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}},
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}
+        },
         sub_workflows={
             "repair_loop": SubWorkflowDefinition(
                 id="repair_loop",
                 type="loop",
                 max_iterations=max_iterations,
-                stop_conditions=[{"condition": "$.script_exit_code == 0", "status": "success"}],
+                stop_conditions=[
+                    {"condition": "$.script_exit_code == 0", "status": "success"}
+                ],
                 phases=[
                     {
                         "id": "run_entry_script",
@@ -4504,12 +5012,14 @@ def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
     artifact_store.artifact_dir = str(tmp_path / "artifacts")
     artifact_store.raw_dir = str(tmp_path / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
-    session_mgr.send_command.return_value = json.dumps({
-        "repair_role": "code_adapter",
-        "category": "validation",
-        "root_cause": "final evidence gate failed",
-        "suggested_fix": "complete custom-op evidence",
-    })
+    session_mgr.send_command.return_value = json.dumps(
+        {
+            "repair_role": "code_adapter",
+            "category": "validation",
+            "root_cause": "final evidence gate failed",
+            "suggested_fix": "complete custom-op evidence",
+        }
+    )
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
     return WorkflowExecutor(
         _custom_op_gate_workflow(),
@@ -4522,8 +5032,9 @@ def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
     )
 
 
-
-def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_default(tmp_path: Path) -> None:
+def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_default(
+    tmp_path: Path,
+) -> None:
     """Rule-based migration without explicit backend defaults to report_only (safe)."""
     source_file = tmp_path / "model.py"
     original = (
@@ -4533,7 +5044,9 @@ def test_rule_based_migration_builtin_without_backend_uses_report_only_safe_defa
         "    tensor = torch.ones(1).cuda()\n"
     )
     source_file.write_text(original, encoding="utf-8")
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
     executor = WorkflowExecutor(
         workflow,
         MagicMock(),
@@ -4575,7 +5088,9 @@ def test_rule_based_migration_builtin_with_backend_ppu(tmp_path: Path) -> None:
         "    tensor = torch.ones(1).cuda()\n"
     )
     source_file.write_text(original, encoding="utf-8")
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
     executor = WorkflowExecutor(
         workflow,
         MagicMock(),
@@ -4592,7 +5107,11 @@ def test_rule_based_migration_builtin_with_backend_ppu(tmp_path: Path) -> None:
         output_schema={},
         type="builtin",
     )
-    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py", "backend": "ppu"})
+    setattr(
+        phase,
+        "params",
+        {"operation": "rule_based_migration", "pattern": "*.py", "backend": "ppu"},
+    )
 
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
@@ -4615,7 +5134,9 @@ def test_rule_based_migration_builtin_with_backend_report_only(tmp_path: Path) -
         "    tensor = torch.ones(1).cuda()\n"
     )
     source_file.write_text(original, encoding="utf-8")
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
     executor = WorkflowExecutor(
         workflow,
         MagicMock(),
@@ -4632,7 +5153,15 @@ def test_rule_based_migration_builtin_with_backend_report_only(tmp_path: Path) -
         output_schema={},
         type="builtin",
     )
-    setattr(phase, "params", {"operation": "rule_based_migration", "pattern": "*.py", "backend": "report_only"})
+    setattr(
+        phase,
+        "params",
+        {
+            "operation": "rule_based_migration",
+            "pattern": "*.py",
+            "backend": "report_only",
+        },
+    )
 
     status, output = executor._execute_builtin_phase(phase, state={}, context={})
 
@@ -4644,7 +5173,9 @@ def test_rule_based_migration_builtin_with_backend_report_only(tmp_path: Path) -
     assert migrated == original, "report_only backend must not modify files"
 
 
-def test_rule_based_migration_top_level_strategy_file_overrides_platform(tmp_path: Path) -> None:
+def test_rule_based_migration_top_level_strategy_file_overrides_platform(
+    tmp_path: Path,
+) -> None:
     from core.platform_policy import TargetPlatformConfig
 
     source_file = tmp_path / "model.py"
@@ -4683,11 +5214,15 @@ def test_rule_based_migration_top_level_strategy_file_overrides_platform(tmp_pat
     assert source_file.read_text(encoding="utf-8") == original
 
 
-def test_rule_based_migration_platform_strategy_used_without_workflow_override(tmp_path: Path) -> None:
+def test_rule_based_migration_platform_strategy_used_without_workflow_override(
+    tmp_path: Path,
+) -> None:
     from core.platform_policy import TargetPlatformConfig
 
     source_file = tmp_path / "model.py"
-    source_file.write_text("import torch\nprint(torch.cuda.is_available())\n", encoding="utf-8")
+    source_file.write_text(
+        "import torch\nprint(torch.cuda.is_available())\n", encoding="utf-8"
+    )
     workflow = WorkflowDefinition(
         name="rule-builtin",
         version="1.0",
@@ -4722,7 +5257,9 @@ def test_rule_based_migration_platform_strategy_used_without_workflow_override(t
 
 
 def test_builtin_phase_missing_operation_fails(tmp_path: Path) -> None:
-    workflow = WorkflowDefinition(name="rule-builtin", version="1.0", phases=[], terminals=["complete"])
+    workflow = WorkflowDefinition(
+        name="rule-builtin", version="1.0", phases=[], terminals=["complete"]
+    )
     executor = WorkflowExecutor(
         workflow,
         MagicMock(),
@@ -4788,12 +5325,19 @@ def test_builtin_phase_missing_operation_does_not_fall_through(tmp_path: Path) -
     assert "phase_5_validation" not in result["phase_results"]
 
 
-def test_experience_memory_workflow_has_custom_op_final_gate_after_entry_script() -> None:
-    workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+def test_experience_memory_workflow_has_custom_op_final_gate_after_entry_script() -> (
+    None
+):
+    workflow_path = (
+        Path(__file__).resolve().parent.parent
+        / "workflows"
+        / "experience_memory_test.yaml"
+    )
     workflow = load_workflow(str(workflow_path))
 
     gate_phase = next(
-        phase for phase in workflow.sub_workflows["repair_loop"].phases
+        phase
+        for phase in workflow.sub_workflows["repair_loop"].phases
         if isinstance(phase, dict) and phase.get("id") == "custom_op_final_gate"
     )
 
@@ -4802,12 +5346,23 @@ def test_experience_memory_workflow_has_custom_op_final_gate_after_entry_script(
     assert gate_phase["params"] == {"operation": "custom_op_final_gate"}
 
 
-def test_experience_memory_custom_op_gate_skips_for_non_custom_contract(tmp_path: Path) -> None:
-    workflow_path = Path(__file__).resolve().parent.parent / "workflows" / "experience_memory_test.yaml"
+def test_experience_memory_custom_op_gate_skips_for_non_custom_contract(
+    tmp_path: Path,
+) -> None:
+    workflow_path = (
+        Path(__file__).resolve().parent.parent
+        / "workflows"
+        / "experience_memory_test.yaml"
+    )
     workflow = load_workflow(str(workflow_path))
 
-    phase_ids = [phase.get("id") for phase in workflow.sub_workflows["repair_loop"].phases if isinstance(phase, dict)]
+    phase_ids = [
+        phase.get("id")
+        for phase in workflow.sub_workflows["repair_loop"].phases
+        if isinstance(phase, dict)
+    ]
     assert "custom_op_final_gate" in phase_ids
+
 
 def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
@@ -4829,7 +5384,10 @@ def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> N
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4837,7 +5395,9 @@ def test_missing_custom_op_final_gate_blocks_phase5_success(tmp_path: Path) -> N
 
     assert result["status"] == "failure"
     assert result["loop_state"]["script_exit_code"] == 1
-    assert "Custom-op final evidence gate failed" in result["loop_state"]["script_stderr"]
+    assert (
+        "Custom-op final evidence gate failed" in result["loop_state"]["script_stderr"]
+    )
     assert result["loop_state"]["custom_op_final_gate"]["passed"] is False
     executor.session_mgr.send_command.assert_called_once()
 
@@ -4848,7 +5408,9 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
     payload = _custom_op_gate_payload()
     performance_report = cast(dict[str, object], payload["performance_report"])
     performance_report["complete"] = False
-    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(payload), encoding="utf-8")
+    (reports_dir / "custom_op_final_gate.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
     executor = _custom_op_gate_executor(tmp_path)
     state = {
         "phase_3_entry_script": {
@@ -4866,7 +5428,10 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4874,13 +5439,20 @@ def test_incomplete_performance_report_blocks_phase5_success(tmp_path: Path) -> 
 
     assert result["status"] == "failure"
     assert result["loop_state"]["script_exit_code"] == 1
-    assert any("performance_report.complete" in error for error in result["loop_state"]["custom_op_final_gate"]["errors"])
+    assert any(
+        "performance_report.complete" in error
+        for error in result["loop_state"]["custom_op_final_gate"]["errors"]
+    )
 
 
-def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path) -> None:
+def test_custom_op_final_gate_ignores_outside_project_reports_dir(
+    tmp_path: Path,
+) -> None:
     outside = tmp_path / "outside_reports"
     outside.mkdir()
-    (outside / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
+    (outside / "custom_op_final_gate.json").write_text(
+        json.dumps(_custom_op_gate_payload()), encoding="utf-8"
+    )
     executor = _custom_op_gate_executor(tmp_path)
     state = {
         "phase_3_entry_script": {
@@ -4898,7 +5470,10 @@ def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4907,13 +5482,17 @@ def test_custom_op_final_gate_ignores_outside_project_reports_dir(tmp_path: Path
     assert result["status"] == "failure"
     gate = result["loop_state"]["custom_op_final_gate"]
     assert gate["passed"] is False
-    assert gate["path"] == str((tmp_path / "migration_reports" / "custom_op_final_gate.json").resolve())
+    assert gate["path"] == str(
+        (tmp_path / "migration_reports" / "custom_op_final_gate.json").resolve()
+    )
 
 
 def test_custom_op_final_gate_rejects_oversized_report(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
-    _ = (reports_dir / "custom_op_final_gate.json").write_text("{" + " " * (5 * 1024 * 1024), encoding="utf-8")
+    _ = (reports_dir / "custom_op_final_gate.json").write_text(
+        "{" + " " * (5 * 1024 * 1024), encoding="utf-8"
+    )
     executor = _custom_op_gate_executor(tmp_path)
     state = {
         "phase_3_entry_script": {
@@ -4931,21 +5510,29 @@ def test_custom_op_final_gate_rejects_oversized_report(tmp_path: Path) -> None:
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
     )
 
     assert result["status"] == "failure"
-    assert any("too large" in error for error in result["loop_state"]["custom_op_final_gate"]["errors"])
+    assert any(
+        "too large" in error
+        for error in result["loop_state"]["custom_op_final_gate"]["errors"]
+    )
 
 
 def test_valid_custom_op_final_gate_allows_phase5_success(tmp_path: Path) -> None:
     reports_dir = tmp_path / "migration_reports"
     reports_dir.mkdir()
     _write_native_custom_op_gate_artifacts(tmp_path)
-    (reports_dir / "custom_op_final_gate.json").write_text(json.dumps(_custom_op_gate_payload()), encoding="utf-8")
+    (reports_dir / "custom_op_final_gate.json").write_text(
+        json.dumps(_custom_op_gate_payload()), encoding="utf-8"
+    )
     executor = _custom_op_gate_executor(tmp_path)
     state = {
         "phase_3_entry_script": {
@@ -4963,7 +5550,10 @@ def test_valid_custom_op_final_gate_allows_phase5_success(tmp_path: Path) -> Non
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -4987,7 +5577,10 @@ def test_non_custom_project_skips_custom_op_final_gate(tmp_path: Path) -> None:
             output_schema={},
             type="loop",
             sub_workflow="repair_loop",
-            input_mapping={"entry_script": "${state.phase_3_entry_script.run_command}", "project_dir": str(tmp_path)},
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
         ),
         state=state,
         context={},
@@ -5014,51 +5607,87 @@ class FakePhase7SessionManager:
         return f"session:{role}"
 
     def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
-        self.sent.append({"session_id": session_id, "command": command, "timeout": timeout})
+        self.sent.append(
+            {"session_id": session_id, "command": command, "timeout": timeout}
+        )
         return json.dumps(self.response)
 
 
-def test_phase7a_orchestration_uses_artifact_backed_evaluator_and_persists_candidates(tmp_path: Path):
+def test_phase7a_orchestration_uses_artifact_backed_evaluator_and_persists_candidates(
+    tmp_path: Path,
+):
     project_root = tmp_path / "project"
     project_root.mkdir()
-    (project_root / "model.py").write_text("import torch\nprint('npu fix')\n", encoding="utf-8")
+    (project_root / "model.py").write_text(
+        "import torch\nprint('npu fix')\n", encoding="utf-8"
+    )
 
     artifact_store = ArtifactStore(str(tmp_path), "run-1")
-    Path(artifact_store.validated_dir, "phase_1_project_analysis_canonical.json").write_text(json.dumps({
-        "project_dir": str(project_root),
-        "dependencies": ["torch"],
-        "unique_project_marker": "artifact-project-context",
-    }), encoding="utf-8")
-    Path(artifact_store.validated_dir, "phase_5_validation_canonical.json").write_text(json.dumps({
-        "final_status": "success",
-        "unique_validation_marker": "artifact-validation-context",
-    }), encoding="utf-8")
-    Path(artifact_store.raw_dir, "phase_run_entry_script_attempt1.json").write_text(json.dumps({
-        "stderr": "missing torch_npu before fix",
-        "unique_raw_marker": "artifact-raw-context",
-    }), encoding="utf-8")
+    Path(
+        artifact_store.validated_dir, "phase_1_project_analysis_canonical.json"
+    ).write_text(
+        json.dumps(
+            {
+                "project_dir": str(project_root),
+                "dependencies": ["torch"],
+                "unique_project_marker": "artifact-project-context",
+            }
+        ),
+        encoding="utf-8",
+    )
+    Path(artifact_store.validated_dir, "phase_5_validation_canonical.json").write_text(
+        json.dumps(
+            {
+                "final_status": "success",
+                "unique_validation_marker": "artifact-validation-context",
+            }
+        ),
+        encoding="utf-8",
+    )
+    Path(artifact_store.raw_dir, "phase_run_entry_script_attempt1.json").write_text(
+        json.dumps(
+            {
+                "stderr": "missing torch_npu before fix",
+                "unique_raw_marker": "artifact-raw-context",
+            }
+        ),
+        encoding="utf-8",
+    )
     Path(artifact_store.journal_path).write_text(
-        json.dumps({"phase_id": "phase_5_validation", "unique_journal_marker": "artifact-journal-context"}) + "\n",
+        json.dumps(
+            {
+                "phase_id": "phase_5_validation",
+                "unique_journal_marker": "artifact-journal-context",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
     store = ExperienceStore(str(tmp_path))
-    session_mgr = FakePhase7SessionManager({
-        "evaluation_summary": "Found dependency pattern",
-        "project_source_root": str(project_root),
-        "candidates": [{
-            "title": "Install torch-npu after CPU torch",
-            "problem_description": "Generic dependency fix",
-            "rough_fix_approach": "Pin CPU torch then install torch-npu",
-            "artifact_evidence": ["validated/phase_5_validation_canonical.json", "raw/phase_run_entry_script_attempt1.json"],
-            "involved_code_files": [{"path": "model.py", "role": "entry"}],
-            "recommended_type": "skill",
-            "category": "dependency",
-            "subtype": "torch_npu_install",
-            "tags": ["torch-npu", "pip"],
-            "confidence": 0.92,
-        }],
-    })
+    session_mgr = FakePhase7SessionManager(
+        {
+            "evaluation_summary": "Found dependency pattern",
+            "project_source_root": str(project_root),
+            "candidates": [
+                {
+                    "title": "Install torch-npu after CPU torch",
+                    "problem_description": "Generic dependency fix",
+                    "rough_fix_approach": "Pin CPU torch then install torch-npu",
+                    "artifact_evidence": [
+                        "validated/phase_5_validation_canonical.json",
+                        "raw/phase_run_entry_script_attempt1.json",
+                    ],
+                    "involved_code_files": [{"path": "model.py", "role": "entry"}],
+                    "recommended_type": "skill",
+                    "category": "dependency",
+                    "subtype": "torch_npu_install",
+                    "tags": ["torch-npu", "pip"],
+                    "confidence": 0.92,
+                }
+            ],
+        }
+    )
     executor = WorkflowExecutor(
         WorkflowDefinition(name="phase7", version="1.0", phases=[], terminals=[]),
         session_mgr,
@@ -5090,35 +5719,45 @@ def test_phase7a_orchestration_uses_artifact_backed_evaluator_and_persists_candi
     candidates = store.read_candidates("run-1")
     assert candidates[0]["candidate_id"] == "candidate-001"
     assert candidates[0]["project_source_root"] == str(project_root)
-    assert (tmp_path / "memory" / "staging" / "run-1" / "evaluation_summary.md").read_text(encoding="utf-8") == "Found dependency pattern"
+    assert (
+        tmp_path / "memory" / "staging" / "run-1" / "evaluation_summary.md"
+    ).read_text(encoding="utf-8") == "Found dependency pattern"
 
 
-def test_phase7b_orchestration_refines_candidates_and_updates_catalog_manifest(tmp_path: Path):
+def test_phase7b_orchestration_refines_candidates_and_updates_catalog_manifest(
+    tmp_path: Path,
+):
     artifact_store = ArtifactStore(str(tmp_path), "run-1")
     store = ExperienceStore(str(tmp_path))
-    store.upsert_index({
-        "id": "run-0-exp-existing",
-        "type": "skill",
-        "status": "staging",
-        "category": "dependency",
-        "subtype": "torch_npu_install",
-        "tags": ["torch-npu", "pip"],
-        "title": "Existing torch-npu install fix",
-        "confidence": 0.7,
-    })
-    store.write_candidate("run-1", "candidate-001", {
-        "candidate_id": "candidate-001",
-        "skill_name": "torch-npu-install-order",
-        "title": "Install torch-npu after CPU torch",
-        "problem_description": "torch-npu dependency resolution failed",
-        "rough_fix_approach": "Install CPU torch first, then torch-npu",
-        "recommended_type": "skill",
-        "category": "dependency",
-        "subtype": "torch_npu_install",
-        "tags": ["torch-npu", "pip"],
-        "confidence": 0.95,
-        "fix_steps": ["Install CPU torch before torch-npu"],
-    })
+    store.upsert_index(
+        {
+            "id": "run-0-exp-existing",
+            "type": "skill",
+            "status": "staging",
+            "category": "dependency",
+            "subtype": "torch_npu_install",
+            "tags": ["torch-npu", "pip"],
+            "title": "Existing torch-npu install fix",
+            "confidence": 0.7,
+        }
+    )
+    store.write_candidate(
+        "run-1",
+        "candidate-001",
+        {
+            "candidate_id": "candidate-001",
+            "skill_name": "torch-npu-install-order",
+            "title": "Install torch-npu after CPU torch",
+            "problem_description": "torch-npu dependency resolution failed",
+            "rough_fix_approach": "Install CPU torch first, then torch-npu",
+            "recommended_type": "skill",
+            "category": "dependency",
+            "subtype": "torch_npu_install",
+            "tags": ["torch-npu", "pip"],
+            "confidence": 0.95,
+            "fix_steps": ["Install CPU torch before torch-npu"],
+        },
+    )
     executor = WorkflowExecutor(
         WorkflowDefinition(name="phase7", version="1.0", phases=[], terminals=[]),
         None,
@@ -5153,12 +5792,16 @@ def test_phase7b_orchestration_refines_candidates_and_updates_catalog_manifest(t
     assert legacy_statuses["run-0-exp-existing"] == "consumed"
 
 
-def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(tmp_path: Path) -> None:
+def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(
+    tmp_path: Path,
+) -> None:
     from core.paths import execution_root
 
     skill_root_name = "__relative_runtime_skills__"
     skill_repo_root = execution_root() / skill_root_name
-    write_runtime_skill(skill_repo_root, "agent-skill", "# Agent Skill\n\nAgent guidance")
+    write_runtime_skill(
+        skill_repo_root, "agent-skill", "# Agent Skill\n\nAgent guidance"
+    )
     try:
         phase = PhaseDefinition(
             id="phase_runtime",
@@ -5167,14 +5810,18 @@ def test_runtime_skill_repo_root_relative_path_resolves_against_execution_root(t
             output_schema={},
             type="llm",
             agent="main_engineer",
-            runtime_skills=RuntimeSkillsConfig(include=["agent-skill"], inject_full=True),
+            runtime_skills=RuntimeSkillsConfig(
+                include=["agent-skill"], inject_full=True
+            ),
         )
         workflow = WorkflowDefinition(
             name="runtime_test",
             version="1.0",
             phases=[phase],
             terminals=["complete"],
-            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            agents={
+                "main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}
+            },
         )
         session_mgr = MagicMock()
         artifact_store = MagicMock()
@@ -5226,11 +5873,19 @@ class TestPhase5ContainerEnvPrefix:
         )
         mock_backend = MagicMock(spec=ContainerBackend)
         mock_backend.run.return_value = MagicMock(
-            exit_code=0, stdout="", stderr="", duration=0.1,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration=0.1,
         )
         executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=mock_backend,
         )
         phase = PhaseDefinition(
@@ -5244,7 +5899,11 @@ class TestPhase5ContainerEnvPrefix:
         setattr(phase, "command", "${loop_vars.entry_script}")
 
         executor._execute_shell_phase(
-            phase, state={}, context={}, loop_vars={"entry_script": cmd}, loop_state={},
+            phase,
+            state={},
+            context={},
+            loop_vars={"entry_script": cmd},
+            loop_state={},
         )
 
         mock_backend.run.assert_called_once()
@@ -5267,11 +5926,19 @@ class TestPhase5ContainerEnvPrefix:
         )
         mock_backend = MagicMock(spec=ContainerBackend)
         mock_backend.run.return_value = MagicMock(
-            exit_code=0, stdout="", stderr="", duration=0.1,
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration=0.1,
         )
         executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=mock_backend,
         )
         phase = PhaseDefinition(
@@ -5285,7 +5952,11 @@ class TestPhase5ContainerEnvPrefix:
         setattr(phase, "command", "${loop_vars.entry_script}")
 
         executor._execute_shell_phase(
-            phase, state={}, context={}, loop_vars={"entry_script": cmd}, loop_state={},
+            phase,
+            state={},
+            context={},
+            loop_vars={"entry_script": cmd},
+            loop_state={},
         )
 
         call_kwargs = mock_backend.run.call_args.kwargs
@@ -5300,17 +5971,29 @@ class TestPhase5ContainerEnvPrefix:
 
 class TestWorkflowExecutorContainerPreflight:
     @patch("core.execution_backend.ContainerBackend")
-    def test_container_workflow_calls_preflight_and_probe(self, MockBackend, tmp_path: Path):
+    def test_container_workflow_calls_preflight_and_probe(
+        self, MockBackend, tmp_path: Path
+    ):
         backend = MagicMock()
         MockBackend.return_value = backend
-        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         backend.set_project_dir.assert_called_once()
         backend.preflight.assert_called_once()
@@ -5320,26 +6003,45 @@ class TestWorkflowExecutorContainerPreflight:
 
     @patch("core.execution_backend.ContainerBackend")
     def test_local_workflow_does_not_call_preflight(self, MockBackend, tmp_path: Path):
-        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"]
+        )
         executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         MockBackend.assert_not_called()
         assert executor.exec_backend is None
         assert executor._container_env_probe is None
 
     @patch("subprocess.run")
-    def test_container_backend_preflight_is_called_on_init(self, mock_run, tmp_path: Path):
+    def test_container_backend_preflight_is_called_on_init(
+        self, mock_run, tmp_path: Path
+    ):
         mock_run.return_value = MagicMock(returncode=0, stdout="init-cid\n", stderr="")
-        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         assert isinstance(executor.exec_backend, ContainerBackend)
         assert executor.exec_backend._container_id == "init-cid"
@@ -5350,32 +6052,51 @@ class TestWorkflowExecutorContainerPreflight:
 
 class TestContainerEnvContextInjection:
     def test_inject_container_env_context_skipped_for_local(self, tmp_path: Path):
-        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
-        executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"]
         )
-        ctx: dict = {}
+        executor = WorkflowExecutor(
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
+        )
+        ctx: dict[str, object] = {}
         executor._inject_container_env_context(ctx)
         assert ctx == {}
 
     @patch("subprocess.run")
-    def test_inject_container_env_context_adds_keys_for_container(self, mock_run, tmp_path: Path):
+    def test_inject_container_env_context_adds_keys_for_container(
+        self, mock_run, tmp_path: Path
+    ):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='{"status": "ok", "python_version": "3.10.1", "platform": "Linux", "cwd": "/workspace"}\n',
             stderr="",
         )
-        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "test:latest"})
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
-        ctx: dict = {}
+        ctx: dict[str, object] = {}
         executor._inject_container_env_context(ctx)
         assert "container_env_facts" in ctx
         assert "container_python_version" in ctx
@@ -5384,16 +6105,25 @@ class TestContainerEnvContextInjection:
     def test_inject_container_env_context_uses_setdefault(self, tmp_path: Path):
         from core.execution_backend import ContainerBackend
 
-        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
-        mock_backend = ContainerBackend(ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"}))
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"]
+        )
+        mock_backend = ContainerBackend(
+            ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
+        )
         mock_backend._container_id = "existing-cid"
         executor = WorkflowExecutor(
-            workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=mock_backend,
         )
         executor._container_env_probe = {"container_id": "existing-cid", "status": "ok"}
-        ctx: dict = {"container_name_or_id": "pre-set"}
+        ctx: dict[str, object] = {"container_name_or_id": "pre-set"}
         executor._inject_container_env_context(ctx)
         assert ctx["container_name_or_id"] == "pre-set"
 
@@ -5405,14 +6135,21 @@ class TestContainerEnvContextInjection:
             encoding="utf-8",
         )
         workflow = WorkflowDefinition(
-            name="review-context", version="1.0", phases=[], terminals=["complete"],
+            name="review-context",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
         )
-        backend = ContainerBackend(ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"}))
+        backend = ContainerBackend(
+            ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
+        )
         backend._container_id = "cid-review"
         backend.set_project_dir(str(tmp_path))
         session_mgr = MagicMock()
         session_mgr.get_or_create.return_value = "s-review"
-        session_mgr.send_command.return_value = '{"verdict": "accept", "reasoning": "ok"}'
+        session_mgr.send_command.return_value = (
+            '{"verdict": "accept", "reasoning": "ok"}'
+        )
         executor = WorkflowExecutor(
             workflow,
             session_mgr,
@@ -5458,12 +6195,22 @@ class TestContainerEnvContextInjection:
 class TestExperienceConfigGate:
     def test_experience_injection_gated_when_workflow_disabled(self, tmp_path: Path):
         phase = PhaseDefinition(
-            id="test", name="T", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer", retrieve_experience=True,
+            id="test",
+            name="T",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
+            retrieve_experience=True,
         )
         workflow = WorkflowDefinition(
-            name="exp_disabled", version="1.0", phases=[phase], terminals=["complete"],
-            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            name="exp_disabled",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
+            agents={
+                "main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}
+            },
             experience=ExperienceConfig(enabled=False, phase7_enabled=True),
         )
         mock_store = MagicMock()
@@ -5475,8 +6222,13 @@ class TestExperienceConfigGate:
 
         with patch("core.experience_query.ExperienceQuerier") as MockQuerier:
             executor = WorkflowExecutor(
-                workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
-                project_dir=str(tmp_path), output_dir=str(tmp_path),
+                workflow,
+                session_mgr,
+                MagicMock(),
+                prompt_loader,
+                MagicMock(),
+                project_dir=str(tmp_path),
+                output_dir=str(tmp_path),
                 experience_store=mock_store,
             )
             result = executor._append_dynamic_experience_markdown(
@@ -5486,15 +6238,25 @@ class TestExperienceConfigGate:
             assert result == "PROMPT"
 
     def test_experience_injection_allowed_when_enabled(self, tmp_path: Path):
-        from dataclasses import dataclass, field
         from core.types import ExperienceConfig
+
         phase = PhaseDefinition(
-            id="test", name="T", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer", retrieve_experience=True,
+            id="test",
+            name="T",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
+            retrieve_experience=True,
         )
         workflow = WorkflowDefinition(
-            name="exp_enabled", version="1.0", phases=[phase], terminals=["complete"],
-            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            name="exp_enabled",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
+            agents={
+                "main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}
+            },
             experience=ExperienceConfig(enabled=True, phase7_enabled=True),
         )
         mock_store = MagicMock()
@@ -5516,24 +6278,36 @@ class TestExperienceConfigGate:
             MockQuerier.return_value = mock_querier
 
             executor = WorkflowExecutor(
-                workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
-                project_dir=str(tmp_path), output_dir=str(tmp_path),
+                workflow,
+                session_mgr,
+                MagicMock(),
+                prompt_loader,
+                MagicMock(),
+                project_dir=str(tmp_path),
+                output_dir=str(tmp_path),
                 experience_store=mock_store,
             )
-            executor._append_dynamic_experience_markdown(
-                "PROMPT", phase, {}, {}, None
-            )
+            executor._append_dynamic_experience_markdown("PROMPT", phase, {}, {}, None)
             MockQuerier.assert_called_once()
 
 
 class TestPhase7SkipAndReroute:
-    def _executor_with_phases(self, tmp_path: Path, phases: list, experience_cfg=None):
+    def _executor_with_phases(
+        self,
+        tmp_path: Path,
+        phases: list[PhaseDefinition],
+        experience_cfg: ExperienceConfig | None = None,
+    ):
         if experience_cfg is None:
             experience_cfg = ExperienceConfig(enabled=True, phase7_enabled=True)
         workflow = WorkflowDefinition(
-            name="phase7_test", version="1.0", phases=phases,
+            name="phase7_test",
+            version="1.0",
+            phases=phases,
             terminals=["complete", "failed"],
-            agents={"main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}},
+            agents={
+                "main_engineer": {"role": "main_engineer", "lifecycle": "persistent"}
+            },
             experience=experience_cfg,
         )
         session_mgr = MagicMock()
@@ -5542,20 +6316,33 @@ class TestPhase7SkipAndReroute:
         prompt_loader = MagicMock()
         prompt_loader.load_prompt.return_value = "PROMPT"
         return WorkflowExecutor(
-            workflow, session_mgr, MagicMock(), prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            workflow,
+            session_mgr,
+            MagicMock(),
+            prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             experience_store=None,
         ), session_mgr
 
     def test_phase7_rerouted_in_transition_definition(self, tmp_path: Path):
         from core.types import TransitionDefinition
+
         phase = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
-            transition=TransitionDefinition(on_success="phase_7a_evaluate", on_failure="complete"),
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
+            transition=TransitionDefinition(
+                on_success="phase_7a_evaluate", on_failure="complete"
+            ),
         )
         executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
@@ -5563,12 +6350,17 @@ class TestPhase7SkipAndReroute:
 
     def test_phase7_rerouted_in_transitions_dict(self, tmp_path: Path):
         phase = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
             transitions={"on_success": "phase_7a_evaluate", "on_failure": "complete"},
         )
         executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
@@ -5576,13 +6368,21 @@ class TestPhase7SkipAndReroute:
 
     def test_phase7b_rerouted(self, tmp_path: Path):
         from core.types import TransitionDefinition
+
         phase = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
-            transition=TransitionDefinition(on_success="phase_7b_refine", on_failure="complete"),
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            transition=TransitionDefinition(
+                on_success="phase_7b_refine", on_failure="complete"
+            ),
         )
         executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
@@ -5590,13 +6390,19 @@ class TestPhase7SkipAndReroute:
 
     def test_phase7_not_rerouted_when_enabled(self, tmp_path: Path):
         from core.types import TransitionDefinition
+
         phase = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
             transition=TransitionDefinition(on_success="phase_7a_evaluate"),
         )
         executor, _ = self._executor_with_phases(
-            tmp_path, [phase],
+            tmp_path,
+            [phase],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=True),
         )
         next_id = executor._get_next_phase_id(phase, "success", {}, {})
@@ -5604,15 +6410,24 @@ class TestPhase7SkipAndReroute:
 
     def test_phase7_default_next_reroute(self, tmp_path: Path):
         phase_6 = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
         )
         phase_7a = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="x.y.z",
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="x.y.z",
         )
         executor, _ = self._executor_with_phases(
-            tmp_path, [phase_6, phase_7a],
+            tmp_path,
+            [phase_6, phase_7a],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         next_id = executor._get_next_phase_id(phase_6, "success", {}, {})
@@ -5620,23 +6435,37 @@ class TestPhase7SkipAndReroute:
 
     def test_phase7_skipped_in_execute_loop(self, tmp_path: Path):
         from core.types import TransitionDefinition
+
         phase_6 = PhaseDefinition(
-            id="phase_6_report", name="Report", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_6_report",
+            name="Report",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
             transition=TransitionDefinition(on_success="phase_7a_evaluate"),
         )
         phase_7a = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_evaluator.ExperienceEvaluator.evaluate",
             transition=TransitionDefinition(on_success="phase_7b_refine"),
         )
         phase_7b = PhaseDefinition(
-            id="phase_7b_refine", name="Refine", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_dispatcher.ExperienceDispatcher.dispatch_and_refine",
+            id="phase_7b_refine",
+            name="Refine",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_dispatcher.ExperienceDispatcher.dispatch_and_refine",
             transition=TransitionDefinition(on_success="complete"),
         )
         executor, session_mgr = self._executor_with_phases(
-            tmp_path, [phase_6, phase_7a, phase_7b],
+            tmp_path,
+            [phase_6, phase_7a, phase_7b],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         executor.hook_manager = MagicMock()
@@ -5651,15 +6480,24 @@ class TestPhase7SkipAndReroute:
 
     def test_phase7_direct_start_skipped(self, tmp_path: Path):
         phase_7a = PhaseDefinition(
-            id="phase_7a_evaluate", name="Evaluate", prompt_template="x", output_schema={},
-            type="orchestration", handler="experience_evaluator.ExperienceEvaluator.evaluate",
+            id="phase_7a_evaluate",
+            name="Evaluate",
+            prompt_template="x",
+            output_schema={},
+            type="orchestration",
+            handler="experience_evaluator.ExperienceEvaluator.evaluate",
         )
         phase_end = PhaseDefinition(
-            id="phase_end", name="End", prompt_template="x", output_schema={},
-            type="llm", agent="main_engineer",
+            id="phase_end",
+            name="End",
+            prompt_template="x",
+            output_schema={},
+            type="llm",
+            agent="main_engineer",
         )
         executor, session_mgr = self._executor_with_phases(
-            tmp_path, [phase_7a, phase_end],
+            tmp_path,
+            [phase_7a, phase_end],
             experience_cfg=ExperienceConfig(enabled=True, phase7_enabled=False),
         )
         executor.hook_manager = MagicMock()
@@ -5669,7 +6507,9 @@ class TestPhase7SkipAndReroute:
         assert result["status"] == "complete"
         assert "phase_7a_evaluate" in executor.phase_results
         assert executor.phase_results["phase_7a_evaluate"]["status"] == "skipped"
-        assert executor.phase_results["phase_7a_evaluate"]["reason"] == "phase7_disabled"
+        assert (
+            executor.phase_results["phase_7a_evaluate"]["reason"] == "phase7_disabled"
+        )
         assert "phase_end" in executor.phase_results
 
 
@@ -5678,38 +6518,64 @@ class TestPhase7SkipAndReroute:
 
 def test_we_filter_previous_outputs_empty_for_early_phases(temp_dir):
     """Phase 0/1/2/3 should receive empty previous_outputs."""
-    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="filter_test", version="1.0", phases=[], terminals=[]
+    )
     executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {
         "phase_0_env_detect": {"platform": "npu"},
         "phase_1_project_analysis": {"entry_script": "train.py"},
         "phase_2_venv_create": {"venv_path": "/.venv"},
     }
-    for pid in ("phase_0_env_detect", "phase_1_project_analysis",
-                "phase_2_venv_create", "phase_3_entry_script"):
-        phase = PhaseDefinition(id=pid, name=pid, prompt_template=pid, output_schema={}, type="llm")
+    for pid in (
+        "phase_0_env_detect",
+        "phase_1_project_analysis",
+        "phase_2_venv_create",
+        "phase_3_entry_script",
+    ):
+        phase = PhaseDefinition(
+            id=pid, name=pid, prompt_template=pid, output_schema={}, type="llm"
+        )
         assert executor._filter_previous_outputs(phase, state) == {}
 
 
 def test_we_filter_previous_outputs_phase35_only_includes_phase3(temp_dir):
     """Phase 3.5 must receive only phase_3_entry_script, not earlier phases."""
-    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="filter_test", version="1.0", phases=[], terminals=[]
+    )
     executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {
         "phase_0_env_detect": {"platform": "npu"},
         "phase_1_project_analysis": {"entry_script": "train.py"},
         "phase_2_venv_create": {"venv_path": "/.venv"},
-        "phase_3_entry_script": {"entry_script_path": "/train.py", "entry_script_kind": "custom_op_full_validation"},
+        "phase_3_entry_script": {
+            "entry_script_path": "/train.py",
+            "entry_script_kind": "custom_op_full_validation",
+        },
     }
     phase = PhaseDefinition(
-        id="phase_35_static_validate", name="3.5", prompt_template="phase_35_static_validate",
-        output_schema={}, type="llm",
+        id="phase_35_static_validate",
+        name="3.5",
+        prompt_template="phase_35_static_validate",
+        output_schema={},
+        type="llm",
     )
     filtered = executor._filter_previous_outputs(phase, state)
     assert "phase_3_entry_script" in filtered
@@ -5720,37 +6586,65 @@ def test_we_filter_previous_outputs_phase35_only_includes_phase3(temp_dir):
 
 def test_we_filter_previous_outputs_fallback_to_all_for_unlisted(temp_dir):
     """Phases not in whitelist should fall back to all state (backward compat)."""
-    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="filter_test", version="1.0", phases=[], terminals=[]
+    )
     executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {"phase_1_entry_script": {}, "phase_5_validation": {}}
-    phase = PhaseDefinition(id="phase_5_validation", name="5", prompt_template="phase_5_validation", output_schema={}, type="llm")
+    phase = PhaseDefinition(
+        id="phase_5_validation",
+        name="5",
+        prompt_template="phase_5_validation",
+        output_schema={},
+        type="llm",
+    )
     filtered = executor._filter_previous_outputs(phase, state)
     assert filtered == state
 
 
 def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
     """Integration: _inject_llm_baseline_context produces filtered JSON for Phase 3.5."""
-    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="filter_test", version="1.0", phases=[], terminals=[]
+    )
     executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {
         "phase_0_env_detect": {"platform": "npu", "python_version": "3.10"},
         "phase_1_project_analysis": {"entry_script": "train.py"},
         "phase_2_venv_create": {"venv_path": "/.venv"},
-        "phase_3_entry_script": {"entry_script_path": "/train.py", "run_command": "python train.py"},
+        "phase_3_entry_script": {
+            "entry_script_path": "/train.py",
+            "run_command": "python train.py",
+        },
     }
     phase = PhaseDefinition(
-        id="phase_35_static_validate", name="3.5", prompt_template="phase_35_static_validate",
-        output_schema={}, type="llm",
+        id="phase_35_static_validate",
+        name="3.5",
+        prompt_template="phase_35_static_validate",
+        output_schema={},
+        type="llm",
     )
-    ctx: dict = {}
+    ctx: dict[str, object] = {}
     executor._inject_llm_baseline_context(ctx, phase, state)
-    parsed = json.loads(ctx["previous_outputs"])
+    previous_outputs = ctx["previous_outputs"]
+    assert isinstance(previous_outputs, str)
+    parsed = json.loads(previous_outputs)
     assert "phase_3_entry_script" in parsed
     assert "phase_0_env_detect" not in parsed
     assert "phase_1_project_analysis" not in parsed
@@ -5759,19 +6653,31 @@ def test_we_inject_llm_baseline_context_phase35_excludes_early_phases(temp_dir):
 
 def test_we_inject_llm_baseline_context_early_phase_empty(temp_dir):
     """Integration: Phase 0 gets empty previous_outputs."""
-    workflow = WorkflowDefinition(name="filter_test", version="1.0", phases=[], terminals=[])
+    workflow = WorkflowDefinition(
+        name="filter_test", version="1.0", phases=[], terminals=[]
+    )
     executor = WorkflowExecutor(
-        workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=temp_dir, output_dir=temp_dir,
+        workflow,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
     )
     state = {"phase_0_env_detect": {"platform": "npu"}}
     phase = PhaseDefinition(
-        id="phase_0_env_detect", name="0", prompt_template="phase_0_env_detect",
-        output_schema={}, type="llm",
+        id="phase_0_env_detect",
+        name="0",
+        prompt_template="phase_0_env_detect",
+        output_schema={},
+        type="llm",
     )
-    ctx: dict = {}
+    ctx: dict[str, object] = {}
     executor._inject_llm_baseline_context(ctx, phase, state)
-    assert json.loads(ctx["previous_outputs"]) == {}
+    previous_outputs = ctx["previous_outputs"]
+    assert isinstance(previous_outputs, str)
+    assert json.loads(previous_outputs) == {}
 
 
 # ── disable_custom_op_contract_injection flag regression ──────────────────
@@ -5835,8 +6741,12 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
             terminals=["complete"],
             globals={"custom_op_route_enabled": False},
         ),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
 
     normalized = executor._normalize_llm_output(
@@ -5855,7 +6765,11 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
             "phase5_entry_script_revision_allowed": True,
         },
         {"previous_outputs": "custom operators exist"},
-        {"phase_1_project_analysis": {"custom_op_surface": {"custom_op_detected": True}}},
+        {
+            "phase_1_project_analysis": {
+                "custom_op_surface": {"custom_op_detected": True}
+            }
+        },
     )
 
     for field in (
@@ -5873,7 +6787,9 @@ def test_custom_op_route_disabled_strips_agent_contract_fields(tmp_path: Path) -
     assert validate_entry_script(normalized)["passed"] is True
 
 
-def test_legacy_disable_custom_op_injection_strips_agent_contract_fields(tmp_path: Path) -> None:
+def test_legacy_disable_custom_op_injection_strips_agent_contract_fields(
+    tmp_path: Path,
+) -> None:
     phase = PhaseDefinition(
         id="phase_3_entry_script",
         name="Entry",
@@ -5891,8 +6807,12 @@ def test_legacy_disable_custom_op_injection_strips_agent_contract_fields(tmp_pat
             terminals=["complete"],
             globals={"disable_custom_op_contract_injection": True},
         ),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
 
     normalized = executor._normalize_llm_output(
@@ -5927,9 +6847,18 @@ def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> Non
         agent="main_engineer",
     )
     executor_no_globals = WorkflowExecutor(
-        WorkflowDefinition(name="default-behaviour", version="1.0", phases=[phase], terminals=["complete"]),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        WorkflowDefinition(
+            name="default-behaviour",
+            version="1.0",
+            phases=[phase],
+            terminals=["complete"],
+        ),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
 
     normalized_no_flag = executor_no_globals._normalize_llm_output(
@@ -5948,8 +6877,12 @@ def test_disable_custom_op_injection_false_signal_injects(tmp_path: Path) -> Non
             terminals=["complete"],
             globals={"disable_custom_op_contract_injection": False},
         ),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        project_dir=str(tmp_path), output_dir=str(tmp_path),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
     )
     normalized_false = executor_flag_false._normalize_llm_output(
         phase,
@@ -5971,7 +6904,13 @@ def test_phase_6_report_session_error_generates_fallback(tmp_path: Path) -> None
             del role, lifecycle
             return "main-session"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = None, retries: int | None = None) -> str:
+        def send_command(
+            self,
+            session_id: str,
+            command: str,
+            timeout: int | None = None,
+            retries: int | None = None,
+        ) -> str:
             self.send_calls.append((session_id, command, timeout, retries))
             return json.dumps({"ok": False, "error": "Session still running"})
 
@@ -6030,7 +6969,13 @@ def test_phase_6_report_timeout_exception_generates_fallback(tmp_path: Path) -> 
             del role, lifecycle
             return "main-session"
 
-        def send_command(self, session_id: str, command: str, timeout: int | None = None, retries: int | None = None) -> str:
+        def send_command(
+            self,
+            session_id: str,
+            command: str,
+            timeout: int | None = None,
+            retries: int | None = None,
+        ) -> str:
             self.send_calls.append((session_id, command, timeout, retries))
             raise TimeoutError("phase 6 timed out")
 
@@ -6100,7 +7045,9 @@ class TestProductionWorkflowPlatformPolicy:
         assert mode == "presence_only", f"Expected presence_only, got {mode}"
 
         baseline_devices = get_performance_baseline_device_values(policy)
-        assert "cpu" in baseline_devices, "CPU baseline must be accepted when configured"
+        assert "cpu" in baseline_devices, (
+            "CPU baseline must be accepted when configured"
+        )
         assert "cuda" in baseline_devices, "CUDA baseline must still be accepted"
 
         baseline_fields = get_performance_baseline_boolean_fields(policy)
@@ -6111,9 +7058,11 @@ class TestProductionWorkflowPlatformPolicy:
         """A workflow without performance overrides defaults to full mode
         with CUDA-only baseline values."""
         from core.platform_policy import (
-            BUILTIN_PRESETS, get_performance_validation_mode,
+            BUILTIN_PRESETS,
+            get_performance_validation_mode,
             get_performance_baseline_device_values,
         )
+
         ppu = BUILTIN_PRESETS["ppu_cuda_compatible"]
         mode = get_performance_validation_mode(ppu)
         assert mode == "full"
