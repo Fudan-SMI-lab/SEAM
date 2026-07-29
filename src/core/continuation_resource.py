@@ -6,6 +6,11 @@ import stat
 from pathlib import Path
 
 from .continuation_models import ContinuationError, ContinuationErrorKind
+from .continuation_lock_identity import (
+    BoundedReadError,
+    BoundedReadErrorKind,
+    read_verified_bytes,
+)
 from .continuation_paths import PathKind, canonical_existing_path
 from .resource_manifest import (
     RESOURCE_MANIFEST_FILENAME,
@@ -27,15 +32,15 @@ def _error(detail: str) -> ContinuationError:
     return ContinuationError(ContinuationErrorKind.AUTHORITY_INVALID, detail)
 
 
-def _capability_path(report_dir: Path) -> Path:
+def resource_capability_path(report_dir: Path) -> Path:
     authority_root = report_dir.parent.parent / ".seam-resource-authority"
     identity = hashlib.sha256(os.fspath(report_dir).encode()).hexdigest()
     return authority_root / f"{identity}.key"
 
 
-def _read_existing_secret(report_dir: Path) -> bytes:
+def read_existing_resource_secret(report_dir: Path) -> bytes:
     capability = canonical_existing_path(
-        _capability_path(report_dir),
+        resource_capability_path(report_dir),
         PathKind.FILE,
         ContinuationErrorKind.AUTHORITY_INVALID,
     )
@@ -45,9 +50,13 @@ def _read_existing_secret(report_dir: Path) -> bytes:
             raise _error("resource authority capability is not a regular file")
         if os.name != "nt" and metadata.st_mode & 0o077:
             raise _error("resource authority capability permissions are too broad")
-        secret = capability.read_bytes()
+        secret = read_verified_bytes(capability, _CAPABILITY_SIZE)
     except ContinuationError:
         raise
+    except BoundedReadError as exc:
+        if exc.kind is BoundedReadErrorKind.TOO_LARGE:
+            raise _error("resource authority capability has an invalid length") from exc
+        raise _error("resource authority capability is unreadable") from exc
     except OSError as exc:
         raise _error("resource authority capability is unreadable") from exc
     if len(secret) != _CAPABILITY_SIZE:
@@ -59,7 +68,7 @@ def open_existing_resource_manifest(
     report_dir: Path,
     identity: ResourceManifestIdentity,
 ) -> ResourceManifest:
-    secret = _read_existing_secret(report_dir)
+    secret = read_existing_resource_secret(report_dir)
     authority = _ResourceCaptureAuthority(identity, secret)
     try:
         manifest = read_resource_manifest(report_dir / RESOURCE_MANIFEST_FILENAME)

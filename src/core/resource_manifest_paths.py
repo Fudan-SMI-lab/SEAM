@@ -6,6 +6,11 @@ import hashlib
 from pathlib import Path
 from typing import Final, NamedTuple
 
+from .continuation_lock_identity import (
+    BoundedReadError,
+    BoundedReadErrorKind,
+    read_verified_bytes,
+)
 from .resource_manifest_models import (
     ResourceManifestError,
     ResourceManifestErrorKind,
@@ -34,7 +39,7 @@ def _unsafe(detail: str) -> ResourceManifestError:
     return ResourceManifestError(ResourceManifestErrorKind.UNSAFE_PATH, detail)
 
 
-def _read_capture_capability(path: Path) -> bytes:
+def read_capture_capability(path: Path) -> bytes:
     try:
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
@@ -45,9 +50,19 @@ def _read_capture_capability(path: Path) -> bytes:
             raise _unsafe(
                 "resource manifest authority capability permissions are too broad"
             )
-        secret = path.read_bytes()
+        secret = read_verified_bytes(path, _CAPABILITY_SIZE)
     except ResourceManifestError:
         raise
+    except BoundedReadError as exc:
+        detail = (
+            "resource manifest authority capability has an invalid length"
+            if exc.kind is BoundedReadErrorKind.TOO_LARGE
+            else f"resource manifest authority capability is unreadable: {exc}"
+        )
+        raise ResourceManifestError(
+            ResourceManifestErrorKind.AUTHORITY_MISMATCH,
+            detail,
+        ) from exc
     except OSError as exc:
         raise ResourceManifestError(
             ResourceManifestErrorKind.AUTHORITY_MISMATCH,
@@ -81,7 +96,7 @@ def _capture_capability_path(report_dir: Path) -> Path:
 def load_internal_capture_secret(report_dir: Path, generated: bytes) -> bytes:
     path = _capture_capability_path(report_dir)
     try:
-        return _read_capture_capability(path)
+        return read_capture_capability(path)
     except ResourceManifestError as exc:
         if (
             exc.kind is not ResourceManifestErrorKind.AUTHORITY_MISMATCH
@@ -91,7 +106,7 @@ def load_internal_capture_secret(report_dir: Path, generated: bytes) -> bytes:
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        return _read_capture_capability(path)
+        return read_capture_capability(path)
     except OSError as exc:
         raise ResourceManifestError(
             ResourceManifestErrorKind.WRITE_INTERRUPTED,
