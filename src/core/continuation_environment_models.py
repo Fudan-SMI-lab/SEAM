@@ -4,14 +4,14 @@ from dataclasses import dataclass, field
 from enum import Enum, unique
 from pathlib import Path
 import typing
-from typing import TYPE_CHECKING, Literal, TypeAlias, final
+from typing import TYPE_CHECKING, Literal, final
 
-from typing_extensions import override
+from typing_extensions import TypeAlias, override
 
 from .resource_manifest_models import EnvironmentType, ResourceManifest
 
 if TYPE_CHECKING:
-    from .continuation_lock import ActiveProjectOwnerLock
+    from .continuation_lock_context import ActiveProjectOwnerLock
 
 
 @unique
@@ -57,13 +57,13 @@ class ContinuationEnvironmentError(Exception):
         return f"{self.kind.value}: {self.field}: {self.detail}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class BindMount:
     source: Path
     destination: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContainerRequirements:
     name: str
     workdir: str
@@ -71,7 +71,7 @@ class ContainerRequirements:
     project_mount_destination: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContainerObservation:
     runtime: str
     container_id: str
@@ -86,15 +86,15 @@ class ContainerObservation:
     ownership_label: str | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RetainedContainerProbeRequest:
     runtime: Literal["docker", "podman"]
     container_id: str
-    expected_ownership_token: str | None
+    expected_ownership_token_sha256: str | None
     expected_ownership_label: str | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RetainedEnvironmentProbeRequest:
     interpreter_path: str
     runtime: Literal["docker", "podman"] | None = None
@@ -102,7 +102,7 @@ class RetainedEnvironmentProbeRequest:
     timeout_seconds: int = 30
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class EnvironmentFingerprint:
     environment_type: EnvironmentType
     namespace: str
@@ -136,7 +136,7 @@ class EnvironmentFingerprint:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContinuationEnvironmentRequest:
     resource_manifest: ResourceManifest
     output_project: Path
@@ -151,7 +151,7 @@ class ContinuationEnvironmentRequest:
     owner_lock: ActiveProjectOwnerLock | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ExistingContainerAttachment:
     mode: Literal["existing_container"]
     runtime: str
@@ -165,7 +165,7 @@ class ExistingContainerAttachment:
 
 
 @final
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _FrameworkContainerDeleteProof:
     original_owner_run_id: str
     lineage_root_run_id: str
@@ -173,7 +173,7 @@ class _FrameworkContainerDeleteProof:
     ownership_label: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FrameworkContainerDeleteEligible:
     original_owner_run_id: str
     lineage_root_run_id: str
@@ -204,7 +204,7 @@ def _verified_framework_container_delete_eligibility(
     )
 
 
-def _framework_container_delete_eligibility_is_verified(
+def framework_container_delete_eligibility_is_verified(
     eligibility: FrameworkContainerDeleteEligible,
 ) -> bool:
     proof = eligibility._proof
@@ -221,7 +221,7 @@ def _framework_container_delete_eligibility_is_verified(
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContainerDeleteForbidden:
     reason: str
 
@@ -236,14 +236,14 @@ else:
     ]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RetainedEnvironmentEligible:
     environment: EnvironmentFingerprint
     attachment: ExistingContainerAttachment | None
     deletion: ContainerDeletion
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Phase2EstablishmentEligible:
     reason: Literal["parent_failed_before_target_environment"] = (
         "parent_failed_before_target_environment"

@@ -150,9 +150,9 @@ def verify_terminal_continuation_environment(
             RetainedContainerProbeRequest(
                 runtime=runtime,
                 container_id=container_id,
-                expected_ownership_token=known_fact(
+                expected_ownership_token_sha256=known_fact(
                     manifest.facts,
-                    "container.framework_ownership_token",
+                    "container.framework_ownership_token_sha256",
                     required=False,
                 ),
                 expected_ownership_label=known_fact(

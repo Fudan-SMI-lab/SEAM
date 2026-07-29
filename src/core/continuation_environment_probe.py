@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import os
 import subprocess
+import hashlib
+import hmac
+from collections.abc import Mapping
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from .continuation_environment_models import (
     BindMount,
@@ -20,7 +30,14 @@ from .resource_manifest_models import EnvironmentType
 
 
 class _ObservedModel(BaseModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def project_observed_fields(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        return {name: value[name] for name in cls.model_fields if name in value}
 
 
 class _ContainerState(_ObservedModel):
@@ -69,7 +86,7 @@ class _FingerprintPayload(_ObservedModel):
     package_inventory_hash: str
 
 
-_INSPECT_ADAPTER = TypeAdapter(tuple[_ContainerInspect, ...])
+_INSPECT_ADAPTER = TypeAdapter(Tuple[_ContainerInspect, ...])
 _FINGERPRINT_SCRIPT = """import hashlib
 import importlib.metadata
 import json
@@ -162,9 +179,18 @@ def inspect_retained_container(
         )
     record = records[0]
     labels = record.Config.Labels
-    token = request.expected_ownership_token
+    token = labels.get("seam.owner-token")
+    token_digest = hashlib.sha256(token.encode()).hexdigest() if token else None
     matched_token = (
-        token if token is not None and labels.get("seam.owner-token") == token else None
+        token
+        if token is not None
+        and token_digest is not None
+        and request.expected_ownership_token_sha256 is not None
+        and hmac.compare_digest(
+            token_digest,
+            request.expected_ownership_token_sha256,
+        )
+        else None
     )
     mounts = tuple(
         BindMount(source=Path(item.Source).resolve(), destination=item.Destination)
