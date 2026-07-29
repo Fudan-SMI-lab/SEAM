@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Final
+
 from harness.session.opencode_contract_json import JsonObject, JsonValue
 from harness.session.opencode_contract_models import (
     Completeness,
@@ -176,6 +178,8 @@ def parse_messages(response: JsonObject | None) -> tuple[MessagesResult, bool]:
     headers = object_value(response.get("headers"))
     if not isinstance(body, list) or query is None or headers is None:
         return MessagesResult((), Completeness.INCOMPATIBLE, False), True
+    if len(body) > MAX_MESSAGE_COUNT:
+        return MessagesResult((), Completeness.INCOMPATIBLE, False), True
     limit = query.get("limit")
     if "limit" in query and (
         isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
@@ -189,12 +193,16 @@ def parse_messages(response: JsonObject | None) -> tuple[MessagesResult, bool]:
     parents: dict[str, str] = {}
     expected_session_id: str | None = None
     partial = not full
+    part_count = 0
     for raw_message in body:
         if not isinstance(raw_message, dict):
             return MessagesResult(tuple(parsed), Completeness.INCOMPATIBLE, full), True
         info = object_value(raw_message.get("info"))
         raw_parts = raw_message.get("parts")
         if info is None or not _valid_info(info) or not isinstance(raw_parts, list):
+            return MessagesResult(tuple(parsed), Completeness.INCOMPATIBLE, full), True
+        part_count += len(raw_parts)
+        if part_count > MAX_PART_COUNT:
             return MessagesResult(tuple(parsed), Completeness.INCOMPATIBLE, full), True
         message_id = string_value(info.get("id"))
         session_id = string_value(info.get("sessionID"))
@@ -234,3 +242,7 @@ def parse_messages(response: JsonObject | None) -> tuple[MessagesResult, bool]:
         return MessagesResult(tuple(parsed), Completeness.INCOMPATIBLE, full), True
     completeness = Completeness.PARTIAL if partial else Completeness.COMPLETE
     return MessagesResult(tuple(parsed), completeness, full), False
+
+
+MAX_MESSAGE_COUNT: Final = 100_000
+MAX_PART_COUNT: Final = 1_000_000
