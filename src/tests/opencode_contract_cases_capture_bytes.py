@@ -26,6 +26,26 @@ def test_oversized_capture_is_rejected_without_retaining_payload(
     assert contract.to_json_value() is None
 
 
+def test_json_depth_limit_discards_parsed_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(contract_json, "MAX_JSON_DEPTH", 2)
+
+    capture = contract_json.decode_capture('[[["deep"]]]')
+
+    assert capture is None
+
+
+def test_json_node_limit_discards_parsed_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(contract_json, "MAX_JSON_NODES", 3)
+
+    capture = contract_json.decode_capture("[1, 2, 3]")
+
+    assert capture is None
+
+
 @final
 class TestCaptureBytes:
     test_invalid_utf8_bytes_are_preserved_exactly = staticmethod(
@@ -33,4 +53,10 @@ class TestCaptureBytes:
     )
     test_oversized_capture_is_rejected_without_retaining_payload = staticmethod(
         test_oversized_capture_is_rejected_without_retaining_payload
+    )
+    test_json_depth_limit_discards_parsed_capture = staticmethod(
+        test_json_depth_limit_discards_parsed_capture
+    )
+    test_json_node_limit_discards_parsed_capture = staticmethod(
+        test_json_node_limit_discards_parsed_capture
     )

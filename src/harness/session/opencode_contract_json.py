@@ -12,6 +12,8 @@ if typing.TYPE_CHECKING:
 
 MAX_CAPTURE_CHARS: Final = 64 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS: Final = 309
+MAX_JSON_DEPTH: Final = 128
+MAX_JSON_NODES: Final = 1_000_000
 JsonValue: "TypeAlias" = (
     "None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]"
 )
@@ -79,11 +81,32 @@ def load_json(value: str | bytes) -> JsonValue:
     )
 
 
+def _within_structure_limits(value: JsonValue) -> bool:
+    nodes = 0
+    pending: list[tuple[JsonValue, int]] = [(value, 0)]
+    while pending:
+        current, depth = pending.pop()
+        nodes += 1
+        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+            return False
+        if isinstance(current, list):
+            pending.extend((item, depth + 1) for item in current)
+        elif isinstance(current, dict):
+            pending.extend((item, depth + 1) for item in current.values())
+    return True
+
+
 def decode_capture(payload: str | bytes) -> RawCapture:
-    if len(payload) > MAX_CAPTURE_CHARS:
+    payload_bytes = (
+        payload
+        if isinstance(payload, bytes)
+        else payload.encode("utf-8", errors="surrogatepass")
+    )
+    if len(payload_bytes) > MAX_CAPTURE_CHARS:
         return None
     try:
-        return load_json(payload)
+        parsed = load_json(payload)
+        return parsed if _within_structure_limits(parsed) else None
     except (
         json.JSONDecodeError,
         UnicodeDecodeError,
