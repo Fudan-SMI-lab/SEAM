@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.replay import NONDETERMINISM_NOTICE
+from core.replay import NONDETERMINISM_NOTICE, ReplayUnavailableReason
 from core.v3_runtime_access import build_access_report
 from core.v3_runtime_replay import build_replay_report
 from core.v3_runtime_report_facts import (
@@ -13,13 +13,18 @@ from core.v3_runtime_report_models import (
     RuntimeAccessReport,
     RuntimeReplayReport,
     RuntimeReportRequest,
+    RuntimeOutcomeStatus,
     V3RuntimeReport,
 )
 
 
-def _outcome_status(request: RuntimeReportRequest) -> str:
+def _outcome_status(request: RuntimeReportRequest) -> RuntimeOutcomeStatus:
     outcome = request.outcome
-    return outcome.terminal_outcome.value if outcome is not None else "unavailable"
+    return (
+        RuntimeOutcomeStatus(outcome.terminal_outcome.value)
+        if outcome is not None
+        else RuntimeOutcomeStatus.UNAVAILABLE
+    )
 
 
 def _manifest_unavailable(request: RuntimeReportRequest) -> V3RuntimeReport:
@@ -40,7 +45,7 @@ def _manifest_unavailable(request: RuntimeReportRequest) -> V3RuntimeReport:
         ),
         replay=RuntimeReplayReport(
             available=False,
-            reason="resource_manifest_unavailable",
+            reason=ReplayUnavailableReason.RESOURCE_MANIFEST_UNAVAILABLE,
             accepted_attempt_id=None,
             validation_command=None,
             command=None,

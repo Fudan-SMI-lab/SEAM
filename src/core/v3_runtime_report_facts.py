@@ -14,7 +14,7 @@ from core.v3_runtime_report_models import RuntimeEnvironmentReport, RuntimeFact
 _NONPUBLIC_FACTS = frozenset(
     {
         "container.framework_ownership_label",
-        "container.framework_ownership_token",
+        "container.framework_ownership_token_sha256",
         "retention.entry_command",
     }
 )

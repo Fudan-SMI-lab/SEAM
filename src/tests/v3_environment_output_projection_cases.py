@@ -112,7 +112,7 @@ def test_retained_container_reports_exact_access_and_live_replay(
     }
     assert {name: _fact_value(report.container, name) for name in expected} == expected
     container_names = {fact.name for fact in report.container}
-    assert "container.framework_ownership_token" not in container_names
+    assert "container.framework_ownership_token_sha256" not in container_names
     assert "container.framework_ownership_label" not in container_names
     assert _fact_value(report.retention, "retention.cleanup_result") == "retained"
     assert report.access.entry_command == entry
