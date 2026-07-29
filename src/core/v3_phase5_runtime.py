@@ -27,7 +27,7 @@ RuntimeValue: TypeAlias = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Phase5RuntimeConfig:
     review_enabled: bool
     review_fail_closed: bool
