@@ -22,7 +22,7 @@ from harness.session.trace_correlation_models import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportCorrelationRequest:
     scope: RunCorrelationScope
     phase_ids: frozenset[str]
@@ -30,7 +30,7 @@ class TransportCorrelationRequest:
     invocations: tuple[FrameworkInvocationCorrelation, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportCorrelationResult:
     transports: tuple[TransportAttemptCorrelation, ...]
     invocations: tuple[FrameworkInvocationCorrelation, ...]

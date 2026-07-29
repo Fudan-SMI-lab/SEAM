@@ -20,7 +20,7 @@ from harness.session.trace_correlation_models import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewCorrelationRequest:
     scope: RunCorrelationScope
     phase_ids: frozenset[str]
@@ -28,7 +28,7 @@ class ReviewCorrelationRequest:
     observability: ObservabilitySummary
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewCorrelationResult:
     reviews: tuple[ReviewRoundCorrelation, ...]
     invocations: tuple[FrameworkInvocationCorrelation, ...]

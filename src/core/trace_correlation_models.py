@@ -20,7 +20,7 @@ ToolCallId = NewType("ToolCallId", str)
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TraceCorrelationContractError(Exception):
     field: str
     detail: str
@@ -63,7 +63,7 @@ def make_transport_attempt_id(
     return TransportAttemptId(f"{invocation_id}:attempt-{attempt}")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ParentTraceReference:
     run_id: RunId
     manifest_path: Path
@@ -86,7 +86,7 @@ class ParentTraceReference:
             )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunCorrelationScope:
     run_id: RunId
     parent_run_id: RunId | None

@@ -30,7 +30,7 @@ ObservabilitySource = Callable[[], ObservabilitySummary]
 _PHASE5_ATTEMPT = re.compile(r"phase_5_validation-attempt-([1-9][0-9]*)\Z")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RuntimeTraceCorrelationRequest:
     scope: RunCorrelationScope
     executed_phases: tuple[PhaseId, ...]
@@ -39,7 +39,7 @@ class RuntimeTraceCorrelationRequest:
     observability: ObservabilitySummary
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class V3TraceCorrelationInputs:
     run_id: RunId
     outcome: RunOutcome
