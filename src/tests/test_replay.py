@@ -15,7 +15,6 @@ from core.phase5_attempt_receipt import (
     Phase5AttemptReceipt,
     artifact_file_receipt,
     load_attempt_receipt,
-    phase5_attempt_authority,
 )
 from core.replay import (
     ContainerObservation,
@@ -24,11 +23,15 @@ from core.replay import (
     render_replay_from_path,
 )
 from core.run_outcome import AcceptedAttemptId
-from tests.phase5_receipt_test_support import accepted_receipt, run_outcome
+from tests.phase5_receipt_test_support import (
+    accepted_receipt,
+    issued_authority,
+    run_outcome,
+)
 
 
 def replay_authority(tmp_path: Path, receipt: Phase5AttemptReceipt):
-    return phase5_attempt_authority(tmp_path / "attempt.receipt.json", receipt)
+    return issued_authority(tmp_path / "attempt.receipt.json", receipt)
 
 
 def test_local_replay_renders_exact_recorded_argv_environment_and_cwd(

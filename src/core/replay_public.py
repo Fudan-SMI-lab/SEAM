@@ -71,20 +71,20 @@ def public_replay_command(receipt: Phase5AttemptReceipt) -> str:
         for variable in receipt.invocation.environment_delta
     )
     cwd = _public_text(receipt.backend.backend_cwd)
-    match receipt.backend.kind:  # noqa  # noqa: MATCH_OK - statically exhaustive
-        case BackendKind.LOCAL:
-            invocation = ("env", *environment, *argv)
-            return f"cd -- {shlex.quote(cwd)} && {shlex.join(invocation)}"
-        case BackendKind.CONTAINER:
-            runtime = receipt.backend.runtime
-            container_id = receipt.backend.container_id
-            if runtime is None or container_id is None:
-                return ""
-            command = [_public_text(runtime), "exec", "-i", "-w", cwd]
-            for variable in receipt.invocation.environment_delta:
-                command.extend(["-e", f"{_public_text(variable.name)}={_REDACTED}"])
-            command.extend([_public_text(container_id), *argv])
-            return shlex.join(command)
+    if receipt.backend.kind is BackendKind.LOCAL:
+        invocation = ("env", *environment, *argv)
+        return f"cd -- {shlex.quote(cwd)} && {shlex.join(invocation)}"
+    if receipt.backend.kind is BackendKind.CONTAINER:
+        runtime = receipt.backend.runtime
+        container_id = receipt.backend.container_id
+        if runtime is None or container_id is None:
+            return ""
+        command = [_public_text(runtime), "exec", "-i", "-w", cwd]
+        for variable in receipt.invocation.environment_delta:
+            command.extend(["-e", f"{_public_text(variable.name)}={_REDACTED}"])
+        command.extend([_public_text(container_id), *argv])
+        return shlex.join(command)
+    return ""
 
 
 def public_cwd(receipt: Phase5AttemptReceipt) -> str:

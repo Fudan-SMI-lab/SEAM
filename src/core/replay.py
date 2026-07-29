@@ -28,6 +28,8 @@ NONDETERMINISM_NOTICE = (
 
 @unique
 class ReplayUnavailableReason(str, Enum):
+    RESOURCE_MANIFEST_UNAVAILABLE = "resource_manifest_unavailable"
+    RUN_OUTCOME_UNAVAILABLE = "run_outcome_unavailable"
     RUN_NOT_SUCCESSFUL = "run_not_successful"
     ATTEMPT_NOT_ACCEPTED = "attempt_not_accepted"
     INCOMPLETE_RECEIPT = "incomplete_receipt"
@@ -43,14 +45,14 @@ class ReplayUnavailableReason(str, Enum):
     RUN_ID_MISMATCH = "run_id_mismatch"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContainerObservation:
     runtime: str
     container_id: str
     running: bool
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReplayReceipt:
     available: bool
     reason: ReplayUnavailableReason | None
@@ -155,24 +157,23 @@ def render_replay(
     if artifact_failure is not None:
         return _unavailable(artifact_failure)
 
-    match receipt.backend.kind:
-        case BackendKind.LOCAL:
-            display_command = _render_local(receipt)
-        case BackendKind.CONTAINER:
-            if not receipt.backend.container_retained:
-                return _unavailable(ReplayUnavailableReason.CONTAINER_NOT_RETAINED)
-            if container_observation is None:
-                return _unavailable(ReplayUnavailableReason.CONTAINER_STATUS_UNKNOWN)
-            if (
-                container_observation.runtime != receipt.backend.runtime
-                or container_observation.container_id != receipt.backend.container_id
-            ):
-                return _unavailable(ReplayUnavailableReason.CONTAINER_IDENTITY_MISMATCH)
-            if not container_observation.running:
-                return _unavailable(ReplayUnavailableReason.CONTAINER_UNAVAILABLE)
-            display_command = _render_container(receipt)
-        case unreachable:
-            assert_never(unreachable)
+    if receipt.backend.kind is BackendKind.LOCAL:
+        display_command = _render_local(receipt)
+    elif receipt.backend.kind is BackendKind.CONTAINER:
+        if not receipt.backend.container_retained:
+            return _unavailable(ReplayUnavailableReason.CONTAINER_NOT_RETAINED)
+        if container_observation is None:
+            return _unavailable(ReplayUnavailableReason.CONTAINER_STATUS_UNKNOWN)
+        if (
+            container_observation.runtime != receipt.backend.runtime
+            or container_observation.container_id != receipt.backend.container_id
+        ):
+            return _unavailable(ReplayUnavailableReason.CONTAINER_IDENTITY_MISMATCH)
+        if not container_observation.running:
+            return _unavailable(ReplayUnavailableReason.CONTAINER_UNAVAILABLE)
+        display_command = _render_container(receipt)
+    else:
+        assert_never(receipt.backend.kind)
 
     return ReplayReceipt(
         available=True,
@@ -200,20 +201,11 @@ def render_replay_from_path(
     try:
         receipt = load_attempt_receipt(receipt_path)
     except AttemptReceiptError as exc:
-        match exc.kind:
-            case AttemptReceiptErrorKind.MISSING:
-                reason = ReplayUnavailableReason.RECEIPT_MISSING
-            case (
-                AttemptReceiptErrorKind.MALFORMED
-                | AttemptReceiptErrorKind.UNSAFE_PATH
-                | AttemptReceiptErrorKind.IDENTITY_MISMATCH
-                | AttemptReceiptErrorKind.NOT_ACCEPTABLE
-                | AttemptReceiptErrorKind.INTEGRITY_MISMATCH
-                | AttemptReceiptErrorKind.STALE_TRANSITION
-            ):
-                reason = ReplayUnavailableReason.RECEIPT_MALFORMED
-            case unreachable:
-                assert_never(unreachable)
+        reason = (
+            ReplayUnavailableReason.RECEIPT_MISSING
+            if exc.kind is AttemptReceiptErrorKind.MISSING
+            else ReplayUnavailableReason.RECEIPT_MALFORMED
+        )
         return _unavailable(reason)
     return render_replay(
         receipt,
