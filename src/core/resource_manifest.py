@@ -258,6 +258,9 @@ class ResourceManifestStore:
                 provenance=FactProvenance.DERIVED,
                 namespace="host",
             )
+            lifecycle = self._context._authority.capture_lifecycle_facts((lifecycle,))[
+                0
+            ]
             revised = merge_update(
                 current,
                 ResourceManifestUpdate(

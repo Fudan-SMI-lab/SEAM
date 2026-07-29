@@ -136,8 +136,8 @@ def test_authenticated_ownership_fact_tampering_fails_closed(tmp_path: Path) -> 
     store, _backend, _finalizer, _recorder = _retained_store(tmp_path)
     payload = json.loads(store.path.read_text(encoding="utf-8"))
     for fact in payload["facts"]:
-        if fact["name"] == "container.framework_ownership_token":
-            fact["value"] = "attacker-controlled-token"
+        if fact["name"] == "container.framework_ownership_token_sha256":
+            fact["value"] = "0" * 64
     store.path.write_text(json.dumps(payload), encoding="utf-8")
 
     # When the authoritative store reopens the modified manifest.

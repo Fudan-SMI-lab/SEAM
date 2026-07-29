@@ -34,7 +34,11 @@ _AUTHENTICATED_LIFECYCLE_FACTS = frozenset(
         "retention.owner_kind",
         "retention.post_state",
         "retention.pre_state",
+        "lifecycle.status",
     }
+)
+_TERMINAL_LIFECYCLE_STATUSES = frozenset(
+    {"passed", "passed_with_reviews", "failed", "cancelled", "error"}
 )
 
 
@@ -263,8 +267,9 @@ def require_manifest_authority(
                     authority, fact, environment.environment_id, "environment"
                 )
     for fact in manifest.facts:
-        if (
-            fact.name in _AUTHENTICATED_LIFECYCLE_FACTS
-            and fact.authority_tag is not None
-        ):
+        requires_authority = (
+            fact.name == "lifecycle.status"
+            and fact.value in _TERMINAL_LIFECYCLE_STATUSES
+        )
+        if requires_authority:
             _require_fact_tag(authority, fact, "resource-lifecycle", "lifecycle")
