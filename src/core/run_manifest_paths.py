@@ -6,12 +6,14 @@ import stat
 from pathlib import Path
 from typing import Final, NamedTuple, final
 
+from .run_manifest_directory import require_real_directory
 from .run_manifest_models import (
     EvidenceDigest,
     ManifestErrorKind,
     RunManifestError,
     Sha256Digest,
 )
+from .evidence_limits import EvidenceBudget
 
 _WINDOWS_REPARSE_POINT: Final = 0x400
 
@@ -84,10 +86,6 @@ def _is_reparse(identity: PathIdentity) -> bool:
     )
 
 
-def _is_link_or_junction(path: Path) -> bool:
-    return _is_reparse(_path_identity(path))
-
-
 def _matches_metadata(identity: PathIdentity, metadata: os.stat_result) -> bool:
     attributes = metadata.st_file_attributes if os.name == "nt" else 0
     return (
@@ -119,50 +117,13 @@ def _require_identity(identity: PathIdentity) -> None:
         raise _containment_error(f"tree entry changed during access: {identity.path}")
 
 
-def require_real_directory(path: Path, container: Path) -> Path:
-    try:
-        canonical_container = container.resolve(strict=True)
-        canonical_path = path.resolve(strict=True)
-    except OSError as exc:
-        raise _containment_error(
-            f"required directory is unavailable: {path}: {exc}"
-        ) from exc
-    lexical_path = Path(os.path.abspath(path))
-    contained = (
-        canonical_path == canonical_container
-        or canonical_container in canonical_path.parents
-    )
-    ancestor = lexical_path
-    while True:
-        if _is_link_or_junction(ancestor):
-            raise _containment_error(
-                f"directory has a link or junction ancestor: {path}"
-            )
-        try:
-            resolved_ancestor = ancestor.resolve(strict=True)
-        except OSError as exc:
-            raise _containment_error(
-                f"directory ancestor changed during access: {ancestor}: {exc}"
-            ) from exc
-        if resolved_ancestor == canonical_container:
-            break
-        parent = ancestor.parent
-        if parent == ancestor:
-            raise _containment_error(f"directory escapes its container: {path}")
-        ancestor = parent
-    if not contained:
-        raise _containment_error(f"directory escapes its canonical container: {path}")
-    if not canonical_path.is_dir():
-        raise _containment_error(f"path is not a directory: {path}")
-    return canonical_path
-
-
 def inspect_real_tree(root: Path, container: Path) -> RealTree:
     canonical_root = require_real_directory(root, container)
     root_identity = _path_identity(canonical_root)
     pending = [root_identity]
     directories: list[PathIdentity] = []
     files: list[PathIdentity] = []
+    budget = EvidenceBudget()
     while pending:
         directory = pending.pop()
         _require_identity(directory)
@@ -181,6 +142,10 @@ def inspect_real_tree(root: Path, container: Path) -> RealTree:
             ):
                 raise _containment_error(f"tree entry escapes evidence root: {entry}")
             resolved_identity = identity._replace(path=resolved)
+            budget.charge(
+                resolved.relative_to(canonical_root),
+                identity.size if stat.S_ISREG(identity.mode) else 0,
+            )
             if stat.S_ISDIR(identity.mode):
                 directories.append(resolved_identity)
                 pending.append(resolved_identity)
@@ -230,7 +195,7 @@ def _read_verified(tree: RealTree, identity: PathIdentity) -> bytes:
                     f"opened file differs from inspected entry: {identity.path}"
                 )
             _require_ancestors(tree, identity.path)
-            content = handle.read()
+            content = handle.read(identity.size + 1)
             if not _matches_metadata(identity, os.fstat(handle.fileno())):
                 raise _containment_error(
                     f"opened file changed while reading: {identity.path}"
@@ -243,7 +208,39 @@ def _read_verified(tree: RealTree, identity: PathIdentity) -> bytes:
             f"tree entry is unreadable: {identity.path}: {exc}"
         ) from exc
     _require_entry(tree, identity)
+    if len(content) != identity.size:
+        raise _containment_error(f"tree entry changed size: {identity.path}")
     return content
+
+
+def read_real_tree_file(tree: RealTree, identity: PathIdentity) -> bytes:
+    return _read_verified(tree, identity)
+
+
+def require_real_tree_entry(tree: RealTree, identity: PathIdentity) -> None:
+    _require_entry(tree, identity)
+
+
+def require_real_tree(tree: RealTree) -> None:
+    _require_tree(tree)
+
+
+def read_real_file(
+    path: Path,
+    container: Path,
+    maximum_bytes: int,
+) -> tuple[PathIdentity, bytes]:
+    parent = require_real_directory(path.parent, container)
+    parent_identity = _path_identity(parent)
+    identity = _path_identity(path)
+    if (
+        _is_reparse(identity)
+        or not stat.S_ISREG(identity.mode)
+        or identity.size > maximum_bytes
+    ):
+        raise _containment_error(f"file is unsafe or exceeds its limit: {path}")
+    tree = RealTree(parent_identity, (), (identity,))
+    return identity, _read_verified(tree, identity)
 
 
 def _require_tree(tree: RealTree) -> None:

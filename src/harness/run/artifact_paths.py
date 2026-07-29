@@ -9,6 +9,14 @@ from pathlib import Path
 
 from typing_extensions import override
 
+from core.evidence_limits import EvidenceBudget, MAX_EVIDENCE_FILE_BYTES
+from core.run_manifest import RunManifestError
+from core.run_manifest_paths import (
+    inspect_real_tree,
+    read_real_file,
+    read_real_tree_file,
+)
+
 from .models import FinalizationStage
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -20,7 +28,7 @@ class ArtifactPathKind(str, Enum):
     DIRECTORY = "directory"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SidecarValidationError(ValueError):
     path: str
     expected: ArtifactPathKind
@@ -31,7 +39,7 @@ class SidecarValidationError(ValueError):
         return f"{self.path}: expected contained {self.expected.value}; {self.detail}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactFingerprint:
     kind: ArtifactPathKind
     device: int
@@ -39,7 +47,7 @@ class ArtifactFingerprint:
     digest: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactReceipt:
     path: str
     canonical_path: str
@@ -51,7 +59,7 @@ class ArtifactReceipt:
         return self.fingerprint.kind
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReportSnapshot:
     entries: tuple[tuple[str, ArtifactFingerprint], ...]
 
@@ -72,6 +80,7 @@ def _walk_regular_tree(
 ) -> tuple[Path, ...]:
     found: list[Path] = []
     pending = [root]
+    budget = EvidenceBudget()
     while pending:
         parent = pending.pop()
         with os.scandir(parent) as entries:
@@ -85,32 +94,49 @@ def _walk_regular_tree(
                             "link or reparse point",
                         )
                     continue
+                metadata = entry.stat(follow_symlinks=False)
+                budget.charge(
+                    path.relative_to(root),
+                    metadata.st_size if entry.is_file(follow_symlinks=False) else 0,
+                )
                 found.append(path)
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(path)
     return tuple(sorted(found))
 
 
-def _fingerprint(path: Path, kind: ArtifactPathKind) -> ArtifactFingerprint:
-    metadata = path.stat()
+def _fingerprint(
+    path: Path,
+    kind: ArtifactPathKind,
+    container: Path | None = None,
+) -> ArtifactFingerprint:
     digest = sha256()
-    if kind is ArtifactPathKind.FILE:
-        digest.update(path.read_bytes())
-    else:
-        for child in _walk_regular_tree(path):
-            digest.update(child.relative_to(path).as_posix().encode())
-            if child.is_file():
-                digest.update(b"F")
-                digest.update(sha256(child.read_bytes()).digest())
-            elif child.is_dir():
-                digest.update(b"D")
-            else:
-                raise SidecarValidationError(
-                    str(child), kind, "unsupported filesystem kind"
+    boundary = container or path.parent
+    try:
+        if kind is ArtifactPathKind.FILE:
+            metadata, content = read_real_file(path, boundary, MAX_EVIDENCE_FILE_BYTES)
+            digest.update(content)
+            device, inode = metadata.device, metadata.inode
+        else:
+            tree = inspect_real_tree(path, boundary)
+            entries = sorted(
+                (*tree.directories, *tree.files), key=lambda item: str(item.path)
+            )
+            file_paths = {identity.path for identity in tree.files}
+            for identity in entries:
+                digest.update(
+                    identity.path.relative_to(tree.root.path).as_posix().encode()
                 )
-    return ArtifactFingerprint(
-        kind, metadata.st_dev, metadata.st_ino, digest.hexdigest()
-    )
+                if identity.path in file_paths:
+                    digest.update(b"F")
+                    content = read_real_tree_file(tree, identity)
+                    digest.update(sha256(content).digest())
+                else:
+                    digest.update(b"D")
+            device, inode = tree.root.device, tree.root.inode
+    except RunManifestError as exc:
+        raise SidecarValidationError(str(path), kind, str(exc)) from exc
+    return ArtifactFingerprint(kind, device, inode, digest.hexdigest())
 
 
 def validate_path_receipt(
@@ -147,7 +173,7 @@ def validate_path_receipt(
     if not kind_checks[kind](canonical):
         raise SidecarValidationError(raw_path, kind, "path has wrong kind")
     return ArtifactReceipt(
-        raw_path, str(canonical), _fingerprint(canonical, kind), stage
+        raw_path, str(canonical), _fingerprint(canonical, kind, report), stage
     )
 
 
@@ -157,7 +183,7 @@ def snapshot_report(report_dir: Path) -> ReportSnapshot:
     for path in _walk_regular_tree(report, reject_links=False):
         kind = ArtifactPathKind.DIRECTORY if path.is_dir() else ArtifactPathKind.FILE
         try:
-            fingerprint = _fingerprint(path, kind)
+            fingerprint = _fingerprint(path, kind, report)
         except SidecarValidationError:
             continue
         entries.append((str(path.resolve(strict=True)), fingerprint))

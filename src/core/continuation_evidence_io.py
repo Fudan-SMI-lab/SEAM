@@ -9,6 +9,7 @@ from typing import NamedTuple, Protocol
 from .continuation_evidence_models import ChildEvidenceNamespace, ProjectSnapshot
 from .run_manifest import EvidenceDigest, Sha256Digest
 from .run_manifest_paths import copy_real_tree, digest_inventory
+from .evidence_limits import EvidenceBudget
 
 _WINDOWS_REPARSE_POINT = 0x400
 
@@ -96,7 +97,7 @@ def _digest_entry(
             _identity(before), _identity(os.fstat(handle.fileno()))
         ):
             raise OSError(f"project file changed before read: {relative_path}")
-        content = handle.read()
+        content = handle.read(before.st_size + 1)
         after = os.fstat(handle.fileno())
         _require_directories(directories)
     expected = _identity(before)
@@ -104,6 +105,8 @@ def _digest_entry(
         expected, _identity(path.lstat())
     ):
         raise OSError(f"project file changed during read: {relative_path}")
+    if len(content) != before.st_size:
+        raise OSError(f"project file changed size during read: {relative_path}")
     return EvidenceDigest(
         relative_path=relative_path,
         digest=Sha256Digest(hashlib.sha256(content).hexdigest()),
@@ -119,6 +122,7 @@ def snapshot_project_baseline(workspace: Path) -> ProjectSnapshot:
     pending: list[tuple[_ProjectDirectory, ...]] = [(root_directory,)]
     files: list[EvidenceDigest] = []
     links: list[EvidenceDigest] = []
+    budget = EvidenceBudget()
     while pending:
         directories = pending.pop()
         _require_directories(directories)
@@ -127,6 +131,10 @@ def snapshot_project_baseline(workspace: Path) -> ProjectSnapshot:
             _require_directories(directories)
             metadata = entry.lstat()
             relative_path = entry.relative_to(root).as_posix()
+            budget.charge(
+                Path(relative_path),
+                metadata.st_size if stat.S_ISREG(metadata.st_mode) else 0,
+            )
             if _is_link(metadata):
                 target = os.readlink(entry).encode("utf-8", errors="surrogatepass")
                 if not _identities_match(_identity(metadata), _identity(entry.lstat())):
