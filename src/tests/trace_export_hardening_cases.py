@@ -149,6 +149,32 @@ def test_directory_sync_failure_aborts_before_publication(
     assert not list(tmp_path.glob(".trace.*.tmp"))
 
 
+def test_parent_sync_failure_rolls_back_published_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from harness.session import trace_export_transaction
+
+    sync_count = 0
+
+    def fail_parent_sync(_path: object) -> None:
+        nonlocal sync_count
+        sync_count += 1
+        if sync_count == 4:
+            raise OSError("parent sync failed")
+
+    monkeypatch.setattr(trace_export_transaction, "_sync_directory", fail_parent_sync)
+
+    with pytest.raises(TraceExportError, match="sync"):
+        _ = export_root(
+            tmp_path,
+            FakeTraceClient({"ses_root": graph("ses_root").retrieval}),
+        )
+
+    assert not (tmp_path / "trace").exists()
+    assert not list(tmp_path.glob(".trace.*.tmp"))
+
+
 def test_manifest_size_limit_removes_unpublished_export(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -234,6 +260,9 @@ def test_unavailable_raw_contract_has_explicit_reason(tmp_path: Path) -> None:
 class TestTraceExportHardeningCases:
     test_directory_sync_failure_aborts_before_publication = staticmethod(
         test_directory_sync_failure_aborts_before_publication
+    )
+    test_parent_sync_failure_rolls_back_published_directory = staticmethod(
+        test_parent_sync_failure_rolls_back_published_directory
     )
     test_graph_edge_limit_bounds_retained_adjacency = staticmethod(
         test_graph_edge_limit_bounds_retained_adjacency

@@ -8,6 +8,12 @@ from typing import Literal, final
 
 from harness.session.trace_export_models import TraceExportError, TraceExportRequest
 from harness.session.trace_export_paths import has_unsafe_ancestry
+from core.owned_directory_lock import (
+    DirectoryLockIdentity,
+    OwnedDirectoryChangedError,
+    directory_lock_identity,
+    release_owned_directory,
+)
 
 atomic_directory_rename = os.rename
 directory_fsync = os.fsync
@@ -21,6 +27,7 @@ class TraceExportTransaction:
     def __init__(self, request: TraceExportRequest) -> None:
         self.final = request.destination
         self.staging = self.final.parent / f".trace.{token_urlsafe(8)}.tmp"
+        self._publish_lock = self.final.parent / f".{self.final.name}.publish.lock"
         self.request = TraceExportRequest(
             destination=self.staging,
             seeds=request.seeds,
@@ -32,12 +39,15 @@ class TraceExportTransaction:
         self._committed = False
         self._parent_identity: tuple[int, int, int] | None = None
         self._staging_identity: tuple[int, int, int] | None = None
+        self._publish_lock_identity: DirectoryLockIdentity | None = None
+        self._publish_lock_token = token_urlsafe(24).encode("ascii")
 
     def __enter__(self) -> TraceExportTransaction:
         try:
             self._prepare()
         except TraceExportError as exc:
             cleanup_error = self._remove_staging()
+            cleanup_error = cleanup_error or self._remove_publish_lock()
             if cleanup_error is not None:
                 raise TraceExportError(
                     self.staging,
@@ -49,22 +59,31 @@ class TraceExportTransaction:
     def commit(self) -> None:
         if not self._directories_stable() or self.final.exists():
             raise TraceExportError(self.final, "trace staging identity changed")
+        renamed = False
         try:
             _sync_directory(self.staging / "sessions")
             _sync_directory(self.staging / "overflows")
             _sync_directory(self.staging)
             atomic_directory_rename(self.staging, self.final)
+            renamed = True
+            _sync_directory(self.final.parent)
+            cleanup_error = self._remove_publish_lock()
+            if cleanup_error is not None:
+                raise OSError(cleanup_error)
+            _sync_directory(self.final.parent)
         except OSError as exc:
+            if (
+                renamed
+                and self.final.exists()
+                and self._staging_identity == _directory_identity(self.final)
+            ):
+                shutil.rmtree(self.final)
+                _sync_directory(self.final.parent)
+            _ = self._remove_publish_lock()
             raise TraceExportError(
                 self.final, f"trace commit interrupted: {exc}"
             ) from exc
         self._committed = True
-        try:
-            _sync_directory(self.final.parent)
-        except OSError as exc:
-            raise TraceExportError(
-                self.final, f"trace directory sync interrupted: {exc}"
-            ) from exc
 
     def __exit__(
         self,
@@ -75,6 +94,7 @@ class TraceExportTransaction:
         if self._committed:
             return False
         cleanup_error = self._remove_staging()
+        cleanup_error = cleanup_error or self._remove_publish_lock()
         if cleanup_error is not None:
             error = TraceExportError(
                 self.staging,
@@ -100,6 +120,11 @@ class TraceExportTransaction:
             if has_unsafe_ancestry(parent):
                 raise TraceExportError(destination, "destination ancestry is unsafe")
             _ = parent.resolve(strict=True)
+            if destination.exists():
+                raise TraceExportError(destination, "destination already exists")
+            self._publish_lock.mkdir(mode=0o700)
+            _ = (self._publish_lock / "owner").write_bytes(self._publish_lock_token)
+            self._publish_lock_identity = directory_lock_identity(self._publish_lock)
             if destination.exists():
                 raise TraceExportError(destination, "destination already exists")
             self.staging.mkdir(mode=0o700)
@@ -129,6 +154,24 @@ class TraceExportTransaction:
             return None
         except OSError as exc:
             return str(exc)
+        return None
+
+    def _remove_publish_lock(self) -> str | None:
+        identity = self._publish_lock_identity
+        if identity is None:
+            return None
+        try:
+            release_owned_directory(
+                self._publish_lock,
+                identity,
+                "owner",
+                self._publish_lock_token,
+            )
+        except FileNotFoundError:
+            return None
+        except (OSError, OwnedDirectoryChangedError) as exc:
+            return str(exc)
+        self._publish_lock_identity = None
         return None
 
 
