@@ -13,6 +13,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from core.run_outcome import (
+    AcceptedAttemptId,
     PhaseId,
     ReviewOutcome,
     ReviewRound,
@@ -118,7 +119,9 @@ def review_outcome(
         workflow_terminal=WorkflowTerminal("complete"),
         terminal_anchor=TerminalAnchor(PhaseId("phase_5_validation")),
         executed_phases=(PhaseId("phase_5_validation"),),
-        accepted_attempt_id=None,
+        accepted_attempt_id=(
+            AcceptedAttemptId("phase-5-attempt-cli") if validation else None
+        ),
         review_rounds=rounds,
     )
     return outcome.terminal_outcome

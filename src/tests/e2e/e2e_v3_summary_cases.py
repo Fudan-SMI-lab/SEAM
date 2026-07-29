@@ -8,6 +8,7 @@ from typing_extensions import assert_never
 
 from core.run_manifest import RunId
 from core.run_outcome import (
+    AcceptedAttemptId,
     PhaseId,
     ReviewOutcome,
     RunOutcome,
@@ -49,7 +50,11 @@ def test_v3_summary_bytes_and_exit_mapping_are_stable(
         workflow_terminal=WorkflowTerminal("complete"),
         terminal_anchor=TerminalAnchor(phase_id=PhaseId("phase_0_env_detect")),
         executed_phases=(PhaseId("phase_0_env_detect"),),
-        accepted_attempt_id=None,
+        accepted_attempt_id=(
+            AcceptedAttemptId("phase-5-attempt-summary")
+            if phase_status == "passed" and not errors
+            else None
+        ),
         review_rounds=(),
     )
     summary = build_run_summary(
@@ -101,13 +106,15 @@ def test_v3_summary_bytes_and_exit_mapping_are_stable(
     )
     _ = write_json_text(summary_path, serialized_summary)
     actual_bytes = summary_path.read_bytes()
-    match outcome.terminal_outcome:
-        case TerminalOutcome.FAILED:
-            exit_code = 1
-        case TerminalOutcome.PASSED | TerminalOutcome.PASSED_WITH_REVIEWS:
-            exit_code = 0
-        case unreachable:
-            assert_never(unreachable)
+    if outcome.terminal_outcome is TerminalOutcome.FAILED:
+        exit_code = 1
+    elif (
+        outcome.terminal_outcome is TerminalOutcome.PASSED
+        or outcome.terminal_outcome is TerminalOutcome.PASSED_WITH_REVIEWS
+    ):
+        exit_code = 0
+    else:
+        assert_never(outcome.terminal_outcome)
 
     # Then
     expected_payload = asdict(summary)

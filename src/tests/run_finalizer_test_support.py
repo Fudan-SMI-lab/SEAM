@@ -5,6 +5,7 @@ from pathlib import Path
 
 from core.run_manifest import RunId
 from core.run_outcome import (
+    AcceptedAttemptId,
     PhaseId,
     ReviewOutcome,
     RunOutcome,
@@ -29,7 +30,9 @@ def _finalizer_outcome(validation_succeeded: bool) -> RunOutcome:
         workflow_terminal=WorkflowTerminal("complete"),
         terminal_anchor=TerminalAnchor(phase_id=PhaseId("phase_0_env_detect")),
         executed_phases=(PhaseId("phase_0_env_detect"),),
-        accepted_attempt_id=None,
+        accepted_attempt_id=(
+            AcceptedAttemptId("phase-5-attempt-final") if validation_succeeded else None
+        ),
         review_rounds=(),
     )
 
