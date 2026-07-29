@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.agent_io_logger import redact_sensitive_text
+from core.agent_io_logger import JsonValue, redact_json_value, redact_sensitive_text
 
 
 def _utc_now() -> str:
@@ -82,14 +82,14 @@ class TelemetryBridge:
             }
         )
 
-    def on_event(self, event_type: str, **kwargs: object) -> None:
+    def on_event(self, event_type: str, **kwargs: JsonValue) -> None:
         evt: dict[str, object] = {
             "event_type": event_type,
             "timestamp": _utc_now(),
         }
         if kwargs:
             evt["details"] = {
-                key: redact_sensitive_text(value) if isinstance(value, str) else value
+                key: redact_json_value(value, key)
                 for key, value in kwargs.items()
                 if not any(
                     fragment in key.lower()
@@ -107,8 +107,8 @@ class TelemetryBridge:
             }
         self._events.append(evt)
 
-    def set_metadata(self, key: str, value: object) -> None:
-        self._metadata[key] = value
+    def set_metadata(self, key: str, value: JsonValue) -> None:
+        self._metadata[key] = redact_json_value(value, key)
 
     def save_metrics(
         self,
