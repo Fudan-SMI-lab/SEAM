@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+
 from pathlib import Path
 
 from .continuation_environment_manifest import error, known_fact, required_fact
@@ -98,7 +101,10 @@ def container_eligibility(
         facts, "container.original_owner_run_id", required=False
     )
     lineage_root = known_fact(facts, "container.lineage_root_run_id", required=False)
-    token = known_fact(facts, "container.framework_ownership_token", required=False)
+    token_sha256 = known_fact(
+        facts, "container.framework_ownership_token_sha256", required=False
+    )
+    token = observed.ownership_token
     label = known_fact(facts, "container.framework_ownership_label", required=False)
     attachment = ExistingContainerAttachment(
         mode="existing_container",
@@ -114,11 +120,17 @@ def container_eligibility(
     if owner != "framework":
         return attachment, ContainerDeleteForbidden("container is user or external")
     ownership_complete = all(
-        value is not None for value in (original_owner, lineage_root, token, label)
+        value is not None
+        for value in (original_owner, lineage_root, token, token_sha256, label)
     )
     ownership_matches = (
         ownership_complete
-        and observed.ownership_token == token
+        and token is not None
+        and token_sha256 is not None
+        and hmac.compare_digest(
+            hashlib.sha256(token.encode()).hexdigest(),
+            token_sha256,
+        )
         and observed.ownership_label == label
         and lineage_root == request.child_lineage_root_run_id
     )

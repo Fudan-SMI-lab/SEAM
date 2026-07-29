@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from core.resource_manifest import (
@@ -114,7 +116,18 @@ def test_backend_matrix_separates_attachment_ownership_and_lineage(
     if backend_request.owner_kind == "framework" and attachment is not None:
         assert _fact_values(facts, "container.original_owner_run_id")[0].value
         assert _fact_values(facts, "container.lineage_root_run_id")[0].value
-        assert _fact_values(facts, "container.framework_ownership_token")[0].value
+    token_attestation = _fact_values(
+        facts, "container.framework_ownership_token_sha256"
+    )[0].value
+    if backend_request.framework_ownership_token is None:
+        assert token_attestation is None
+    else:
+        assert (
+            token_attestation
+            == hashlib.sha256(
+                backend_request.framework_ownership_token.encode()
+            ).hexdigest()
+        )
 
 
 @pytest.mark.parametrize(

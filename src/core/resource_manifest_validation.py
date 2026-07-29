@@ -43,7 +43,7 @@ _REQUIRED_INITIAL_FACTS = frozenset(
         "container.owner_kind",
         "container.original_owner_run_id",
         "container.lineage_root_run_id",
-        "container.framework_ownership_token",
+        "container.framework_ownership_token_sha256",
         "container.framework_ownership_label",
         "container.runtime",
         "container.id",
