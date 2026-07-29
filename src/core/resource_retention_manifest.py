@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
-from typing_extensions import assert_never
-
 from .execution_env_context import (
     BackendFactRequest,
     EnvironmentProbe,
@@ -61,7 +59,7 @@ class ManifestContainerBackend(RetentionBackend, Protocol):
     def observed_environment_probe(self) -> EnvironmentProbe | None: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RetentionManifestRequest:
     report_dir: Path
     run_id: str
@@ -161,29 +159,27 @@ def _backend_fact_request(request: RetentionManifestRequest) -> BackendFactReque
     config = backend.config
     attachment = request.policy.attachment
     current_authority = request.policy.delete_authority
-    match current_authority:
-        case CurrentRunContainerDeleteAuthority() as authority:
-            original_owner = authority.original_owner_run_id
-            lineage_root = authority.lineage_root_run_id
-            ownership_token = authority.ownership_token
-            ownership_label = authority.ownership_label
-        case ContinuationContainerDeleteAuthority(attachment=verified):
-            original_owner = verified.original_owner_run_id
-            lineage_root = verified.lineage_root_run_id
-            ownership_token = verified.ownership_token
-            ownership_label = verified.ownership_label
-        case None if attachment is not None:
-            original_owner = attachment.original_owner_run_id
-            lineage_root = attachment.lineage_root_run_id
-            ownership_token = attachment.ownership_token
-            ownership_label = attachment.ownership_label
-        case None:
-            original_owner = None
-            lineage_root = None
-            ownership_token = None
-            ownership_label = None
-        case unreachable:
-            assert_never(unreachable)
+    if isinstance(current_authority, CurrentRunContainerDeleteAuthority):
+        original_owner = current_authority.original_owner_run_id
+        lineage_root = current_authority.lineage_root_run_id
+        ownership_token = current_authority.ownership_token
+        ownership_label = current_authority.ownership_label
+    elif isinstance(current_authority, ContinuationContainerDeleteAuthority):
+        verified = current_authority.attachment
+        original_owner = verified.original_owner_run_id
+        lineage_root = verified.lineage_root_run_id
+        ownership_token = verified.ownership_token
+        ownership_label = verified.ownership_label
+    elif attachment is not None:
+        original_owner = attachment.original_owner_run_id
+        lineage_root = attachment.lineage_root_run_id
+        ownership_token = attachment.ownership_token
+        ownership_label = attachment.ownership_label
+    else:
+        original_owner = None
+        lineage_root = None
+        ownership_token = None
+        ownership_label = None
     image = config.image
     if image is None and config.images:
         image = config.images[0]
@@ -213,7 +209,7 @@ def _backend_fact_request(request: RetentionManifestRequest) -> BackendFactReque
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RetentionManifestFinalizer:
     store: ResourceManifestStore
     recorder: RetentionLifecycleRecorder

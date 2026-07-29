@@ -4,6 +4,9 @@ from core.resource_retention import (
     ContainerDeleteAuthority,
     ContainerDeletionError,
     ContainerDeletionReceipt,
+    ContainerRetention,
+    CurrentRunContainerDeleteAuthority,
+    resolve_v3_container_retention,
 )
 from core.types import ExecutionBackendConfig, WorkflowDefinition
 
@@ -52,3 +55,12 @@ def container_workflow(source: str = "image") -> WorkflowDefinition:
         terminals=["complete"],
         execution_backend=config,
     )
+
+
+def current_run_delete_authority(run_id: str) -> CurrentRunContainerDeleteAuthority:
+    policy = resolve_v3_container_retention(
+        container_workflow(), ContainerRetention.DELETE, run_id
+    )
+    authority = policy.delete_authority
+    assert isinstance(authority, CurrentRunContainerDeleteAuthority)
+    return authority
