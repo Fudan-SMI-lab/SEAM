@@ -87,6 +87,7 @@ def test_improvement_selection_failure_closes_rejected_round(
     workflow = WorkflowDefinition(
         name="improvement-failure",
         version="1.0",
+        globals={"review_gate_enabled": True, "review_fail_closed": True},
         phases=[],
         terminals=["complete"],
         sub_workflows={"repair_loop": sub_workflow},

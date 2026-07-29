@@ -38,6 +38,7 @@ def _active_final_budget_harness(
     workflow.globals = {
         **(workflow.globals or {}),
         "review_gate_enabled": True,
+        "review_fail_closed": True,
         "max_repair_iterations": 1,
     }
     session_manager = MagicMock()

@@ -100,6 +100,7 @@ def test_post_improvement_validation_failure_consumes_one_repair_cycle(
     workflow = WorkflowDefinition(
         name="review-revalidation",
         version="1.0",
+        globals={"review_gate_enabled": True, "review_fail_closed": True},
         phases=[],
         terminals=["complete"],
         sub_workflows={"repair_loop": sub_workflow},

@@ -55,6 +55,7 @@ def test_review_state_resets_between_runs_on_same_executor(tmp_path: Path) -> No
     workflow = WorkflowDefinition(
         name="review-isolation",
         version="1.0",
+        globals={"review_gate_enabled": True, "review_fail_closed": True},
         phases=[],
         terminals=["complete"],
         sub_workflows={"repair_loop": sub_workflow},
