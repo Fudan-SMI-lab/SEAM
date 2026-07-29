@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Protocol, TypeAlias, final
+from typing import Callable, Protocol, Union, final
+
+from typing_extensions import TypeAlias
 
 from core.phase5_attempt_receipt import AttemptReceiptError
 from core.resource_manifest import ResourceManifestError
@@ -16,7 +18,7 @@ from core.v3_runtime_report import (
 
 from .models import RunArtifactUpdate
 
-JsonScalar: TypeAlias = str | int | float | bool | None
+JsonScalar: TypeAlias = Union[str, int, float, bool, None]
 JsonValue: TypeAlias = "JsonScalar | list[JsonValue] | dict[str, JsonValue]"
 PostCleanupHook: TypeAlias = Callable[[TerminalOutcome], RunArtifactUpdate]
 
@@ -163,7 +165,9 @@ def render_runtime_report_lines(report: V3RuntimeReport) -> tuple[str, ...]:
         lines.append(f"- Container entry: {report.access.entry_command}")
     if report.access.activation_command is not None:
         lines.append(f"- Environment activation: {report.access.activation_command}")
-    reason = f" ({report.replay.reason})" if report.replay.reason is not None else ""
+    reason = (
+        f" ({report.replay.reason.value})" if report.replay.reason is not None else ""
+    )
     lines.append(
         f"- Replay available: {'yes' if report.replay.available else 'no'}{reason}"
     )

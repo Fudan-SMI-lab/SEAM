@@ -26,7 +26,7 @@ from core.v3_runtime_report import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RuntimeReportingInputs:
     manifest_store: ResourceManifestStore | None
     artifact_store: ArtifactStore | None
