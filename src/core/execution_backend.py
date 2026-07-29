@@ -18,6 +18,9 @@ from core.continuation_environment_probe import (
     inspect_retained_container as inspect_retained_container,
     probe_retained_environment as probe_retained_environment,
 )
+from core.continuation_environment_models import (
+    framework_container_delete_eligibility_is_verified,
+)
 from core.continuation_lock import project_owner_lock_is_active
 from core.types import ExecutionBackendConfig
 from core.resource_retention import (
@@ -27,7 +30,6 @@ from core.resource_retention import (
     ContinuationContainerDeleteAuthority,
     CurrentRunContainerDeleteAuthority,
     _container_cleanup_is_authorized,
-    _framework_container_delete_eligibility_is_verified,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,7 @@ class ContainerNotRunningError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ExecResult:
     exit_code: int
     stdout: str
@@ -350,8 +352,7 @@ class ContainerBackend:
         if status != "running":
             if self.config.source == "existing_container":
                 raise ContainerNotRunningError(
-                    f"Cached container '{cid}' status is '{status}', "
-                    f"expected 'running'"
+                    f"Cached container '{cid}' status is '{status}', expected 'running'"
                 )
             if self._delete_authority is not None:
                 raise ContainerNotRunningError(
@@ -568,16 +569,14 @@ class ContainerBackend:
             cmd.extend(["--network", self.config.network_mode])
         for flag in self.config.runtime_flags:
             cmd.append(flag)
-        match self._delete_authority:
-            case CurrentRunContainerDeleteAuthority() as authority:
-                cmd.extend(["--label", authority.ownership_label])
-                cmd.extend(
-                    ["--label", f"seam.owner-token={authority.ownership_token}"]
-                )
-            case ContinuationContainerDeleteAuthority() | None:
-                pass
-            case unreachable:
-                assert_never(unreachable)
+        authority = self._delete_authority
+        if isinstance(authority, CurrentRunContainerDeleteAuthority):
+            cmd.extend(["--label", authority.ownership_label])
+            cmd.extend(["--label", f"seam.owner-token={authority.ownership_token}"])
+        elif authority is not None and not isinstance(
+            authority, ContinuationContainerDeleteAuthority
+        ):
+            assert_never(authority)
         if self.config.cleanup:
             cmd.append("--rm")
 
@@ -831,38 +830,32 @@ class ContainerBackend:
                 "running",
                 "container deletion is outside authorized finalization",
             )
-        match authority:
-            case CurrentRunContainerDeleteAuthority() as current_authority:
-                authorized = (
-                    self.config.source == "image"
-                    and authority is self._delete_authority
-                )
-                expected_token = current_authority.ownership_token
-                expected_label = current_authority.ownership_label
-            case ContinuationContainerDeleteAuthority(
-                attachment=attachment,
-                eligibility=eligibility,
-            ):
-                authorized = (
-                    authority is self._delete_authority
-                    and _framework_container_delete_eligibility_is_verified(
-                        eligibility
-                    )
-                    and project_owner_lock_is_active(authority.owner_lock)
-                    and self.config.source == "existing_container"
-                    and attachment.container_id == container_id
-                    and attachment.runtime == self._runtime_cmd
-                    and attachment.original_owner_run_id
-                    == eligibility.original_owner_run_id
-                    and attachment.lineage_root_run_id
-                    == eligibility.lineage_root_run_id
-                    and attachment.ownership_token == eligibility.ownership_token
-                    and attachment.ownership_label == eligibility.ownership_label
-                )
-                expected_token = eligibility.ownership_token
-                expected_label = eligibility.ownership_label
-            case unreachable:
-                assert_never(unreachable)
+        if isinstance(authority, CurrentRunContainerDeleteAuthority):
+            authorized = (
+                self.config.source == "image" and authority is self._delete_authority
+            )
+            expected_token = authority.ownership_token
+            expected_label = authority.ownership_label
+        elif isinstance(authority, ContinuationContainerDeleteAuthority):
+            attachment = authority.attachment
+            eligibility = authority.eligibility
+            authorized = (
+                authority is self._delete_authority
+            and framework_container_delete_eligibility_is_verified(eligibility)
+                and project_owner_lock_is_active(authority.owner_lock)
+                and self.config.source == "existing_container"
+                and attachment.container_id == container_id
+                and attachment.runtime == self._runtime_cmd
+                and attachment.original_owner_run_id
+                == eligibility.original_owner_run_id
+                and attachment.lineage_root_run_id == eligibility.lineage_root_run_id
+                and attachment.ownership_token == eligibility.ownership_token
+                and attachment.ownership_label == eligibility.ownership_label
+            )
+            expected_token = eligibility.ownership_token
+            expected_label = eligibility.ownership_label
+        else:
+            assert_never(authority)
         if not authorized:
             raise ContainerDeletionError(
                 container_id,
