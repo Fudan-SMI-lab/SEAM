@@ -7,6 +7,8 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
+from core.run_manifest_models import RunManifestError
+from core.run_manifest_paths import copy_real_tree
 from core.v3_runtime_report import V3RuntimeReport
 
 from .models import (
@@ -17,6 +19,17 @@ from .models import (
 )
 
 atomic_replace = os.replace
+artifact_tree_copy = copy_real_tree
+
+
+def _cleanup_staging(staging: Path) -> OSError | None:
+    try:
+        shutil.rmtree(staging)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return exc
+    return None
 
 
 def copy_run_artifacts(temp_dir: Path, output_dir: Path) -> str | None:
@@ -28,16 +41,21 @@ def copy_run_artifacts(temp_dir: Path, output_dir: Path) -> str | None:
         raise FileExistsError(destination)
     staging = output_dir / f".sm-artifacts.{uuid4().hex}.tmp"
     try:
-        _ = shutil.copytree(source, staging)
+        artifact_tree_copy(source, temp_dir, staging)
         _ = staging.rename(destination)
-    except OSError as exc:
-        cleanup_failure: OSError | None = None
-        try:
-            shutil.rmtree(staging)
-        except FileNotFoundError:
-            cleanup_failure = None
-        except OSError as cleanup_exc:
-            cleanup_failure = cleanup_exc
+    except RunManifestError as exc:
+        cleanup_failure = _cleanup_staging(staging)
+        if cleanup_failure is not None:
+            raise SidecarWriteError(
+                path=str(staging),
+                detail=f"artifact staging cleanup failed: {cleanup_failure}",
+            ) from exc
+        raise SidecarWriteError(
+            path=str(source),
+            detail=f"artifact copy rejected: {exc}",
+        ) from exc
+    except (OSError, shutil.Error) as exc:
+        cleanup_failure = _cleanup_staging(staging)
         if cleanup_failure is not None:
             raise SidecarWriteError(
                 path=str(staging),

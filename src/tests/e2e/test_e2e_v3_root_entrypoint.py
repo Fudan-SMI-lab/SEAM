@@ -7,6 +7,7 @@ import textwrap
 import pytest
 
 from harness.run import copy_run_artifacts
+from harness.run import sidecars as run_sidecars
 
 from .e2e_v3_summary_cases import (
     test_v3_summary_bytes_and_exit_mapping_are_stable as test_v3_summary_bytes_and_exit_mapping_are_stable,
@@ -27,6 +28,11 @@ from .e2e_v3_continuation_shell_cases import (
     test_v3_launcher_forwards_continuation_without_project as test_v3_launcher_forwards_continuation_without_project,
     test_v3_launcher_rejects_conflicting_container_retention as test_v3_launcher_rejects_conflicting_container_retention,
     test_v3_launcher_rejects_invalid_run_mode as test_v3_launcher_rejects_invalid_run_mode,
+)
+from .e2e_v3_continuation_shell_security_cases import (
+    test_v3_launcher_keeps_hostile_agent_value_as_one_argument as test_v3_launcher_keeps_hostile_agent_value_as_one_argument,
+    test_v3_launcher_keeps_hostile_path_as_one_argument as test_v3_launcher_keeps_hostile_path_as_one_argument,
+    test_v3_launcher_rejects_retention_smuggling_through_extra as test_v3_launcher_rejects_retention_smuggling_through_extra,
 )
 from .e2e_v3_trace_entrypoint_cases import (
     test_legacy_and_v2_entrypoints_exclude_trace_policy as test_legacy_and_v2_entrypoints_exclude_trace_policy,
@@ -267,6 +273,7 @@ def test_frozen_outcome_controls_real_summary_and_process_exit(
         sys.path.insert(0, "src")
 
         from core.run_outcome import (
+            AcceptedAttemptId,
             PhaseId,
             ReviewOutcome,
             RunOutcome,
@@ -288,7 +295,11 @@ def test_frozen_outcome_controls_real_summary_and_process_exit(
             workflow_terminal=WorkflowTerminal("complete"),
             terminal_anchor=TerminalAnchor(phase_id=PhaseId("phase_0_env_detect")),
             executed_phases=(PhaseId("phase_0_env_detect"),),
-            accepted_attempt_id=None,
+            accepted_attempt_id=(
+                AcceptedAttemptId("phase-5-attempt-root")
+                if authority_passes
+                else None
+            ),
             review_rounds=(),
         )
         scenario = FinalizerScenario(
@@ -354,12 +365,12 @@ def test_v3_artifact_copy_cleans_interrupted_staging(
     output_dir = tmp_path / "report"
     output_dir.mkdir()
 
-    def interrupt_copy(_source: Path, staging: Path) -> Path:
+    def interrupt_copy(_source: Path, _container: Path, staging: Path) -> None:
         staging.mkdir()
         _ = (staging / "partial.txt").write_text("partial", encoding="utf-8")
         raise shutil.Error("copy interrupted")
 
-    monkeypatch.setattr(shutil, "copytree", interrupt_copy)
+    monkeypatch.setattr(run_sidecars, "artifact_tree_copy", interrupt_copy)
 
     # When artifact persistence receives the interruption.
     with pytest.raises(shutil.Error, match="copy interrupted"):
