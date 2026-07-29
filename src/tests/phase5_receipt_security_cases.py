@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -49,12 +48,21 @@ def test_receipt_from_another_run_cannot_be_accepted(tmp_path: Path) -> None:
         custom_op_gate=CustomOpGateEvidence(status=CustomOpGateStatus.INACTIVE),
         review=review(ReviewOutcome.DISABLED),
     )
+    other_root = tmp_path / "other-run"
+    other_root.mkdir()
+    other_store = ArtifactStore(str(other_root), "run-b")
+    other_path = save_attempt(other_store, other_root, exit_code=0)
+    _ = finalize_attempt_receipt(
+        other_path,
+        custom_op_gate=CustomOpGateEvidence(status=CustomOpGateStatus.INACTIVE),
+        review=review(ReviewOutcome.DISABLED),
+    )
 
     # When another run tries to accept it.
     with pytest.raises(AttemptReceiptError) as raised:
         _ = accept_attempt_receipt(
             receipt_path,
-            replace(authority(store, receipt_path), run_id="run-b"),
+            authority(other_store, other_path),
         )
 
     # Then run identity is part of acceptance authority.

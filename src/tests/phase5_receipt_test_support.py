@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.artifact_store import ArtifactStore
+from core.phase5_artifact_store import Phase5ArtifactStore
 from core.phase5_attempt_receipt import (
     ArtifactFileReceipt,
     BackendExecution,
@@ -88,6 +89,14 @@ def authority(store: ArtifactStore, receipt_path: Path) -> Phase5AttemptAuthorit
     return value
 
 
+def issued_authority(
+    receipt_path: Path,
+    receipt: Phase5AttemptReceipt,
+) -> Phase5AttemptAuthority:
+    store = Phase5ArtifactStore(str(receipt_path.parent), receipt.run_id)
+    return store._register_authority(receipt_path, receipt)
+
+
 def accepted_receipt(
     tmp_path: Path,
     *,
@@ -136,15 +145,16 @@ def run_outcome(
     *,
     succeeded: bool = True,
 ) -> RunOutcome:
+    anchor = PhaseId("phase_5_validation" if succeeded else "phase_6_report")
     return RunOutcome(
         validation_succeeded=succeeded,
         review_outcome=ReviewOutcome.DISABLED,
         review_fail_closed=True,
         workflow_terminal=WorkflowTerminal("complete"),
-        terminal_anchor=TerminalAnchor(
-            phase_id=PhaseId("phase_5_validation" if succeeded else "phase_6_report")
+        terminal_anchor=TerminalAnchor(phase_id=anchor),
+        executed_phases=(PhaseId("phase_5_validation"), anchor),
+        accepted_attempt_id=(
+            AcceptedAttemptId(receipt.attempt_id) if succeeded else None
         ),
-        executed_phases=(PhaseId("phase_5_validation"),),
-        accepted_attempt_id=AcceptedAttemptId(receipt.attempt_id),
         review_rounds=(),
     )
