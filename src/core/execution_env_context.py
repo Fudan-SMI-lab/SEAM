@@ -145,11 +145,18 @@ class OpenCodeFactRequest(_FrozenModel):
 
 
 class Phase2EnvironmentReport(_FrozenModel):
-    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
+    model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="forbid")
     env_type: typing.Optional[Literal["base_env", "venv"]] = None
     venv_path: _Text
     python_path: _Text
     installed_packages: Annotated[typing.Tuple[_Text, ...], Field(max_length=512)]
+
+    @model_validator(mode="before")
+    @classmethod
+    def project_environment_fields(cls, value: object) -> object:
+        if not isinstance(value, typing.Mapping):
+            return value
+        return {name: value[name] for name in cls.model_fields if name in value}
 
     @model_validator(mode="after")
     def require_safe_paths(self) -> Self:
