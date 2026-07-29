@@ -2,13 +2,64 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, unique
-from typing import NewType
+import re
+from typing import final
 
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import CoreSchema, core_schema
 from typing_extensions import assert_never, override
 
-PhaseId = NewType("PhaseId", str)
-AcceptedAttemptId = NewType("AcceptedAttemptId", str)
-WorkflowTerminal = NewType("WorkflowTerminal", str)
+
+@final
+class PhaseId(str):
+    def __new__(cls, raw: str) -> PhaseId:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", raw):
+            raise OutcomeContractError(reason="phase_id is not a valid identifier")
+        return str.__new__(cls, raw)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        _source_type: type[str],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return core_schema.no_info_after_validator_function(cls, handler(str))
+
+
+@final
+class AcceptedAttemptId(str):
+    def __new__(cls, raw: str) -> AcceptedAttemptId:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", raw):
+            raise OutcomeContractError(
+                reason="accepted attempt is not a valid identifier"
+            )
+        return str.__new__(cls, raw)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        _source_type: type[str],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return core_schema.no_info_after_validator_function(cls, handler(str))
+
+
+@final
+class WorkflowTerminal(str):
+    def __new__(cls, raw: str) -> WorkflowTerminal:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", raw):
+            raise OutcomeContractError(
+                reason="workflow terminal is not a valid identifier"
+            )
+        return str.__new__(cls, raw)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls,
+        _source_type: type[str],
+        handler: GetCoreSchemaHandler,
+    ) -> CoreSchema:
+        return core_schema.no_info_after_validator_function(cls, handler(str))
 
 
 @unique
@@ -62,11 +113,14 @@ class TerminalOutcome(str, Enum):
     FAILED = "failed"
 
 
-@dataclass(frozen=True, slots=True)
 class OutcomeContractError(Exception):
     """Raised when domain facts describe an impossible outcome state."""
 
     reason: str
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
     @override
     def __str__(self) -> str:
@@ -74,22 +128,20 @@ class OutcomeContractError(Exception):
 
 
 def _expected_verdict(outcome: ReviewOutcome) -> ReviewVerdict | None:
-    match outcome:
-        case ReviewOutcome.DISABLED:
-            return None
-        case ReviewOutcome.ACCEPTED:
-            return ReviewVerdict.ACCEPT
-        case ReviewOutcome.REJECTED | ReviewOutcome.REJECT_EXHAUSTED:
-            return ReviewVerdict.REJECT
-        case ReviewOutcome.UNKNOWN | ReviewOutcome.SESSION_ERROR:
-            return ReviewVerdict.UNKNOWN
-        case ReviewOutcome.IMPROVEMENT_ERROR:
-            return ReviewVerdict.REJECT
-        case _:
-            assert_never(outcome)
+    if outcome is ReviewOutcome.DISABLED:
+        return None
+    if outcome is ReviewOutcome.ACCEPTED:
+        return ReviewVerdict.ACCEPT
+    if outcome is ReviewOutcome.REJECTED or outcome is ReviewOutcome.REJECT_EXHAUSTED:
+        return ReviewVerdict.REJECT
+    if outcome is ReviewOutcome.UNKNOWN or outcome is ReviewOutcome.SESSION_ERROR:
+        return ReviewVerdict.UNKNOWN
+    if outcome is ReviewOutcome.IMPROVEMENT_ERROR:
+        return ReviewVerdict.REJECT
+    assert_never(outcome)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewRound:
     """One immutable logical reviewer judgment within the review budget."""
 
@@ -110,30 +162,19 @@ class ReviewRound:
         if self.verdict is not expected_verdict:
             raise OutcomeContractError(reason="review outcome conflicts with verdict")
 
-        match self.outcome:
-            case ReviewOutcome.REJECTED:
-                if self.round_number >= self.max_rounds:
-                    raise OutcomeContractError(
-                        reason="rejected is intermediate and requires a remaining round"
-                    )
-            case ReviewOutcome.REJECT_EXHAUSTED:
-                if self.round_number != self.max_rounds:
-                    raise OutcomeContractError(
-                        reason="reject_exhausted requires the final review round"
-                    )
-            case (
-                ReviewOutcome.DISABLED
-                | ReviewOutcome.ACCEPTED
-                | ReviewOutcome.UNKNOWN
-                | ReviewOutcome.SESSION_ERROR
-                | ReviewOutcome.IMPROVEMENT_ERROR
-            ):
-                pass
-            case _:
-                assert_never(self.outcome)
+        if self.outcome is ReviewOutcome.REJECTED:
+            if self.round_number >= self.max_rounds:
+                raise OutcomeContractError(
+                    reason="rejected is intermediate and requires a remaining round"
+                )
+        elif self.outcome is ReviewOutcome.REJECT_EXHAUSTED:
+            if self.round_number != self.max_rounds:
+                raise OutcomeContractError(
+                    reason="reject_exhausted requires the final review round"
+                )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TerminalAnchor:
     """The phase from which a terminal run may be diagnosed or continued."""
 
@@ -141,7 +182,9 @@ class TerminalAnchor:
 
     def __post_init__(self) -> None:
         if not self.phase_id.strip():
-            raise OutcomeContractError(reason="terminal anchor phase_id cannot be empty")
+            raise OutcomeContractError(
+                reason="terminal anchor phase_id cannot be empty"
+            )
 
 
 def _validate_review_history(review_rounds: tuple[ReviewRound, ...]) -> None:
@@ -159,25 +202,13 @@ def _validate_review_history(review_rounds: tuple[ReviewRound, ...]) -> None:
             )
         if expected_number == final_index:
             continue
-        match review_round.outcome:
-            case ReviewOutcome.REJECTED:
-                pass
-            case (
-                ReviewOutcome.DISABLED
-                | ReviewOutcome.ACCEPTED
-                | ReviewOutcome.REJECT_EXHAUSTED
-                | ReviewOutcome.UNKNOWN
-                | ReviewOutcome.SESSION_ERROR
-                | ReviewOutcome.IMPROVEMENT_ERROR
-            ):
-                raise OutcomeContractError(
-                    reason="only rejected review rounds may precede another round"
-                )
-            case _:
-                assert_never(review_round.outcome)
+        if review_round.outcome is not ReviewOutcome.REJECTED:
+            raise OutcomeContractError(
+                reason="only rejected review rounds may precede another round"
+            )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunOutcome:
     """Authoritative V3 result with terminal, workflow, attempt, and review facts."""
 
@@ -192,53 +223,47 @@ class RunOutcome:
     terminal_outcome: TerminalOutcome = field(init=False)
 
     def __post_init__(self) -> None:
-        match self.review_outcome:
-            case ReviewOutcome.DISABLED:
-                if self.review_rounds:
-                    raise OutcomeContractError(
-                        reason="disabled review cannot retain review rounds"
-                    )
-            case (
-                ReviewOutcome.ACCEPTED
-                | ReviewOutcome.REJECTED
-                | ReviewOutcome.REJECT_EXHAUSTED
-                | ReviewOutcome.UNKNOWN
-                | ReviewOutcome.SESSION_ERROR
-                | ReviewOutcome.IMPROVEMENT_ERROR
-            ):
-                if not self.review_rounds:
-                    raise OutcomeContractError(
-                        reason="enabled review requires at least one review round"
-                    )
-                if self.review_rounds[-1].outcome is not self.review_outcome:
-                    raise OutcomeContractError(
-                        reason="final review round must match the review disposition"
-                    )
-            case _:
-                assert_never(self.review_outcome)
+        if self.review_outcome is ReviewOutcome.DISABLED:
+            if self.review_rounds:
+                raise OutcomeContractError(
+                    reason="disabled review cannot retain review rounds"
+                )
+        else:
+            if not self.review_rounds:
+                raise OutcomeContractError(
+                    reason="enabled review requires at least one review round"
+                )
+            if self.review_rounds[-1].outcome is not self.review_outcome:
+                raise OutcomeContractError(
+                    reason="final review round must match the review disposition"
+                )
 
         _validate_review_history(self.review_rounds)
+
+        if (
+            self.validation_succeeded
+            and self.review_outcome is ReviewOutcome.ACCEPTED
+            and self.accepted_attempt_id is None
+        ):
+            raise OutcomeContractError(
+                reason="accepted review requires an accepted attempt"
+            )
 
         if not self.validation_succeeded or not self.executed_phases:
             terminal_outcome = TerminalOutcome.FAILED
         else:
-            match self.review_outcome:
-                case ReviewOutcome.DISABLED | ReviewOutcome.ACCEPTED:
-                    terminal_outcome = TerminalOutcome.PASSED
-                case ReviewOutcome.REJECT_EXHAUSTED:
-                    terminal_outcome = (
-                        TerminalOutcome.FAILED
-                        if self.review_fail_closed
-                        else TerminalOutcome.PASSED_WITH_REVIEWS
-                    )
-                case (
-                    ReviewOutcome.REJECTED
-                    | ReviewOutcome.UNKNOWN
-                    | ReviewOutcome.SESSION_ERROR
-                    | ReviewOutcome.IMPROVEMENT_ERROR
-                ):
-                    terminal_outcome = TerminalOutcome.FAILED
-                case _:
-                    assert_never(self.review_outcome)
+            if (
+                self.review_outcome is ReviewOutcome.DISABLED
+                or self.review_outcome is ReviewOutcome.ACCEPTED
+            ):
+                terminal_outcome = TerminalOutcome.PASSED
+            elif self.review_outcome is ReviewOutcome.REJECT_EXHAUSTED:
+                terminal_outcome = (
+                    TerminalOutcome.FAILED
+                    if self.review_fail_closed
+                    else TerminalOutcome.PASSED_WITH_REVIEWS
+                )
+            else:
+                terminal_outcome = TerminalOutcome.FAILED
 
         object.__setattr__(self, "terminal_outcome", terminal_outcome)
