@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum, unique
-from typing import TypeAlias
+from typing import Callable, Optional
+from typing_extensions import TypeAlias
 
 from typing_extensions import assert_never, override
 
@@ -21,10 +22,10 @@ from .trace_lifecycle_models import (
 )
 
 DurationSource: TypeAlias = Callable[[], float]
-RuntimeReportSource: TypeAlias = Callable[[], V3RuntimeReport | None]
+RuntimeReportSource: TypeAlias = Callable[[], Optional[V3RuntimeReport]]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PhaseStatus:
     phase_number: int
     phase_id: str
@@ -34,7 +35,7 @@ class PhaseStatus:
     error: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunIdentity:
     run_id: RunId
     base_url: str
@@ -43,7 +44,7 @@ class RunIdentity:
     temp_dir: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunExecution:
     keep_temp_dir: bool
     requested_max_phase5_iter: int
@@ -56,7 +57,7 @@ class RunExecution:
     duration_source: DurationSource | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunArtifactUpdate:
     artifact_dir: str | None = None
     telemetry_paths: tuple[tuple[str, str], ...] = ()
@@ -69,7 +70,7 @@ class RunArtifactUpdate:
 EMPTY_ARTIFACT_UPDATE = RunArtifactUpdate()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunArtifacts:
     artifact_dir: str | None = None
     telemetry_paths: tuple[tuple[str, str], ...] = ()
@@ -92,7 +93,7 @@ class RunArtifacts:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ContinuationRunSummary:
     parent_run_id: str
     anchor_phase_id: str
@@ -101,7 +102,7 @@ class ContinuationRunSummary:
     attachment_mode: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunSummary:
     run_id: str
     base_url: str
@@ -147,7 +148,7 @@ class FinalizationStage(str, Enum):
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FinalizationHookError(RuntimeError):
     detail: str
 
@@ -163,7 +164,7 @@ def _empty_hook(_outcome: TerminalOutcome) -> RunArtifactUpdate:
     return EMPTY_ARTIFACT_UPDATE
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FinalizationHooks:
     evidence_replay: FinalizationHook = _empty_hook
     trace_export: FinalizationHook = _empty_hook
@@ -195,7 +196,7 @@ class FinalizationHooks:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RunFinalizationRequest:
     identity: RunIdentity
     execution: RunExecution
@@ -214,14 +215,14 @@ class RunFinalizationRequest:
         return self.authoritative_outcome
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FinalizationDiagnostic:
     stage: FinalizationStage
     error_type: str
     detail: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FinalizationResult:
     outcome: TerminalOutcome
     summary: RunSummary
@@ -236,13 +237,14 @@ class FinalizationResult:
     def exit_code(self) -> int:
         if self.finalization_failed:
             return 1
-        match self.outcome:
-            case TerminalOutcome.FAILED:
-                return 1
-            case TerminalOutcome.PASSED | TerminalOutcome.PASSED_WITH_REVIEWS:
-                return 2 if self.requested_cleanup_failed else 0
-            case unreachable:
-                assert_never(unreachable)
+        if self.outcome is TerminalOutcome.FAILED:
+            return 1
+        if (
+            self.outcome is TerminalOutcome.PASSED
+            or self.outcome is TerminalOutcome.PASSED_WITH_REVIEWS
+        ):
+            return 2 if self.requested_cleanup_failed else 0
+        assert_never(self.outcome)
 
 
 @unique
@@ -252,7 +254,7 @@ class ReportAllocationErrorKind(str, Enum):
     CREATE_FAILED = "create_failed"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReportAllocationError(Exception):
     kind: ReportAllocationErrorKind
     detail: str
@@ -262,7 +264,7 @@ class ReportAllocationError(Exception):
         return f"{self.kind.value}: {self.detail}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SidecarWriteError(OSError):
     path: str
     detail: str

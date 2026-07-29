@@ -26,13 +26,15 @@ def build_summary(
         if execution.duration_source is None
         else execution.duration_source()
     )
-    match outcome:
-        case TerminalOutcome.FAILED:
-            overall_status = "FAIL"
-        case TerminalOutcome.PASSED | TerminalOutcome.PASSED_WITH_REVIEWS:
-            overall_status = "PASS"
-        case unreachable:
-            assert_never(unreachable)
+    if outcome is TerminalOutcome.FAILED:
+        overall_status = "FAIL"
+    elif (
+        outcome is TerminalOutcome.PASSED
+        or outcome is TerminalOutcome.PASSED_WITH_REVIEWS
+    ):
+        overall_status = "PASS"
+    else:
+        assert_never(outcome)
     return RunSummary(
         run_id=str(identity.run_id),
         base_url=identity.base_url,
