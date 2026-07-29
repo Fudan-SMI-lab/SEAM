@@ -4,7 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import harness.run as run
+from core.run_manifest import RunId
 from core.run_outcome import TerminalOutcome
+from core.trace_correlation_models import (
+    FrameworkInvocationId,
+    TransportAttemptId,
+)
 from harness.session.trace_exporter import TraceExportRequest, TraceExporter
 from tests.opencode_contract_test_helpers import object_list_member, object_member
 from tests.run_finalizer_test_support import FinalizerScenario, finalization_request
@@ -146,6 +151,94 @@ def test_invalid_correlation_edges_are_incomplete_without_duplicate_fetches(
     } <= codes
     assert client.calls == ["ses_root", "ses_child"]
     assert result.complete is False
+    assert result.correlation_complete is False
+
+
+def test_inconsistent_runtime_relations_make_correlation_incomplete(
+    tmp_path: Path,
+) -> None:
+    # Given a context whose typed records contradict their run and relation identities.
+    context = correlation_context()
+    context = replace(
+        context,
+        phase_executions=(
+            replace(context.phase_executions[0], run_id=RunId("foreign-run")),
+        ),
+        phase5_attempts=(replace(context.phase5_attempts[0], attempt_number=9),),
+        review_rounds=(
+            replace(
+                context.review_rounds[0],
+                framework_invocation_id=FrameworkInvocationId("missing-invocation"),
+            ),
+            *context.review_rounds[1:],
+        ),
+        transport_attempts=(
+            replace(
+                context.transport_attempts[0],
+                transport_attempt_id=TransportAttemptId("noncanonical-attempt"),
+            ),
+        ),
+    )
+    client = FakeTraceClient({"ses_root": graph("ses_root").retrieval})
+
+    # When the final projection validates the assembled context.
+    result = TraceExporter(client).export(
+        TraceExportRequest(
+            destination=tmp_path / "trace",
+            seeds=(seed("ses_root"),),
+            captured_at=CAPTURED_AT,
+            correlation=context,
+        )
+    )
+
+    # Then every contradictory relation is diagnosed and completeness fails closed.
+    manifest = read_object(result.manifest_path)
+    correlation = object_member(manifest, "correlation")
+    codes = {
+        string_member(item, "code")
+        for item in object_list_member(correlation, "diagnostics")
+    }
+    assert {
+        "cross_run_record",
+        "contradictory_attempt",
+        "orphan_invocation",
+    } <= codes
+    assert correlation["complete"] is False
+    assert result.correlation_complete is False
+
+
+def test_overlapping_managed_roots_keep_independent_attribution(
+    tmp_path: Path,
+) -> None:
+    # Given nested sessions that are both explicitly managed roots.
+    outer = graph("ses_outer", child_ids=("ses_inner",))
+    inner = graph("ses_inner")
+    client = FakeTraceClient(
+        {"ses_outer": outer.retrieval, "ses_inner": inner.retrieval}
+    )
+
+    # When both roots are exported and the outer graph discovers the inner root.
+    result = TraceExporter(client).export(
+        TraceExportRequest(
+            destination=tmp_path / "trace",
+            seeds=(seed("ses_outer"), seed("ses_inner")),
+            captured_at=CAPTURED_AT,
+            correlation=correlation_context(),
+        )
+    )
+
+    # Then the inner root keeps its own attribution and overlap fails closed.
+    manifest = read_object(result.manifest_path)
+    correlation = object_member(manifest, "correlation")
+    sessions = {
+        string_member(item, "session_id"): item
+        for item in object_list_member(correlation, "sessions")
+    }
+    diagnostics = object_list_member(correlation, "diagnostics")
+    assert sessions["ses_inner"]["root_session_id"] == "ses_inner"
+    assert client.calls == ["ses_outer", "ses_inner"]
+    assert any(item.get("code") == "duplicate_child_id" for item in diagnostics)
+    assert correlation["complete"] is False
     assert result.correlation_complete is False
 
 

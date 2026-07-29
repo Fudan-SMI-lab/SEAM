@@ -16,7 +16,7 @@ from core.trace_correlation_models import (
 from harness.session.events import TransportInvocationId
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class CorrelationDiagnostic:
     code: str
     record_kind: str
@@ -24,14 +24,14 @@ class CorrelationDiagnostic:
     detail: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PhaseExecutionCorrelation:
     run_id: RunId
     phase_id: PhaseId
     phase_execution_id: PhaseExecutionId
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Phase5AttemptCorrelation:
     run_id: RunId
     phase_execution_id: PhaseExecutionId
@@ -40,7 +40,7 @@ class Phase5AttemptCorrelation:
     accepted: bool
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ReviewRoundCorrelation:
     run_id: RunId
     phase_execution_id: PhaseExecutionId
@@ -52,7 +52,7 @@ class ReviewRoundCorrelation:
     record_id: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class FrameworkInvocationCorrelation:
     run_id: RunId
     phase_execution_id: PhaseExecutionId
@@ -60,7 +60,7 @@ class FrameworkInvocationCorrelation:
     session_id: SessionId
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportAttemptCorrelation:
     run_id: RunId
     phase_execution_id: PhaseExecutionId
@@ -73,7 +73,7 @@ class TransportAttemptCorrelation:
     record_id: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SessionCorrelation:
     run_id: RunId
     root_session_id: SessionId
@@ -83,7 +83,7 @@ class SessionCorrelation:
     scope: str | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ToolCallCorrelation:
     run_id: RunId
     root_session_id: SessionId
@@ -95,7 +95,7 @@ class ToolCallCorrelation:
     child_session_id: SessionId | None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TraceCorrelationContext:
     scope: RunCorrelationScope
     phase_executions: tuple[PhaseExecutionCorrelation, ...]
@@ -106,7 +106,7 @@ class TraceCorrelationContext:
     diagnostics: tuple[CorrelationDiagnostic, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TraceCorrelationProjection:
     context: TraceCorrelationContext
     sessions: tuple[SessionCorrelation, ...]

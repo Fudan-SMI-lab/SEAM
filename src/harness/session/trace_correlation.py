@@ -13,6 +13,7 @@ from harness.session.trace_correlation_models import (
     TraceCorrelationProjection,
 )
 from harness.session.trace_correlation_payloads import session_correlation_value
+from harness.session.trace_correlation_validation import validate_context_relations
 from harness.session.trace_seeds import TraceSeed
 from core.trace_correlation_models import SessionId, ToolCallId
 
@@ -32,7 +33,7 @@ _GRAPH_DIAGNOSTICS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SessionCorrelationInput:
     session_id: str
     path: tuple[str, ...]
@@ -92,6 +93,12 @@ class TraceCorrelationProjector:
                 session_id if isinstance(session_id, str) else "run",
             )
         self._validate_sessions()
+        for diagnostic in validate_context_relations(self._context):
+            self._add(
+                diagnostic.code,
+                diagnostic.record_kind,
+                diagnostic.record_id,
+            )
         self._validate_runtime_links()
         self._validate_tools()
         return TraceCorrelationProjection(
