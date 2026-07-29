@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, TypeAlias, TypedDict, cast
+from typing import Protocol, TypedDict, cast
+
+from typing_extensions import TypeAlias
 
 
 @dataclass
