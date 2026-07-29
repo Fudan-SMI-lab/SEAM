@@ -6,6 +6,8 @@ from typing import final
 import pytest
 
 from harness.session.trace_export_models import TraceExportError
+from harness.session.trace_exporter import TraceExporter
+from harness.session.trace_export_models import TraceExportRequest
 from tests.opencode_contract_test_helpers import object_list_member
 from tests.trace_export_assertions import (
     export_root,
@@ -13,7 +15,7 @@ from tests.trace_export_assertions import (
     string_list_member,
     string_member,
 )
-from tests.trace_export_test_support import FakeTraceClient, graph
+from tests.trace_export_test_support import FakeTraceClient, graph, seed
 
 
 def test_graph_session_limit_retains_bounded_partial_manifest(
@@ -40,6 +42,32 @@ def test_graph_session_limit_retains_bounded_partial_manifest(
         string_member(error, "code") == "trace_session_limit_exceeded"
         for error in errors
     )
+    raw_policy = manifest["raw_policy"]
+    assert isinstance(raw_policy, dict)
+    assert raw_policy["truncated_by_exporter"] is True
+
+
+def test_duplicate_seeds_are_diagnosed_and_counted_without_correlation(
+    tmp_path: Path,
+) -> None:
+    client = FakeTraceClient({"ses_root": graph("ses_root").retrieval})
+
+    result = TraceExporter(client).export(
+        TraceExportRequest(
+            destination=tmp_path / "trace",
+            seeds=(seed("ses_root"), seed("ses_root")),
+            overflow_roots=(),
+        )
+    )
+
+    manifest = read_object(result.manifest_path)
+    counts = manifest["counts"]
+    assert isinstance(counts, dict)
+    assert counts["seed_count"] == 2
+    assert counts["unique_seed_count"] == 1
+    assert result.complete is False
+    errors = object_list_member(manifest, "errors")
+    assert any(string_member(error, "code") == "duplicate_seed" for error in errors)
 
 
 def test_aggregate_artifact_limit_is_structured_and_incomplete(
@@ -94,6 +122,9 @@ class TestTraceExportLimitCases:
     )
     test_aggregate_artifact_limit_is_structured_and_incomplete = staticmethod(
         test_aggregate_artifact_limit_is_structured_and_incomplete
+    )
+    test_duplicate_seeds_are_diagnosed_and_counted_without_correlation = staticmethod(
+        test_duplicate_seeds_are_diagnosed_and_counted_without_correlation
     )
     test_manifest_interruption_leaves_no_visible_partial_export = staticmethod(
         test_manifest_interruption_leaves_no_visible_partial_export

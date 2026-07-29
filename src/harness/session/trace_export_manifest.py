@@ -17,6 +17,16 @@ from harness.session.trace_correlation_payloads import projection_value
 from harness.session.trace_seeds import TraceSeed
 
 MAX_MANIFEST_BYTES: Final = 64 * 1024 * 1024
+_TRUNCATION_ERROR_CODES: Final = frozenset(
+    {
+        "artifact_size_limit_exceeded",
+        "overflow_reference_limit_exceeded",
+        "trace_depth_limit_exceeded",
+        "trace_edge_limit_exceeded",
+        "trace_seed_limit_exceeded",
+        "trace_session_limit_exceeded",
+    }
+)
 
 
 class ManifestIndex(Protocol):
@@ -67,6 +77,7 @@ def _manifest(
     }
     counts: JsonObject = {
         "seed_count": sum(len(values) for values in seeds.values()),
+        "unique_seed_count": len(seeds),
         "session_count": len(source.sessions),
         "message_count": source.message_count,
         "part_count": source.part_count,
@@ -85,9 +96,12 @@ def _manifest(
     }
     if correlation is not None:
         authority["correlation"] = False
+    truncated_by_exporter = any(
+        error.get("code") in _TRUNCATION_ERROR_CODES for error in source.errors
+    ) or any(record.get("artifact") is None for record in source.sessions)
     raw_policy: JsonObject = {
         "redacted": False,
-        "truncated_by_exporter": False,
+        "truncated_by_exporter": truncated_by_exporter,
         "source_completeness": "per_session",
         "interpreted": False,
         "executed": False,

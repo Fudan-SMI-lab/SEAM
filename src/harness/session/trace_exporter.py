@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import final
+from typing import Final, final
 
 from harness.session.opencode_contract import JsonObject, JsonValue
 from harness.session.trace_export_index import TraceExportIndex
@@ -32,8 +32,10 @@ from harness.session.trace_correlation import (
     TraceCorrelationProjector,
 )
 
+MAX_TRACE_SEEDS: Final = 10_000
 
-@dataclass(frozen=True, slots=True)
+
+@dataclass(frozen=True)
 class _ExportCaptureState:
     seeds: dict[str, tuple[TraceSeed, ...]]
     traversal: GraphTraversal
@@ -212,7 +214,10 @@ class TraceExporter:
         index: TraceExportIndex,
     ) -> dict[str, tuple[TraceSeed, ...]]:
         grouped: dict[str, list[TraceSeed]] = {}
-        for seed in seeds:
+        for position, seed in enumerate(seeds):
+            if position >= MAX_TRACE_SEEDS:
+                index.add_error("trace_seed_limit_exceeded", None, str(position))
+                break
             if not seed.session_id or len(seed.session_id) > MAX_SESSION_ID_CHARS:
                 index.add_error("malformed_seed_id", None, "empty session ID")
                 continue
@@ -221,5 +226,8 @@ class TraceExporter:
                     "trace_session_limit_exceeded", None, seed.session_id[:128]
                 )
                 continue
-            grouped.setdefault(seed.session_id, []).append(seed)
+            values = grouped.setdefault(seed.session_id, [])
+            if values:
+                index.add_error("duplicate_seed", seed.session_id, str(len(values) + 1))
+            values.append(seed)
         return {session_id: tuple(values) for session_id, values in grouped.items()}

@@ -96,6 +96,7 @@ def test_recursive_export_preserves_raw_values_and_accessible_overflow(
     assert manifest["session_ids"] == ["ses_root", "ses_child", "ses_grandchild"]
     assert object_member(manifest, "counts") == {
         "seed_count": 1,
+        "unique_seed_count": 1,
         "session_count": 3,
         "message_count": 6,
         "part_count": 8,
