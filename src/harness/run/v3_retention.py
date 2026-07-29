@@ -23,7 +23,7 @@ from .models import (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _V3AuthorizedResourceCleanup:
     resources: ResourceCleanup
     container: ContainerRetentionFinalizer
@@ -57,21 +57,20 @@ class _V3AuthorizedResourceCleanup:
 PostCleanupHook = Callable[[TerminalOutcome], RunArtifactUpdate]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _V3RetentionManifestHook:
     manifest: RetentionManifestFinalizer
     existing: PostCleanupHook
 
     def __call__(self, outcome: TerminalOutcome) -> RunArtifactUpdate:
-        match outcome:
-            case TerminalOutcome.PASSED:
-                terminal_status = "passed"
-            case TerminalOutcome.PASSED_WITH_REVIEWS:
-                terminal_status = "passed_with_reviews"
-            case TerminalOutcome.FAILED:
-                terminal_status = "failed"
-            case unreachable:
-                assert_never(unreachable)
+        if outcome is TerminalOutcome.PASSED:
+            terminal_status = "passed"
+        elif outcome is TerminalOutcome.PASSED_WITH_REVIEWS:
+            terminal_status = "passed_with_reviews"
+        elif outcome is TerminalOutcome.FAILED:
+            terminal_status = "failed"
+        else:
+            assert_never(outcome)
         path = self.manifest.persist_and_seal(terminal_status)
         current = self.existing(outcome)
         return replace(
@@ -81,7 +80,7 @@ class _V3RetentionManifestHook:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _V3RetentionManifestFailureHook:
     error: OSError | ResourceManifestError
     existing: PostCleanupHook
