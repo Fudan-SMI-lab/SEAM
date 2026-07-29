@@ -6,7 +6,9 @@ from tests.trace_correlation_authority_cases import (
 )
 from tests.trace_correlation_graph_cases import (
     test_complete_correlation_graph_links_runtime_sessions_and_tool_calls as test_complete_correlation_graph_links_runtime_sessions_and_tool_calls,
+    test_inconsistent_runtime_relations_make_correlation_incomplete as test_inconsistent_runtime_relations_make_correlation_incomplete,
     test_invalid_correlation_edges_are_incomplete_without_duplicate_fetches as test_invalid_correlation_edges_are_incomplete_without_duplicate_fetches,
+    test_overlapping_managed_roots_keep_independent_attribution as test_overlapping_managed_roots_keep_independent_attribution,
     test_trace_correlation_is_linked_in_summary_without_becoming_outcome as test_trace_correlation_is_linked_in_summary_without_becoming_outcome,
 )
 
@@ -14,6 +16,8 @@ __all__ = (
     "test_child_trace_references_parent_identity_without_copying_raw_payload",
     "test_complete_correlation_graph_links_runtime_sessions_and_tool_calls",
     "test_invalid_correlation_edges_are_incomplete_without_duplicate_fetches",
+    "test_inconsistent_runtime_relations_make_correlation_incomplete",
+    "test_overlapping_managed_roots_keep_independent_attribution",
     "test_missing_or_corrupt_trace_status_cannot_change_run_outcome_or_exit",
     "test_trace_correlation_is_linked_in_summary_without_becoming_outcome",
     "test_trace_deletion_and_corruption_do_not_change_continuation_authority",
