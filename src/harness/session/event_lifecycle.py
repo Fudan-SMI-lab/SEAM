@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
-from typing import TypeAlias
+from typing import Callable
+
+from typing_extensions import TypeAlias
 
 from .events import (
     ActiveTransportAttempt,

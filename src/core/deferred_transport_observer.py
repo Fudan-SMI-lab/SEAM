@@ -7,7 +7,7 @@ from typing_extensions import override
 from harness.session.events import TransportAttemptEvent, TransportObserver
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportObserverBindingError(RuntimeError):
     detail: str
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, unique
-from typing import NewType, TypeAlias
+from typing import Callable, NewType, Union
+
+from typing_extensions import TypeAlias
 
 TransportInvocationId = NewType("TransportInvocationId", str)
 
@@ -38,7 +39,7 @@ class TransportEventReason(str, Enum):
     POST_ACCEPTANCE_TIMEOUT = "post_acceptance_timeout"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportAttemptDetails:
     session_id: str
     method: str
@@ -53,7 +54,7 @@ class TransportAttemptDetails:
     exhausted: bool
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportAttemptStarted(TransportAttemptDetails):
     phase: TransportEventPhase = field(
         default=TransportEventPhase.STARTED,
@@ -61,7 +62,7 @@ class TransportAttemptStarted(TransportAttemptDetails):
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportAttemptCompleted(TransportAttemptDetails):
     phase: TransportEventPhase = field(
         default=TransportEventPhase.COMPLETED,
@@ -69,7 +70,7 @@ class TransportAttemptCompleted(TransportAttemptDetails):
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportAttemptTimedOut(TransportAttemptDetails):
     phase: TransportEventPhase = field(
         default=TransportEventPhase.TIMEOUT,
@@ -77,7 +78,7 @@ class TransportAttemptTimedOut(TransportAttemptDetails):
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportAttemptErrored(TransportAttemptDetails):
     phase: TransportEventPhase = field(
         default=TransportEventPhase.ERROR,
@@ -85,7 +86,7 @@ class TransportAttemptErrored(TransportAttemptDetails):
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportAttemptsExhausted(TransportAttemptDetails):
     phase: TransportEventPhase = field(
         default=TransportEventPhase.EXHAUSTED,
@@ -93,17 +94,17 @@ class TransportAttemptsExhausted(TransportAttemptDetails):
     )
 
 
-TransportAttemptEvent: TypeAlias = (
-    TransportAttemptStarted
-    | TransportAttemptCompleted
-    | TransportAttemptTimedOut
-    | TransportAttemptErrored
-    | TransportAttemptsExhausted
-)
+TransportAttemptEvent: TypeAlias = Union[
+    TransportAttemptStarted,
+    TransportAttemptCompleted,
+    TransportAttemptTimedOut,
+    TransportAttemptErrored,
+    TransportAttemptsExhausted,
+]
 TransportObserver: TypeAlias = Callable[[TransportAttemptEvent], None]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportInvocation:
     session_id: str
     invocation_id: TransportInvocationId
@@ -111,19 +112,19 @@ class TransportInvocation:
     timeout_s: float
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PreparedTransportAttempt:
     invocation: TransportInvocation
     attempt: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ActiveTransportAttempt:
     prepared: PreparedTransportAttempt
     started_at: float
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TransportDisposition:
     retry_decision: RetryDecision
     reason: TransportEventReason
