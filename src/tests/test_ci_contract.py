@@ -22,7 +22,9 @@ from tests.documented_cli_contract_support import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPOSITORY_ROOT / "src" / "pyproject.toml"
 WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "hardware-free-pytest.yml"
+PYLINT_WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "pylint.yml"
 JUNIT_NAME = "task-26-seam-runtime-continuation-trace.xml"
+SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.12")
 HARDWARE_FREE_COMMAND = (
     "python -m pytest tests -q -m 'not opencode and not docker and not slow' "
     f"--junitxml=../../.omo/evidence/{JUNIT_NAME}"
@@ -67,11 +69,9 @@ def _load_pyproject():
         return tomllib.load(stream)
 
 
-def _load_workflow():
-    assert WORKFLOW_PATH.is_file(), (
-        f"Task 26 CI contract missing: expected {WORKFLOW_PATH}"
-    )
-    with WORKFLOW_PATH.open(encoding="utf-8") as stream:
+def _load_workflow(path: Path = WORKFLOW_PATH):
+    assert path.is_file(), f"CI contract missing: expected {path}"
+    with path.open(encoding="utf-8") as stream:
         workflow = yaml.load(stream, Loader=yaml.BaseLoader)
     assert isinstance(workflow, dict)
     return workflow
@@ -87,6 +87,7 @@ def test_ci_project_declares_hardware_free_dev_contract() -> None:
     packages = project["tool"]["setuptools"]["packages"]["find"]["include"]
 
     # Then dependencies and marker meanings are explicit and hardware-neutral.
+    assert project["project"]["requires-python"] == ">=3.10"
     assert tuple(dev) == EXPECTED_DEV_EXTRAS
     assert markers == [
         f"{name}: {description}" for name, description in EXPECTED_MARKERS.items()
@@ -109,6 +110,9 @@ def test_pull_request_workflow_runs_exact_hardware_free_gate() -> None:
     assert list(jobs) == ["hardware-free"]
     job = jobs["hardware-free"]
     steps = job["steps"]
+    setup = next(
+        step for step in steps if step.get("uses") == "actions/setup-python@v5"
+    )
     install = next(step for step in steps if step.get("name") == "Install dev extras")
     test = next(step for step in steps if step.get("name") == "Run hardware-free suite")
     checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v4")
@@ -117,7 +121,12 @@ def test_pull_request_workflow_runs_exact_hardware_free_gate() -> None:
     assert job["runs-on"] == "ubuntu-latest"
     assert job["timeout-minutes"] == "20"
     assert job["env"] == {"PYTHONUTF8": "1"}
+    assert job["strategy"] == {
+        "matrix": {"python-version": list(SUPPORTED_PYTHON_VERSIONS)}
+    }
     assert job["defaults"]["run"]["working-directory"] == "src"
+    assert setup["name"] == "Set up Python ${{ matrix.python-version }}"
+    assert setup["with"] == {"python-version": "${{ matrix.python-version }}"}
     assert install["run"] == INSTALL_DEV_COMMAND
     assert test["run"] == HARDWARE_FREE_COMMAND
     assert checkout["with"] == {"persist-credentials": "false"}
@@ -142,7 +151,7 @@ def test_workflow_uploads_failure_evidence_without_privileged_resources() -> Non
     # Then failed pytest evidence is retained without services, secrets, or devices.
     assert upload["if"] == "failure()"
     assert upload["with"] == {
-        "name": "hardware-free-pytest-junit",
+        "name": "hardware-free-pytest-junit-${{ matrix.python-version }}",
         "path": f"../.omo/evidence/{JUNIT_NAME}",
         "if-no-files-found": "error",
         "include-hidden-files": "true",
@@ -161,6 +170,21 @@ def test_workflow_uploads_failure_evidence_without_privileged_resources() -> Non
             "privileged:",
         )
     )
+
+
+def test_pylint_workflow_uses_supported_linux_interpreters() -> None:
+    # Given the push-time lint workflow.
+    workflow = _load_workflow(PYLINT_WORKFLOW_PATH)
+
+    # When its runner and interpreter matrix are inspected.
+    job = workflow["jobs"]["build"]
+    versions = job["strategy"]["matrix"]["python-version"]
+
+    # Then lint runs only on supported Linux Python versions, including the floor.
+    assert job["runs-on"] == "ubuntu-latest"
+    assert tuple(versions) == SUPPORTED_PYTHON_VERSIONS
+    assert "3.8" not in versions
+    assert "3.9" not in versions
 
 
 def test_optional_resource_tests_are_marked_and_skip_without_opt_in(

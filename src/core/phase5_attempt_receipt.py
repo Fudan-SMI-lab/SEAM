@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import os
-import secrets
 from pathlib import Path
-from typing import Final
 
 from pydantic import ValidationError
 
 from core.continuation_lock_identity import (
     BoundedReadError,
-    BoundedReadErrorKind,
+    read_lock_path_snapshot,
     read_verified_bytes,
+    release_owned_file,
 )
+from core.evidence_limits import MAX_EVIDENCE_FILE_BYTES
 
 from core.phase5_attempt_models import (
     ArtifactFileReceipt,
@@ -38,8 +38,12 @@ from core.phase5_attempt_authority import (
     Phase5AttemptAuthority,
     receipt_matches_authority,
 )
-
-_MAX_RECEIPT_BYTES: Final = 1024 * 1024
+from core.phase5_attempt_receipt_persistence import (
+    load_attempt_receipt,
+    write_attempt_receipt,
+)
+from core.run_manifest_models import RunManifestError
+from core.run_manifest_paths import read_real_file
 
 __all__ = (
     "ArtifactFileReceipt",
@@ -63,102 +67,37 @@ __all__ = (
     "finalize_attempt_receipt",
     "load_attempt_receipt",
     "receipt_matches_authority",
+    "require_receipt_artifact_integrity",
     "sha256_file",
 )
 
 
 def sha256_file(path: Path) -> Sha256Digest:
-    if path.is_symlink():
-        raise AttemptReceiptError(AttemptReceiptErrorKind.UNSAFE_PATH, str(path))
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return Sha256Digest(digest.hexdigest())
+    try:
+        content = read_verified_bytes(path, MAX_EVIDENCE_FILE_BYTES)
+    except BoundedReadError as exc:
+        raise AttemptReceiptError(
+            AttemptReceiptErrorKind.UNSAFE_PATH,
+            str(path),
+        ) from exc
+    return Sha256Digest(hashlib.sha256(content).hexdigest())
 
 
 def artifact_file_receipt(path: Path) -> ArtifactFileReceipt:
-    resolved = path.resolve()
+    try:
+        content = read_verified_bytes(path, MAX_EVIDENCE_FILE_BYTES)
+    except BoundedReadError as exc:
+        raise AttemptReceiptError(
+            AttemptReceiptErrorKind.UNSAFE_PATH,
+            str(path),
+        ) from exc
+    resolved = Path(os.path.abspath(path))
     return ArtifactFileReceipt(
         path=str(resolved),
-        sha256=sha256_file(resolved),
-        size_bytes=resolved.stat().st_size,
+        sha256=Sha256Digest(hashlib.sha256(content).hexdigest()),
+        size_bytes=len(content),
         complete=True,
     )
-
-
-def write_attempt_receipt(
-    path: Path,
-    receipt: Phase5AttemptReceipt,
-    previous: Phase5AttemptReceipt | None = None,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.parent.is_symlink() or path.is_symlink():
-        raise AttemptReceiptError(AttemptReceiptErrorKind.UNSAFE_PATH, str(path))
-    payload = receipt.model_dump_json(indent=2).encode()
-    if previous is None:
-        try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError as exc:
-            raise AttemptReceiptError(
-                AttemptReceiptErrorKind.STALE_TRANSITION, str(path)
-            ) from exc
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                _ = handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-        except OSError:
-            path.unlink(missing_ok=True)
-            raise
-        return
-
-    lock = path.with_name(f".{path.name}.lock")
-    try:
-        lock_descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise AttemptReceiptError(
-            AttemptReceiptErrorKind.STALE_TRANSITION, str(path)
-        ) from exc
-    os.close(lock_descriptor)
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
-    try:
-        if load_attempt_receipt(path) != previous:
-            raise AttemptReceiptError(
-                AttemptReceiptErrorKind.STALE_TRANSITION, str(path)
-            )
-        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            _ = handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-        lock.unlink(missing_ok=True)
-
-
-def load_attempt_receipt(path: Path) -> Phase5AttemptReceipt:
-    try:
-        content = read_verified_bytes(path, _MAX_RECEIPT_BYTES)
-        return Phase5AttemptReceipt.model_validate_json(content)
-    except BoundedReadError as exc:
-        kind = (
-            AttemptReceiptErrorKind.MISSING
-            if exc.kind is BoundedReadErrorKind.MISSING
-            else AttemptReceiptErrorKind.UNSAFE_PATH
-            if exc.kind
-            in {
-                BoundedReadErrorKind.UNSAFE,
-                BoundedReadErrorKind.CHANGED,
-            }
-            else AttemptReceiptErrorKind.MALFORMED
-        )
-        raise AttemptReceiptError(kind, str(path)) from exc
-    except (UnicodeError, ValidationError) as exc:
-        raise AttemptReceiptError(
-            AttemptReceiptErrorKind.MALFORMED, f"{path}: {exc}"
-        ) from exc
 
 
 def _updated_receipt(
@@ -217,9 +156,14 @@ def accept_attempt_receipt(
         )
     marker_path = path.parent / f".{receipt.attempt_id}.reserved"
     try:
-        marker_content = read_verified_bytes(marker_path, 4096)
-        marker = Phase5ReservationMarker.model_validate_json(marker_content)
-    except (BoundedReadError, UnicodeError, ValidationError) as exc:
+        marker_snapshot = read_lock_path_snapshot(marker_path, 4097)
+        if len(marker_snapshot.content) > 4096:
+            raise AttemptReceiptError(
+                AttemptReceiptErrorKind.IDENTITY_MISMATCH,
+                str(marker_path),
+            )
+        marker = Phase5ReservationMarker.model_validate_json(marker_snapshot.content)
+    except (OSError, UnicodeError, ValidationError) as exc:
         raise AttemptReceiptError(
             AttemptReceiptErrorKind.IDENTITY_MISMATCH, str(marker_path)
         ) from exc
@@ -235,6 +179,25 @@ def accept_attempt_receipt(
         raise AttemptReceiptError(
             AttemptReceiptErrorKind.NOT_ACCEPTABLE, str(receipt.attempt_id)
         )
+    require_receipt_artifact_integrity(path, receipt)
+    accepted = _updated_receipt(receipt, receipt.custom_op_gate, receipt.review, True)
+    write_attempt_receipt(path, accepted, receipt)
+    try:
+        release_owned_file(
+            marker_path,
+            marker_snapshot.identity,
+            marker_snapshot.content,
+        )
+    except OSError:
+        return accepted
+    return accepted
+
+
+def require_receipt_artifact_integrity(
+    path: Path,
+    receipt: Phase5AttemptReceipt,
+) -> None:
+    workspace_root = path.parents[3]
     for artifact in (
         receipt.artifacts.stdout,
         receipt.artifacts.stderr,
@@ -245,13 +208,18 @@ def accept_attempt_receipt(
             continue
         artifact_path = Path(artifact.path)
         try:
+            _, artifact_content = read_real_file(
+                artifact_path,
+                workspace_root,
+                MAX_EVIDENCE_FILE_BYTES,
+            )
             valid = (
                 artifact.complete
-                and artifact_path.is_file()
-                and artifact_path.stat().st_size == artifact.size_bytes
-                and sha256_file(artifact_path) == artifact.sha256
+                and len(artifact_content) == artifact.size_bytes
+                and Sha256Digest(hashlib.sha256(artifact_content).hexdigest())
+                == artifact.sha256
             )
-        except OSError as exc:
+        except (OSError, RunManifestError) as exc:
             raise AttemptReceiptError(
                 AttemptReceiptErrorKind.INTEGRITY_MISMATCH, artifact.path
             ) from exc
@@ -259,17 +227,3 @@ def accept_attempt_receipt(
             raise AttemptReceiptError(
                 AttemptReceiptErrorKind.INTEGRITY_MISMATCH, artifact.path
             )
-    accepted = _updated_receipt(receipt, receipt.custom_op_gate, receipt.review, True)
-    write_attempt_receipt(path, accepted, receipt)
-    try:
-        current_marker = read_verified_bytes(marker_path, 4096)
-    except BoundedReadError as exc:
-        raise AttemptReceiptError(
-            AttemptReceiptErrorKind.IDENTITY_MISMATCH, str(marker_path)
-        ) from exc
-    if current_marker != marker_content:
-        raise AttemptReceiptError(
-            AttemptReceiptErrorKind.IDENTITY_MISMATCH, str(marker_path)
-        )
-    marker_path.unlink()
-    return accepted

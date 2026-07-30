@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum, unique
 from pathlib import Path
-from typing import Literal, NamedTuple, NoReturn, final
+from typing import Final, Literal, NamedTuple, NoReturn, final
 
 from typing_extensions import TypeAlias, override
 
@@ -31,6 +31,9 @@ class ContainerCleanupStatus(str, Enum):
 
 
 class DeleteAuthorityError(TypeError): ...
+
+
+class RetentionOwnershipTransitionError(DeleteAuthorityError): ...
 
 
 class _OpaqueDeleteAuthority:
@@ -140,33 +143,26 @@ ContainerDeleteAuthority: TypeAlias = (
 )
 
 
-class _DeleteAuthorityBinding(NamedTuple):
-    authority: ContainerDeleteAuthority
-    ownership: (
-        tuple[str, str, str, str]
-        | tuple[
-            ExistingContainerAttachment,
-            FrameworkContainerDeleteEligible,
-            ActiveProjectOwnerLock,
-        ]
-    )
+@final
+class _RejectedRetentionOwnershipTransitions:
+    __slots__: tuple[str, ...] = ()
 
-
-_DELETE_AUTHORITY_BINDINGS: dict[int, _DeleteAuthorityBinding] = {}
-
-
-def delete_authority_is_registered(authority: ContainerDeleteAuthority) -> bool:
-    binding = _DELETE_AUTHORITY_BINDINGS.get(id(authority))
-    if isinstance(authority, CurrentRunContainerDeleteAuthority):
-        ownership = (
-            authority.original_owner_run_id,
-            authority.lineage_root_run_id,
-            authority.ownership_token,
-            authority.ownership_label,
+    def __getitem__(self, _key: int) -> NoReturn:
+        raise RetentionOwnershipTransitionError(
+            "retention ownership is bound by its resolver"
         )
-        return binding is not None and binding == (authority, ownership)
-    ownership = (authority.attachment, authority.eligibility, authority.owner_lock)
-    return binding is not None and binding == (authority, ownership)
+
+    def __setitem__(
+        self,
+        _key: int,
+        _authority: ContainerDeleteAuthority,
+    ) -> NoReturn:
+        raise RetentionOwnershipTransitionError(
+            "retention ownership cannot be reassigned"
+        )
+
+
+_DELETE_AUTHORITY_BINDINGS: Final = _RejectedRetentionOwnershipTransitions()
 
 
 class V3ContainerRetentionPolicy(NamedTuple):

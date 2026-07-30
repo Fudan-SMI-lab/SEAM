@@ -82,7 +82,7 @@ def test_symlink_preseed_cannot_overwrite_external_file(tmp_path: Path) -> None:
         pytest.skip("symlinks are unavailable on this platform")
 
     # When shell artifacts are persisted.
-    with pytest.raises((FileExistsError, OSError)):
+    with pytest.raises(AttemptReceiptError) as raised:
         _ = store.save_shell_attempt_artifacts(
             "run_entry_script",
             command="python validate.py",
@@ -94,6 +94,7 @@ def test_symlink_preseed_cannot_overwrite_external_file(tmp_path: Path) -> None:
             stderr="",
             execution=attempt,
         )
+    assert raised.value.kind is AttemptReceiptErrorKind.UNSAFE_PATH
 
     # Then the symlink target remains untouched.
     assert victim.read_text(encoding="utf-8") == "keep"

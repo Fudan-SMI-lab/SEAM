@@ -2,6 +2,8 @@
 
 本文描述当前可执行代码和确定性 fixture 已验证的 V3 行为。它不是 crash resume 设计，也不把 raw trace、replay 或工作目录 state 当作运行结果 authority。
 
+生产支持契约是 Linux 和 Python 3.10+。Mandatory CI 只在无硬件 Linux runner 上验证支持下限和当前解释器，不声称验证真实 NPU/GPU。Real accelerator checks remain optional and non-gating.
+
 ## 1. 公共入口
 
 日常入口是 `src/scripts/run_seam.sh`。它把参数交给 `run_e2e_v3.sh`，默认服务器为 `http://127.0.0.1:4098`，默认 workflow 为 `src/workflows/seam_auto_default.yaml`，Phase 5 上限为 8，Review Gate 关闭，输出项目保留，容器保留，raw trace 关闭。

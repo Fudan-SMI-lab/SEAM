@@ -9,9 +9,11 @@ from typing_extensions import assert_never
 from .continuation_models import (
     ContinuationError,
     ContinuationErrorKind,
+    PhasePresentationStatus,
     ResolvedAuthority,
     ResolvedTerminalParent,
     RunSummaryDocument,
+    SummaryStatus,
     TerminalParentStatus,
 )
 from .continuation_paths import (
@@ -41,33 +43,49 @@ def _error(kind: ContinuationErrorKind, detail: str) -> ContinuationError:
 
 
 def _terminal_status(summary: RunSummaryDocument) -> TerminalParentStatus:
-    try:
-        return TerminalParentStatus(summary.overall_status)
-    except ValueError as exc:
-        raise _error(
-            ContinuationErrorKind.STATUS_INELIGIBLE,
-            "parent summary status must be exactly PASS or FAIL",
-        ) from exc
+    match summary.overall_status:
+        case SummaryStatus.PASS:
+            return TerminalParentStatus.PASS
+        case SummaryStatus.FAIL:
+            return TerminalParentStatus.FAIL
+        case SummaryStatus.UNKNOWN:
+            raise _error(
+                ContinuationErrorKind.STATUS_INELIGIBLE,
+                "parent summary status must be exactly PASS or FAIL",
+            )
+        case unreachable:
+            assert_never(unreachable)
 
 
 class _TerminalExpectation(NamedTuple):
-    anchor_status: str
+    anchor_status: PhasePresentationStatus
     lifecycle_statuses: frozenset[str]
-    phase_statuses: frozenset[str]
+    phase_statuses: frozenset[PhasePresentationStatus]
 
 
 def _terminal_expectation(status: TerminalParentStatus) -> _TerminalExpectation:
     if status is TerminalParentStatus.PASS:
         return _TerminalExpectation(
-            "passed",
+            PhasePresentationStatus.PASSED,
             frozenset({"passed", "passed_with_reviews"}),
-            frozenset({"passed", "skipped"}),
+            frozenset(
+                {
+                    PhasePresentationStatus.PASSED,
+                    PhasePresentationStatus.SKIPPED,
+                }
+            ),
         )
     if status is TerminalParentStatus.FAIL:
         return _TerminalExpectation(
-            "failed",
+            PhasePresentationStatus.FAILED,
             frozenset({"failed"}),
-            frozenset({"passed", "failed", "skipped"}),
+            frozenset(
+                {
+                    PhasePresentationStatus.PASSED,
+                    PhasePresentationStatus.FAILED,
+                    PhasePresentationStatus.SKIPPED,
+                }
+            ),
         )
     assert_never(status)
 
@@ -101,8 +119,7 @@ def _require_phase_anchor(
             ContinuationErrorKind.INCOMPLETE_PARENT,
             "terminal parent summary has no executed phases",
         )
-    complete_statuses = {"passed", "failed", "skipped"}
-    if any(phase.status not in complete_statuses for phase in summary.phases):
+    if any(phase.status is PhasePresentationStatus.UNKNOWN for phase in summary.phases):
         raise _error(
             ContinuationErrorKind.INCOMPLETE_PARENT,
             "terminal parent summary contains an incomplete phase",

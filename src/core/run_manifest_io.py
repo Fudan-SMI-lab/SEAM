@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from .atomic_file import atomic_write_bytes_with
 from .continuation_lock_identity import (
     BoundedReadError,
     BoundedReadErrorKind,
@@ -54,18 +55,11 @@ def read_manifest(path: Path) -> RunManifest:
 
 
 def atomic_write(path: Path, payload: ManifestPayload) -> None:
-    temp_path: Path | None = None
     try:
-        temp_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
-        with temp_path.open("xb") as handle:
-            _ = handle.write(payload.content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        atomic_replace(temp_path, path)
-        fsync_parent(path)
+        _ = uuid4()
+        atomic_write_bytes_with(path, payload.content, atomic_replace, fsync_parent)
     except OSError as exc:
-        if temp_path is not None and temp_path.exists():
-            temp_path.unlink()
         raise RunManifestError(
-            ManifestErrorKind.WRITE_INTERRUPTED, f"manifest write interrupted: {exc}"
+            ManifestErrorKind.WRITE_INTERRUPTED,
+            f"manifest write interrupted: {exc}",
         ) from exc

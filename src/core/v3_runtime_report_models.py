@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, unique
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from typing_extensions import Annotated
@@ -26,16 +26,16 @@ class _FrozenModel(BaseModel):
 
 class RuntimeFact(_FrozenModel):
     name: str
-    value: str | None
+    value: Optional[str]
     provenance: FactProvenance
     namespace: str
     status: FactStatus
-    detail: str | None = None
+    detail: Optional[str] = None
 
 
 class RuntimeEnvironmentReport(_FrozenModel):
     environment_id: str
-    facts: tuple[RuntimeFact, ...]
+    facts: Tuple[RuntimeFact, ...]
 
 
 @unique
@@ -49,19 +49,19 @@ class RuntimeAccessKind(str, Enum):
 class RuntimeAccessReport(_FrozenModel):
     available: bool
     kind: RuntimeAccessKind
-    entry_command: str | None = None
-    activation_command: str | None = None
+    entry_command: Optional[str] = None
+    activation_command: Optional[str] = None
     detail: str
-    provenance: FactProvenance | None = None
+    provenance: Optional[FactProvenance] = None
 
 
 class RuntimeReplayReport(_FrozenModel):
     available: bool
-    reason: ReplayUnavailableReason | None
-    accepted_attempt_id: AcceptedAttemptId | None
-    validation_command: BoundedReportText | None
-    command: BoundedReportText | None
-    cwd: BoundedReportText | None
+    reason: Optional[ReplayUnavailableReason]
+    accepted_attempt_id: Optional[AcceptedAttemptId]
+    validation_command: Optional[BoundedReportText]
+    command: Optional[BoundedReportText]
+    cwd: Optional[BoundedReportText]
     nondeterminism_notice: BoundedReportText
     auto_execute: bool = False
 
@@ -76,18 +76,18 @@ class RuntimeOutcomeStatus(str, Enum):
 
 class V3RuntimeReport(_FrozenModel):
     schema_version: str = "1.0"
-    manifest_path: str | None
+    manifest_path: Optional[str]
     outcome_status: RuntimeOutcomeStatus
-    execution: tuple[RuntimeFact, ...]
-    launcher: tuple[RuntimeFact, ...]
-    environments: tuple[RuntimeEnvironmentReport, ...]
-    active_environment_id: str | None
-    container: tuple[RuntimeFact, ...]
-    retention: tuple[RuntimeFact, ...]
-    opencode: tuple[RuntimeFact, ...]
+    execution: Tuple[RuntimeFact, ...]
+    launcher: Tuple[RuntimeFact, ...]
+    environments: Tuple[RuntimeEnvironmentReport, ...]
+    active_environment_id: Optional[str]
+    container: Tuple[RuntimeFact, ...]
+    retention: Tuple[RuntimeFact, ...]
+    opencode: Tuple[RuntimeFact, ...]
     access: RuntimeAccessReport
     replay: RuntimeReplayReport
-    diagnostics: tuple[str, ...] = ()
+    diagnostics: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

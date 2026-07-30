@@ -4,10 +4,10 @@ import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass
 import re
-from typing import Annotated, ClassVar, Final, NewType, Protocol, TypeVar
+from typing import ClassVar, Final, NewType, Optional, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import override
+from typing_extensions import Annotated, override
 
 from core.run_outcome import ReviewOutcome
 from core.types import TransitionDefinition, WorkflowDefinition
@@ -28,9 +28,9 @@ _PositiveReviewLimit = Annotated[int, Field(strict=True, gt=0)]
 class _ReviewConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = _MODEL_CONFIG
 
-    max_review_iterations: _PositiveReviewLimit | None = None
-    review_fail_closed: bool | None = None
-    fail_closed: bool | None = None
+    max_review_iterations: Optional[_PositiveReviewLimit] = None
+    review_fail_closed: Optional[bool] = None
+    fail_closed: Optional[bool] = None
 
 
 def _parse_review_config(values: Mapping[str, object]) -> _ReviewConfig:
@@ -43,7 +43,7 @@ def _parse_review_config(values: Mapping[str, object]) -> _ReviewConfig:
 class _PhaseParamsConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = _MODEL_CONFIG
 
-    sub_workflow: str | None = None
+    sub_workflow: Optional[str] = None
 
 
 @dataclass(frozen=True)

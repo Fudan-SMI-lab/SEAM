@@ -33,6 +33,8 @@ New to domestic GPUs? You may face these common hurdles:
 ### Quick Start
 Run the commands below on your domestic GPU server or container environment to try SEAM:
 
+Production support for this release is Linux only and requires Python 3.10+. Mandatory CI uses hardware-free Linux runners; real NPU/GPU integration checks remain optional and non-gating.
+
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM

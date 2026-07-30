@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 import pytest
 
+from core.owned_directory_lock import DirectoryLockIdentity, release_owned_directory
 from core.run_outcome import TerminalOutcome
 from harness.run import (
     CleanupContext,
@@ -73,14 +73,12 @@ def test_cleanup_bookkeeping_ordinary_failure_preserves_later_operations(
     def stop_process(_process: subprocess.Popen[bytes]) -> None:
         calls.append("server")
 
-    original_rmtree = shutil.rmtree
-
-    def remove_temp(path: Path) -> None:
+    def remove_temp(path: Path, identity: DirectoryLockIdentity) -> None:
         calls.append("temp")
-        original_rmtree(path)
+        release_owned_directory(path, identity)
 
     monkeypatch.setattr("harness.run.cleanup.stop_server", stop_process)
-    monkeypatch.setattr("harness.run.cleanup.shutil.rmtree", remove_temp)
+    monkeypatch.setattr("harness.run.cleanup.release_owned_directory", remove_temp)
     observer = ObserverSidecar(
         lambda: {}, lambda: RunCounts(0, 0), requested, sessions, recorded
     )
@@ -157,11 +155,10 @@ def test_cleanup_successful_operation_order_is_unchanged(
     owned_temp = tmp_path / "owned-temp"
     owned_temp.mkdir()
     process = subprocess.Popen([sys.executable, "-c", "pass"])
-    original_rmtree = shutil.rmtree
 
-    def remove_temp(path: Path) -> None:
+    def remove_temp(path: Path, identity: DirectoryLockIdentity) -> None:
         calls.append("temp")
-        original_rmtree(path)
+        release_owned_directory(path, identity)
 
     def stop_process(_process: subprocess.Popen[bytes]) -> None:
         calls.append("server")
@@ -177,7 +174,7 @@ def test_cleanup_successful_operation_order_is_unchanged(
         calls.append("recorded")
 
     monkeypatch.setattr("harness.run.cleanup.stop_server", stop_process)
-    monkeypatch.setattr("harness.run.cleanup.shutil.rmtree", remove_temp)
+    monkeypatch.setattr("harness.run.cleanup.release_owned_directory", remove_temp)
     observer = ObserverSidecar(
         lambda: {},
         lambda: RunCounts(0, 0),

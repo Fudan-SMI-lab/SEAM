@@ -7,8 +7,21 @@ from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
+from core.atomic_directory import rename_directory_no_replace
+from core.atomic_file import atomic_write_bytes_with
 from core.run_manifest_models import RunManifestError
-from core.run_manifest_paths import copy_real_tree
+from core.owned_directory_lock import (
+    DirectoryLockIdentity,
+    OwnedDirectoryChangedError,
+    close_directory_identity,
+    empty_directory_identity,
+    release_owned_directory,
+)
+from core.continuation_lock_identity import (
+    fsync_parent,
+)
+from core.run_manifest_paths import copy_real_tree_into
+from core.secret_redaction import JsonValue, redact_json_value
 from core.v3_runtime_report import V3RuntimeReport
 
 from .models import (
@@ -19,15 +32,19 @@ from .models import (
 )
 
 atomic_replace = os.replace
-artifact_tree_copy = copy_real_tree
+atomic_directory_rename = rename_directory_no_replace
+artifact_tree_copy = copy_real_tree_into
 
 
-def _cleanup_staging(staging: Path) -> OSError | None:
+def _cleanup_staging(
+    staging: Path,
+    identity: DirectoryLockIdentity,
+) -> OSError | None:
     try:
-        shutil.rmtree(staging)
+        release_owned_directory(staging, identity)
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, OwnedDirectoryChangedError) as exc:
         return exc
     return None
 
@@ -40,48 +57,46 @@ def copy_run_artifacts(temp_dir: Path, output_dir: Path) -> str | None:
     if destination.exists():
         raise FileExistsError(destination)
     staging = output_dir / f".sm-artifacts.{uuid4().hex}.tmp"
+    staging.mkdir(mode=0o700)
+    staging_identity = empty_directory_identity(staging)
+    published = False
     try:
         artifact_tree_copy(source, temp_dir, staging)
-        _ = staging.rename(destination)
+        atomic_directory_rename(staging, destination)
+        published = True
+        fsync_parent(destination)
     except RunManifestError as exc:
-        cleanup_failure = _cleanup_staging(staging)
+        cleanup_target = destination if published else staging
+        cleanup_failure = _cleanup_staging(cleanup_target, staging_identity)
         if cleanup_failure is not None:
             raise SidecarWriteError(
-                path=str(staging),
-                detail=f"artifact staging cleanup failed: {cleanup_failure}",
+                path=str(cleanup_target),
+                detail=f"artifact publication cleanup failed: {cleanup_failure}",
             ) from exc
         raise SidecarWriteError(
             path=str(source),
             detail=f"artifact copy rejected: {exc}",
         ) from exc
     except (OSError, shutil.Error) as exc:
-        cleanup_failure = _cleanup_staging(staging)
+        cleanup_target = destination if published else staging
+        cleanup_failure = _cleanup_staging(cleanup_target, staging_identity)
         if cleanup_failure is not None:
             raise SidecarWriteError(
-                path=str(staging),
-                detail=f"artifact staging cleanup failed: {cleanup_failure}",
+                path=str(cleanup_target),
+                detail=f"artifact publication cleanup failed: {cleanup_failure}",
             ) from exc
         raise
+    close_directory_identity(staging_identity)
     return str(destination)
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
-    temp_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
     try:
-        with temp_path.open("xb") as handle:
-            _ = handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        atomic_replace(temp_path, path)
+        atomic_write_bytes_with(path, content, atomic_replace, fsync_parent)
     except OSError as exc:
-        cleanup_detail = ""
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError as cleanup_exc:
-            cleanup_detail = f"; temporary cleanup failed: {cleanup_exc}"
         raise SidecarWriteError(
             path=str(path),
-            detail=f"atomic write interrupted: {exc}{cleanup_detail}",
+            detail=f"atomic write interrupted: {exc}",
         ) from exc
 
 
@@ -109,7 +124,12 @@ def write_summary(
         payload["continuation"] = asdict(continuation)
     if runtime_report is not None:
         payload["runtime"] = runtime_report.model_dump(mode="json")
-    text = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+    text = json.dumps(
+        redact_json_value(payload),
+        indent=2,
+        ensure_ascii=False,
+        default=str,
+    )
     _atomic_write(path, text.replace("\n", os.linesep).encode())
     return str(path)
 
@@ -118,7 +138,7 @@ def write_diagnostics(
     path: Path,
     diagnostics: tuple[FinalizationDiagnostic, ...],
 ) -> str:
-    payload = [
+    payload: JsonValue = [
         {
             "stage": item.stage.value,
             "error_type": item.error_type,
@@ -126,6 +146,10 @@ def write_diagnostics(
         }
         for item in diagnostics
     ]
-    text = json.dumps(payload, indent=2, ensure_ascii=False)
+    text = json.dumps(
+        redact_json_value(payload),
+        indent=2,
+        ensure_ascii=False,
+    )
     _atomic_write(path, text.replace("\n", os.linesep).encode())
     return str(path)

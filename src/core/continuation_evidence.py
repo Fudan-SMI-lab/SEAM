@@ -35,7 +35,7 @@ from .run_manifest import (
     RunManifestError,
     RunManifestStore,
 )
-from .run_manifest_paths import digest_inventory
+from .run_manifest_inventory import digest_inventory
 from .run_outcome import TerminalAnchor
 
 

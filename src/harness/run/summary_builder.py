@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing_extensions import assert_never
 
+from core.continuation_models import SummaryStatus
 from core.run_outcome import TerminalOutcome
 
 from .models import RunArtifacts, RunFinalizationRequest, RunSummary
@@ -27,12 +28,12 @@ def build_summary(
         else execution.duration_source()
     )
     if outcome is TerminalOutcome.FAILED:
-        overall_status = "FAIL"
+        overall_status = SummaryStatus.FAIL
     elif (
         outcome is TerminalOutcome.PASSED
         or outcome is TerminalOutcome.PASSED_WITH_REVIEWS
     ):
-        overall_status = "PASS"
+        overall_status = SummaryStatus.PASS
     else:
         assert_never(outcome)
     return RunSummary(

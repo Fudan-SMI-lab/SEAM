@@ -8,6 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_MODULES = (
+    "core/workflow_condition_parser.py",
     "core/workflow_condition_policy.py",
     "core/workflow_dispatch_policy.py",
     "core/workflow_stop_policy.py",
@@ -18,13 +19,13 @@ POLICY_MODULES = (
 
 
 @pytest.mark.parametrize("relative_path", POLICY_MODULES)
-def test_workflow_policy_module_is_bounded_and_python38_compatible(
+def test_workflow_policy_module_is_bounded_and_python310_compatible(
     relative_path: str,
 ) -> None:
     path = ROOT / relative_path
     source = path.read_text(encoding="utf-8")
 
-    _ = ast.parse(source, filename=str(path), feature_version=(3, 8))
+    _ = ast.parse(source, filename=str(path), feature_version=(3, 10))
     pure_lines = [
         line
         for line in source.splitlines()

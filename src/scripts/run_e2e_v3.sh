@@ -257,21 +257,24 @@ if [[ -n "$CONTINUE_FROM" ]]; then
 fi
 
 resolve_python() {
+    supports_runtime() {
+        "$1" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1
+    }
     if [[ -n "$SEAM_PYTHON" ]]; then
-        if command -v "$SEAM_PYTHON" >/dev/null 2>&1 || [[ -x "$SEAM_PYTHON" ]]; then
+        if (command -v "$SEAM_PYTHON" >/dev/null 2>&1 || [[ -x "$SEAM_PYTHON" ]]) && supports_runtime "$SEAM_PYTHON"; then
             printf '%s\n' "$SEAM_PYTHON"
             return 0
         fi
-        echo -e "${RED}Error: PYTHON is set to '$SEAM_PYTHON' but it is not executable.${NC}" >&2
+        echo -e "${RED}Error: PYTHON must be an executable Python 3.10+ interpreter.${NC}" >&2
         exit 1
     fi
-    for candidate in python3 python python3.12 python3.11 python3.10 python3.9 python3.8; do
-        if command -v "$candidate" >/dev/null 2>&1; then
+    for candidate in python3.12 python3.11 python3.10 python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 && supports_runtime "$candidate"; then
             printf '%s\n' "$candidate"
             return 0
         fi
     done
-    echo -e "${RED}Error: no Python interpreter found. Set PYTHON=/path/to/python.${NC}" >&2
+    echo -e "${RED}Error: no Python 3.10+ interpreter found. Set PYTHON=/path/to/python.${NC}" >&2
     exit 1
 }
 

@@ -1,11 +1,12 @@
-from dataclasses import asdict
 import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 from typing_extensions import assert_never
 
+from core.continuation_models import PhasePresentationStatus
 from core.run_manifest import RunId
 from core.run_outcome import (
     AcceptedAttemptId,
@@ -31,20 +32,27 @@ from harness.run import (
 @pytest.mark.parametrize(
     ("phase_status", "errors", "expected_status", "expected_exit"),
     [
-        ("passed", [], "PASS", 0),
-        ("failed", ["RuntimeError: migration failed"], "FAIL", 1),
+        (PhasePresentationStatus.PASSED, [], "PASS", 0),
+        (
+            PhasePresentationStatus.FAILED,
+            ["RuntimeError: migration failed"],
+            "FAIL",
+            1,
+        ),
     ],
 )
 def test_v3_summary_bytes_and_exit_mapping_are_stable(
     tmp_path: Path,
-    phase_status: str,
+    phase_status: PhasePresentationStatus,
     errors: list[str],
     expected_status: str,
     expected_exit: int,
 ) -> None:
     # Given
     outcome = RunOutcome(
-        validation_succeeded=phase_status == "passed" and not errors,
+        validation_succeeded=(
+            phase_status is PhasePresentationStatus.PASSED and not errors
+        ),
         review_outcome=ReviewOutcome.DISABLED,
         review_fail_closed=True,
         workflow_terminal=WorkflowTerminal("complete"),
@@ -52,7 +60,7 @@ def test_v3_summary_bytes_and_exit_mapping_are_stable(
         executed_phases=(PhaseId("phase_0_env_detect"),),
         accepted_attempt_id=(
             AcceptedAttemptId("phase-5-attempt-summary")
-            if phase_status == "passed" and not errors
+            if phase_status is PhasePresentationStatus.PASSED and not errors
             else None
         ),
         review_rounds=(),

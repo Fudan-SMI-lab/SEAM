@@ -9,6 +9,7 @@ import pytest
 
 import core.continuation_evidence_io as evidence_io
 import core.run_manifest_paths as run_manifest_paths
+from core.run_manifest_inventory import digest_inventory
 
 _TRANSIENT_WINDOWS_DIRECTORY_ATTRIBUTE = 0x10000000
 
@@ -20,6 +21,7 @@ class _EvidenceIdentity(NamedTuple):
     attributes: int
     size: int
     modified_ns: int
+    changed_ns: int
 
 
 def test_non_reparse_directory_attribute_churn_preserves_identity(
@@ -49,7 +51,7 @@ def test_non_reparse_directory_attribute_churn_preserves_identity(
 
     monkeypatch.setattr(run_manifest_paths, "_path_identity", changing_identity)
 
-    assert run_manifest_paths.digest_inventory(root, tmp_path) == ()
+    assert digest_inventory(root, tmp_path) == ()
     assert root_observations >= 4
 
 
@@ -67,7 +69,7 @@ def test_project_snapshot_accepts_non_reparse_directory_attribute_churn(
 
     def changing_identity(
         metadata: os.stat_result,
-    ) -> tuple[int, int, int, int, int, int]:
+    ) -> tuple[int, int, int, int, int, int, int]:
         nonlocal observations
         identity = real_identity(metadata)
         observations += 1
@@ -79,6 +81,7 @@ def test_project_snapshot_accepts_non_reparse_directory_attribute_churn(
                 identity[3] | _TRANSIENT_WINDOWS_DIRECTORY_ATTRIBUTE,
                 identity[4],
                 identity[5],
+                identity[6],
             )
         return identity
 

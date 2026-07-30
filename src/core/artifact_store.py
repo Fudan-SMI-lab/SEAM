@@ -4,7 +4,8 @@ import json
 import os
 import re
 import stat
-from typing import Any
+from pathlib import Path
+from typing import Any, BinaryIO
 
 from core.phase5_artifact_store import Phase5ArtifactStore
 from core.phase5_attempt_receipt import (
@@ -13,8 +14,13 @@ from core.phase5_attempt_receipt import (
     Phase5AttemptReservation,
     ShellAttemptExecution,
 )
+from core.phase5_transaction import Phase5Transaction
 
 _SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+def _phase_key(phase_id: str) -> str:
+    return phase_id[6:] if phase_id.startswith("phase_") else phase_id
 
 
 class ArtifactStore:
@@ -26,6 +32,7 @@ class ArtifactStore:
     journal_path: str
     checkpoint_path: str
     _phase5_store: Phase5ArtifactStore
+    _phase5_transaction: Phase5Transaction
 
     def __init__(self, base_dir: str, run_id: str) -> None:
         self.base_dir = base_dir
@@ -35,7 +42,12 @@ class ArtifactStore:
         self.validated_dir = os.path.join(self.artifact_dir, "validated")
         self.journal_path = os.path.join(self.artifact_dir, "execution_journal.jsonl")
         self.checkpoint_path = os.path.join(self.artifact_dir, "state.json")
-        self._phase5_store = Phase5ArtifactStore(self.artifact_dir, self.run_id)
+        self._phase5_transaction = Phase5Transaction()
+        self._phase5_store = Phase5ArtifactStore(
+            self.artifact_dir,
+            self.run_id,
+            self._phase5_transaction,
+        )
 
         os.makedirs(self.raw_dir, exist_ok=True)
         os.makedirs(self.validated_dir, exist_ok=True)
@@ -79,10 +91,23 @@ class ArtifactStore:
     ) -> Phase5AttemptAuthority | None:
         return self._phase5_store.authority_for_attempt(attempt_id)
 
+    def accepted_phase5_receipt_paths(self) -> tuple[str, ...]:
+        return self._phase5_store.accepted_receipt_paths()
+
+    def phase5_transaction(self) -> Phase5Transaction:
+        return self._phase5_transaction
+
     def record_finalized_phase5_authority(
         self, receipt_path: str, receipt: Phase5AttemptReceipt
     ) -> None:
         self._phase5_store.record_finalized_authority(receipt_path, receipt)
+
+    def accept_phase5_attempt_receipt(
+        self,
+        receipt_path: str | os.PathLike[str],
+        authority: Phase5AttemptAuthority,
+    ) -> Phase5AttemptReceipt:
+        return self._phase5_store.accept_attempt_receipt(Path(receipt_path), authority)
 
     def save_shell_attempt_artifacts(
         self,
@@ -97,6 +122,8 @@ class ArtifactStore:
         stderr: str | None = None,
         stdout_source_path: str | None = None,
         stderr_source_path: str | None = None,
+        stdout_source: BinaryIO | None = None,
+        stderr_source: BinaryIO | None = None,
         execution: ShellAttemptExecution | None = None,
     ) -> dict[str, Any]:
         return self._phase5_store.save_attempt(
@@ -110,13 +137,15 @@ class ArtifactStore:
             stderr=stderr,
             stdout_source_path=stdout_source_path,
             stderr_source_path=stderr_source_path,
+            stdout_source=stdout_source,
+            stderr_source=stderr_source,
             execution=execution,
         )
 
     def save_phase_output(
         self, phase_id: str, data: dict[str, Any], attempt: int = 0
     ) -> str:
-        key = phase_id.removeprefix("phase_")
+        key = _phase_key(phase_id)
         filename = f"phase_{key}_attempt{attempt}.json"
         filepath = os.path.join(self.raw_dir, filename)
         with open(filepath, "w", encoding="utf-8") as f:
@@ -124,7 +153,7 @@ class ArtifactStore:
         return filepath
 
     def load_phase_output(self, phase_id: str) -> dict[str, Any] | None:
-        key = phase_id.removeprefix("phase_")
+        key = _phase_key(phase_id)
         filename = f"phase_{key}_canonical.json"
         filepath = os.path.join(self.validated_dir, filename)
         if not os.path.exists(filepath):
@@ -133,7 +162,7 @@ class ArtifactStore:
             return json.load(f)
 
     def mark_validated(self, phase_id: str, data: dict[str, Any]) -> str:
-        key = phase_id.removeprefix("phase_")
+        key = _phase_key(phase_id)
         filename = f"phase_{key}_canonical.json"
         filepath = os.path.join(self.validated_dir, filename)
         with open(filepath, "w", encoding="utf-8") as f:

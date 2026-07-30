@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 import pytest
 
+from core.owned_directory_lock import DirectoryLockIdentity, release_owned_directory
 from core.run_outcome import TerminalOutcome
 from harness.run import (
     CleanupContext,
@@ -59,14 +59,12 @@ def test_resource_cleanup_continues_after_ordinary_session_failure(
     def stop_process(_process: subprocess.Popen[bytes]) -> None:
         calls.append("server")
 
-    original_rmtree = shutil.rmtree
-
-    def remove_temp(path: Path) -> None:
+    def remove_temp(path: Path, identity: DirectoryLockIdentity) -> None:
         calls.append("temp")
-        original_rmtree(path)
+        release_owned_directory(path, identity)
 
     monkeypatch.setattr("harness.run.cleanup.stop_server", stop_process)
-    monkeypatch.setattr("harness.run.cleanup.shutil.rmtree", remove_temp)
+    monkeypatch.setattr("harness.run.cleanup.release_owned_directory", remove_temp)
     cleanup = ResourceCleanup(
         CleanupContext(
             temp_dir=owned_temp,
@@ -155,14 +153,12 @@ def test_resource_cleanup_continues_after_ordinary_server_failure(
         calls.append("server")
         raise failure_factory()
 
-    original_rmtree = shutil.rmtree
-
-    def remove_temp(path: Path) -> None:
+    def remove_temp(path: Path, identity: DirectoryLockIdentity) -> None:
         calls.append("temp")
-        original_rmtree(path)
+        release_owned_directory(path, identity)
 
     monkeypatch.setattr("harness.run.cleanup.stop_server", fail_server)
-    monkeypatch.setattr("harness.run.cleanup.shutil.rmtree", remove_temp)
+    monkeypatch.setattr("harness.run.cleanup.release_owned_directory", remove_temp)
     cleanup = ResourceCleanup(CleanupContext(owned_temp, False, True, None, process))
 
     # When cleanup attempts the server resource.
@@ -192,10 +188,10 @@ def test_resource_cleanup_records_ordinary_temp_failure(
     owned_temp = tmp_path / "owned-temp"
     owned_temp.mkdir()
 
-    def fail_temp(_path: Path) -> None:
+    def fail_temp(_path: Path, _identity: DirectoryLockIdentity) -> None:
         raise failure_factory()
 
-    monkeypatch.setattr("harness.run.cleanup.shutil.rmtree", fail_temp)
+    monkeypatch.setattr("harness.run.cleanup.release_owned_directory", fail_temp)
     cleanup = ResourceCleanup(CleanupContext(owned_temp, False, True, None, None))
 
     # When cleanup attempts the final resource.
@@ -223,13 +219,15 @@ def test_resource_cleanup_propagates_control_flow_from_later_resources(
     def interrupt_server(_process: subprocess.Popen[bytes]) -> None:
         raise signal_type()
 
-    def interrupt_temp(_path: Path) -> None:
+    def interrupt_temp(_path: Path, _identity: DirectoryLockIdentity) -> None:
         raise signal_type()
 
     if resource == "server":
         monkeypatch.setattr("harness.run.cleanup.stop_server", interrupt_server)
     else:
-        monkeypatch.setattr("harness.run.cleanup.shutil.rmtree", interrupt_temp)
+        monkeypatch.setattr(
+            "harness.run.cleanup.release_owned_directory", interrupt_temp
+        )
     cleanup = ResourceCleanup(CleanupContext(owned_temp, False, True, None, process))
 
     # When cleanup reaches that resource, the control signal escapes.

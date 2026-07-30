@@ -48,6 +48,13 @@ def _make_directory_link(link: Path, target: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
+def _remove_directory_link(link: Path) -> None:
+    if os.name == "nt":
+        os.rmdir(link)
+    else:
+        link.unlink()
+
+
 def test_concurrent_same_revision_writers_cannot_both_succeed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -239,7 +246,7 @@ def test_readonly_namespace_rejects_windows_junction_escape(tmp_path: Path) -> N
                 authority_context, RunId("parent-run-001"), WORKFLOW_DIGEST
             )
     finally:
-        os.rmdir(junction)
+        _remove_directory_link(junction)
 
 
 def test_working_evidence_rejects_windows_junction_escape(tmp_path: Path) -> None:
@@ -259,7 +266,7 @@ def test_working_evidence_rejects_windows_junction_escape(tmp_path: Path) -> Non
         with pytest.raises(RunManifestError):
             _ = writer.seal_working_evidence(working)
     finally:
-        os.rmdir(validated)
+        _remove_directory_link(validated)
 
 
 @pytest.mark.parametrize("stage", ["before_temp", "after_temp"])

@@ -3,16 +3,19 @@ from __future__ import annotations
 import os
 import re
 import secrets
-import shutil
 from pathlib import Path
-from threading import Lock
-from typing import NoReturn, final
-
-from typing_extensions import override
+from typing import final
 
 from core.artifact_store import ArtifactStore
+from core.continuation_lock_identity import fsync_parent
+from core.owned_directory_lock import (
+    close_directory_identity,
+    release_owned_directory,
+)
 from . import run_manifest_access as access
 from .run_manifest_io import atomic_write, read_manifest, validated_payload
+from .run_manifest_allocation import create_run_directory
+from .run_manifest_evidence_seal import seal_evidence as _seal_evidence
 from .run_manifest_lock import RunFileLock
 from .run_manifest_models import (
     RUN_MANIFEST_FILENAME as RUN_MANIFEST_FILENAME,
@@ -30,7 +33,8 @@ from .run_manifest_models import (
     SharedWorkspaceMarker as SharedWorkspaceMarker,
 )
 from .run_manifest_directory import require_real_directory
-from .run_manifest_paths import copy_real_tree, digest_inventory
+from .run_manifest_inventory import digest_inventory
+from .run_manifest_rollback import rollback_owned_allocation
 from .run_manifest_validation import (
     manifest_error,
     require,
@@ -42,47 +46,28 @@ from .run_manifest_validation import (
 )
 
 
+_ManifestPermission = access.deny_permission_reassignment
+
+
 @final
-class RunManifestStore:
+class RunManifestStore(access.RunManifestHandleBase):
+    __slots__: tuple[str, ...] = ()
+
+    def __init_subclass__(cls) -> None:
+        _ = cls
+        raise access.RunManifestHandleError("RunManifestStore cannot be subclassed")
+
     def __init__(
         self,
         context: RunStorageContext,
         run_id: RunId,
         expected_workflow_digest: Sha256Digest,
     ) -> None:
-        self._initialize(context, run_id, expected_workflow_digest)
+        super().__init__(context, run_id, expected_workflow_digest)
         raise manifest_error(
             ManifestErrorKind.READ_ONLY,
             "manifest stores must be opened through a public factory",
         )
-
-    def _initialize(
-        self,
-        context: RunStorageContext,
-        run_id: RunId,
-        expected_workflow_digest: Sha256Digest,
-    ) -> None:
-        self._context = context
-        self._run_dir = context.authoritative_root / str(run_id)
-        self._manifest_path = self._run_dir / RUN_MANIFEST_FILENAME
-        self._expected_workflow_digest = expected_workflow_digest
-        self._thread_lock = Lock()
-
-    def __copy__(self) -> NoReturn:
-        raise access.RunManifestHandleError("RunManifestStore cannot be copied")
-
-    def __deepcopy__(self, _memo: dict[int, RunManifestStore]) -> NoReturn:
-        raise access.RunManifestHandleError("RunManifestStore cannot be copied")
-
-    @override
-    def __reduce__(self) -> NoReturn:
-        raise access.RunManifestHandleError("RunManifestStore cannot be serialized")
-
-    def _registered_writable(self) -> bool:
-        return access.store_is_writable(self)
-
-    def _require_registered(self) -> None:
-        access.require_store(self)
 
     @classmethod
     def create(
@@ -91,6 +76,8 @@ class RunManifestStore:
         manifest: RunManifest,
         parent: RunManifestStore | None = None,
     ) -> RunManifestStore:
+        if cls is not RunManifestStore:
+            raise access.RunManifestHandleError("factory rejects foreign handle types")
         candidate = validated_payload(manifest)
         validate_initial(context, candidate.manifest, parent is not None)
         if parent is not None:
@@ -104,38 +91,76 @@ class RunManifestStore:
             )
         try:
             context.authoritative_root.mkdir(parents=True, exist_ok=True)
+            fsync_parent(context.authoritative_root)
         except OSError as exc:
             raise manifest_error(ManifestErrorKind.WRITE_INTERRUPTED, str(exc)) from exc
         _ = require_real_directory(
             context.authoritative_root, context.authoritative_root.parent
         )
-        run_dir = context.authoritative_root / str(candidate.manifest.run_id)
-        try:
-            run_dir.mkdir()
-        except FileExistsError as exc:
-            raise manifest_error(
-                ManifestErrorKind.DUPLICATE_RUN,
-                f"run namespace already exists: {candidate.manifest.run_id}",
-            ) from exc
-        owner_token = secrets.token_hex(16)
-        owner_path = run_dir / ".allocation-owner"
-        store = object.__new__(cls)
-        store._initialize(
-            context,
+        run_dir, run_identity = create_run_directory(
+            context.authoritative_root,
             candidate.manifest.run_id,
-            candidate.manifest.workflow_digest,
         )
-        access.register_store(store, True)
+        store: RunManifestStore | None = None
+        owner_content: bytes | None = None
+        succeeded = False
         try:
-            _ = owner_path.write_text(owner_token, encoding="ascii")
-            atomic_write(store._manifest_path, candidate)
-        except RunManifestError:
-            store._rollback_owned_allocation(owner_path, owner_token)
-            raise
-        except OSError as exc:
-            store._rollback_owned_allocation(owner_path, owner_token)
-            raise manifest_error(ManifestErrorKind.WRITE_INTERRUPTED, str(exc)) from exc
-        return store
+            store = object.__new__(cls)
+            store._initialize_handle(
+                access.ManifestHandleIdentity(
+                    context,
+                    candidate.manifest.run_id,
+                    candidate.manifest.workflow_digest,
+                ),
+            )
+            owner_content = f"{id(store):x}:{secrets.token_hex(16)}".encode("ascii")
+            object.__setattr__(store, "_allocation_owner", owner_content)
+            try:
+                flags = (
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_BINARY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                descriptor = os.open(run_dir / ".allocation-owner", flags, 0o600)
+                allocation_handle = os.fdopen(descriptor, "r+b")
+                owner_created = False
+                try:
+                    _ = allocation_handle.write(owner_content)
+                    allocation_handle.flush()
+                    os.fsync(allocation_handle.fileno())
+                    access.lock_owner_descriptor(allocation_handle)
+                    fsync_parent(run_dir / ".allocation-owner")
+                    object.__setattr__(store, "_allocation_handle", allocation_handle)
+                    owner_created = True
+                finally:
+                    if not owner_created:
+                        allocation_handle.close()
+                atomic_write(store._manifest_path, candidate)
+            except OSError as exc:
+                raise manifest_error(
+                    ManifestErrorKind.WRITE_INTERRUPTED, str(exc)
+                ) from exc
+            succeeded = True
+            return store
+        finally:
+            if succeeded:
+                close_directory_identity(run_identity)
+            elif store is not None and owner_content is not None:
+                store._revoke_write_access()
+                rollback_owned_allocation(
+                    run_dir,
+                    store._manifest_path,
+                    run_dir / ".allocation-owner",
+                    owner_content,
+                    run_identity,
+                )
+            else:
+                try:
+                    release_owned_directory(run_dir, run_identity)
+                except OSError:
+                    close_directory_identity(run_identity)
 
     @classmethod
     def open_readonly(
@@ -144,14 +169,17 @@ class RunManifestStore:
         run_id: RunId,
         expected_workflow_digest: Sha256Digest,
     ) -> RunManifestStore:
+        if cls is not RunManifestStore:
+            raise access.RunManifestHandleError("factory rejects foreign handle types")
         require(
             re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", str(run_id)) is not None,
             ManifestErrorKind.MALFORMED,
             "run_id is not a safe namespace",
         )
         store = object.__new__(cls)
-        store._initialize(context, run_id, expected_workflow_digest)
-        access.register_store(store, False)
+        store._initialize_handle(
+            access.ManifestHandleIdentity(context, run_id, expected_workflow_digest),
+        )
         _ = store.read()
         return store
 
@@ -203,7 +231,7 @@ class RunManifestStore:
         with self._thread_lock, RunFileLock(self._run_dir):
             current = self.read()
             if current.evidence_sealed:
-                access.register_store(self, False)
+                self._revoke_write_access()
                 return current
             require(
                 self._registered_writable(),
@@ -221,10 +249,7 @@ class RunManifestStore:
                 ManifestErrorKind.PARENT_MISMATCH,
                 "working evidence is from another run",
             )
-            sealed_dir = self._run_dir / "sealed-artifacts"
-            if not sealed_dir.exists():
-                self._copy_seal(artifact_store, sealed_dir)
-            inventory = digest_inventory(sealed_dir, self._run_dir)
+            inventory = _seal_evidence(artifact_store, workspace, self._run_dir)
             updated = current.model_copy(
                 update={
                     "revision": current.revision + 1,
@@ -234,36 +259,5 @@ class RunManifestStore:
             )
             candidate = validated_payload(updated)
             atomic_write(self._manifest_path, candidate)
-            access.register_store(self, False)
+            self._revoke_write_access()
             return candidate.manifest
-
-    def _copy_seal(self, artifact_store: ArtifactStore, sealed_dir: Path) -> None:
-        staging = self._run_dir / f".sealed-artifacts.{secrets.token_hex(8)}.tmp"
-        try:
-            copy_real_tree(
-                Path(artifact_store.artifact_dir), self._context.workspace_root, staging
-            )
-            os.rename(staging, sealed_dir)
-        except RunManifestError:
-            if staging.exists():
-                shutil.rmtree(staging)
-            raise
-        except OSError as exc:
-            if staging.exists():
-                shutil.rmtree(staging)
-            raise manifest_error(
-                ManifestErrorKind.WRITE_INTERRUPTED, f"evidence seal interrupted: {exc}"
-            ) from exc
-
-    def _rollback_owned_allocation(self, owner_path: Path, owner_token: str) -> None:
-        require(
-            self._registered_writable(),
-            ManifestErrorKind.READ_ONLY,
-            "manifest allocation rollback requires its issued writer",
-        )
-        try:
-            owns_allocation = owner_path.read_text(encoding="ascii") == owner_token
-        except FileNotFoundError:
-            return
-        if owns_allocation and not self._manifest_path.exists():
-            shutil.rmtree(self._run_dir)

@@ -16,7 +16,6 @@ from core.phase5_attempt_receipt import (
     EnvironmentVariable,
     ReviewAcceptanceEvidence,
     ShellInvocation,
-    accept_attempt_receipt,
     artifact_file_receipt,
     finalize_attempt_receipt,
 )
@@ -188,7 +187,7 @@ def accept_phase5_receipt(
             parent_disposition=PhaseDisposition.FAILED,
         )
     try:
-        _ = accept_attempt_receipt(Path(receipt_path), authority)
+        _ = artifact_store.accept_phase5_attempt_receipt(receipt_path, authority)
     except (AttemptReceiptError, OSError) as exc:
         logger.warning("Phase 5 attempt acceptance receipt failed: %s", exc)
         return replace(

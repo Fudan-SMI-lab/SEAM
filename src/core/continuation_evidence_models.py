@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum, unique
 from pathlib import Path
-from typing import ClassVar, Literal, NamedTuple, final
+from typing import ClassVar, Literal, NamedTuple, Tuple, final
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import override
@@ -50,7 +50,7 @@ class ContinuationEvidenceError(Exception):
 
 class ChildEvidenceRequest(_FrozenModel):
     continuation: ContinuationRequest
-    inherited_canonical: tuple[CanonicalReference, ...]
+    inherited_canonical: Tuple[CanonicalReference, ...]
 
 
 class ProjectBaseline(_FrozenModel):
@@ -64,8 +64,8 @@ class ProjectBaseline(_FrozenModel):
     child_run_id: str
     workspace_kind: Literal["lineage_shared_mutable"] = "lineage_shared_mutable"
     complete: Literal[True] = True
-    files: tuple[EvidenceDigest, ...]
-    links: tuple[EvidenceDigest, ...]
+    files: Tuple[EvidenceDigest, ...]
+    links: Tuple[EvidenceDigest, ...]
 
 
 class MigrationReportArchive(_FrozenModel):
@@ -79,7 +79,7 @@ class MigrationReportArchive(_FrozenModel):
     child_run_id: str
     source: Literal["migration_reports"] = "migration_reports"
     complete: Literal[True] = True
-    files: tuple[EvidenceDigest, ...]
+    files: Tuple[EvidenceDigest, ...]
 
 
 class ContinuationEvidenceRoot(_FrozenModel):
@@ -91,8 +91,8 @@ class ContinuationEvidenceRoot(_FrozenModel):
     schema_version: Literal[1] = 1
     child_run_id: str
     complete: Literal[True] = True
-    precontinuation_files: tuple[EvidenceDigest, ...]
-    trace_files: tuple[EvidenceDigest, ...]
+    precontinuation_files: Tuple[EvidenceDigest, ...]
+    trace_files: Tuple[EvidenceDigest, ...]
 
 
 class ProjectSnapshot(NamedTuple):

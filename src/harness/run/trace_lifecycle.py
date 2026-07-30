@@ -4,14 +4,15 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, final
+from typing import Protocol, Tuple, final
 
 from core.run_outcome import TerminalOutcome
+from core.secret_redaction import redact_sensitive_text
 from harness.session.opencode_contract import JsonValue
-from harness.session.trace_export_models import TraceGraphClient
-from harness.session.trace_exporter import TraceExportRequest, TraceExporter
-from harness.session.trace_seeds import TraceSeed
 from harness.session.trace_correlation_models import TraceCorrelationContext
+from harness.session.trace_export_models import TraceGraphClient
+from harness.session.trace_exporter import TraceExporter, TraceExportRequest
+from harness.session.trace_seeds import TraceSeed
 
 from .models import (
     EMPTY_ARTIFACT_UPDATE,
@@ -21,7 +22,7 @@ from .models import (
 from .trace_lifecycle_models import TraceCorrelationSummary, TraceLifecycleStatus
 
 TraceClientSource = Callable[[], TraceGraphClient]
-TraceSeedSource = Callable[[], tuple[TraceSeed, ...]]
+TraceSeedSource = Callable[[], Tuple[TraceSeed, ...]]
 TraceCorrelationSource = Callable[[], TraceCorrelationContext]
 logger = logging.getLogger("harness.run.trace_lifecycle")
 
@@ -108,7 +109,7 @@ class TraceLifecycle:
                 enabled=True,
                 complete=False,
                 path=None,
-                errors=(f"{type(exc).__name__}: {exc}",),
+                errors=(redact_sensitive_text(f"{type(exc).__name__}: {exc}"),),
             )
             self._publish()
             return EMPTY_ARTIFACT_UPDATE
@@ -126,14 +127,16 @@ class TraceLifecycle:
                     else None
                 ),
                 lineage_root_run_id=str(scope.lineage_root_run_id),
-                diagnostics=result.correlation_errors,
+                diagnostics=tuple(
+                    redact_sensitive_text(error) for error in result.correlation_errors
+                ),
             )
         self._status = TraceLifecycleStatus(
             requested=True,
             enabled=True,
             complete=result.complete,
             path=str(manifest_path),
-            errors=result.errors,
+            errors=tuple(redact_sensitive_text(error) for error in result.errors),
             correlation=correlation_status,
         )
         self._publish()
@@ -173,7 +176,7 @@ class TraceLifecycle:
             logger.warning(
                 "Trace telemetry failed with %s: %s",
                 type(exc).__name__,
-                exc,
+                redact_sensitive_text(str(exc)),
             )
 
 

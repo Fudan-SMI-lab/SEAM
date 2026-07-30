@@ -170,10 +170,10 @@ def test_metadata_hash_failure_rolls_back_shell_artifacts(
     store = ArtifactStore(str(tmp_path), "run-hash-rollback")
     attempt = execution(store, tmp_path)
 
-    def fail_hash(_path: Path):
+    def fail_hash(_content: bytes):
         raise OSError("simulated hash failure")
 
-    monkeypatch.setattr("core.phase5_artifact_store.sha256_file", fail_hash)
+    monkeypatch.setattr("core.phase5_artifact_store._sha256_content", fail_hash)
 
     # When persistence computes metadata hashes.
     with pytest.raises(OSError, match="simulated hash failure"):

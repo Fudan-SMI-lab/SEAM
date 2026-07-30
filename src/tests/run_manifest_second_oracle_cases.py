@@ -41,6 +41,13 @@ def _make_directory_link(link: Path, target: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
+def _remove_directory_link(link: Path) -> None:
+    if os.name == "nt":
+        os.rmdir(link)
+    else:
+        link.unlink()
+
+
 def test_direct_context_construction_rejects_authority_inside_workspace(
     tmp_path: Path,
 ) -> None:
@@ -106,7 +113,7 @@ def test_junction_swap_after_inspection_never_seals_outside_bytes(
     finally:
         release.set()
         if linked:
-            os.rmdir(validated)
+            _remove_directory_link(validated)
 
     # Then
     assert escaped.value.kind is ManifestErrorKind.CONTAINMENT

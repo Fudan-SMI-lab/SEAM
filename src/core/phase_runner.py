@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Protocol, cast, runtime_checkable
+from typing import Dict, Protocol, cast, runtime_checkable
 
 from harness.session.manager import extract_json_response
 
@@ -41,7 +41,7 @@ from validators.validate_project_analysis import validate as validate_project_an
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
 
-JsonObject = dict[str, object]
+JsonObject = Dict[str, object]
 
 CUSTOM_OP_REQUIRED_TERMS = (
     "custom_op",
@@ -120,7 +120,11 @@ class SessionManagerLike(Protocol):
     def get_or_create(self, role: str, lifecycle: str) -> str: ...
 
     def send_command(
-        self, session_id: str, command: str, timeout: int | None = None
+        self,
+        session_id: str,
+        command: str,
+        timeout: int | None = None,
+        retries: int = 2,
     ) -> str: ...
 
 
@@ -143,7 +147,11 @@ class PhaseSpec:
 
     @property
     def artifact_id(self) -> str:
-        return self.prompt_id.removeprefix("phase_")
+        return (
+            self.prompt_id[6:]
+            if self.prompt_id.startswith("phase_")
+            else self.prompt_id
+        )
 
 
 class PhaseRunner:
@@ -1152,7 +1160,10 @@ class PhaseRunner:
     def _build_prompt_context(
         self, phase: PhaseSpec, context: JsonObject
     ) -> dict[str, str]:
-        previous_outputs = context.get("previous_outputs", {})
+        previous_outputs_value = context.get("previous_outputs", {})
+        previous_outputs = (
+            previous_outputs_value if isinstance(previous_outputs_value, dict) else {}
+        )
         prompt_ctx: dict[str, str] = {
             "phase_name": str(context.get("phase_name", phase.prompt_id)),
             "project_dir": str(context.get("project_dir", ".")),

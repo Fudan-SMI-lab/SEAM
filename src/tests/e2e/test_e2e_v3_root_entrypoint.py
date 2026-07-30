@@ -366,7 +366,6 @@ def test_v3_artifact_copy_cleans_interrupted_staging(
     output_dir.mkdir()
 
     def interrupt_copy(_source: Path, _container: Path, staging: Path) -> None:
-        staging.mkdir()
         _ = (staging / "partial.txt").write_text("partial", encoding="utf-8")
         raise shutil.Error("copy interrupted")
 

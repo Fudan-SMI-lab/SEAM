@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 from enum import Enum, unique
 from pathlib import Path
-from typing import Final, final
+from typing import Dict, Final, final
 
 from pydantic import JsonValue, TypeAdapter
 from typing_extensions import TypeAlias, override
@@ -26,7 +26,7 @@ from core.run_outcome import (
     WorkflowTerminal,
 )
 
-CanonicalJsonObject: TypeAlias = dict[str, JsonValue]
+CanonicalJsonObject: TypeAlias = Dict[str, JsonValue]
 _CANONICAL_ADAPTER: Final = TypeAdapter(CanonicalJsonObject)
 
 
@@ -138,7 +138,7 @@ class ContinuationHydration:
                 ContinuationHydrationErrorKind.AUTHORITY_MISMATCH,
                 "hydrated state and inherited result provenance do not agree",
             )
-        for entry, result in zip(self.state_entries, self.phase_results, strict=True):
+        for entry, result in zip(self.state_entries, self.phase_results):
             _ = _CANONICAL_ADAPTER.validate_json(entry.canonical_json)
             if result.phase_id != result.canonical_reference.phase_id or hashlib.sha256(
                 entry.canonical_json

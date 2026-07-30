@@ -35,6 +35,9 @@ SEAM是一个自动化迁移AI工具，能把原来只能在NVIDIA显卡上运�
 
 ### 快速开始
 在您要用的中国产GPU服务器、容器环境里，下载和使用SEAM：
+
+本版本的生产运行目标仅为 Linux，要求 Python 3.10+。强制 CI 使用无硬件 Linux runner；真实 NPU/GPU 集成验证保持可选且不作为发布门禁。
+
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM

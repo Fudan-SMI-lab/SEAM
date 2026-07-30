@@ -6,7 +6,7 @@ import hashlib
 import hmac
 from collections.abc import Mapping
 from pathlib import Path
-from typing import ClassVar, Tuple
+from typing import ClassVar, Dict, Tuple
 
 from pydantic import (
     BaseModel,
@@ -47,7 +47,7 @@ class _ContainerState(_ObservedModel):
 class _ContainerConfig(_ObservedModel):
     Image: str = ""
     WorkingDir: str = ""
-    Labels: dict[str, str] = Field(default_factory=dict)
+    Labels: Dict[str, str] = Field(default_factory=dict)
 
 
 class _ContainerDevice(_ObservedModel):
@@ -55,7 +55,7 @@ class _ContainerDevice(_ObservedModel):
 
 
 class _HostConfig(_ObservedModel):
-    Devices: tuple[_ContainerDevice, ...] = ()
+    Devices: Tuple[_ContainerDevice, ...] = ()
 
 
 class _ContainerMount(_ObservedModel):
@@ -71,7 +71,7 @@ class _ContainerInspect(_ObservedModel):
     State: _ContainerState
     Config: _ContainerConfig
     HostConfig: _HostConfig = _HostConfig()
-    Mounts: tuple[_ContainerMount, ...] = ()
+    Mounts: Tuple[_ContainerMount, ...] = ()
 
 
 class _FingerprintPayload(_ObservedModel):

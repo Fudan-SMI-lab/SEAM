@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sm-adapt"
 version = "2.0.0"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 
 [project.optional-dependencies]
 dev = [

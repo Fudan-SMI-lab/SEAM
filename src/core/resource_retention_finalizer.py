@@ -22,6 +22,7 @@ from .resource_retention_lifecycle import (
     RetentionLifecycleRecord as RetentionLifecycleRecord,
     retention_manifest_update as retention_manifest_update,
 )
+from .resource_retention_resolution import retention_policy_is_registered
 from .resource_retention_recorder import (
     RetentionLifecycleRecorder as RetentionLifecycleRecorder,
     _authorized_retention_finalization as _authorized_retention_finalization,
@@ -33,7 +34,7 @@ def _continuation_evidence_unavailable() -> bool:
     return False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ContainerRetentionFinalizer:
     policy: V3ContainerRetentionPolicy
     backend: RetentionBackend | None
@@ -52,6 +53,15 @@ class ContainerRetentionFinalizer:
                 "unknown",
                 "unknown",
                 "authorized cleanup finalization stage required",
+            )
+        if not retention_policy_is_registered(self.policy):
+            raise ContainerDeletionError(
+                self.backend.container_id
+                if self.backend is not None and self.backend.container_id is not None
+                else "unknown",
+                "unknown",
+                "unknown",
+                "retention policy was not issued by its owning resolver",
             )
         backend = self.backend
         if backend is None or backend.container_id is None:

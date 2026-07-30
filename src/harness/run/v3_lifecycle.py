@@ -2,26 +2,29 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Final, Protocol
+from typing import Callable, Protocol
 
 from typing_extensions import TypeAlias
 
+from core.atomic_file import atomic_write_bytes
 from core.run_outcome import TerminalOutcome
-from core.run_manifest import RunManifestError
-from core.run_manifest_paths import inspect_real_tree, read_real_tree_file
+from core.secret_redaction import JsonValue, redact_json_value, redact_sensitive_text
+
+from .cleanup import ResourceCleanup
 from .models import (
     EMPTY_ARTIFACT_UPDATE,
     FinalizationHooks,
     PhaseStatus,
     RunArtifactUpdate,
-    SidecarWriteError,
 )
 from .sidecars import copy_run_artifacts, write_json_text
-from .cleanup import ResourceCleanup
+from .v3_snapshot import (
+    SnapshotResult as SnapshotResult,
+    persist_python_snapshot as persist_python_snapshot,
+)
 
 MetricPathSource: TypeAlias = Callable[[], Mapping[str, str]]
 CountSource: TypeAlias = Callable[[], int]
@@ -30,9 +33,6 @@ Action: TypeAlias = Callable[[], None]
 CountAction: TypeAlias = Callable[[int], None]
 LogSink: TypeAlias = Callable[[str], None]
 AgentPathSource: TypeAlias = Callable[[], Mapping[str, str]]
-_EXCLUDED_SNAPSHOT_DIRS: Final = frozenset(
-    {".git", ".sm-artifacts", ".venv", "__pycache__"}
-)
 
 
 class CleanupFailureAction(Protocol):
@@ -53,13 +53,13 @@ def _ignore_cleanup_failure(
     return None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunCounts:
     session_count: int
     command_count: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ObserverSidecar:
     save_metrics: MetricPathSource
     counts: CountPairSource
@@ -69,7 +69,7 @@ class ObserverSidecar:
     record_cleanup_failure: CleanupFailureAction = _ignore_cleanup_failure
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BridgeSidecar:
     save_metrics: MetricPathSource
     command_count: CountSource
@@ -108,7 +108,7 @@ class AgentPathProvider(Protocol):
     def paths(self) -> Mapping[str, str]: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class V3TelemetrySources:
     observer: ObserverSource | None
     bridge: BridgeSource | None
@@ -158,7 +158,7 @@ def build_telemetry_sidecars(sources: V3TelemetrySources) -> TelemetrySidecars:
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TelemetrySidecars:
     observer: ObserverSidecar | None = None
     bridge: BridgeSidecar | None = None
@@ -195,38 +195,7 @@ class TelemetrySidecars:
         )
 
 
-@dataclass(frozen=True)
-class SnapshotResult:
-    path: str
-    file_count: int
-
-
-def persist_python_snapshot(project_dir: Path, output_path: Path) -> SnapshotResult:
-    snapshot: dict[str, dict[str, str]] = {}
-    try:
-        tree = inspect_real_tree(project_dir, project_dir.parent)
-        for identity in tree.files:
-            relative_path = identity.path.relative_to(tree.root.path)
-            if identity.path.suffix != ".py" or any(
-                part in _EXCLUDED_SNAPSHOT_DIRS for part in relative_path.parts
-            ):
-                continue
-            raw = read_real_tree_file(tree, identity)
-            content = raw.decode("utf-8")
-            snapshot[str(relative_path)] = {
-                "sha256": sha256(raw).hexdigest(),
-                "content": content,
-            }
-    except (RunManifestError, UnicodeError) as exc:
-        raise SidecarWriteError(str(project_dir), str(exc)) from exc
-    serialized = json.dumps(snapshot, indent=2, ensure_ascii=False, default=str)
-    return SnapshotResult(
-        path=write_json_text(output_path, serialized),
-        file_count=len(snapshot),
-    )
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EvidenceContext:
     output_dir: Path
     temp_dir: Path | None
@@ -234,7 +203,7 @@ class EvidenceContext:
     phase_results: tuple[PhaseStatus, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EvidencePersister:
     context: EvidenceContext
     telemetry: TelemetrySidecars
@@ -244,9 +213,9 @@ class EvidencePersister:
         after_snapshot_path: str | None = None
         artifact_dir: str | None = None
         if self.context.traceback_text is not None:
-            _ = (self.context.output_dir / "traceback.txt").write_text(
-                self.context.traceback_text,
-                encoding="utf-8",
+            atomic_write_bytes(
+                self.context.output_dir / "traceback.txt",
+                redact_sensitive_text(self.context.traceback_text).encode("utf-8"),
             )
         if self.context.temp_dir is not None:
             snapshot = persist_python_snapshot(
@@ -261,10 +230,25 @@ class EvidencePersister:
             if artifact_dir:
                 self.log(f"Artifacts copied to {artifact_dir}")
         telemetry = self.telemetry.evidence_update()
-        phase_payload = [asdict(phase) for phase in self.context.phase_results]
+        phase_payload: JsonValue = [
+            {
+                "phase_number": phase.phase_number,
+                "phase_id": phase.phase_id,
+                "label": phase.label,
+                "status": phase.status,
+                "duration_seconds": phase.duration_seconds,
+                "error": phase.error,
+            }
+            for phase in self.context.phase_results
+        ]
         _ = write_json_text(
             self.context.output_dir / "phase_results.json",
-            json.dumps(phase_payload, indent=2, ensure_ascii=False, default=str),
+            json.dumps(
+                redact_json_value(phase_payload),
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
         )
         return RunArtifactUpdate(
             artifact_dir=artifact_dir,
@@ -274,7 +258,7 @@ class EvidencePersister:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class V3RunLifecycle:
     evidence: EvidencePersister
     cleanup: ResourceCleanup

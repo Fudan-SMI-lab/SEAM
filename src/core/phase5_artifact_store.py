@@ -2,37 +2,45 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import time
 from pathlib import Path
-from typing import final
+from typing import BinaryIO, final
+
 from pydantic import ValidationError
 
 from core.phase5_artifact_io import (
-    copy_file_exclusive,
+    WrittenArtifact,
+    artifact_receipt,
+    read_bounded_descriptor,
     rollback_created,
+    sha256_content as _sha256_content,
     write_text_exclusive,
 )
-from core.agent_io_logger import redact_sensitive_text
+from core.continuation_lock_identity import fsync_parent
+from core.phase5_attempt_allocator import (
+    Phase5AttemptAllocator,
+    require_current_reservation,
+)
+from core.evidence_limits import MAX_EVIDENCE_FILE_BYTES
 from core.phase5_artifact_metadata import complete_metadata, sanitized_invocation
-from core.phase5_authority_registry import Phase5AuthorityRegistry
+from core.phase5_attempt_models import ShellArtifactsReceipt
 from core.phase5_attempt_receipt import (
     AttemptReceiptError,
     AttemptReceiptErrorKind,
-    CustomOpGateEvidence,
-    CustomOpGateStatus,
-    Phase5AttemptId,
     Phase5AttemptAuthority,
     Phase5AttemptReceipt,
     Phase5AttemptReservation,
-    ReviewAcceptanceEvidence,
-    ShellArtifactsReceipt,
     ShellAttemptExecution,
-    sha256_file,
-    artifact_file_receipt,
+    accept_attempt_receipt,
+)
+from core.phase5_attempt_receipt_persistence import (
+    draft_attempt_receipt,
     write_attempt_receipt,
 )
-from core.run_outcome import ReviewOutcome
+from core.phase5_authority_registry import Phase5AuthorityRegistry
+from core.run_manifest_paths import read_real_file
+from core.secret_redaction import redact_sensitive_text
+from core.phase5_transaction import Phase5Transaction
 from harness.session.opencode_contract import JsonObject
 
 
@@ -41,56 +49,20 @@ class Phase5ArtifactStore:
     artifact_dir: str
     run_id: str
 
-    def __init__(self, artifact_dir: str, run_id: str) -> None:
+    def __init__(
+        self,
+        artifact_dir: str,
+        run_id: str,
+        transaction: Phase5Transaction,
+    ) -> None:
         self.artifact_dir = artifact_dir
         self.run_id = run_id
+        self._attempt_allocator = Phase5AttemptAllocator(artifact_dir, run_id)
         self._authority_registry = Phase5AuthorityRegistry()
-
-    def _register_authority(
-        self,
-        path: Path,
-        receipt: Phase5AttemptReceipt,
-    ) -> Phase5AttemptAuthority:
-        return self._authority_registry.register(path, receipt)
+        self._transaction = transaction
 
     def reserve_attempt(self) -> Phase5AttemptReservation:
-        artifact_dir = Path(self.artifact_dir).resolve() / "shell_attempts"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        attempt_number = 1
-        while True:
-            attempt_id = Phase5AttemptId(f"phase_5_validation-attempt-{attempt_number}")
-            reservation_nonce = secrets.token_hex(16)
-            marker = artifact_dir / f".{attempt_id}.reserved"
-            try:
-                descriptor = os.open(
-                    marker,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o600,
-                )
-            except FileExistsError:
-                attempt_number += 1
-                continue
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                _ = handle.write(
-                    json.dumps(
-                        {
-                            "run_id": self.run_id,
-                            "attempt_id": attempt_id,
-                            "reservation_nonce": reservation_nonce,
-                        },
-                        sort_keys=True,
-                    )
-                )
-            prefix = artifact_dir / f"run_entry_script_attempt{attempt_number:04d}"
-            return Phase5AttemptReservation(
-                run_id=self.run_id,
-                reservation_nonce=reservation_nonce,
-                attempt_id=attempt_id,
-                attempt_number=attempt_number,
-                prefix=str(prefix),
-                marker_path=str(marker),
-                receipt_path=f"{prefix}.receipt.json",
-            )
+        return self._attempt_allocator.reserve_attempt()
 
     def save_attempt(
         self,
@@ -105,28 +77,19 @@ class Phase5ArtifactStore:
         stderr: str | None = None,
         stdout_source_path: str | None = None,
         stderr_source_path: str | None = None,
+        stdout_source: BinaryIO | None = None,
+        stderr_source: BinaryIO | None = None,
         execution: ShellAttemptExecution | None = None,
     ) -> JsonObject:
         artifact_dir = os.path.abspath(
             os.path.join(self.artifact_dir, "shell_attempts")
         )
         os.makedirs(artifact_dir, exist_ok=True)
+        fsync_parent(Path(artifact_dir))
         if execution is not None:
             reservation = execution.reservation
             expected_root = Path(artifact_dir).resolve()
-            prefix = Path(reservation.prefix).resolve()
-            expected_marker = expected_root / f".{reservation.attempt_id}.reserved"
-            if (
-                reservation.run_id != self.run_id
-                or prefix.parent != expected_root
-                or Path(reservation.receipt_path).resolve()
-                != Path(f"{prefix}.receipt.json")
-                or Path(reservation.marker_path).resolve() != expected_marker
-            ):
-                raise AttemptReceiptError(
-                    AttemptReceiptErrorKind.IDENTITY_MISMATCH,
-                    str(reservation.attempt_id),
-                )
+            require_current_reservation(reservation, self.run_id, expected_root)
         if execution is None:
             safe_phase = "".join(
                 character if character.isalnum() or character in {"_", "-"} else "_"
@@ -147,29 +110,50 @@ class Phase5ArtifactStore:
         stderr_path = os.path.abspath(prefix + ".stderr.log")
         meta_path = os.path.abspath(prefix + ".meta.json")
 
-        created: list[Path] = []
+        workspace_root = Path(self.artifact_dir).resolve(strict=True).parents[1]
+        created: list[WrittenArtifact] = []
         try:
-            if stdout_source_path:
-                copy_file_exclusive(Path(stdout_source_path), Path(stdout_path))
-            else:
-                write_text_exclusive(Path(stdout_path), stdout or "")
-            created.append(Path(stdout_path))
-            if stderr_source_path:
-                copy_file_exclusive(Path(stderr_source_path), Path(stderr_path))
-            else:
-                write_text_exclusive(Path(stderr_path), stderr or "")
-            created.append(Path(stderr_path))
-        except (OSError, AttemptReceiptError):
-            rollback_created(created)
+            if stdout_source is not None:
+                stdout = read_bounded_descriptor(
+                    stdout_source, MAX_EVIDENCE_FILE_BYTES
+                ).decode("utf-8", errors="replace")
+            elif stdout_source_path:
+                _, stdout_bytes = read_real_file(
+                    Path(stdout_source_path),
+                    workspace_root,
+                    MAX_EVIDENCE_FILE_BYTES,
+                )
+                stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stdout_artifact = write_text_exclusive(
+                Path(stdout_path), redact_sensitive_text(stdout or "")
+            )
+            created.append(stdout_artifact)
+            if stderr_source is not None:
+                stderr = read_bounded_descriptor(
+                    stderr_source, MAX_EVIDENCE_FILE_BYTES
+                ).decode("utf-8", errors="replace")
+            elif stderr_source_path:
+                _, stderr_bytes = read_real_file(
+                    Path(stderr_source_path),
+                    workspace_root,
+                    MAX_EVIDENCE_FILE_BYTES,
+                )
+                stderr = stderr_bytes.decode("utf-8", errors="replace")
+            stderr_artifact = write_text_exclusive(
+                Path(stderr_path), redact_sensitive_text(stderr or "")
+            )
+            created.append(stderr_artifact)
+        except (OSError, AttemptReceiptError) as exc:
+            _rollback_after_failure(created, exc)
             raise
 
         try:
-            stdout_bytes = os.path.getsize(stdout_path)
-            stderr_bytes = os.path.getsize(stderr_path)
-            stdout_sha256 = sha256_file(Path(stdout_path))
-            stderr_sha256 = sha256_file(Path(stderr_path))
-        except (OSError, AttemptReceiptError):
-            rollback_created(created)
+            stdout_bytes = len(stdout_artifact.content)
+            stderr_bytes = len(stderr_artifact.content)
+            stdout_sha256 = _sha256_content(stdout_artifact.content)
+            stderr_sha256 = _sha256_content(stderr_artifact.content)
+        except OSError as exc:
+            _rollback_after_failure(created, exc)
             raise
         durable_invocation = sanitized_invocation(execution)
         base_metadata: JsonObject = {
@@ -194,46 +178,57 @@ class Phase5ArtifactStore:
         }
         metadata = complete_metadata(base_metadata, execution, durable_invocation)
         try:
-            write_text_exclusive(Path(meta_path), json.dumps(metadata, indent=2))
-            created.append(Path(meta_path))
-        except (OSError, AttemptReceiptError):
-            rollback_created(created)
+            metadata_artifact = write_text_exclusive(
+                Path(meta_path), json.dumps(metadata, indent=2)
+            )
+            created.append(metadata_artifact)
+        except (OSError, AttemptReceiptError) as exc:
+            _rollback_after_failure(created, exc)
             raise
         if execution is None:
+            try:
+                fsync_parent(metadata_artifact.path)
+            except OSError as exc:
+                _rollback_after_failure(created, exc)
+                raise
             return metadata
         assert durable_invocation is not None
         receipt_path = Path(execution.reservation.receipt_path)
         try:
             artifacts = ShellArtifactsReceipt(
-                stdout=artifact_file_receipt(Path(stdout_path)),
-                stderr=artifact_file_receipt(Path(stderr_path)),
-                metadata=artifact_file_receipt(Path(meta_path)),
+                stdout=artifact_receipt(stdout_artifact),
+                stderr=artifact_receipt(stderr_artifact),
+                metadata=artifact_receipt(metadata_artifact),
             )
-            draft = Phase5AttemptReceipt(
-                run_id=execution.reservation.run_id,
-                reservation_nonce=execution.reservation.reservation_nonce,
-                attempt_id=execution.reservation.attempt_id,
-                attempt_number=execution.reservation.attempt_number,
-                invocation=durable_invocation,
-                backend=execution.backend,
-                artifacts=artifacts,
-                shell_exit_code=exit_code,
-                custom_op_gate=CustomOpGateEvidence(status=CustomOpGateStatus.NOT_RUN),
-                review=ReviewAcceptanceEvidence(
-                    enabled=True,
-                    outcome=ReviewOutcome.UNKNOWN,
-                ),
-                complete=False,
-                accepted=False,
+            draft = draft_attempt_receipt(
+                execution,
+                durable_invocation,
+                artifacts,
+                exit_code,
             )
             write_attempt_receipt(receipt_path, draft)
-            created.append(receipt_path)
-        except (OSError, AttemptReceiptError, ValidationError):
-            receipt_path.unlink(missing_ok=True)
-            rollback_created(created)
+        except (OSError, AttemptReceiptError, ValidationError) as exc:
+            _rollback_after_failure(created, exc)
             raise
-        _ = self._register_authority(Path(execution.reservation.receipt_path), draft)
+        _ = self._authority_registry.register(
+            Path(execution.reservation.receipt_path), draft
+        )
         return metadata
+
+    def accept_attempt_receipt(
+        self,
+        receipt_path: Path,
+        authority: Phase5AttemptAuthority,
+    ) -> Phase5AttemptReceipt:
+        if not self._authority_registry.authority_is_registered(authority):
+            raise AttemptReceiptError(
+                AttemptReceiptErrorKind.IDENTITY_MISMATCH,
+                str(authority.attempt_id),
+            )
+        with self._transaction:
+            accepted = accept_attempt_receipt(receipt_path, authority)
+            self._authority_registry.mark_accepted(receipt_path, accepted)
+            return accepted
 
     def authority_for(self, receipt_path: str) -> Phase5AttemptAuthority | None:
         return self._authority_registry.authority_for(receipt_path)
@@ -244,7 +239,20 @@ class Phase5ArtifactStore:
     ) -> Phase5AttemptAuthority | None:
         return self._authority_registry.authority_for_attempt(attempt_id)
 
+    def accepted_receipt_paths(self) -> tuple[str, ...]:
+        return self._authority_registry.accepted_receipt_paths()
+
     def record_finalized_authority(
         self, receipt_path: str, receipt: Phase5AttemptReceipt
     ) -> None:
         self._authority_registry.finalize(receipt_path, receipt)
+
+
+def _rollback_after_failure(
+    created: list[WrittenArtifact],
+    primary: OSError | AttemptReceiptError | ValidationError,
+) -> None:
+    cleanup_errors = rollback_created(created)
+    if cleanup_errors:
+        details = "; ".join(str(error) for error in cleanup_errors)
+        raise OSError(f"{primary}; artifact rollback failed: {details}") from primary

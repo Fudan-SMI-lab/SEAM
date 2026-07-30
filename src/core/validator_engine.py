@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, TypedDict, cast
+from typing import List, Protocol, Tuple, TypedDict, Union, cast
 
 from typing_extensions import TypeAlias
 
@@ -26,7 +26,7 @@ class ValidationDict(TypedDict):
 
 
 ValidatorResultValue: TypeAlias = (
-    ValidationResult | ValidationDict | bool | list[str] | tuple[str, ...]
+    Union[ValidationResult, ValidationDict, bool, List[str], Tuple[str, ...]]
 )
 
 

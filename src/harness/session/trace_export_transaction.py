@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import os
-import shutil
 from secrets import token_urlsafe
 from types import TracebackType
 from typing import Literal, final
 
 from harness.session.trace_export_models import TraceExportError, TraceExportRequest
 from harness.session.trace_export_paths import has_unsafe_ancestry
+from core.atomic_file import atomic_create_bytes
+from core.atomic_directory import rename_directory_no_replace
 from core.owned_directory_lock import (
     DirectoryLockIdentity,
     OwnedDirectoryChangedError,
+    close_directory_identity,
     directory_lock_identity,
+    empty_directory_identity,
     release_owned_directory,
 )
 
-atomic_directory_rename = os.rename
+atomic_directory_rename = rename_directory_no_replace
+private_file_create = atomic_create_bytes
 directory_fsync = os.fsync
 DIRECTORY_SYNC_SUPPORTED = os.name != "nt"
 
@@ -38,16 +42,18 @@ class TraceExportTransaction:
         )
         self._committed = False
         self._parent_identity: tuple[int, int, int] | None = None
-        self._staging_identity: tuple[int, int, int] | None = None
+        self._staging_identity: DirectoryLockIdentity | None = None
         self._publish_lock_identity: DirectoryLockIdentity | None = None
+        self._publish_lock_owned = False
         self._publish_lock_token = token_urlsafe(24).encode("ascii")
 
     def __enter__(self) -> TraceExportTransaction:
         try:
             self._prepare()
         except TraceExportError as exc:
-            cleanup_error = self._remove_staging()
-            cleanup_error = cleanup_error or self._remove_publish_lock()
+            staging_error = self._remove_staging()
+            lock_error = self._remove_publish_lock()
+            cleanup_error = staging_error or lock_error
             if cleanup_error is not None:
                 raise TraceExportError(
                     self.staging,
@@ -66,24 +72,35 @@ class TraceExportTransaction:
             _sync_directory(self.staging)
             atomic_directory_rename(self.staging, self.final)
             renamed = True
+            published_identity = directory_lock_identity(self.final, retain=False)
+            if published_identity != self._staging_identity:
+                replacement_identity = directory_lock_identity(self.final)
+                release_owned_directory(self.final, replacement_identity)
+                raise OwnedDirectoryChangedError(
+                    "published trace differs from the owned staging directory"
+                )
             _sync_directory(self.final.parent)
             cleanup_error = self._remove_publish_lock()
             if cleanup_error is not None:
                 raise OSError(cleanup_error)
             _sync_directory(self.final.parent)
         except OSError as exc:
-            if (
-                renamed
-                and self.final.exists()
-                and self._staging_identity == _directory_identity(self.final)
-            ):
-                shutil.rmtree(self.final)
-                _sync_directory(self.final.parent)
+            cleanup_detail = ""
+            if renamed and self._staging_identity is not None:
+                try:
+                    release_owned_directory(self.final, self._staging_identity)
+                    _sync_directory(self.final.parent)
+                except (OSError, OwnedDirectoryChangedError) as cleanup_error:
+                    cleanup_detail = (
+                        f"; committed trace cleanup failed: {cleanup_error}"
+                    )
             _ = self._remove_publish_lock()
             raise TraceExportError(
-                self.final, f"trace commit interrupted: {exc}"
+                self.final, f"trace commit interrupted: {exc}{cleanup_detail}"
             ) from exc
         self._committed = True
+        if self._staging_identity is not None:
+            close_directory_identity(self._staging_identity)
 
     def __exit__(
         self,
@@ -93,15 +110,16 @@ class TraceExportTransaction:
     ) -> Literal[False]:
         if self._committed:
             return False
-        cleanup_error = self._remove_staging()
-        cleanup_error = cleanup_error or self._remove_publish_lock()
+        staging_error = self._remove_staging()
+        lock_error = self._remove_publish_lock()
+        cleanup_error = staging_error or lock_error
+        if _exception is not None:
+            return False
         if cleanup_error is not None:
             error = TraceExportError(
                 self.staging,
                 f"trace staging cleanup failed: {cleanup_error}",
             )
-            if _exception is not None:
-                raise error from _exception
             raise error
         return False
 
@@ -123,15 +141,16 @@ class TraceExportTransaction:
             if destination.exists():
                 raise TraceExportError(destination, "destination already exists")
             self._publish_lock.mkdir(mode=0o700)
-            _ = (self._publish_lock / "owner").write_bytes(self._publish_lock_token)
-            self._publish_lock_identity = directory_lock_identity(self._publish_lock)
+            self._publish_lock_identity = empty_directory_identity(self._publish_lock)
+            private_file_create(self._publish_lock / "owner", self._publish_lock_token)
+            self._publish_lock_owned = True
             if destination.exists():
                 raise TraceExportError(destination, "destination already exists")
             self.staging.mkdir(mode=0o700)
+            self._staging_identity = empty_directory_identity(self.staging)
             (self.staging / "sessions").mkdir(mode=0o700)
             (self.staging / "overflows").mkdir(mode=0o700)
             self._parent_identity = _directory_identity(parent)
-            self._staging_identity = _directory_identity(self.staging)
         except TraceExportError:
             raise
         except (OSError, RuntimeError) as exc:
@@ -143,17 +162,25 @@ class TraceExportTransaction:
         try:
             return self._parent_identity == _directory_identity(
                 self.final.parent
-            ) and self._staging_identity == _directory_identity(self.staging)
+            ) and self._staging_identity == directory_lock_identity(
+                self.staging, retain=False
+            )
         except OSError:
             return False
 
     def _remove_staging(self) -> str | None:
-        try:
-            shutil.rmtree(self.staging)
-        except FileNotFoundError:
+        identity = self._staging_identity
+        if identity is None:
             return None
-        except OSError as exc:
+        try:
+            release_owned_directory(self.staging, identity)
+        except FileNotFoundError:
+            close_directory_identity(identity)
+            self._staging_identity = None
+            return None
+        except (OSError, OwnedDirectoryChangedError) as exc:
             return str(exc)
+        self._staging_identity = None
         return None
 
     def _remove_publish_lock(self) -> str | None:
@@ -164,14 +191,17 @@ class TraceExportTransaction:
             release_owned_directory(
                 self._publish_lock,
                 identity,
-                "owner",
-                self._publish_lock_token,
+                "owner" if self._publish_lock_owned else None,
+                self._publish_lock_token if self._publish_lock_owned else None,
             )
         except FileNotFoundError:
+            close_directory_identity(identity)
+            self._publish_lock_identity = None
             return None
         except (OSError, OwnedDirectoryChangedError) as exc:
             return str(exc)
         self._publish_lock_identity = None
+        self._publish_lock_owned = False
         return None
 
 

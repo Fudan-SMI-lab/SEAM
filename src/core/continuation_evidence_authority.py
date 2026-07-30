@@ -13,6 +13,8 @@ from .continuation_evidence_models import (
     ContinuationEvidenceRoot,
 )
 from .continuation_models import ContinuationError, ResolvedTerminalParent
+from .continuation_lock_identity import read_verified_bytes
+from .evidence_limits import MAX_EVIDENCE_FILE_BYTES
 from .continuation_resolver import resolve_terminal_parent
 from .run_manifest import (
     EvidenceDigest,
@@ -21,7 +23,7 @@ from .run_manifest import (
     RunManifestStore,
     RunStorageContext,
 )
-from .run_manifest_paths import digest_inventory
+from .run_manifest_inventory import digest_inventory
 
 _ROOT_RECEIPT_PATH = "validated/continuation_evidence_root.json"
 
@@ -72,7 +74,7 @@ def verify_external_evidence_root(
     evidence = matches[0]
     root_path = report_dir / "sealed-artifacts" / _ROOT_RECEIPT_PATH
     try:
-        content = root_path.read_bytes()
+        content = read_verified_bytes(root_path, MAX_EVIDENCE_FILE_BYTES)
         root = ContinuationEvidenceRoot.model_validate_json(content)
         precontinuation = digest_inventory(
             report_dir / "artifacts" / "pre-continuation",

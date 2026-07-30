@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+from typing_extensions import assert_never
+
 from core.continuation_accepted_attempt import verify_accepted_attempt
 from core.continuation_hydration_authority import (
     load_canonical_json,
@@ -16,7 +18,7 @@ from core.continuation_hydration_models import (
     InheritedPhaseResult,
     InheritedStateValue,
 )
-from core.continuation_models import TerminalParentStatus
+from core.continuation_models import PhasePresentationStatus, TerminalParentStatus
 from core.run_manifest import CanonicalReference, EvidenceDigest
 from core.run_outcome import PhaseId
 from core.types import PhaseDefinition, WorkflowDefinition
@@ -62,7 +64,9 @@ def _start_index(
 def _evidence_for(
     phase_id: PhaseId, inventory: tuple[EvidenceDigest, ...]
 ) -> EvidenceDigest:
-    artifact_name = f"phase_{str(phase_id).removeprefix('phase_')}_canonical.json"
+    phase_name = str(phase_id)
+    key = phase_name[6:] if phase_name.startswith("phase_") else phase_name
+    artifact_name = f"phase_{key}_canonical.json"
     relative_path = f"validated/{artifact_name}"
     matches = tuple(item for item in inventory if item.relative_path == relative_path)
     if len(matches) != 1:
@@ -120,18 +124,23 @@ def hydrate_terminal_parent(
                 ContinuationHydrationErrorKind.MISSING_CANONICAL_OUTPUT,
                 f"predecessor has no authoritative phase result: {phase.id}",
             )
-        if phase_summary.status == "failed":
-            raise _error(
-                ContinuationHydrationErrorKind.FAILED_CANONICAL_PREDECESSOR,
-                f"canonical predecessor failed: {phase.id}",
-            )
-        if phase_summary.status == "skipped":
-            continue
-        if phase_summary.status != "passed":
-            raise _error(
-                ContinuationHydrationErrorKind.AUTHORITY_MISMATCH,
-                f"predecessor status is not terminal: {phase_summary.status}",
-            )
+        match phase_summary.status:
+            case PhasePresentationStatus.FAILED:
+                raise _error(
+                    ContinuationHydrationErrorKind.FAILED_CANONICAL_PREDECESSOR,
+                    f"canonical predecessor failed: {phase.id}",
+                )
+            case PhasePresentationStatus.SKIPPED:
+                continue
+            case PhasePresentationStatus.PASSED:
+                pass
+            case PhasePresentationStatus.UNKNOWN:
+                raise _error(
+                    ContinuationHydrationErrorKind.AUTHORITY_MISMATCH,
+                    "predecessor status is not terminal: unknown",
+                )
+            case unreachable:
+                assert_never(unreachable)
         state_entry, result = _inherit_phase(
             phase, sealed_root, request.parent.run_manifest.sealed_evidence
         )

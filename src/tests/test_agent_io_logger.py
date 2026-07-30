@@ -37,7 +37,6 @@ class FakeSessionManager:
     def cleanup_all(self) -> int:
         return 1
 
-
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 

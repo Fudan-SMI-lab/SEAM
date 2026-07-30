@@ -58,6 +58,9 @@ def _request(summary_path: Path) -> ChildEvidenceRequest:
     )
 
 
+continuation_request = _request
+
+
 def _directory_link(link: Path, target: Path) -> None:
     if os.name == "nt":
         created = subprocess.run(

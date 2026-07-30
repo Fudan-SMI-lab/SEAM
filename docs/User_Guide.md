@@ -4,6 +4,9 @@
 ## 快速开始
 
 在您要用的中国产GPU服务器、容器环境里，下载和使用SEAM：
+
+SEAM 本版本仅支持在 Linux 生产环境运行，要求 Python 3.10+。强制 CI 不需要加速器硬件；真实 NPU/GPU 集成检查是可选、非 gating 验证。
+
 ```bash
 git clone https://github.com/seam-project/seam.git
 cd seam

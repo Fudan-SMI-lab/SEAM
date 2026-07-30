@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
+from core.owned_directory_lock import DirectoryLockIdentity, directory_lock_identity
 from core.review_policy import ReviewCliOverrides
 from core.execution_backend import ContainerBackend
 from core.execution_env_context import (
@@ -350,7 +351,7 @@ def print_summary(
         print(f"- Output dir: {summary.output_dir}")
         return
     headline = colorize(
-        f"E2E {summary.overall_status}",
+        f"E2E {summary.overall_status.value}",
         Ansi.GREEN if summary.overall_status == "PASS" else Ansi.RED,
     )
     print()
@@ -654,6 +655,7 @@ def run_e2e_v3(
 
     server_proc: subprocess.Popen[bytes] | None = None
     temp_dir: Path | None = None
+    temp_dir_identity: DirectoryLockIdentity | None = None
     before_snapshot_path: str | None = None
     entry_script: str | None = None
     errors: list[str] = []
@@ -722,6 +724,7 @@ def run_e2e_v3(
             keep_temp_dir = True
         else:
             temp_dir = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-v3-"))
+            temp_dir_identity = directory_lock_identity(temp_dir, retain=True)
             if TEMPLATE_DIR.exists():
                 _ = shutil.copytree(TEMPLATE_DIR, temp_dir, dirs_exist_ok=True)
             log(f"Created temp dir: {temp_dir}")
@@ -1047,6 +1050,7 @@ def run_e2e_v3(
                 owns_temp_dir=continuation is None and project_dir is None,
                 observer=telemetry.observer,
                 server_process=server_proc,
+                owned_temp_identity=temp_dir_identity,
             )
         ),
         telemetry=telemetry,

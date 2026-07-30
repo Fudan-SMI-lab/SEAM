@@ -19,6 +19,7 @@ from core.phase5_attempt_receipt import (
     sha256_file,
 )
 from core.run_outcome import RunOutcome, TerminalOutcome
+from core.secret_redaction import contains_redaction_marker
 
 NONDETERMINISM_NOTICE = (
     "Display only; this invocation reconstructs recorded inputs and does not guarantee "
@@ -43,6 +44,7 @@ class ReplayUnavailableReason(str, Enum):
     RECEIPT_MISSING = "receipt_missing"
     RECEIPT_MALFORMED = "receipt_malformed"
     RUN_ID_MISMATCH = "run_id_mismatch"
+    INVOCATION_SANITIZED = "invocation_sanitized"
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,13 @@ def render_replay(
         return _unavailable(ReplayUnavailableReason.RUN_ID_MISMATCH)
     if not receipt_matches_authority(receipt, authority):
         return _unavailable(ReplayUnavailableReason.RECEIPT_MALFORMED)
+    if any(contains_redaction_marker(argument) for argument in receipt.invocation.argv):
+        return _unavailable(ReplayUnavailableReason.INVOCATION_SANITIZED)
+    if any(
+        contains_redaction_marker(variable.value)
+        for variable in receipt.invocation.environment_delta
+    ):
+        return _unavailable(ReplayUnavailableReason.INVOCATION_SANITIZED)
     artifact_failure = _artifact_failure(receipt)
     if artifact_failure is not None:
         return _unavailable(artifact_failure)

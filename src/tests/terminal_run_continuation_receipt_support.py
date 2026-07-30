@@ -7,7 +7,6 @@ from core.phase5_attempt_receipt import (
     CustomOpGateEvidence,
     CustomOpGateStatus,
     ReviewAcceptanceEvidence,
-    accept_attempt_receipt,
     finalize_attempt_receipt,
 )
 from core.run_outcome import ReviewOutcome
@@ -22,4 +21,7 @@ def record_accepted_phase5_receipt(working: ArtifactStore, project_dir: Path) ->
         review=ReviewAcceptanceEvidence(enabled=False, outcome=ReviewOutcome.DISABLED),
     )
     working.record_finalized_phase5_authority(str(receipt_path), finalized)
-    _ = accept_attempt_receipt(receipt_path, authority(working, receipt_path))
+    _ = working.accept_phase5_attempt_receipt(
+        receipt_path,
+        authority(working, receipt_path),
+    )

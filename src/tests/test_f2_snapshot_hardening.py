@@ -52,6 +52,7 @@ def test_existing_resource_capability_uses_verified_bounded_read(
     capability = continuation_resource.resource_capability_path(report_dir)
     capability.parent.mkdir(parents=True)
     _ = capability.write_bytes(b"x" * 32)
+    capability.chmod(0o600)
     observed: list[tuple[Path, int]] = []
 
     def verified(target: Path, limit: int) -> bytes:
@@ -72,6 +73,7 @@ def test_capture_capability_uses_verified_bounded_read(
 ) -> None:
     path = tmp_path / "capture.key"
     _ = path.write_bytes(b"x" * 32)
+    path.chmod(0o600)
     observed: list[tuple[Path, int]] = []
 
     def verified(target: Path, limit: int) -> bytes:

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum, unique
 from pathlib import Path
-from typing import ClassVar, Literal, NewType, final
+from typing import ClassVar, Literal, NewType, Optional, Tuple, final
 
 from pydantic import BaseModel, ConfigDict, PositiveInt, StrictInt
 from pydantic import field_validator, model_validator
@@ -78,8 +78,8 @@ class EnvironmentVariable(_FrozenModel):
 
 
 class ShellInvocation(_FrozenModel):
-    argv: tuple[str, ...]
-    environment_delta: tuple[EnvironmentVariable, ...] = ()
+    argv: Tuple[str, ...]
+    environment_delta: Tuple[EnvironmentVariable, ...] = ()
 
     @model_validator(mode="after")
     def require_complete_invocation(self) -> Self:
@@ -96,8 +96,8 @@ class BackendExecution(_FrozenModel):
     namespace: str
     host_cwd: str
     backend_cwd: str
-    runtime: str | None = None
-    container_id: str | None = None
+    runtime: Optional[str] = None
+    container_id: Optional[str] = None
     container_retained: bool = False
 
     @model_validator(mode="after")
@@ -145,8 +145,8 @@ class ShellArtifactsReceipt(_FrozenModel):
 
 class CustomOpGateEvidence(_FrozenModel):
     status: CustomOpGateStatus
-    report: ArtifactFileReceipt | None = None
-    errors: tuple[str, ...] = ()
+    report: Optional[ArtifactFileReceipt] = None
+    errors: Tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def require_passed_report_authority(self) -> Self:

@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import NamedTuple
-from uuid import uuid4
 
 from pydantic import ValidationError
 
+from .atomic_file import atomic_write_bytes_with
 from .continuation_lock_identity import (
     BoundedReadError,
     BoundedReadErrorKind,
@@ -73,23 +73,10 @@ def read_resource_manifest(path: Path) -> ResourceManifest:
 
 
 def atomic_write(path: Path, payload: ResourceManifestPayload) -> None:
-    temp_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
     try:
-        with temp_path.open("xb") as handle:
-            _ = handle.write(payload.content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        atomic_replace(temp_path, path)
-        fsync_parent(path)
+        atomic_write_bytes_with(path, payload.content, atomic_replace, fsync_parent)
     except OSError as exc:
-        cleanup_detail = ""
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            cleanup_detail = "; staging file already absent"
-        except OSError as cleanup_exc:
-            cleanup_detail = f"; staging cleanup failed: {cleanup_exc}"
         raise ResourceManifestError(
             ResourceManifestErrorKind.WRITE_INTERRUPTED,
-            f"resource manifest write interrupted: {exc}{cleanup_detail}",
+            f"resource manifest write interrupted: {exc}",
         ) from exc

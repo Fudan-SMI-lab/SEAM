@@ -14,12 +14,11 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from typing_extensions import assert_never
 
@@ -41,6 +40,7 @@ from core.workflow_dispatch_policy import select_dispatch_route
 from core.workflow_stagnation_policy import StagnationState, reduce_stagnation
 from core.workflow_stop_policy import StopCondition, select_stop_status
 from core.workflow_transition_policy import TransitionRequest, plan_next_phase
+from core.workflow_shell_capture import capture_shell_output
 from core.session_registry import SessionRegistry
 from core.accelerator_context import extract_accelerator_context
 from core.hook_manager import HookManager
@@ -2610,6 +2610,8 @@ class WorkflowExecutor:
         stderr: str | None = None,
         stdout_source_path: str | None = None,
         stderr_source_path: str | None = None,
+        stdout_source: BinaryIO | None = None,
+        stderr_source: BinaryIO | None = None,
         execution: ShellAttemptExecution | None = None,
     ) -> dict[str, Any] | None:
         writer = getattr(self.artifact_store, "save_shell_attempt_artifacts", None)
@@ -2627,6 +2629,8 @@ class WorkflowExecutor:
                 stderr=stderr,
                 stdout_source_path=stdout_source_path,
                 stderr_source_path=stderr_source_path,
+                stdout_source=stdout_source,
+                stderr_source=stderr_source,
                 execution=execution,
             )
         except Exception as exc:
@@ -2844,8 +2848,6 @@ class WorkflowExecutor:
         return normalized
 
     # ── Shell phase ─────────────────────────────────────────────────────
-
-    _MAX_TAIL = 500_000  # 500 KB
 
     def _execute_shell_phase(
         self,
@@ -3113,51 +3115,19 @@ class WorkflowExecutor:
             else None
         )
 
-        out_path = err_path = None
         artifact_metadata: dict[str, Any] | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".out", delete=False
-            ) as out_f:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".err", delete=False
-                ) as err_f:
-                    out_path = out_f.name
-                    err_path = err_f.name
-
-            start_t = time.time()
-            env_for_subprocess = None
-            if run_env:
-                env_for_subprocess = {**os.environ, **run_env}
-            result = subprocess.run(
-                run_cmd,
-                shell=run_shell,
-                cwd=cwd,
-                env=env_for_subprocess,
-                stdout=open(out_path, "w"),
-                stderr=open(err_path, "w"),
-                timeout=timeout,
-            )
-            duration = time.time() - start_t
-
-            exit_code = result.returncode
-
-            stdout = self._read_tail(out_path)
-            stderr = self._read_tail(err_path)
-
-        except subprocess.TimeoutExpired:
-            exit_code = 124
-            duration = timeout if timeout is not None else 0
-            stdout = self._read_tail(out_path) if out_path else ""
-            stderr = self._read_tail(err_path) if err_path else ""
-        except Exception as exc:
-            exit_code = 1
-            duration = time.time() - (start_t if "start_t" in dir() else time.time())
-            stdout = ""
-            stderr = str(exc)
-
-        finally:
-            if entry_script_command and "exit_code" in locals():
+        with capture_shell_output(
+            run_cmd,
+            shell=run_shell,
+            cwd=cwd,
+            environment=run_env,
+            timeout=timeout,
+        ) as shell_capture:
+            exit_code = shell_capture.exit_code
+            duration = shell_capture.duration
+            stdout = shell_capture.stdout
+            stderr = shell_capture.stderr
+            if entry_script_command:
                 artifact_metadata = self._persist_shell_attempt_artifacts(
                     phase_id=phase.id,
                     command=str(cmd),
@@ -3165,22 +3135,12 @@ class WorkflowExecutor:
                     backend_workdir=cwd,
                     exit_code=exit_code,
                     duration=round(duration, 3),
-                    stdout_source_path=(
-                        out_path if out_path and os.path.exists(out_path) else None
-                    ),
-                    stderr_source_path=(
-                        err_path if err_path and os.path.exists(err_path) else None
-                    ),
-                    stdout=stdout if "stdout" in locals() else "",
-                    stderr=stderr if "stderr" in locals() else "",
+                    stdout_source=shell_capture.stdout_source,
+                    stderr_source=shell_capture.stderr_source,
+                    stdout=stdout,
+                    stderr=stderr,
                     execution=execution,
                 )
-            for p in (out_path, err_path):
-                if p and os.path.exists(p):
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
 
         captured = {
             "exit_code": exit_code,
@@ -3229,15 +3189,6 @@ class WorkflowExecutor:
         return bool(
             loop_vars and str(loop_vars.get("entry_script", "")) == str(raw_command)
         )
-
-    def _read_tail(self, path: str, max_bytes: int = _MAX_TAIL) -> str:
-        """Read at most last *max_bytes* of a file."""
-        try:
-            with open(path, "rb") as f:
-                f.seek(max(0, os.path.getsize(path) - max_bytes))
-                return f.read().decode("utf-8", errors="replace")
-        except (OSError, IOError):
-            return ""
 
     @classmethod
     def _build_failure_evidence(

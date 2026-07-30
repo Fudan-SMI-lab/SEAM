@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.artifact_store import ArtifactStore
-from core.phase5_artifact_store import Phase5ArtifactStore
+from core.phase5_authority_registry import Phase5AuthorityRegistry
 from core.phase5_attempt_receipt import (
     ArtifactFileReceipt,
     BackendExecution,
@@ -93,8 +93,7 @@ def issued_authority(
     receipt_path: Path,
     receipt: Phase5AttemptReceipt,
 ) -> Phase5AttemptAuthority:
-    store = Phase5ArtifactStore(str(receipt_path.parent), receipt.run_id)
-    return store._register_authority(receipt_path, receipt)
+    return Phase5AuthorityRegistry().register(receipt_path, receipt)
 
 
 def accepted_receipt(

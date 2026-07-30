@@ -1,5 +1,7 @@
 """Validation for Phase 4 rule migration output."""
 
+from __future__ import annotations
+
 from typing import cast
 
 from core.validator_engine import ValidationDict

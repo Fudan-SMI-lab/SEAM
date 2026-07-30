@@ -1,5 +1,7 @@
 """OpenCode server lifecycle management - auto start/stop for E2E tests."""
 
+from __future__ import annotations
+
 import http.client
 import json
 import os
@@ -10,8 +12,12 @@ import subprocess
 import time
 import urllib.error
 import urllib.parse
+from typing import TYPE_CHECKING
 
-ServerProcess = subprocess.Popen[bytes]
+if TYPE_CHECKING:
+    ServerProcess = subprocess.Popen[bytes]
+else:
+    ServerProcess = subprocess.Popen
 
 def find_available_port(start: int = 4096, end: int = 4099) -> int:
     """Find a free TCP port in [start, end] inclusive."""
@@ -491,9 +497,10 @@ def check_session_capable(base_url: str, timeout: int = 5) -> bool:
         http.client.HTTPSConnection if parsed.scheme == "https"
         else http.client.HTTPConnection
     )
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
     try:
-        conn = connection_cls(parsed.hostname, parsed.port, timeout=timeout)
+        conn = connection_cls(parsed.hostname, port, timeout=timeout)
         try:
             payload = json.dumps({"title": "health-check"})
             headers = {"Content-Type": "application/json"}
@@ -556,9 +563,10 @@ def _session_probe_details(
         http.client.HTTPSConnection if parsed.scheme == "https"
         else http.client.HTTPConnection
     )
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
     try:
-        conn = connection_cls(parsed.hostname, parsed.port, timeout=timeout)
+        conn = connection_cls(parsed.hostname, port, timeout=timeout)
         try:
             payload = json.dumps({"title": "health-check"})
             headers = {"Content-Type": "application/json"}
@@ -570,7 +578,7 @@ def _session_probe_details(
 
             if ok:
                 _cleanup_probe_session(
-                    body_text, parsed.hostname, parsed.port,
+                    body_text, parsed.hostname, port,
                     connection_cls, timeout,
                 )
 

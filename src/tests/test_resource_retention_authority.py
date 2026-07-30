@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import inspect
 import pickle
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +15,14 @@ from core.resource_retention import (
     _authorized_container_cleanup,
     resolve_v3_container_retention,
 )
+from core.resource_retention_finalizer import (
+    ContainerRetentionFinalizer,
+    RetentionLifecycleRecorder,
+    _authorized_retention_finalization,
+)
+from tests.authority_boundary_attack_support import reclassify_retention_policy
 from tests.resource_retention_test_support import container_workflow
+from tests.resource_retention_test_support import RecordingBackend
 
 
 def _delete_authority() -> CurrentRunContainerDeleteAuthority:
@@ -81,3 +89,25 @@ def test_reconstructed_delete_authority_cannot_enter_cleanup_context() -> None:
     with pytest.raises(ContainerDeletionError, match="not registered"):
         with _authorized_container_cleanup(reconstructed):
             pytest.fail("reconstructed authority entered destructive context")
+
+
+def test_foreign_policy_cannot_reclassify_retain_authority_as_delete(
+    tmp_path: Path,
+) -> None:
+    policy = resolve_v3_container_retention(
+        container_workflow(), ContainerRetention.RETAIN, "run-opacity"
+    )
+    foreign_policy = reclassify_retention_policy(policy)
+    backend = RecordingBackend()
+    finalizer = ContainerRetentionFinalizer(
+        foreign_policy,
+        backend,
+        tmp_path,
+        RetentionLifecycleRecorder(),
+    )
+
+    with _authorized_retention_finalization(finalizer):
+        with pytest.raises(ContainerDeletionError, match="policy"):
+            finalizer.run()
+
+    assert backend.delete_calls == []

@@ -44,7 +44,31 @@ def test_abort_preserves_successor_publish_lock(tmp_path: Path) -> None:
     lock.mkdir()
     expected = _identity(lock)
 
-    with pytest.raises(TraceExportError):
-        _ = transaction.__exit__(RuntimeError, RuntimeError("abort"), None)
+    assert transaction.__exit__(RuntimeError, RuntimeError("abort"), None) is False
 
     assert _identity(lock) == expected
+
+
+def test_staging_cleanup_failure_still_attempts_publish_lock_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction = TraceExportTransaction(_request(tmp_path))
+    _ = transaction.__enter__()
+    lock_cleanup_called = False
+
+    def fail_staging() -> str:
+        return "staging changed"
+
+    def clean_lock() -> None:
+        nonlocal lock_cleanup_called
+        lock_cleanup_called = True
+        return None
+
+    monkeypatch.setattr(transaction, "_remove_staging", fail_staging)
+    monkeypatch.setattr(transaction, "_remove_publish_lock", clean_lock)
+
+    with pytest.raises(TraceExportError, match="staging changed"):
+        _ = transaction.__exit__(None, None, None)
+
+    assert lock_cleanup_called

@@ -14,9 +14,9 @@ from core.resource_retention_authority import (
     ContinuationContainerDeleteAuthority as ContinuationContainerDeleteAuthority,
     CurrentRunContainerDeleteAuthority as CurrentRunContainerDeleteAuthority,
     V3ContainerRetentionPolicy as V3ContainerRetentionPolicy,
-    delete_authority_is_registered,
 )
 from core.resource_retention_resolution import (
+    delete_authority_is_registered,
     resolve_v3_container_retention as resolve_v3_container_retention,
 )
 

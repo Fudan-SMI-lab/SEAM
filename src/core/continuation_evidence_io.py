@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import NamedTuple, Protocol
 
 from .continuation_evidence_models import ChildEvidenceNamespace, ProjectSnapshot
+from .atomic_file import atomic_create_bytes
+from .continuation_lock_identity import fsync_parent, read_verified_bytes
+from .evidence_limits import MAX_EVIDENCE_FILE_BYTES
 from .run_manifest import EvidenceDigest, Sha256Digest
-from .run_manifest_paths import copy_real_tree, digest_inventory
+from .run_manifest_inventory import digest_inventory
+from .run_manifest_paths import copy_real_tree
 from .evidence_limits import EvidenceBudget
 
 _WINDOWS_REPARSE_POINT = 0x400
@@ -25,7 +29,9 @@ def allocate_child_evidence_namespace(
     artifact_dir = report_dir / "artifacts"
     precontinuation_dir = artifact_dir / "pre-continuation"
     artifact_dir.mkdir()
+    fsync_parent(artifact_dir)
     precontinuation_dir.mkdir()
+    fsync_parent(precontinuation_dir)
     return ChildEvidenceNamespace(
         report_dir=report_dir,
         trace_dir=trace_dir,
@@ -39,7 +45,7 @@ def allocate_child_evidence_namespace(
     )
 
 
-def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
     return (
         metadata.st_dev,
         metadata.st_ino,
@@ -47,12 +53,13 @@ def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
         getattr(metadata, "st_file_attributes", 0),
         metadata.st_size,
         metadata.st_mtime_ns,
+        0 if os.name == "nt" else metadata.st_ctime_ns,
     )
 
 
 def _identities_match(
-    expected: tuple[int, int, int, int, int, int],
-    actual: tuple[int, int, int, int, int, int],
+    expected: tuple[int, int, int, int, int, int, int],
+    actual: tuple[int, int, int, int, int, int, int],
 ) -> bool:
     return (
         expected[:3] == actual[:3]
@@ -63,7 +70,7 @@ def _identities_match(
 
 class _ProjectDirectory(NamedTuple):
     path: Path
-    identity: tuple[int, int, int, int, int, int]
+    identity: tuple[int, int, int, int, int, int, int]
 
 
 def _is_link(metadata: os.stat_result) -> bool:
@@ -186,24 +193,7 @@ def write_exclusive_record(
     record: JsonEvidenceRecord,
 ) -> EvidenceDigest:
     content = (record.model_dump_json(by_alias=True, indent=2) + "\n").encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-    descriptor = os.open(path, flags, 0o600)
-    created_identity = _identity(os.fstat(descriptor))
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            _ = handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except OSError:
-        try:
-            current_identity = _identity(path.lstat())
-        except FileNotFoundError:
-            current_identity = None
-        if current_identity is not None and _identities_match(
-            created_identity, current_identity
-        ):
-            path.unlink()
-        raise
+    atomic_create_bytes(path, content)
     return EvidenceDigest(
         relative_path=path.name,
         digest=Sha256Digest(hashlib.sha256(content).hexdigest()),
@@ -213,7 +203,7 @@ def write_exclusive_record(
 
 def verify_record(path: Path, receipt: EvidenceDigest) -> bool:
     try:
-        content = path.read_bytes()
+        content = read_verified_bytes(path, MAX_EVIDENCE_FILE_BYTES)
     except OSError:
         return False
     return (

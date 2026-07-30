@@ -1,20 +1,21 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum, unique
-import re
-from typing import final
+from typing import ClassVar, final
 
-from pydantic import GetCoreSchemaHandler
+from pydantic import GetCoreSchemaHandler, JsonValue
 from pydantic_core import CoreSchema, core_schema
-from typing_extensions import assert_never, override
+from typing_extensions import Self, assert_never, override
 
 
-@final
-class PhaseId(str):
-    def __new__(cls, raw: str) -> PhaseId:
+class _SafeIdentifier(str):
+    _error_reason: ClassVar[str]
+
+    def __new__(cls, raw: str) -> Self:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", raw):
-            raise OutcomeContractError(reason="phase_id is not a valid identifier")
+            raise OutcomeContractError(reason=cls._error_reason)
         return str.__new__(cls, raw)
 
     @classmethod
@@ -27,39 +28,18 @@ class PhaseId(str):
 
 
 @final
-class AcceptedAttemptId(str):
-    def __new__(cls, raw: str) -> AcceptedAttemptId:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", raw):
-            raise OutcomeContractError(
-                reason="accepted attempt is not a valid identifier"
-            )
-        return str.__new__(cls, raw)
-
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls,
-        _source_type: type[str],
-        handler: GetCoreSchemaHandler,
-    ) -> CoreSchema:
-        return core_schema.no_info_after_validator_function(cls, handler(str))
+class PhaseId(_SafeIdentifier):
+    _error_reason = "phase_id is not a valid identifier"
 
 
 @final
-class WorkflowTerminal(str):
-    def __new__(cls, raw: str) -> WorkflowTerminal:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", raw):
-            raise OutcomeContractError(
-                reason="workflow terminal is not a valid identifier"
-            )
-        return str.__new__(cls, raw)
+class AcceptedAttemptId(_SafeIdentifier):
+    _error_reason = "accepted attempt is not a valid identifier"
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls,
-        _source_type: type[str],
-        handler: GetCoreSchemaHandler,
-    ) -> CoreSchema:
-        return core_schema.no_info_after_validator_function(cls, handler(str))
+
+@final
+class WorkflowTerminal(_SafeIdentifier):
+    _error_reason = "workflow terminal is not a valid identifier"
 
 
 @unique
@@ -71,8 +51,7 @@ class ReviewVerdict(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def from_raw(cls, raw: object) -> ReviewVerdict:
-        """Parse only a complete verdict token; prose is never authoritative."""
+    def from_raw(cls, raw: JsonValue) -> ReviewVerdict:
         if not isinstance(raw, str):
             return cls.UNKNOWN
         try:
@@ -94,8 +73,7 @@ class ReviewOutcome(str, Enum):
     IMPROVEMENT_ERROR = "improvement_error"
 
     @classmethod
-    def from_raw(cls, raw: object) -> ReviewOutcome:
-        """Parse a complete disposition token and fail closed to unknown."""
+    def from_raw(cls, raw: JsonValue) -> ReviewOutcome:
         if not isinstance(raw, str):
             return cls.UNKNOWN
         try:
@@ -141,7 +119,7 @@ def _expected_verdict(outcome: ReviewOutcome) -> ReviewVerdict | None:
     assert_never(outcome)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ReviewRound:
     """One immutable logical reviewer judgment within the review budget."""
 
@@ -162,19 +140,33 @@ class ReviewRound:
         if self.verdict is not expected_verdict:
             raise OutcomeContractError(reason="review outcome conflicts with verdict")
 
-        if self.outcome is ReviewOutcome.REJECTED:
-            if self.round_number >= self.max_rounds:
+        match self.outcome:
+            case ReviewOutcome.REJECTED if self.round_number >= self.max_rounds:
                 raise OutcomeContractError(
                     reason="rejected is intermediate and requires a remaining round"
                 )
-        elif self.outcome is ReviewOutcome.REJECT_EXHAUSTED:
-            if self.round_number != self.max_rounds:
+            case ReviewOutcome.REJECT_EXHAUSTED if self.round_number != self.max_rounds:
                 raise OutcomeContractError(
                     reason="reject_exhausted requires the final review round"
                 )
+            case (
+                ReviewOutcome.ACCEPTED
+                | ReviewOutcome.REJECTED
+                | ReviewOutcome.REJECT_EXHAUSTED
+                | ReviewOutcome.UNKNOWN
+                | ReviewOutcome.SESSION_ERROR
+                | ReviewOutcome.IMPROVEMENT_ERROR
+            ):
+                pass
+            case ReviewOutcome.DISABLED:
+                raise OutcomeContractError(
+                    reason="disabled review cannot create a round"
+                )
+            case unreachable:
+                assert_never(unreachable)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TerminalAnchor:
     """The phase from which a terminal run may be diagnosed or continued."""
 
@@ -208,7 +200,7 @@ def _validate_review_history(review_rounds: tuple[ReviewRound, ...]) -> None:
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunOutcome:
     """Authoritative V3 result with terminal, workflow, attempt, and review facts."""
 
@@ -240,6 +232,23 @@ class RunOutcome:
 
         _validate_review_history(self.review_rounds)
 
+        match self.review_outcome:
+            case ReviewOutcome.DISABLED | ReviewOutcome.ACCEPTED:
+                pass
+            case (
+                ReviewOutcome.REJECTED
+                | ReviewOutcome.REJECT_EXHAUSTED
+                | ReviewOutcome.UNKNOWN
+                | ReviewOutcome.SESSION_ERROR
+                | ReviewOutcome.IMPROVEMENT_ERROR
+            ):
+                if self.accepted_attempt_id is not None:
+                    raise OutcomeContractError(
+                        reason="non-accepting review cannot retain an accepted attempt"
+                    )
+            case unreachable:
+                assert_never(unreachable)
+
         if (
             self.validation_succeeded
             and self.review_outcome is ReviewOutcome.ACCEPTED
@@ -265,5 +274,16 @@ class RunOutcome:
                 )
             else:
                 terminal_outcome = TerminalOutcome.FAILED
+
+        match terminal_outcome:
+            case TerminalOutcome.PASSED:
+                if self.accepted_attempt_id is None:
+                    raise OutcomeContractError(
+                        reason="passed outcome requires an accepted attempt"
+                    )
+            case TerminalOutcome.PASSED_WITH_REVIEWS | TerminalOutcome.FAILED:
+                pass
+            case unreachable:
+                assert_never(unreachable)
 
         object.__setattr__(self, "terminal_outcome", terminal_outcome)

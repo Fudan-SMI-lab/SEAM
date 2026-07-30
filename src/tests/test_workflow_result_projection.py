@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from core.continuation_models import PhasePresentationStatus
 from harness.run.workflow_result_projection import project_workflow_result
 
 
@@ -26,9 +27,9 @@ def test_projection_orders_maps_and_truncates_executor_results() -> None:
         "unknown_phase",
     ]
     assert [phase.status for phase in projection.phases] == [
-        "passed",
-        "failed",
-        "custom",
+        PhasePresentationStatus.PASSED,
+        PhasePresentationStatus.FAILED,
+        PhasePresentationStatus.UNKNOWN,
     ]
     assert [phase.duration_seconds for phase in projection.phases] == [
         0.111,
@@ -37,4 +38,5 @@ def test_projection_orders_maps_and_truncates_executor_results() -> None:
     ]
     assert projection.phases[1].error == failure[:500]
     assert projection.phases[2].phase_number == 1000
+    assert projection.phases[2].status is PhasePresentationStatus.UNKNOWN
     assert projection.entry_script == "python app.py"

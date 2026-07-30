@@ -4,7 +4,7 @@ import hashlib
 import os
 import stat
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Dict, Final, NamedTuple
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 import yaml
@@ -31,7 +31,7 @@ from core.run_manifest import EvidenceDigest, Sha256Digest
 from core.types import WorkflowDefinition
 
 _MAX_CANONICAL_BYTES: Final = 16 * 1024 * 1024
-_CANONICAL_ADAPTER: Final = TypeAdapter(dict[str, JsonValue])
+_CANONICAL_ADAPTER: Final = TypeAdapter(Dict[str, JsonValue])
 
 
 class HydrationAuthority(NamedTuple):

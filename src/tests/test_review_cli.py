@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -81,6 +82,8 @@ def _load_selector(path: Path) -> _SelectorConfig:
 
 def _wsl_path(path: Path) -> str:
     resolved = path.resolve()
+    if os.name != "nt":
+        return resolved.as_posix()
     drive = resolved.drive.removesuffix(":").lower()
     suffix = resolved.as_posix().split(":", maxsplit=1)[1]
     return f"/mnt/{drive}{suffix}"
@@ -96,10 +99,11 @@ def _run_launcher(
     shell_scripts.mkdir(parents=True, exist_ok=True)
     for source in (SRC_ROOT / "scripts").glob("run_*.sh"):
         normalized = source.read_text(encoding="utf-8").replace("\r\n", "\n")
-        with (shell_scripts / source.name).open(
-            "w", encoding="utf-8", newline="\n"
-        ) as destination:
+        copied = shell_scripts / source.name
+        with copied.open("w", encoding="utf-8", newline="\n") as destination:
             _ = destination.write(normalized)
+        if os.name != "nt":
+            copied.chmod(0o755)
     diagnostics_dir = shell_root / "scripts"
     diagnostics_dir.mkdir(exist_ok=True)
     _ = shutil.copyfile(

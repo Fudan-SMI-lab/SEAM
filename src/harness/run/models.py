@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum, unique
-from typing import Callable, Optional
-from typing_extensions import TypeAlias
+from typing import TypeAlias
 
 from typing_extensions import assert_never, override
 
+from core.continuation_models import PhasePresentationStatus, SummaryStatus
 from core.run_manifest import RunId
 from core.run_outcome import RunOutcome, TerminalOutcome
-from core.v3_runtime_report import V3RuntimeReport
 from core.runtime_observability_models import (
     EMPTY_OBSERVABILITY_SUMMARY,
     ObservabilitySummary,
 )
+from core.v3_runtime_report import V3RuntimeReport
+
 from .trace_lifecycle_models import (
     TRACE_NOT_REQUESTED,
     TraceLifecycleStatus,
@@ -22,20 +23,20 @@ from .trace_lifecycle_models import (
 )
 
 DurationSource: TypeAlias = Callable[[], float]
-RuntimeReportSource: TypeAlias = Callable[[], Optional[V3RuntimeReport]]
+RuntimeReportSource: TypeAlias = Callable[[], V3RuntimeReport | None]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PhaseStatus:
     phase_number: int
     phase_id: str
     label: str
-    status: str
+    status: PhasePresentationStatus
     duration_seconds: float = 0.0
     error: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunIdentity:
     run_id: RunId
     base_url: str
@@ -44,7 +45,7 @@ class RunIdentity:
     temp_dir: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunExecution:
     keep_temp_dir: bool
     requested_max_phase5_iter: int
@@ -57,7 +58,7 @@ class RunExecution:
     duration_source: DurationSource | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunArtifactUpdate:
     artifact_dir: str | None = None
     telemetry_paths: tuple[tuple[str, str], ...] = ()
@@ -70,7 +71,7 @@ class RunArtifactUpdate:
 EMPTY_ARTIFACT_UPDATE = RunArtifactUpdate()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunArtifacts:
     artifact_dir: str | None = None
     telemetry_paths: tuple[tuple[str, str], ...] = ()
@@ -93,7 +94,7 @@ class RunArtifacts:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ContinuationRunSummary:
     parent_run_id: str
     anchor_phase_id: str
@@ -102,7 +103,7 @@ class ContinuationRunSummary:
     attachment_mode: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunSummary:
     run_id: str
     base_url: str
@@ -115,7 +116,7 @@ class RunSummary:
     phases: tuple[PhaseStatus, ...]
     session_count: int
     command_count: int
-    overall_status: str
+    overall_status: SummaryStatus
     total_duration_seconds: float
     artifact_dir: str | None
     telemetry_paths: dict[str, str]
@@ -148,7 +149,7 @@ class FinalizationStage(str, Enum):
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FinalizationHookError(RuntimeError):
     detail: str
 
@@ -164,7 +165,7 @@ def _empty_hook(_outcome: TerminalOutcome) -> RunArtifactUpdate:
     return EMPTY_ARTIFACT_UPDATE
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FinalizationHooks:
     evidence_replay: FinalizationHook = _empty_hook
     trace_export: FinalizationHook = _empty_hook
@@ -196,7 +197,7 @@ class FinalizationHooks:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunFinalizationRequest:
     identity: RunIdentity
     execution: RunExecution
@@ -215,14 +216,14 @@ class RunFinalizationRequest:
         return self.authoritative_outcome
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FinalizationDiagnostic:
     stage: FinalizationStage
     error_type: str
     detail: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FinalizationResult:
     outcome: TerminalOutcome
     summary: RunSummary
@@ -254,7 +255,7 @@ class ReportAllocationErrorKind(str, Enum):
     CREATE_FAILED = "create_failed"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ReportAllocationError(Exception):
     kind: ReportAllocationErrorKind
     detail: str
@@ -264,7 +265,7 @@ class ReportAllocationError(Exception):
         return f"{self.kind.value}: {self.detail}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SidecarWriteError(OSError):
     path: str
     detail: str

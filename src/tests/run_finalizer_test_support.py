@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from core.continuation_models import PhasePresentationStatus
 from core.run_manifest import RunId
 from core.run_outcome import (
     AcceptedAttemptId,
@@ -77,7 +78,7 @@ def finalization_request(
                     phase_number=1,
                     phase_id="phase_0_env_detect",
                     label="phase_0_env_detect",
-                    status=scenario.status,
+                    status=PhasePresentationStatus.from_raw(scenario.status),
                     duration_seconds=1.25,
                     error=scenario.errors[0] if scenario.errors else None,
                 ),

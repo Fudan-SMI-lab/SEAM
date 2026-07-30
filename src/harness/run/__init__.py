@@ -101,6 +101,7 @@ if sys.version_info >= (3, 10):
         "write_json_text",
     )
 else:
+    from .cleanup import CleanupContext, ResourceCleanup
     from .finalization_contract import (
         ContinuationRunSummary,
         FinalizationHooks,
@@ -117,15 +118,31 @@ else:
         TerminalOutcome,
     )
     from .finalizer_py38 import finalize_run
+    from .finalizer import allocate_report_directory
+    from .models import ReportAllocationError
     from .resource_manifest_hook import resource_manifest_finalization_hook
     from .trace_lifecycle_models import TraceCorrelationSummary, TraceLifecycleStatus
+    from .trace_lifecycle import compose_trace_hooks
+    from .v3_lifecycle import (
+        EvidenceContext,
+        EvidencePersister,
+        V3RunLifecycle,
+        V3TelemetrySources,
+        build_telemetry_sidecars,
+        persist_python_snapshot,
+    )
 
     __all__ = (
         "ContinuationRunSummary",
+        "CleanupContext",
+        "EvidenceContext",
+        "EvidencePersister",
         "FinalizationHooks",
         "FinalizationResult",
         "FinalizationStage",
         "PhaseStatus",
+        "ReportAllocationError",
+        "ResourceCleanup",
         "RunArtifacts",
         "RunArtifactUpdate",
         "RunExecution",
@@ -136,6 +153,12 @@ else:
         "TerminalOutcome",
         "TraceCorrelationSummary",
         "TraceLifecycleStatus",
+        "V3RunLifecycle",
+        "V3TelemetrySources",
+        "allocate_report_directory",
+        "build_telemetry_sidecars",
+        "compose_trace_hooks",
         "finalize_run",
+        "persist_python_snapshot",
         "resource_manifest_finalization_hook",
     )

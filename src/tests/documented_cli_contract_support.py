@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel, ConfigDict
+from typing_extensions import assert_never
 
 from core.run_outcome import (
     AcceptedAttemptId,
@@ -37,12 +38,7 @@ EXAMPLE_TAG = re.compile(
 )
 FLAG_ROW = re.compile(r"^\|\s*`(?P<flag>--[a-z0-9-]+)`\s*\|", re.MULTILINE)
 FLAG_TABLE = re.compile(
-    "".join(
-        (
-            r"<!-- cli-contract:python-flags:start -->(?P<body>.*?)",
-            r"<!-- cli-contract:python-flags:end -->",
-        )
-    ),
+    r"<!-- cli-contract:python-flags:start -->(?P<body>.*?)<!-- cli-contract:python-flags:end -->",
     re.DOTALL,
 )
 
@@ -112,6 +108,21 @@ def review_outcome(
         if verdict is None:
             raise AssertionError(f"unsupported terminal fixture outcome: {review}")
         rounds = (ReviewRound(1, 1, verdict, review),)
+    match review:
+        case ReviewOutcome.DISABLED | ReviewOutcome.ACCEPTED:
+            accepted_attempt_id = (
+                AcceptedAttemptId("phase-5-attempt-cli") if validation else None
+            )
+        case (
+            ReviewOutcome.REJECTED
+            | ReviewOutcome.REJECT_EXHAUSTED
+            | ReviewOutcome.UNKNOWN
+            | ReviewOutcome.SESSION_ERROR
+            | ReviewOutcome.IMPROVEMENT_ERROR
+        ):
+            accepted_attempt_id = None
+        case unreachable:
+            assert_never(unreachable)
     outcome = RunOutcome(
         validation_succeeded=validation,
         review_outcome=review,
@@ -119,9 +130,7 @@ def review_outcome(
         workflow_terminal=WorkflowTerminal("complete"),
         terminal_anchor=TerminalAnchor(PhaseId("phase_5_validation")),
         executed_phases=(PhaseId("phase_5_validation"),),
-        accepted_attempt_id=(
-            AcceptedAttemptId("phase-5-attempt-cli") if validation else None
-        ),
+        accepted_attempt_id=accepted_attempt_id,
         review_rounds=rounds,
     )
     return outcome.terminal_outcome

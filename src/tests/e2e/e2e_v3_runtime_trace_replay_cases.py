@@ -12,6 +12,8 @@ from tests.trace_export_test_support import FakeTraceClient, graph, seed
 from .e2e_v3_runtime_fakes import SessionScript, concrete_trace_client
 from .e2e_v3_runtime_fixture import RuntimeScenario, read_json, run_runtime_scenario
 
+RAW_TRACE_SECRET = "raw-trace-sensitive-value"
+
 
 def test_v3_runtime_replay_uses_accepted_receipt_without_auto_execution(
     tmp_path: Path,
@@ -43,10 +45,14 @@ def test_v3_runtime_exports_recursive_raw_trace_once_without_summary_duplication
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given a deterministic root, child, and grandchild raw session graph.
+    root_reasoning = reasoning_part("ses_root")
+    root_reasoning["text"] = (
+        f"persisted accessible reasoning AWS_SECRET_ACCESS_KEY={RAW_TRACE_SECRET}"
+    )
     root = graph(
         "ses_root",
         child_ids=("ses_child",),
-        parts=(reasoning_part("ses_root"), task_part("ses_root", "ses_child")),
+        parts=(root_reasoning, task_part("ses_root", "ses_child")),
     )
     child = graph(
         "ses_child",
@@ -89,11 +95,14 @@ def test_v3_runtime_exports_recursive_raw_trace_once_without_summary_duplication
     assert counts["session_count"] == 3
     assert counts["child_edge_count"] == 2
     root_record = object_list_member(manifest, "sessions")[0]
-    root_payload = read_json(artifact_path(trace_root, root_record))
+    root_payload_path = artifact_path(trace_root, root_record)
+    root_payload = read_json(root_payload_path)
     assert root_payload["messages"] == root.messages
     assert root_payload["raw_contract"] == root.retrieval.contract.to_json_value()
+    assert RAW_TRACE_SECRET.encode() in root_payload_path.read_bytes()
     summary_text = (result.report_dir / "summary.json").read_text(encoding="utf-8")
     assert "persisted accessible reasoning" not in summary_text
+    assert RAW_TRACE_SECRET not in summary_text
     assert result.manager.message_post_count == 0
 
 

@@ -170,7 +170,7 @@ def verify_terminal_continuation_environment(
         observed_environment = probe_retained_environment(
             RetainedEnvironmentProbeRequest(
                 interpreter_path=required_fact(
-                    environment.facts, "interpreter.realpath"
+                    environment.facts, "interpreter.sys_executable"
                 ),
                 runtime=runtime,
                 container_id=container_id,

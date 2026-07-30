@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import BinaryIO, Literal
 from uuid import uuid4
 
+from core.atomic_file import atomic_write_bytes_with, open_private_exclusive
+from core.continuation_lock_identity import fsync_parent
 from harness.session.opencode_contract import JsonValue
 from harness.session.trace_export_models import (
     OverflowCapture,
@@ -19,6 +21,12 @@ from harness.session.trace_export_models import (
 from harness.session.trace_export_paths import (
     has_unsafe_ancestry,
     resolve_local_reference,
+)
+from core.continuation_lock_identity import (
+    LockIdentity,
+    lock_identity,
+    read_verified_bytes,
+    release_owned_file,
 )
 
 
@@ -45,20 +53,12 @@ def encode_json(value: JsonValue) -> bytes:
 
 
 def write_atomic(path: Path, content: bytes) -> StoredArtifact:
-    temporary = path.parent / f".{path.name}.{uuid4().hex}.tmp"
     if has_unsafe_ancestry(path.parent):
         raise TraceWriteError(path, "artifact parent is linked or a reparse point")
     try:
-        with temporary.open("xb") as handle:
-            _ = handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        atomic_replace(temporary, path)
+        atomic_write_bytes_with(path, content, atomic_replace, fsync_parent)
     except OSError as exc:
-        cleanup_detail = _remove_temporary(temporary)
-        raise TraceWriteError(
-            path, f"atomic write interrupted: {exc}{cleanup_detail}"
-        ) from exc
+        raise TraceWriteError(path, f"atomic write interrupted: {exc}") from exc
     return StoredArtifact(path, len(content), hashlib.sha256(content).hexdigest())
 
 
@@ -125,6 +125,7 @@ def _copy_bounded(
     size = 0
     failure: OverflowCapture | None = None
     final_stat: os.stat_result | None = None
+    temporary_identity: LockIdentity | None = None
     try:
         source_handle = source_open(source, "rb")
     except FileNotFoundError:
@@ -142,7 +143,8 @@ def _copy_bounded(
                     None,
                     "source identity changed before open",
                 )
-            with temporary.open("xb") as output_handle:
+            with open_private_exclusive(temporary) as output_handle:
+                temporary_identity = lock_identity(os.fstat(output_handle.fileno()))
                 while failure is None:
                     try:
                         chunk = source_handle.read(_COPY_CHUNK_BYTES)
@@ -175,14 +177,14 @@ def _copy_bounded(
                     os.fsync(output_handle.fileno())
                     final_stat = os.fstat(source_handle.fileno())
     except OSError as exc:
-        cleanup_detail = _remove_temporary(temporary)
+        cleanup_detail = _remove_temporary(temporary, temporary_identity)
         return OverflowCapture(
             OverflowStatus.WRITE_INTERRUPTED,
             None,
             f"overflow copy interrupted: {exc}{cleanup_detail}",
         )
     if failure is not None:
-        _ = _remove_temporary(temporary)
+        _ = _remove_temporary(temporary, temporary_identity)
         return failure
     try:
         current_stat = source.stat()
@@ -197,16 +199,26 @@ def _copy_bounded(
         or not _stable_file(expected, final_stat)
         or not _stable_file(expected, current_stat)
     ):
-        _ = _remove_temporary(temporary)
+        _ = _remove_temporary(temporary, temporary_identity)
         return OverflowCapture(
             OverflowStatus.UNSAFE,
             None,
             "source identity or content changed while copying",
         )
+    published = False
     try:
+        copied = read_verified_bytes(temporary, request.max_bytes)
+        if (
+            len(copied) != size
+            or hashlib.sha256(copied).hexdigest() != digest.hexdigest()
+        ):
+            raise OSError("overflow temporary changed before publication")
         atomic_replace(temporary, destination)
+        published = True
+        fsync_parent(destination)
     except OSError as exc:
-        cleanup_detail = _remove_temporary(temporary)
+        cleanup_target = destination if published else temporary
+        cleanup_detail = _remove_temporary(cleanup_target, temporary_identity)
         return OverflowCapture(
             OverflowStatus.WRITE_INTERRUPTED,
             None,
@@ -232,12 +244,15 @@ def _stable_file(expected: os.stat_result, actual: os.stat_result) -> bool:
         _same_file(expected, actual)
         and expected.st_size == actual.st_size
         and expected.st_mtime_ns == actual.st_mtime_ns
+        and (os.name == "nt" or expected.st_ctime_ns == actual.st_ctime_ns)
     )
 
 
-def _remove_temporary(path: Path) -> str:
+def _remove_temporary(path: Path, identity: LockIdentity | None) -> str:
+    if identity is None:
+        return ""
     try:
-        path.unlink()
+        release_owned_file(path, identity)
     except FileNotFoundError:
         return ""
     except OSError as exc:

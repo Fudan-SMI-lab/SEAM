@@ -32,10 +32,11 @@ def _run_launcher(
     shell_scripts.mkdir(parents=True)
     for source in (SRC_ROOT / "scripts").glob("run_*.sh"):
         normalized = source.read_text(encoding="utf-8").replace("\r\n", "\n")
-        with (shell_scripts / source.name).open(
-            "w", encoding="utf-8", newline="\n"
-        ) as destination:
+        copied = shell_scripts / source.name
+        with copied.open("w", encoding="utf-8", newline="\n") as destination:
             _ = destination.write(normalized)
+        if os.name != "nt":
+            copied.chmod(0o755)
     diagnostics_dir = shell_root / "scripts"
     diagnostics_dir.mkdir()
     _ = shutil.copyfile(
@@ -65,6 +66,8 @@ def _argument_recording_environment(
         encoding="utf-8",
         newline="\n",
     )
+    if os.name != "nt":
+        fake_python.chmod(0o755)
     environment = dict(os.environ)
     environment.update(
         {
@@ -117,6 +120,8 @@ def test_v3_launcher_defers_session_diagnostics_until_after_ownership(
         encoding="utf-8",
         newline="\n",
     )
+    if os.name != "nt":
+        fake_python.chmod(0o755)
     environment = dict(os.environ)
     environment.update(
         {

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Union
 
-from typing_extensions import assert_never, override
+from typing_extensions import TypeAlias, assert_never, override
 
 from core.run_outcome import ReviewOutcome, ReviewRound, ReviewVerdict
 
@@ -48,7 +48,7 @@ class ImprovementFailed:
     reason: str
 
 
-ImprovementResult = ImprovementApplied | ImprovementFailed
+ImprovementResult: TypeAlias = Union[ImprovementApplied, ImprovementFailed]
 
 
 @dataclass(frozen=True)

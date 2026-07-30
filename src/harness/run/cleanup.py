@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 import subprocess
 from typing import Protocol
 from dataclasses import dataclass
@@ -11,6 +10,12 @@ from pathlib import Path
 from typing_extensions import override
 
 from core.run_outcome import TerminalOutcome
+from core.owned_directory_lock import (
+    DirectoryLockIdentity,
+    close_directory_identity,
+    directory_lock_identity,
+    release_owned_directory,
+)
 from harness.server.lifecycle import stop_server
 
 from .models import EMPTY_ARTIFACT_UPDATE, FinalizationHookError, RunArtifactUpdate
@@ -60,6 +65,19 @@ class CleanupContext:
     owns_temp_dir: bool
     observer: CleanupObserver | None
     server_process: subprocess.Popen[bytes] | None
+    owned_temp_identity: DirectoryLockIdentity | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.temp_dir is not None
+            and self.owns_temp_dir
+            and self.owned_temp_identity is None
+        ):
+            object.__setattr__(
+                self,
+                "owned_temp_identity",
+                directory_lock_identity(self.temp_dir, retain=True),
+            )
 
 
 @dataclass(frozen=True)
@@ -67,6 +85,14 @@ class ResourceCleanup:
     context: CleanupContext
 
     def __call__(self, _outcome: TerminalOutcome) -> RunArtifactUpdate:
+        try:
+            return self._run_cleanup()
+        finally:
+            identity = self.context.owned_temp_identity
+            if identity is not None:
+                close_directory_identity(identity)
+
+    def _run_cleanup(self) -> RunArtifactUpdate:
         failures: list[ResourceCleanupFailure] = []
         observer = self.context.observer
         if self.context.temp_dir is not None and observer is not None:
@@ -95,9 +121,13 @@ class ResourceCleanup:
             self.context.temp_dir is not None
             and not self.context.keep_temp_dir
             and self.context.owns_temp_dir
+            and self.context.owned_temp_identity is not None
         ):
             try:
-                shutil.rmtree(self.context.temp_dir)
+                release_owned_directory(
+                    self.context.temp_dir,
+                    self.context.owned_temp_identity,
+                )
             except Exception as exc:
                 failures.append(self._failure(CleanupResource.TEMP_DIRECTORY, exc))
         if failures:

@@ -4,7 +4,9 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Final, Literal, Protocol
+
+from core.continuation_lock_identity import read_verified_bytes
 
 from .execution_env_context import (
     BackendFactRequest,
@@ -41,6 +43,7 @@ from .resource_retention_lifecycle import (
 from .types import ExecutionBackendConfig
 
 BackendMode = Literal["auto", "local", "container"]
+_MAX_WORKFLOW_BYTES: Final = 2 * 1024 * 1024
 
 
 class ManifestContainerBackend(RetentionBackend, Protocol):
@@ -77,7 +80,7 @@ def create_retention_manifest(
     request: RetentionManifestRequest,
 ) -> ResourceManifestStore:
     workflow_digest = hashlib.sha256(
-        request.effective_workflow.read_bytes()
+        read_verified_bytes(request.effective_workflow, _MAX_WORKFLOW_BYTES)
     ).hexdigest()
     workspace_identity = os.path.normcase(str(request.workspace.resolve())).encode()
     workspace_digest = hashlib.sha256(workspace_identity).hexdigest()

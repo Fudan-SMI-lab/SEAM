@@ -13,6 +13,7 @@ from core.resource_retention import (
     ContainerDeletionReceipt,
     ContainerRetention,
     V3ContainerRetentionPolicy,
+    resolve_v3_container_retention,
 )
 from core.resource_retention_finalizer import (
     ContainerRetentionFinalizer,
@@ -20,7 +21,7 @@ from core.resource_retention_finalizer import (
     _authorized_retention_finalization,
 )
 from core.resource_retention_manifest import RetentionManifestFinalizer
-from tests.resource_retention_test_support import current_run_delete_authority
+from tests.resource_retention_test_support import container_workflow
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +63,6 @@ def seal_lifecycle(
     post_state: str = "not_applicable",
 ) -> None:
     recorder = RetentionLifecycleRecorder()
-    authority = current_run_delete_authority("run-safe-1")
     if cleanup is ContainerCleanupStatus.NOT_APPLICABLE:
         policy = V3ContainerRetentionPolicy(
             requested=ContainerRetention.RETAIN,
@@ -72,11 +72,8 @@ def seal_lifecycle(
         )
         backend = None
     elif cleanup is ContainerCleanupStatus.RETAINED:
-        policy = V3ContainerRetentionPolicy(
-            requested=ContainerRetention.RETAIN,
-            effective=ContainerRetention.RETAIN,
-            owner_kind="framework",
-            delete_authority=None,
+        policy = resolve_v3_container_retention(
+            container_workflow(), ContainerRetention.RETAIN, "run-safe-1"
         )
         backend = _MeasuredLifecycleBackend(
             tuple(shlex.split(entry_command)),
@@ -87,11 +84,8 @@ def seal_lifecycle(
         cleanup is ContainerCleanupStatus.DELETED
         or cleanup is ContainerCleanupStatus.FAILED
     ):
-        policy = V3ContainerRetentionPolicy(
-            requested=ContainerRetention.DELETE,
-            effective=ContainerRetention.DELETE,
-            owner_kind="framework",
-            delete_authority=authority,
+        policy = resolve_v3_container_retention(
+            container_workflow(), ContainerRetention.DELETE, "run-safe-1"
         )
         backend = _MeasuredLifecycleBackend(
             tuple(shlex.split(entry_command)),
