@@ -311,6 +311,7 @@ class WorkflowExecutor:
                 tuple(self.workflow.terminals),
             )
         self.ui_event_sink = ui_event_sink
+        self._ui_active_phase: str | None = None
         # Resolve platform policy from workflow definition
         self.platform_policy: PlatformPolicy = resolve_policy(
             getattr(workflow, "target_platform", None),

@@ -67,6 +67,9 @@ PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
 | `--server-port` | `0` | 自动启动时的端口偏好，0 表示自动选择。 |
 | `--opencode-readiness` | `message` | `off`、`basic` 或 `message`。 |
 | `--opencode-message-timeout` | `120` | 仅限 message readiness probe 的正整数秒数。 |
+| `--dashboard-mode` | `auto` | `auto`、`on` 或 `off`；`auto` 仅在交互式 TTY 且非 CI 时启用实时仪表盘。 |
+| `--dashboard` | `False` | 强制启用实时终端仪表盘（等价于 `--dashboard-mode on`）。 |
+| `--no-dashboard` | `False` | 强制关闭实时终端仪表盘（等价于 `--dashboard-mode off`）；关闭时运行行为与无仪表盘版本完全一致。 |
 | `--verbose` | `False` | 启用 DEBUG 日志。 |
 | `--workflow-path` | `None` | 直接运行的 workflow；与 continuation 冲突。 |
 <!-- cli-contract:python-flags:end -->

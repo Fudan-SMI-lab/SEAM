@@ -11,14 +11,17 @@ import sys
 import tempfile
 import threading
 import traceback
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 from uuid import uuid4
 
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from core.ui_events import UIEventSink
 
 from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
@@ -404,7 +407,11 @@ def write_usage_guide(
     reports_dir.mkdir(parents=True, exist_ok=True)
     usage_path = reports_dir / "USAGE.md"
     command = entry_script or "<entry command unavailable; inspect summary.json>"
-    status_text = "E2E TEST PASSED" if overall_status == "PASS" else "Migration did not fully pass validation"
+    status_text = (
+        "E2E TEST PASSED"
+        if overall_status == "PASS"
+        else "Migration did not fully pass validation"
+    )
     content = "\n".join(
         [
             "# Migrated Project Usage",
@@ -615,6 +622,50 @@ def run_terminal_continuation(
         return 1
 
 
+class DashboardWiring(NamedTuple):
+    ui_event_sink: UIEventSink | None
+    dashboard_stop: threading.Event | None
+    dashboard_thread: threading.Thread | None
+    dashboard_on: bool
+
+
+def _prepare_dashboard_wiring(
+    dashboard_mode: str,
+    output_dir: Path,
+    run_id: str,
+    *,
+    is_tty: bool,
+    environ: MutableMapping[str, str],
+) -> DashboardWiring:
+    """Create the live-dashboard event pipeline, or nothing when it is off.
+
+    Off mode (explicit ``off``, or ``auto`` without an interactive TTY) is
+    fully inert: no sink, no ``SEAM_UI_EVENTS_PATH``/``SEAM_RUN_ID``
+    environment variables, no events, no dashboard thread.
+    """
+    from core.dashboard import SeamDashboardApp
+    from core.ui_events import UIEventSink, dashboard_enabled
+
+    if not dashboard_enabled(dashboard_mode, is_tty=is_tty, environ=environ):
+        return DashboardWiring(None, None, None, False)
+    ui_event_sink = UIEventSink(output_dir, run_id)
+    environ.update(ui_event_sink.as_env())
+    ui_event_sink.emit(
+        "runner_started",
+        status="running",
+        message="SEAM migration run started",
+        details={"dashboard_mode": dashboard_mode},
+    )
+    dashboard_stop = threading.Event()
+    dashboard_app = SeamDashboardApp(ui_event_sink.path, dashboard_stop)
+    dashboard_thread = threading.Thread(
+        target=dashboard_app.run,
+        daemon=True,
+    )
+    dashboard_thread.start()
+    return DashboardWiring(ui_event_sink, dashboard_stop, dashboard_thread, True)
+
+
 def run_e2e_v3(
     *,
     base_url: str | None,
@@ -657,8 +708,6 @@ def run_e2e_v3(
         ObservabilitySummary,
     )
     from core.telemetry_bridge import TelemetryBridge
-    from core.dashboard import SeamDashboardApp
-    from core.ui_events import UIEventSink, dashboard_enabled
     from core.validator_engine import ValidatorEngine
     from core.workflow_executor import WorkflowExecutor
     from core.workflow_selector import (
@@ -731,24 +780,16 @@ def run_e2e_v3(
             phase5_decision=None,
         )
     )
-    ui_event_sink = UIEventSink(output_dir, str(run_id))
-    dashboard_stop = threading.Event()
-    dashboard_thread: threading.Thread | None = None
-
-    os.environ.update(ui_event_sink.as_env())
-    ui_event_sink.emit(
-        "runner_started",
-        status="running",
-        message="SEAM migration run started",
-        details={"dashboard_mode": dashboard_mode},
+    dashboard_wiring = _prepare_dashboard_wiring(
+        dashboard_mode,
+        output_dir,
+        str(run_id),
+        is_tty=sys.stdout.isatty(),
+        environ=os.environ,
     )
-    if dashboard_enabled(dashboard_mode, is_tty=sys.stdout.isatty(), environ=os.environ):
-        dashboard_app = SeamDashboardApp(ui_event_sink.path, dashboard_stop)
-        dashboard_thread = threading.Thread(
-            target=dashboard_app.run,
-            daemon=True,
-        )
-        dashboard_thread.start()
+    ui_event_sink = dashboard_wiring.ui_event_sink
+    dashboard_stop = dashboard_wiring.dashboard_stop
+    dashboard_thread = dashboard_wiring.dashboard_thread
 
     try:
         from harness.server.lifecycle import resolve_server_url
@@ -1082,11 +1123,12 @@ def run_e2e_v3(
             observer.record_event(
                 "runner_error", error=str(exc), traceback=traceback_text
             )
-        ui_event_sink.emit(
-            "runner_failed",
-            status="failed",
-            message=f"{exc.__class__.__name__}: {exc}",
-        )
+        if ui_event_sink is not None:
+            ui_event_sink.emit(
+                "runner_failed",
+                status="failed",
+                message=f"{exc.__class__.__name__}: {exc}",
+            )
 
     telemetry = build_telemetry_sidecars(
         V3TelemetrySources(
@@ -1135,18 +1177,21 @@ def run_e2e_v3(
     counts = lifecycle.counts()
     finalization_hooks = lifecycle.hooks()
 
-    def record_ui_events_sidecar(_outcome: TerminalOutcome) -> RunArtifactUpdate:
-        return RunArtifactUpdate(
-            telemetry_paths=(("ui_events_jsonl", str(ui_event_sink.path)),)
-        )
+    if ui_event_sink is not None:
+        ui_events_jsonl_path = str(ui_event_sink.path)
 
-    finalization_hooks = replace(
-        finalization_hooks,
-        evidence_replay=compose_trace_hooks(
-            finalization_hooks.evidence_replay,
-            record_ui_events_sidecar,
-        ),
-    )
+        def record_ui_events_sidecar(_outcome: TerminalOutcome) -> RunArtifactUpdate:
+            return RunArtifactUpdate(
+                telemetry_paths=(("ui_events_jsonl", ui_events_jsonl_path),)
+            )
+
+        finalization_hooks = replace(
+            finalization_hooks,
+            evidence_replay=compose_trace_hooks(
+                finalization_hooks.evidence_replay,
+                record_ui_events_sidecar,
+            ),
+        )
     trace_destination = (
         continuation.evidence.namespace.trace_dir
         if continuation is not None
@@ -1324,7 +1369,7 @@ def run_e2e_v3(
             trace_status_source=trace_lifecycle.read,
         )
     )
-    if temp_dir is not None:
+    if temp_dir is not None and ui_event_sink is not None:
         usage_path = write_usage_guide(
             temp_dir,
             entry_script=entry_script,
@@ -1342,13 +1387,15 @@ def run_e2e_v3(
         finalization_failed=finalization.finalization_failed,
         runtime_report=finalization.runtime_report,
     )
-    ui_event_sink.emit(
-        "runner_finished",
-        status=finalization.summary.overall_status.value.lower(),
-        message=f"E2E {finalization.summary.overall_status.value}",
-        details={"summary_path": str(output_dir / "summary.json")},
-    )
-    dashboard_stop.set()
+    if ui_event_sink is not None:
+        ui_event_sink.emit(
+            "runner_finished",
+            status=finalization.summary.overall_status.value.lower(),
+            message=f"E2E {finalization.summary.overall_status.value}",
+            details={"summary_path": str(output_dir / "summary.json")},
+        )
+    if dashboard_stop is not None:
+        dashboard_stop.set()
     if dashboard_thread is not None:
         dashboard_thread.join(timeout=2)
     return finalization.exit_code

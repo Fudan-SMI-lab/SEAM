@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from core.ui_events import (
     PHASE_DISPLAY,
@@ -13,17 +16,38 @@ from core.dashboard import DashboardState, _apply_event, visible_phase_rows
 from core.types import PhaseDefinition, WorkflowDefinition
 from core.workflow_executor import WorkflowExecutor
 from tests.e2e.e2e_observer import TelemetryObserver
-from tests.e2e.e2e_test_v3 import build_parser, write_usage_guide
+from tests.e2e.e2e_test_v3 import (
+    _prepare_dashboard_wiring,
+    build_parser,
+    write_usage_guide,
+)
 
 
 class _FakeSessionManager:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
 
-    def get_or_create(self, role: str, lifecycle: str = "persistent", **_: object) -> str:
+    def get_or_create(
+        self,
+        role: str,
+        agent: str = "",
+        lifecycle: str = "persistent",
+        title: str = "",
+        working_dir: str = "",
+        initial_prompt: str = "",
+    ) -> str:
+        del agent, lifecycle, title, working_dir, initial_prompt
         return f"ses-{role}"
 
-    def send_command(self, session_id: str, command: str, **_: object) -> str:
+    def send_command(
+        self,
+        session_id: str,
+        command: str,
+        agent: str = "",
+        timeout: int = 600,
+        retries: int = 2,
+    ) -> str:
+        del agent, timeout, retries
         self.sent.append((session_id, command))
         return "phase complete"
 
@@ -47,7 +71,9 @@ def test_ui_event_sink_appends_schema_complete_jsonl(tmp_path: Path) -> None:
 
     records = [
         json.loads(line)
-        for line in (tmp_path / "ui_events.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (tmp_path / "ui_events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     assert len(records) == 1
     record = records[0]
@@ -72,7 +98,9 @@ def test_ui_event_sink_appends_schema_complete_jsonl(tmp_path: Path) -> None:
 
 
 def test_ui_event_sink_is_non_critical_when_path_is_unwritable(tmp_path: Path) -> None:
-    sink = UIEventSink(tmp_path / "missing" / "events", run_id="run-1", create_dir=False)
+    sink = UIEventSink(
+        tmp_path / "missing" / "events", run_id="run-1", create_dir=False
+    )
 
     sink.emit("runner_notice", message="this should not raise")
 
@@ -94,7 +122,16 @@ def test_dashboard_enabled_auto_respects_tty_and_ci() -> None:
 def test_e2e_v3_parser_accepts_dashboard_flags() -> None:
     parser = build_parser()
 
-    args = parser.parse_args(["--dashboard-mode", "off", "--dashboard", "--no-dashboard"])
+    args = parser.parse_args(
+        [
+            "--project-dir",
+            "proj",
+            "--dashboard-mode",
+            "off",
+            "--dashboard",
+            "--no-dashboard",
+        ]
+    )
 
     assert args.dashboard_mode == "off"
     assert args.dashboard is True
@@ -290,7 +327,9 @@ def test_telemetry_observer_emits_session_and_command_ui_events(tmp_path: Path) 
     assert response == "phase complete"
     records = [
         json.loads(line)
-        for line in (tmp_path / "ui_events.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (tmp_path / "ui_events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     event_types = [record["event_type"] for record in records]
     assert event_types == [
@@ -339,7 +378,9 @@ def test_workflow_executor_emits_phase_and_shell_ui_events(tmp_path: Path) -> No
 
     records = [
         json.loads(line)
-        for line in (tmp_path / "ui_events.jsonl").read_text(encoding="utf-8").splitlines()
+        for line in (tmp_path / "ui_events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     event_types = [record["event_type"] for record in records]
     assert event_types == [
@@ -382,3 +423,115 @@ class _MemoryArtifactStore:
 
     def save_shell_attempt_artifacts(self, **_: object) -> dict[str, object]:
         return {}
+
+
+def test_dashboard_wiring_off_mode_is_fully_inert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SEAM_UI_EVENTS_PATH", raising=False)
+    monkeypatch.delenv("SEAM_RUN_ID", raising=False)
+
+    wiring = _prepare_dashboard_wiring(
+        "off", tmp_path, "run-1", is_tty=True, environ=os.environ
+    )
+
+    assert wiring.dashboard_on is False
+    assert wiring.ui_event_sink is None
+    assert wiring.dashboard_stop is None
+    assert wiring.dashboard_thread is None
+    assert not (tmp_path / "ui_events.jsonl").exists()
+    assert "SEAM_UI_EVENTS_PATH" not in os.environ
+    assert "SEAM_RUN_ID" not in os.environ
+
+
+def test_dashboard_wiring_auto_without_tty_is_fully_inert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SEAM_UI_EVENTS_PATH", raising=False)
+    monkeypatch.delenv("SEAM_RUN_ID", raising=False)
+
+    wiring = _prepare_dashboard_wiring(
+        "auto", tmp_path, "run-1", is_tty=False, environ=os.environ
+    )
+
+    assert wiring.dashboard_on is False
+    assert wiring.ui_event_sink is None
+    assert wiring.dashboard_stop is None
+    assert wiring.dashboard_thread is None
+    assert not (tmp_path / "ui_events.jsonl").exists()
+    assert "SEAM_UI_EVENTS_PATH" not in os.environ
+    assert "SEAM_RUN_ID" not in os.environ
+
+
+def test_dashboard_wiring_on_mode_activates_event_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+
+    wiring = _prepare_dashboard_wiring(
+        "on", tmp_path, "run-1", is_tty=False, environ=os.environ
+    )
+    try:
+        assert wiring.dashboard_on is True
+        assert wiring.ui_event_sink is not None
+        assert wiring.dashboard_thread is not None
+        assert os.environ["SEAM_UI_EVENTS_PATH"] == str(tmp_path / "ui_events.jsonl")
+        assert os.environ["SEAM_RUN_ID"] == "run-1"
+        records = [
+            json.loads(line)
+            for line in (tmp_path / "ui_events.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [record["event_type"] for record in records] == ["runner_started"]
+    finally:
+        if wiring.dashboard_stop is not None:
+            wiring.dashboard_stop.set()
+        if wiring.dashboard_thread is not None:
+            wiring.dashboard_thread.join(timeout=2)
+        os.environ.pop("SEAM_UI_EVENTS_PATH", None)
+        os.environ.pop("SEAM_RUN_ID", None)
+
+
+def test_telemetry_observer_without_sink_emits_no_ui_events(tmp_path: Path) -> None:
+    observer = TelemetryObserver(_FakeSessionManager(), tmp_path)
+    observer.set_active_phase("phase_1_project_analysis")
+
+    session_id = observer.get_or_create("main_engineer", lifecycle="persistent")
+    response = observer.send_command(session_id, "inspect project", timeout=7)
+
+    assert response == "phase complete"
+    assert not (tmp_path / "ui_events.jsonl").exists()
+
+
+def test_workflow_executor_without_sink_emits_no_ui_events(tmp_path: Path) -> None:
+    phase = PhaseDefinition(
+        id="run_entry_script",
+        name="Run Entry",
+        prompt_template="unused",
+        output_schema={},
+        type="shell",
+        transitions={"on_success": "complete"},
+    )
+    setattr(phase, "command", "python -c 'print(\"ok\")'")
+    setattr(phase, "cwd", str(tmp_path))
+    workflow = WorkflowDefinition(
+        name="ui-shell-off",
+        version="1.0",
+        phases=[phase],
+        terminals=["complete"],
+    )
+    executor = WorkflowExecutor(
+        workflow,
+        _FakeSessionManager(),
+        _MemoryArtifactStore(),
+        object(),
+        object(),
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+    )
+
+    assert executor.ui_event_sink is None
+    executor.execute({"PROJECT_DIR": str(tmp_path)})
+
+    assert not (tmp_path / "ui_events.jsonl").exists()
