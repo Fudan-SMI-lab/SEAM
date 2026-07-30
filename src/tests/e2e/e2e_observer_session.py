@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from dataclasses import replace
-from typing import Protocol, final
+from typing import Any, Protocol, final
 
 from core.agent_io_logger import AgentIOLogger, redact_sensitive_text
 from core.session_registry import TraceSeedAnnotator
 from core.trace_correlation_models import FrameworkInvocationId
+from core.ui_events import UIEventSink, summarize_text
 from harness.session.opencode_contract import JsonValue
 from harness.session.trace_seeds import SessionLifecycle
 
 from .e2e_observer_models import CommandMetric, SessionMetric, exception_text, utc_now
 from .e2e_observer_runtime import SessionManagerBackend
+
+logger = logging.getLogger(__name__)
 
 _OPTIONAL_LOGGER_FAILURES: tuple[type[Exception], ...] = (Exception,)
 
@@ -33,14 +37,24 @@ class ObservedSessionInstrumentation:
         backend: SessionManagerBackend,
         context: SessionInstrumentationContext,
         agent_io_logger: AgentIOLogger | None,
+        ui_event_sink: UIEventSink | None = None,
     ) -> None:
         self._backend = backend
         self._context = context
         self._agent_io_logger = agent_io_logger
+        self._ui_event_sink = ui_event_sink
         self._command_sequence = 0
         self._active_framework_invocation_id: FrameworkInvocationId | None = None
         self._sessions: dict[str, SessionMetric] = {}
         self._commands: list[CommandMetric] = []
+
+    def _emit_ui_event(self, event_type: str, **kwargs: Any) -> None:
+        if self._ui_event_sink is None:
+            return
+        try:
+            self._ui_event_sink.emit(event_type, **kwargs)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug("UI event emission failed", exc_info=True)
 
     @property
     def active_framework_invocation_id(self) -> FrameworkInvocationId | None:
@@ -98,6 +112,15 @@ class ObservedSessionInstrumentation:
                 role=role,
                 lifecycle=lifecycle,
             )
+            self._emit_ui_event(
+                "session_ready",
+                phase_id=self._context.active_phase,
+                agent_role=role,
+                session_id=session_id,
+                status="ready",
+                message=f"{role} session ready",
+                details={"lifecycle": lifecycle},
+            )
         active_phase = self._context.active_phase
         if active_phase and active_phase not in metric.phases:
             self._sessions[session_id] = replace(
@@ -133,6 +156,20 @@ class ObservedSessionInstrumentation:
                 phases=phases,
             )
         self._context.link_session_to_phase(session_id)
+        self._emit_ui_event(
+            "agent_command_started",
+            phase_id=active_phase,
+            agent_role=self.role_for(session_id),
+            session_id=session_id,
+            status="running",
+            message=summarize_text(command, 180),
+            details={
+                "timeout_seconds": timeout,
+                "command_preview": summarize_text(command, 300),
+                "command_sequence": sequence,
+                "active_phase": active_phase,
+            },
+        )
         try:
             response = self._backend.send_command(
                 session_id,
@@ -189,6 +226,23 @@ class ObservedSessionInstrumentation:
                     command_length=len(command),
                     response_length=len(response),
                     error=error_message,
+                )
+                self._emit_ui_event(
+                    "agent_command_finished",
+                    phase_id=active_phase,
+                    agent_role=self.role_for(session_id),
+                    session_id=session_id,
+                    status=status,
+                    message=error_message or summarize_text(response, 180),
+                    details={
+                        "duration_seconds": duration_seconds,
+                        "command_sequence": sequence,
+                        "active_phase": active_phase,
+                        "command_length": len(command),
+                        "response_length": len(response),
+                        "response_preview": summarize_text(response, 300),
+                        "error": error_message,
+                    },
                 )
             finally:
                 self._active_framework_invocation_id = previous_invocation_id

@@ -15,6 +15,10 @@ dev = [
     "typing_extensions>=4.12,<5",
     "tomli>=2.0,<3; python_version < '3.11'",
 ]
+dashboard = [
+    "rich>=13.0",
+    "textual>=0.50",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

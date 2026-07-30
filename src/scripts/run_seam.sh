@@ -63,6 +63,9 @@ Options:
   --opencode-message-timeout N
                               Timeout for model-backed OpenCode message probe
   --opencode-diagnose-only    Run OpenCode diagnostics and exit before launching E2E
+  --dashboard                 Force live terminal dashboard on
+  --no-dashboard              Force live terminal dashboard off
+  --dashboard-mode MODE       Dashboard mode: auto, on, or off (default: auto)
   --dry-run                   Validate paths without running migration
   --extra 'ARGS...'           Pass extra arguments to the E2E harness
   --verbose                   Enable verbose debug logging
@@ -235,6 +238,18 @@ while [[ $# -gt 0 ]]; do
             FORWARD_ARGS+=("--opencode-diagnose-only")
             shift
             ;;
+        --dashboard)
+            FORWARD_ARGS+=("--dashboard")
+            shift
+            ;;
+        --no-dashboard)
+            FORWARD_ARGS+=("--no-dashboard")
+            shift
+            ;;
+        --dashboard-mode)
+            FORWARD_ARGS+=("--dashboard-mode" "$2")
+            shift 2
+            ;;
         --dry-run)
             FORWARD_ARGS+=("--dry-run")
             shift
@@ -312,5 +327,6 @@ echo -e "${GREEN}Server type:${NC} $SERVER_TYPE"
 echo -e "${GREEN}Workflow:${NC}   $([ "$HAS_WORKFLOW" = true ] && echo "${FORWARD_ARGS[*]}" || echo "src/workflows/seam_auto_default.yaml (default)")"
 echo ""
 
-# Delegate to run_e2e_v3.sh
-exec "$SRC_DIR/scripts/run_e2e_v3.sh" "${FORWARD_ARGS[@]}"
+# Delegate to run_e2e_v3.sh. Invoke through bash so checkouts that lose the
+# executable bit can still run from the public launcher.
+exec bash "$SRC_DIR/scripts/run_e2e_v3.sh" "${FORWARD_ARGS[@]}"

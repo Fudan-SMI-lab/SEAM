@@ -16,6 +16,7 @@ from core.runtime_observability_models import (
     ReviewCompletion,
     TimeoutScope,
 )
+from core.ui_events import UIEventSink
 from harness.session.events import TransportAttemptEvent, TransportObserver
 from harness.session.opencode_contract import JsonValue
 from harness.session.opencode_contract_json import load_json
@@ -47,6 +48,7 @@ class TelemetryObserver:
         session_mgr: SessionManagerBackend,
         output_dir: str | Path,
         agent_io_logger: AgentIOLogger | None = None,
+        ui_event_sink: UIEventSink | None = None,
     ) -> None:
         self._session_mgr = session_mgr
         self._output_dir = Path(output_dir)
@@ -56,12 +58,14 @@ class TelemetryObserver:
         self._events: list[dict[str, JsonValue]] = []
         self._metadata: dict[str, JsonValue] = {}
         self._agent_io_logger = agent_io_logger
+        self._ui_event_sink = ui_event_sink
         self._runtime_observability = RuntimeObservability(self._output_dir)
         self._phase_tracker = PhaseTracker(self.record_event)
         self._session_instrumentation = ObservedSessionInstrumentation(
             session_mgr,
             self,
             agent_io_logger,
+            ui_event_sink=ui_event_sink,
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -79,6 +83,7 @@ class TelemetryObserver:
             session_manager,
             config.output_dir,
             agent_io_logger=config.agent_io_logger,
+            ui_event_sink=config.ui_event_sink,
         )
         observer.set_metadata("run_id", config.run_id)
         transport_observer.bind(observer.record_transport_event)

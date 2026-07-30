@@ -123,6 +123,7 @@ from core.v3_phase5_runtime import (
 from core.run_outcome import PhaseId
 from core.runtime_observability_models import ImprovementStatus
 from core.platform_policy import resolve_policy, PlatformPolicy
+from core.ui_events import UIEventSink, summarize_text
 from validators.validate_entry_script import (
     validate as validate_entry_script,
     _extract_env_prefix,
@@ -277,6 +278,7 @@ class WorkflowExecutor:
         container_delete_authority: ContainerDeleteAuthority | None = None,
         defer_execution_backend_cleanup: bool = False,
         defer_execution_backend_preflight: bool = False,
+        ui_event_sink: UIEventSink | None = None,
     ) -> None:
         self.workflow = workflow
         self.session_mgr = session_mgr
@@ -308,6 +310,7 @@ class WorkflowExecutor:
                 tuple(phase.id for phase in self.workflow.phases),
                 tuple(self.workflow.terminals),
             )
+        self.ui_event_sink = ui_event_sink
         # Resolve platform policy from workflow definition
         self.platform_policy: PlatformPolicy = resolve_policy(
             getattr(workflow, "target_platform", None),
@@ -594,6 +597,14 @@ class WorkflowExecutor:
         if callable(setter):
             setter(phase_id)
 
+    def _emit_ui_event(self, event_type: str, **kwargs: Any) -> None:
+        if self.ui_event_sink is None:
+            return
+        try:
+            self.ui_event_sink.emit(event_type, **kwargs)
+        except Exception:  # pylint: disable=broad-exception-caught
+            logger.debug("UI event emission failed", exc_info=True)
+
     # ── Main entry point ────────────────────────────────────────────────
 
     def execute(self, context: dict) -> dict:
@@ -674,6 +685,13 @@ class WorkflowExecutor:
                     }
                     if self._continuation is not None:
                         self.phase_results[phase.id]["inherited"] = False
+                    self._emit_ui_event(
+                        "phase_finished",
+                        phase_id=phase.id,
+                        status="skipped",
+                        message="Phase skipped because experience phase7 is disabled",
+                        details={"reason": "phase7_disabled"},
+                    )
                     idx = self.phase_index.get(phase.id, -1)
                     phases_list = self.workflow.phases or []
                     if idx >= 0 and idx + 1 < len(phases_list):
@@ -701,6 +719,13 @@ class WorkflowExecutor:
                     }
                     if self._continuation is not None:
                         self.phase_results[phase.id]["inherited"] = False
+                    self._emit_ui_event(
+                        "phase_finished",
+                        phase_id=phase.id,
+                        status="skipped",
+                        message="Phase condition evaluated to false",
+                        details={"reason": "condition_false"},
+                    )
                     next_id = self._get_next_phase_id(phase, "skipped", self.state, ctx)
                     current_phase_id = next_id
                     continue
@@ -710,7 +735,15 @@ class WorkflowExecutor:
             start_t = time.time()
             status: str = "success"
             output: Any = {}
+            self._ui_active_phase = phase.id
             self._set_telemetry_active_phase(phase.id)
+            self._emit_ui_event(
+                "phase_started",
+                phase_id=phase.id,
+                status="running",
+                message=f"Executing {phase.id}",
+                details={"phase_type": phase_type},
+            )
 
             try:
                 if phase_type == "llm":
@@ -752,6 +785,14 @@ class WorkflowExecutor:
                         }
                         if self._continuation is not None:
                             self.phase_results[phase.id]["inherited"] = False
+                        self._emit_ui_event(
+                            "phase_finished",
+                            phase_id=phase.id,
+                            status="dispatched",
+                            message=f"Dispatched to {next_id}",
+                            details={"target": next_id},
+                        )
+                        self._ui_active_phase = None
                         self._set_telemetry_active_phase(None)
                         continue
                     status = "success"
@@ -777,6 +818,13 @@ class WorkflowExecutor:
                 output = {"error": str(exc), "traceback": traceback.format_exc()}
 
             duration = time.time() - start_t
+            self._emit_ui_event(
+                "phase_finished",
+                phase_id=phase.id,
+                status=status,
+                message=f"Phase {phase.id} finished with {status}",
+                details={"duration_seconds": round(duration, 3)},
+            )
 
             if v3_enabled and phase.id == "phase_5_validation":
                 decision = phase5_decision_from_runtime(
@@ -845,10 +893,18 @@ class WorkflowExecutor:
 
             # Determine next phase
             next_id = self._get_next_phase_id(phase, status, self.state, ctx)
+            self._ui_active_phase = None
             self._set_telemetry_active_phase(None)
             current_phase_id = next_id
 
+        self._ui_active_phase = None
         self._set_telemetry_active_phase(None)
+        self._emit_ui_event(
+            "workflow_finished",
+            status="complete",
+            message="Workflow execution finished",
+            details={"phase_count": len(self.phase_results)},
+        )
 
         # 4. workflow_end hooks
         try:
@@ -2302,8 +2358,10 @@ class WorkflowExecutor:
             return "(No previous repair attempts — this is the first failure)"
 
         lines = [
-            "| Iter | Status | Duration | Last Category | Last Repair Role | Summary | Agent Diagnostics |",
-            "|------|--------|----------|---------------|------------------|---------|-------------------|",
+            "| Iter | Status | Duration | Last Category | Last Repair Role | "
+            "Summary | Agent Diagnostics |",
+            "|------|--------|----------|---------------|------------------|"
+            "---------|-------------------|",
         ]
         latest_category = "unknown"
         latest_repair_role = ""
@@ -2889,10 +2947,18 @@ class WorkflowExecutor:
 
         entry_script_command = self._is_phase5_entry_script_command(phase, loop_vars)
         timeout = phase.timeout
+        self._emit_ui_event(
+            "shell_command_started",
+            phase_id="phase_5_validation" if entry_script_command else phase.id,
+            subphase_id=phase.id,
+            status="running",
+            message=summarize_text(cmd, 180),
+            details={"cwd": cwd, "timeout_seconds": timeout},
+        )
 
         # Container backend path
         if isinstance(self.exec_backend, ContainerBackend):
-            return self._execute_shell_phase_container(
+            result = self._execute_shell_phase_container(
                 phase,
                 cmd,
                 cwd,
@@ -2903,9 +2969,11 @@ class WorkflowExecutor:
                 loop_vars=loop_vars,
                 loop_state=loop_state,
             )
+            self._emit_shell_finished_event(phase, result, entry_script_command)
+            return result
 
         # Local path (existing code, unchanged)
-        return self._execute_shell_phase_local(
+        result = self._execute_shell_phase_local(
             phase,
             cmd,
             cwd,
@@ -2915,6 +2983,37 @@ class WorkflowExecutor:
             context,
             loop_vars=loop_vars,
             loop_state=loop_state,
+        )
+        self._emit_shell_finished_event(phase, result, entry_script_command)
+        return result
+
+    def _emit_shell_finished_event(
+        self,
+        phase: PhaseDefinition,
+        result: tuple[str, dict],
+        entry_script_command: bool,
+    ) -> None:
+        status, captured = result
+        exit_code = captured.get("exit_code") if isinstance(captured, dict) else None
+        artifact_path = None
+        if isinstance(captured, dict):
+            artifacts = captured.get("artifacts")
+            if isinstance(artifacts, dict):
+                meta_path = artifacts.get("meta_path")
+                artifact_path = str(meta_path) if meta_path else None
+        self._emit_ui_event(
+            "shell_command_finished",
+            phase_id="phase_5_validation" if entry_script_command else phase.id,
+            subphase_id=phase.id,
+            status=status,
+            message=f"Shell command exited with {exit_code}",
+            details={
+                "exit_code": exit_code,
+                "duration_seconds": captured.get("duration")
+                if isinstance(captured, dict)
+                else None,
+            },
+            artifact_path=artifact_path,
         )
 
     def _execute_shell_phase_container(
@@ -3979,6 +4078,18 @@ class WorkflowExecutor:
                 max_iterations,
                 phase.id,
             )
+            self._emit_ui_event(
+                "repair_iteration_started",
+                phase_id=phase.id,
+                subphase_id=getattr(sub_wf_def, "id", None),
+                status="running",
+                message=f"Repair iteration {iteration}/{max_iterations}",
+                details={
+                    "attempt": iteration,
+                    "max_attempts": max_iterations,
+                    "stagnation_count": loop_state.get("stagnation_count", 0),
+                },
+            )
             iter_start = time.time()
             step_outputs: dict[str, Any] = {}
             if isinstance(self.artifact_store, ArtifactStore) and isinstance(
@@ -4123,6 +4234,21 @@ class WorkflowExecutor:
                 history_entry["fixer_outputs"] = fixer_outputs
             loop_history.append(history_entry)
             loop_state["iteration"] = iteration
+            self._emit_ui_event(
+                "repair_iteration_finished",
+                phase_id=phase.id,
+                subphase_id=getattr(sub_wf_def, "id", None),
+                status=str(iter_status),
+                message=f"Repair iteration {iteration} finished",
+                details={
+                    "attempt": iteration,
+                    "duration_seconds": round(iter_duration, 3),
+                    "script_exit_code": loop_state.get("script_exit_code"),
+                    "error_category": history_entry.get("error_category"),
+                    "repair_role": history_entry.get("repair_role"),
+                    "stagnation_count": loop_state.get("stagnation_count", 0),
+                },
+            )
 
             # 4b. Check stop conditions
             stop_conds = (
@@ -4525,6 +4651,21 @@ class WorkflowExecutor:
             # Execute based on type
             phase_status = "success"
             phase_output: Any = {}
+            parent_phase_id = getattr(self, "_ui_active_phase", None)
+            current_iteration = (loop_state or {}).get("iteration")
+            if not current_iteration:
+                current_iteration = len(loop_history or []) + 1
+            self._emit_ui_event(
+                "subphase_started",
+                phase_id=parent_phase_id,
+                subphase_id=phase_id,
+                status="running",
+                message=f"Running subphase {phase_id}",
+                details={
+                    "subphase_type": phase_type,
+                    "iteration": current_iteration,
+                },
+            )
 
             try:
                 if phase_type == "shell":
@@ -4822,6 +4963,24 @@ class WorkflowExecutor:
                 logger.exception("Sub-phase '%s' raised: %s", phase_id, exc)
                 phase_status = "failure"
                 phase_output = {"error": str(exc)}
+
+            subphase_error = (
+                phase_output.get("error")
+                if isinstance(phase_output, dict)
+                else None
+            )
+            self._emit_ui_event(
+                "subphase_finished",
+                phase_id=parent_phase_id,
+                subphase_id=phase_id,
+                status=phase_status,
+                message=f"Subphase {phase_id} finished",
+                details={
+                    "subphase_type": phase_type,
+                    "iteration": current_iteration,
+                    "error": str(subphase_error) if subphase_error else None,
+                },
+            )
 
             # Store in step_outputs
             if isinstance(phase_output, dict):

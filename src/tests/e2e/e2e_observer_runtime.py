@@ -6,6 +6,7 @@ from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
 from core.agent_io_logger import AgentIOLogger
 from core.deferred_transport_observer import DeferredTransportObserver
+from core.ui_events import UIEventSink
 from harness.session.trace_seeds import SessionLifecycle
 
 SessionBackendT = TypeVar("SessionBackendT")
@@ -46,6 +47,7 @@ class TelemetryObserverConfig(NamedTuple):
     output_dir: Path
     run_id: str
     agent_io_logger: AgentIOLogger | None
+    ui_event_sink: UIEventSink | None = None
 
 
 @dataclass(frozen=True, slots=True)

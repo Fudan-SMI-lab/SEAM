@@ -50,6 +50,14 @@ def test_e2e_smoke_help_does_not_run_smoke() -> None:
     assert "E2E FAILED" not in combined_output
 
 
+def test_public_launcher_invokes_v3_wrapper_with_bash() -> None:
+    """The public launcher should not require run_e2e_v3.sh to have +x."""
+    launcher = PROJECT_ROOT / "scripts" / "run_seam.sh"
+    content = launcher.read_text(encoding="utf-8")
+
+    assert 'exec bash "$SRC_DIR/scripts/run_e2e_v3.sh"' in content
+
+
 def test_e2e_smoke_mock_outputs_match_current_validators(tmp_path: Path) -> None:
     manager = MockSessionManager(tmp_path)
 
