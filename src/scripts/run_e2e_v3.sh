@@ -203,9 +203,16 @@ while [[ $# -gt 0 ]]; do
         --opencode-readiness)    OPENCODE_READINESS="$2"; shift 2 ;;
         --opencode-message-timeout) OPENCODE_MESSAGE_TIMEOUT="$2"; shift 2 ;;
         --opencode-diagnose-only) OPENCODE_DIAGNOSE_ONLY=true; shift ;;
-        --dashboard)           EXTRA_ARGS="$EXTRA_ARGS --dashboard"; shift ;;
-        --no-dashboard)        EXTRA_ARGS="$EXTRA_ARGS --no-dashboard"; shift ;;
-        --dashboard-mode)      EXTRA_ARGS="$EXTRA_ARGS --dashboard-mode $2"; shift 2 ;;
+        --dashboard)           EXTRA_ARGS+=("--dashboard"); shift ;;
+        --no-dashboard)        EXTRA_ARGS+=("--no-dashboard"); shift ;;
+        --dashboard-mode)
+            if [[ $# -lt 2 || ( "$2" != "auto" && "$2" != "on" && "$2" != "off" ) ]]; then
+                echo -e "${RED}Error: --dashboard-mode requires one of: auto, on, off.${NC}" >&2
+                exit 1
+            fi
+            EXTRA_ARGS+=("--dashboard-mode" "$2")
+            shift 2
+            ;;
         --dry-run)              DRY_RUN=true; shift ;;
         --verbose)              EXTRA_ARGS+=("--verbose"); shift ;;
         --extra)

@@ -71,6 +71,19 @@ Options:
   --verbose                   Enable verbose debug logging
   -h, --help                  Show this help message
 
+Optional Live Dashboard:
+  The dashboard extra is optional. Install it first:
+    python -m pip install -e "./src[dashboard]"
+  --dashboard-mode auto|on|off (default: auto):
+    auto  enable on an interactive TTY outside CI; otherwise inert
+    on    force on; needs textual (preferred) or rich (fallback), else fails
+          before any side effect with the install command above
+    off   fully disabled; run is identical to a no-dashboard run
+  While active, press `q` to exit the dashboard view; migration and logging
+  continue. Event telemetry is written to ui_events.jsonl in the report
+  directory only while the dashboard is active; off or inactive auto runs
+  create no such file.
+
 Platform Workflows:
   Default Auto-Selector: src/workflows/seam_auto_default.yaml
   PPU Container: src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml
