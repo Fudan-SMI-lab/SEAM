@@ -37,7 +37,7 @@ import importlib.util
 import threading
 from enum import Enum
 from pathlib import Path
-from typing import assert_never
+from core.compat import assert_never
 
 from core.dashboard_rich import run_dashboard
 from core.dashboard_state import (
@@ -105,29 +105,28 @@ def resolve_dashboard_backend() -> DashboardBackend:
 
 
 def _activate_dashboard_backend(backend: DashboardBackend) -> None:
-    match backend:
-        case DashboardBackend.TEXTUAL:
-            requirements = (
-                ("rich.text", "Text"),
-                ("textual.app", "App"),
-                ("textual.app", "ComposeResult"),
-                ("textual.containers", "Container"),
-                ("textual.widgets", "Footer"),
-                ("textual.widgets", "Header"),
-                ("textual.widgets", "Static"),
-            )
-        case DashboardBackend.RICH:
-            requirements = (
-                ("rich.console", "Group"),
-                ("rich.live", "Live"),
-                ("rich.panel", "Panel"),
-                ("rich.table", "Table"),
-                ("rich.text", "Text"),
-            )
-        case DashboardBackend.NONE:
-            raise DashboardBackendUnavailableError()
-        case unreachable:
-            assert_never(unreachable)
+    if backend is DashboardBackend.TEXTUAL:
+        requirements = (
+            ("rich.text", "Text"),
+            ("textual.app", "App"),
+            ("textual.app", "ComposeResult"),
+            ("textual.containers", "Container"),
+            ("textual.widgets", "Footer"),
+            ("textual.widgets", "Header"),
+            ("textual.widgets", "Static"),
+        )
+    elif backend is DashboardBackend.RICH:
+        requirements = (
+            ("rich.console", "Group"),
+            ("rich.live", "Live"),
+            ("rich.panel", "Panel"),
+            ("rich.table", "Table"),
+            ("rich.text", "Text"),
+        )
+    elif backend is DashboardBackend.NONE:
+        raise DashboardBackendUnavailableError()
+    else:
+        assert_never(backend)
     for module_name, attribute_name in requirements:
         module = importlib.import_module(module_name)
         _ = getattr(module, attribute_name)
