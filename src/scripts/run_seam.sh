@@ -263,6 +263,14 @@ while [[ $# -gt 0 ]]; do
             FORWARD_ARGS+=("--dashboard-mode" "$2")
             shift 2
             ;;
+        --dashboard-backend)
+            FORWARD_ARGS+=("--dashboard-backend" "$2")
+            shift 2
+            ;;
+        --seal-manifest)
+            FORWARD_ARGS+=("--seal-manifest")
+            shift
+            ;;
         --dry-run)
             FORWARD_ARGS+=("--dry-run")
             shift

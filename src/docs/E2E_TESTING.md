@@ -70,6 +70,8 @@ PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
 | `--dashboard-mode` | `auto` | `auto`、`on` 或 `off`；`auto` 仅在交互式 TTY 且非 CI 时启用实时仪表盘。 |
 | `--dashboard` | `False` | 强制启用实时终端仪表盘（等价于 `--dashboard-mode on`）。 |
 | `--no-dashboard` | `False` | 强制关闭实时终端仪表盘（等价于 `--dashboard-mode off`）；关闭时运行行为与无仪表盘版本完全一致。 |
+| `--dashboard-backend` | `auto` | `auto`、`textual` 或 `rich`；强制指定渲染后端，`auto` 时优先 textual 再 rich。 |
+| `--seal-manifest` | `False` | 直接运行结束后创建并封存根 `run-manifest.v1.json`，使该运行有资格被 `--continue-from` 续做。 |
 | `--verbose` | `False` | 启用 DEBUG 日志。 |
 | `--workflow-path` | `None` | 直接运行的 workflow；与 continuation 冲突。 |
 <!-- cli-contract:python-flags:end -->

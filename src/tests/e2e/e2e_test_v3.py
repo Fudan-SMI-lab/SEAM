@@ -452,6 +452,96 @@ def write_usage_guide(
     return str(usage_path)
 
 
+def _seal_root_run_manifest(
+    *,
+    run_id: str,
+    report_dir: Path,
+    project_dir: Path,
+    workflow_path: Path,
+    artifact_store: ArtifactStore | None,
+    terminal_anchor: TerminalAnchor,
+) -> bool:
+    """Create and seal a root ``run-manifest.v1.json`` for continuation eligibility.
+
+    Returns True on success, False on failure (logged as warning).
+    """
+    import hashlib as _hashlib
+    from core.run_manifest import (
+        ResourceReference,
+        RunId,
+        RunManifest,
+        RunManifestStore,
+        RunStorageContext,
+        Sha256Digest,
+        SharedWorkspaceMarker,
+    )
+
+    try:
+        import shutil
+        import tempfile
+        from core.run_manifest import (
+            ResourceReference,
+            RunId,
+            RunManifest,
+            RunManifestStore,
+            RunStorageContext,
+            Sha256Digest,
+            SharedWorkspaceMarker,
+        )
+
+        workflow_bytes = workflow_path.read_bytes()
+        workflow_digest = Sha256Digest(_hashlib.sha256(workflow_bytes).hexdigest())
+        rid = RunId(str(run_id))
+        manifest = RunManifest(
+            run_id=rid,
+            parent_run_id=None,
+            lineage_root_run_id=rid,
+            revision=1,
+            terminal_anchor=terminal_anchor,
+            workflow_digest=workflow_digest,
+            inherited_canonical=(),
+            shared_workspace=SharedWorkspaceMarker(
+                workspace_digest=RunStorageContext.bind(
+                    report_dir.parent, project_dir
+                ).workspace_digest
+            ),
+            resource_references=(
+                ResourceReference(
+                    kind="environment", reference_id=f"resource-{rid}"
+                ),
+            ),
+            parent_evidence_digests=(),
+            evidence_sealed=False,
+            sealed_evidence=(),
+        )
+        with tempfile.TemporaryDirectory() as tmp_root:
+            tmp_reports = Path(tmp_root) / "reports"
+            tmp_reports.mkdir()
+            tmp_context = RunStorageContext.bind(tmp_reports, project_dir)
+            store = RunManifestStore.create(tmp_context, manifest)
+            if artifact_store is not None:
+                store.seal_working_evidence(artifact_store)
+            tmp_run_dir = tmp_reports / str(rid)
+            shutil.copy2(
+                tmp_run_dir / "run-manifest.v1.json",
+                report_dir / "run-manifest.v1.json",
+            )
+            sealed_src = tmp_run_dir / "sealed-artifacts"
+            if sealed_src.exists():
+                shutil.copytree(
+                    sealed_src, report_dir / "sealed-artifacts"
+                )
+        logging.getLogger("tests.e2e.e2e_test_v3").info(
+            "Sealed root run-manifest.v1.json in %s", report_dir
+        )
+        return True
+    except Exception:
+        logging.getLogger("tests.e2e.e2e_test_v3").warning(
+            "Failed to seal root run-manifest", exc_info=True
+        )
+        return False
+
+
 def build_v3_summary(
     *,
     authoritative_outcome: RunOutcome,
@@ -584,6 +674,7 @@ def run_terminal_continuation(
     request: TerminalContinuationRunRequest,
     *,
     dashboard_mode: str = "auto",
+    dashboard_backend: str = "auto",
 ) -> int:
     from core.continuation import ContinuationError, ContinuationHydrationError
     from core.continuation_environment import ContinuationEnvironmentError
@@ -616,6 +707,7 @@ def run_terminal_continuation(
                 container_retention=request.invocation.container_retention,
                 save_agent_trace=request.invocation.save_agent_trace,
                 dashboard_mode=dashboard_mode,
+                dashboard_backend=dashboard_backend,
             )
     except (
         ContinuationError,
@@ -637,6 +729,7 @@ def _prepare_dashboard_wiring(
     *,
     is_tty: bool,
     environ: MutableMapping[str, str],
+    dashboard_backend: str = "auto",
 ) -> DashboardWiring:
     """Create the live-dashboard event pipeline, or nothing when it is off.
 
@@ -663,7 +756,12 @@ def _prepare_dashboard_wiring(
 
     if not dashboard_enabled(dashboard_mode, is_tty=is_tty, environ=environ):
         return DashboardWiring(None, None, None, False)
-    backend = resolve_dashboard_backend()
+    if dashboard_backend == "textual":
+        backend = DashboardBackend.TEXTUAL
+    elif dashboard_backend == "rich":
+        backend = DashboardBackend.RICH
+    else:
+        backend = resolve_dashboard_backend()
     if backend is DashboardBackend.NONE:
         normalized_mode = str(dashboard_mode or "auto").strip().lower()
         if normalized_mode == "on":
@@ -723,6 +821,8 @@ def run_e2e_v3(
     container_retention: ContainerRetention = ContainerRetention.RETAIN,
     save_agent_trace: bool | None = None,
     dashboard_mode: str = "auto",
+    dashboard_backend: str = "auto",
+    seal_manifest: bool = False,
 ) -> int:
     _install_sqlite_fallback_if_needed()
 
@@ -822,6 +922,7 @@ def run_e2e_v3(
         str(run_id),
         is_tty=sys.stdout.isatty(),
         environ=os.environ,
+        dashboard_backend=dashboard_backend,
     )
     ui_event_sink = dashboard_wiring.ui_event_sink
 
@@ -1430,6 +1531,20 @@ def run_e2e_v3(
                 message=f"E2E {finalization.summary.overall_status.value}",
                 details={"summary_path": str(output_dir / "summary.json")},
             )
+        if (
+            seal_manifest
+            and continuation is None
+            and temp_dir is not None
+            and artifact_store is not None
+        ):
+            _seal_root_run_manifest(
+                run_id=str(run_id),
+                report_dir=output_dir,
+                project_dir=temp_dir,
+                workflow_path=effective_workflow_path,
+                artifact_store=artifact_store,
+                terminal_anchor=authoritative_outcome.terminal_anchor,
+            )
         return finalization.exit_code
     finally:
         dashboard_wiring.close()
@@ -1503,6 +1618,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _ = parser.add_argument(
         "--no-dashboard", action="store_true", help="Disable the live dashboard."
+    )
+    _ = parser.add_argument(
+        "--dashboard-backend",
+        choices=("auto", "textual", "rich"),
+        default="auto",
+        help="Force dashboard renderer backend (default: auto-probe textual then rich).",
+    )
+    _ = parser.add_argument(
+        "--seal-manifest",
+        action="store_true",
+        help="Create and seal a root run-manifest.v1.json so the run is eligible for --continue-from.",
     )
     _ = parser.add_argument("--verbose", action="store_true")
     _ = parser.add_argument(
@@ -1580,6 +1706,7 @@ def main() -> int:
                 ),
             ),
             dashboard_mode=dashboard_mode,
+            dashboard_backend=args.dashboard_backend,
         )
 
     return run_e2e_v3(
@@ -1601,6 +1728,8 @@ def main() -> int:
         container_retention=ContainerRetention(args.container_retention),
         save_agent_trace=args.save_agent_trace,
         dashboard_mode=dashboard_mode,
+        dashboard_backend=args.dashboard_backend,
+        seal_manifest=args.seal_manifest,
     )
 
 

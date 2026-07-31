@@ -213,6 +213,15 @@ while [[ $# -gt 0 ]]; do
             EXTRA_ARGS+=("--dashboard-mode" "$2")
             shift 2
             ;;
+        --dashboard-backend)
+            if [[ $# -lt 2 || ( "$2" != "auto" && "$2" != "textual" && "$2" != "rich" ) ]]; then
+                echo -e "${RED}Error: --dashboard-backend requires one of: auto, textual, rich.${NC}" >&2
+                exit 1
+            fi
+            EXTRA_ARGS+=("--dashboard-backend" "$2")
+            shift 2
+            ;;
+        --seal-manifest)        EXTRA_ARGS+=("--seal-manifest"); shift ;;
         --dry-run)              DRY_RUN=true; shift ;;
         --verbose)              EXTRA_ARGS+=("--verbose"); shift ;;
         --extra)
