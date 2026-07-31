@@ -256,3 +256,19 @@ PYTHONPATH=src python -m pytest \
 ```
 
 该 gate 解析所有 tagged Python examples，比较完整参数表，验证 parser defaults/conflicts，执行 strict/compatibility `RunOutcome` matrix，并确认两个 optional checks 默认 clean skip。
+
+## 12. 可选实时仪表盘
+
+实时终端仪表盘是可选功能，dashboard extra 默认不安装。使用前先安装：
+
+```bash
+python -m pip install -e "./src[dashboard]"
+```
+
+`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）控制行为：
+
+- `auto`（默认）：仅在非 CI 的交互式 TTY 上启用仪表盘；否则运行行为与无仪表盘版本完全一致，不创建任何 UI 事件文件。
+- `on`：强制启用。未安装任何渲染器时（textual 优先，rich 回退），会在任何副作用之前以 `DashboardBackendUnavailableError` 报错并给出上述安装命令。
+- `off`：完全关闭，运行行为与无仪表盘版本完全一致。
+
+仪表盘激活时按 `q` 仅退出仪表盘视图；迁移和日志继续运行。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 运行不创建该文件，USAGE.md 也不引用它。
