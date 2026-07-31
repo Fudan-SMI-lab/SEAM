@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from enum import Enum, unique
-from typing import NamedTuple, TypeAlias
+from typing import NamedTuple
 
-from typing_extensions import assert_never
+from core.compat import TypeAlias, assert_never
 
 from core.continuation_models import PhasePresentationStatus
 from harness.run.finalization_contract import PhaseStatus
@@ -38,17 +38,16 @@ def _project_status(
     status: WorkflowExecutionStatus,
     summary: str,
 ) -> tuple[PhasePresentationStatus, str | None]:
-    match status:
-        case WorkflowExecutionStatus.SUCCESS:
-            return PhasePresentationStatus.PASSED, None
-        case WorkflowExecutionStatus.FAILURE:
-            return PhasePresentationStatus.FAILED, summary[:500]
-        case WorkflowExecutionStatus.SKIPPED:
-            return PhasePresentationStatus.SKIPPED, None
-        case WorkflowExecutionStatus.UNKNOWN:
-            return PhasePresentationStatus.UNKNOWN, None
-        case unreachable:
-            assert_never(unreachable)
+    if status is WorkflowExecutionStatus.SUCCESS:
+        return PhasePresentationStatus.PASSED, None
+    elif status is WorkflowExecutionStatus.FAILURE:
+        return PhasePresentationStatus.FAILED, summary[:500]
+    elif status is WorkflowExecutionStatus.SKIPPED:
+        return PhasePresentationStatus.SKIPPED, None
+    elif status is WorkflowExecutionStatus.UNKNOWN:
+        return PhasePresentationStatus.UNKNOWN, None
+    else:
+        assert_never(status)
 
 
 def project_workflow_result(

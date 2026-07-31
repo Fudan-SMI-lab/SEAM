@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 from typing import NamedTuple
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from .continuation_models import (
     ContinuationError,
@@ -43,18 +43,18 @@ def _error(kind: ContinuationErrorKind, detail: str) -> ContinuationError:
 
 
 def _terminal_status(summary: RunSummaryDocument) -> TerminalParentStatus:
-    match summary.overall_status:
-        case SummaryStatus.PASS:
-            return TerminalParentStatus.PASS
-        case SummaryStatus.FAIL:
-            return TerminalParentStatus.FAIL
-        case SummaryStatus.UNKNOWN:
-            raise _error(
-                ContinuationErrorKind.STATUS_INELIGIBLE,
-                "parent summary status must be exactly PASS or FAIL",
-            )
-        case unreachable:
-            assert_never(unreachable)
+    status = summary.overall_status
+    if status is SummaryStatus.PASS:
+        return TerminalParentStatus.PASS
+    elif status is SummaryStatus.FAIL:
+        return TerminalParentStatus.FAIL
+    elif status is SummaryStatus.UNKNOWN:
+        raise _error(
+            ContinuationErrorKind.STATUS_INELIGIBLE,
+            "parent summary status must be exactly PASS or FAIL",
+        )
+    else:
+        assert_never(status)
 
 
 class _TerminalExpectation(NamedTuple):

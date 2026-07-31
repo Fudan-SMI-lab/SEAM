@@ -4,7 +4,7 @@ from enum import Enum, unique
 from secrets import token_urlsafe
 from typing import NamedTuple, Protocol
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from core.continuation_environment_models import (
     ContainerDeleteForbidden,
@@ -81,32 +81,31 @@ def _creator_bound_retention() -> tuple[
 
     def authority_is_registered(authority: ContainerDeleteAuthority) -> bool:
         binding = bindings.get(id(authority))
-        match authority:
-            case CurrentRunContainerDeleteAuthority():
-                ownership = (
-                    authority.original_owner_run_id,
-                    authority.lineage_root_run_id,
-                    authority.ownership_token,
-                    authority.ownership_label,
-                )
-            case ContinuationContainerDeleteAuthority():
-                attachment = authority.attachment
-                eligibility = authority.eligibility
-                ownership = (
-                    attachment.container_id,
-                    attachment.container_name,
-                    attachment.original_owner_run_id,
-                    attachment.lineage_root_run_id,
-                    attachment.ownership_token,
-                    attachment.ownership_label,
-                    eligibility.original_owner_run_id,
-                    eligibility.lineage_root_run_id,
-                    eligibility.ownership_token,
-                    eligibility.ownership_label,
-                    authority.owner_lock,
-                )
-            case unreachable:
-                assert_never(unreachable)
+        if isinstance(authority, CurrentRunContainerDeleteAuthority):
+            ownership = (
+                authority.original_owner_run_id,
+                authority.lineage_root_run_id,
+                authority.ownership_token,
+                authority.ownership_label,
+            )
+        elif isinstance(authority, ContinuationContainerDeleteAuthority):
+            attachment = authority.attachment
+            eligibility = authority.eligibility
+            ownership = (
+                attachment.container_id,
+                attachment.container_name,
+                attachment.original_owner_run_id,
+                attachment.lineage_root_run_id,
+                attachment.ownership_token,
+                attachment.ownership_label,
+                eligibility.original_owner_run_id,
+                eligibility.lineage_root_run_id,
+                eligibility.ownership_token,
+                eligibility.ownership_label,
+                authority.owner_lock,
+            )
+        else:
+            assert_never(authority)
         return (
             binding is not None
             and binding.authority is authority
@@ -131,55 +130,54 @@ def _creator_bound_retention() -> tuple[
             )
         attachment = continuation.attachment
         deletion = continuation.deletion
-        match deletion:
-            case FrameworkContainerDeleteEligible():
-                lock = current_project_owner_lock()
-                lock_matches = (
-                    framework_container_delete_eligibility_is_verified(deletion)
-                    and lock is not None
-                    and project_owner_lock_is_active(lock)
-                    and lock.child_run_id == child_run_id
-                    and lock.lineage_root_run_id == deletion.lineage_root_run_id
-                    and attachment.lineage_root_run_id == deletion.lineage_root_run_id
-                    and attachment.original_owner_run_id
-                    == deletion.original_owner_run_id
-                    and attachment.ownership_token == deletion.ownership_token
-                    and attachment.ownership_label == deletion.ownership_label
+        if isinstance(deletion, FrameworkContainerDeleteEligible):
+            lock = current_project_owner_lock()
+            lock_matches = (
+                framework_container_delete_eligibility_is_verified(deletion)
+                and lock is not None
+                and project_owner_lock_is_active(lock)
+                and lock.child_run_id == child_run_id
+                and lock.lineage_root_run_id == deletion.lineage_root_run_id
+                and attachment.lineage_root_run_id == deletion.lineage_root_run_id
+                and attachment.original_owner_run_id
+                == deletion.original_owner_run_id
+                and attachment.ownership_token == deletion.ownership_token
+                and attachment.ownership_label == deletion.ownership_label
+            )
+            if lock_matches and lock is not None:
+                authority = object.__new__(ContinuationContainerDeleteAuthority)
+                object.__setattr__(authority, "_attachment", attachment)
+                object.__setattr__(authority, "_eligibility", deletion)
+                object.__setattr__(authority, "_owner_lock", lock)
+                policy = V3ContainerRetentionPolicy(
+                    requested,
+                    requested,
+                    attachment.owner_kind,
+                    authority,
+                    attachment,
                 )
-                if lock_matches and lock is not None:
-                    authority = object.__new__(ContinuationContainerDeleteAuthority)
-                    object.__setattr__(authority, "_attachment", attachment)
-                    object.__setattr__(authority, "_eligibility", deletion)
-                    object.__setattr__(authority, "_owner_lock", lock)
-                    policy = V3ContainerRetentionPolicy(
-                        requested,
-                        requested,
-                        attachment.owner_kind,
-                        authority,
-                        attachment,
-                    )
-                    bindings[id(authority)] = _DeleteAuthorityBinding(
-                        authority,
-                        (
-                            attachment.container_id,
-                            attachment.container_name,
-                            attachment.original_owner_run_id,
-                            attachment.lineage_root_run_id,
-                            attachment.ownership_token,
-                            attachment.ownership_label,
-                            deletion.original_owner_run_id,
-                            deletion.lineage_root_run_id,
-                            deletion.ownership_token,
-                            deletion.ownership_label,
-                            lock,
-                        ),
-                        policy,
-                    )
-                    return policy
-            case ContainerDeleteForbidden():
-                pass
-            case unreachable:
-                assert_never(unreachable)
+                bindings[id(authority)] = _DeleteAuthorityBinding(
+                    authority,
+                    (
+                        attachment.container_id,
+                        attachment.container_name,
+                        attachment.original_owner_run_id,
+                        attachment.lineage_root_run_id,
+                        attachment.ownership_token,
+                        attachment.ownership_label,
+                        deletion.original_owner_run_id,
+                        deletion.lineage_root_run_id,
+                        deletion.ownership_token,
+                        deletion.ownership_label,
+                        lock,
+                    ),
+                    policy,
+                )
+                return policy
+        elif isinstance(deletion, ContainerDeleteForbidden):
+            pass
+        else:
+            assert_never(deletion)
         return V3ContainerRetentionPolicy(
             requested,
             ContainerRetention.RETAIN,

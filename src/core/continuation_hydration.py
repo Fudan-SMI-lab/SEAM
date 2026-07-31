@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from core.continuation_accepted_attempt import verify_accepted_attempt
 from core.continuation_hydration_authority import (
@@ -124,23 +124,23 @@ def hydrate_terminal_parent(
                 ContinuationHydrationErrorKind.MISSING_CANONICAL_OUTPUT,
                 f"predecessor has no authoritative phase result: {phase.id}",
             )
-        match phase_summary.status:
-            case PhasePresentationStatus.FAILED:
-                raise _error(
-                    ContinuationHydrationErrorKind.FAILED_CANONICAL_PREDECESSOR,
-                    f"canonical predecessor failed: {phase.id}",
-                )
-            case PhasePresentationStatus.SKIPPED:
-                continue
-            case PhasePresentationStatus.PASSED:
-                pass
-            case PhasePresentationStatus.UNKNOWN:
-                raise _error(
-                    ContinuationHydrationErrorKind.AUTHORITY_MISMATCH,
-                    "predecessor status is not terminal: unknown",
-                )
-            case unreachable:
-                assert_never(unreachable)
+        status = phase_summary.status
+        if status is PhasePresentationStatus.FAILED:
+            raise _error(
+                ContinuationHydrationErrorKind.FAILED_CANONICAL_PREDECESSOR,
+                f"canonical predecessor failed: {phase.id}",
+            )
+        elif status is PhasePresentationStatus.SKIPPED:
+            continue
+        elif status is PhasePresentationStatus.PASSED:
+            pass
+        elif status is PhasePresentationStatus.UNKNOWN:
+            raise _error(
+                ContinuationHydrationErrorKind.AUTHORITY_MISMATCH,
+                "predecessor status is not terminal: unknown",
+            )
+        else:
+            assert_never(status)
         state_entry, result = _inherit_phase(
             phase, sealed_root, request.parent.run_manifest.sealed_evidence
         )
