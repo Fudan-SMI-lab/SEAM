@@ -75,6 +75,22 @@ python3 -m tests.e2e.e2e_test_v3 \
 
 Direct Python entrypoint 面向高级调试和自动化集成；日常运行优先使用 V3 Shell Launcher。
 
+### 5. 可选实时仪表盘
+
+实时终端仪表盘是可选功能。安装 dashboard extra 后可用：
+
+```bash
+python -m pip install -e "./src[dashboard]"
+```
+
+`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）：
+
+- `auto`（默认）：仅在非 CI 的交互式 TTY 上启用；否则运行行为与无仪表盘版本完全一致。
+- `on`：强制启用。未安装渲染器时（textual 优先，rich 回退）在任何副作用之前报错并给出上述安装命令。
+- `off`：完全关闭，运行行为与无仪表盘版本完全一致。
+
+仪表盘激活时按 `q` 仅退出仪表盘视图，迁移与日志继续。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 不创建该文件。
+
 常用参数：
 
 | 参数 | 说明 |

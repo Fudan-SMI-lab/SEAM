@@ -51,6 +51,8 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 
 项目根目录下的 `ADAPTATION_REQUIREMENTS.md` 会自动加载；非标准约束可以通过 `--extra '--user-constraints PATH'` 传入。
 
+可选实时仪表盘：dashboard extra 默认不安装，使用前运行 `python -m pip install -e "./src[dashboard]"`。`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）：`auto`（默认）仅在非 CI 的交互式 TTY 上启用，否则与无仪表盘运行完全一致；`on` 强制启用，未安装渲染器时（textual 优先，rich 回退）在任何副作用之前报错并给出上述安装命令；`off` 完全关闭。仪表盘激活时按 `q` 仅退出仪表盘视图，迁移与日志继续。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 不创建该文件。
+
 运行后：
 *   是否跑通：终端最后会直接显示 `E2E TEST PASSED` / `E2E PASS` 或失败信息；也可以通过 `./e2e-reports/src/<时间戳>/summary.json`获取更具体的信息
     

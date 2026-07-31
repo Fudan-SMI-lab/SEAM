@@ -70,6 +70,7 @@ PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
 - 容器默认保留。`delete` 只对 SEAM 明确拥有且现场复核通过的 image 容器生效；外部或用户容器永不删除。已通过的运行若请求清理但清理失败，迁移结果仍是 PASS，但最终进程退出码为 2。
 - `--save-agent-trace` 是默认关闭的可选旁路。它递归导出 OpenCode 可访问的原始数据，不脱敏、不截断已接受的数据，但受容量和图边界限制；不可访问、分页、未知或不支持的数据会明确标为 partial。它不能导出提供方隐藏的 reasoning，也不改变 continuation authority 或冻结的 `RunOutcome`。普通可选 trace 失败不改变退出码，但 continuation 的 required evidence publication 失败会使 finalization 退出 1。
 - Replay 只显示同一进程中已接受的真实 Phase 5 receipt 所对应的命令。SEAM 不自动执行 replay，也不保证确定性复现。
+- 可选实时仪表盘：dashboard extra 默认不安装，使用前运行 `python -m pip install -e "./src[dashboard]"`。`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）：`auto`（默认）仅在非 CI 的交互式 TTY 上启用，否则与无仪表盘运行完全一致；`on` 强制启用，未安装渲染器时（textual 优先，rich 回退）在任何副作用之前报错并给出上述安装命令；`off` 完全关闭。仪表盘激活时按 `q` 仅退出仪表盘视图，迁移与日志继续。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 不创建该文件。
 
 完整 CLI、continuation 矩阵、产物树、超时语义和可选集成检查见 [`src/docs/E2E_TESTING.md`](src/docs/E2E_TESTING.md)；原始 trace 完整性和 schema-v2 关联边界见 [`src/docs/full_agent_io_logging_design.md`](src/docs/full_agent_io_logging_design.md)。
 
