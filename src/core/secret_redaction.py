@@ -48,7 +48,7 @@ _NAME_SEPARATOR: Final = re.compile(r"[^A-Za-z0-9]+")
 _CAMEL_BOUNDARY: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _REDACTION_MARKER: Final = re.compile(r"<REDACTED(?:_[A-Z_]+)?>")
 _SECRET_PATTERNS: Final = (
-    (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer <REDACTED>"),
+    (re.compile(r"(?i)(Bearer)\s+[A-Za-z0-9._~+/=-]+"), "\\1 <REDACTED>"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "<REDACTED_API_KEY>"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}"), "<REDACTED_GITHUB_TOKEN>"),
 )
@@ -137,12 +137,13 @@ def _redact_named_plain(match: re.Match[str]) -> str:
 
 
 def redact_sensitive_text(text: str) -> str:
-    redacted = _QUOTED_CLI_VALUE.sub(_redact_quoted, text)
+    redacted = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    redacted = _QUOTED_CLI_VALUE.sub(_redact_quoted, redacted)
     redacted = _PLAIN_CLI_VALUE.sub(_redact_plain, redacted)
     redacted = _QUOTED_NAMED_VALUE.sub(_redact_named_quoted, redacted)
     redacted = _PLAIN_NAMED_VALUE.sub(_redact_named_plain, redacted)
-    for pattern, replacement in _SECRET_PATTERNS:
-        redacted = pattern.sub(replacement, redacted)
     return redacted
 
 

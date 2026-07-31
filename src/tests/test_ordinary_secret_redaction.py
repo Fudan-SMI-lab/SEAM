@@ -8,6 +8,7 @@ from core.agent_io_logger import AgentIOLogger
 from core.artifact_store import ArtifactStore
 from core.phase5_attempt_receipt import EnvironmentVariable, ShellInvocation
 from core.run_outcome import TerminalOutcome
+from core.secret_redaction import redact_sensitive_text
 from core.telemetry_bridge import TelemetryBridge
 from harness.run import FinalizationHooks, RunArtifactUpdate, finalize_run
 from tests.phase5_receipt_test_support import execution
@@ -15,6 +16,27 @@ from tests.run_finalizer_test_support import FinalizerScenario, finalization_req
 
 SECRET = "sk-abcdefghijklmnopqrstuvwxyz"
 CONTEXT_SECRET = "ordinary contextual sentinel"
+
+
+def test_redact_sensitive_text_redacts_bearer_token_after_authorization_prefix() -> None:
+    redacted = redact_sensitive_text("Authorization: Bearer hdr-sentinel")
+
+    assert "hdr-sentinel" not in redacted
+    assert "<REDACTED>" in redacted
+
+
+def test_redact_sensitive_text_redacts_mixed_case_bearer_preserving_scheme() -> None:
+    lowered = redact_sensitive_text("use bearer tok-lower-sentinel")
+    shouted = redact_sensitive_text("use BEARER tok-upper-sentinel")
+    mixed = redact_sensitive_text("use Bearer tok-mixed-sentinel")
+
+    assert "tok-lower-sentinel" not in lowered
+    assert "bearer <REDACTED>" in lowered
+    assert "tok-upper-sentinel" not in shouted
+    assert "BEARER <REDACTED>" in shouted
+    assert "tok-mixed-sentinel" not in mixed
+    assert "Bearer <REDACTED>" in mixed
+
 
 
 def test_agent_io_error_is_redacted_in_ordinary_index(tmp_path: Path) -> None:
