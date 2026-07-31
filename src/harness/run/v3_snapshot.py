@@ -6,6 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Final
 
+from core.compat import SLOTS_KWARG
 from core.run_manifest import RunManifestError
 from core.run_manifest_paths import inspect_real_tree, read_real_tree_file
 
@@ -17,7 +18,7 @@ _EXCLUDED_SNAPSHOT_DIRS: Final = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class SnapshotResult:
     path: str
     file_count: int

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from typing_extensions import assert_never
+from core.compat import SLOTS_KWARG, assert_never
 
 from .continuation_lock import project_owner_lock_is_active
 from .resource_retention import (
@@ -34,7 +34,7 @@ def _continuation_evidence_unavailable() -> bool:
     return False
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class ContainerRetentionFinalizer:
     policy: V3ContainerRetentionPolicy
     backend: RetentionBackend | None

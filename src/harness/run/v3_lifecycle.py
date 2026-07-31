@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
-from typing_extensions import TypeAlias
+from core.compat import SLOTS_KWARG, TypeAlias
 
 from core.atomic_file import atomic_write_bytes
 from core.run_outcome import TerminalOutcome
@@ -53,13 +53,13 @@ def _ignore_cleanup_failure(
     return None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunCounts:
     session_count: int
     command_count: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class ObserverSidecar:
     save_metrics: MetricPathSource
     counts: CountPairSource
@@ -69,7 +69,7 @@ class ObserverSidecar:
     record_cleanup_failure: CleanupFailureAction = _ignore_cleanup_failure
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class BridgeSidecar:
     save_metrics: MetricPathSource
     command_count: CountSource
@@ -108,7 +108,7 @@ class AgentPathProvider(Protocol):
     def paths(self) -> Mapping[str, str]: ...
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class V3TelemetrySources:
     observer: ObserverSource | None
     bridge: BridgeSource | None
@@ -158,7 +158,7 @@ def build_telemetry_sidecars(sources: V3TelemetrySources) -> TelemetrySidecars:
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class TelemetrySidecars:
     observer: ObserverSidecar | None = None
     bridge: BridgeSidecar | None = None
@@ -195,7 +195,7 @@ class TelemetrySidecars:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class EvidenceContext:
     output_dir: Path
     temp_dir: Path | None
@@ -203,7 +203,7 @@ class EvidenceContext:
     phase_results: tuple[PhaseStatus, ...]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class EvidencePersister:
     context: EvidenceContext
     telemetry: TelemetrySidecars
@@ -258,7 +258,7 @@ class EvidencePersister:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class V3RunLifecycle:
     evidence: EvidencePersister
     cleanup: ResourceCleanup

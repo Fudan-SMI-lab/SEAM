@@ -3,9 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum, unique
-from typing import TypeAlias
 
-from typing_extensions import assert_never, override
+from core.compat import SLOTS_KWARG, TypeAlias, assert_never, override
 
 from core.continuation_models import PhasePresentationStatus, SummaryStatus
 from core.run_manifest import RunId
@@ -26,7 +25,7 @@ DurationSource: TypeAlias = Callable[[], float]
 RuntimeReportSource: TypeAlias = Callable[[], V3RuntimeReport | None]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class PhaseStatus:
     phase_number: int
     phase_id: str
@@ -36,7 +35,7 @@ class PhaseStatus:
     error: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunIdentity:
     run_id: RunId
     base_url: str
@@ -45,7 +44,7 @@ class RunIdentity:
     temp_dir: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunExecution:
     keep_temp_dir: bool
     requested_max_phase5_iter: int
@@ -58,7 +57,7 @@ class RunExecution:
     duration_source: DurationSource | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunArtifactUpdate:
     artifact_dir: str | None = None
     telemetry_paths: tuple[tuple[str, str], ...] = ()
@@ -71,7 +70,7 @@ class RunArtifactUpdate:
 EMPTY_ARTIFACT_UPDATE = RunArtifactUpdate()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunArtifacts:
     artifact_dir: str | None = None
     telemetry_paths: tuple[tuple[str, str], ...] = ()
@@ -94,7 +93,7 @@ class RunArtifacts:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class ContinuationRunSummary:
     parent_run_id: str
     anchor_phase_id: str
@@ -103,7 +102,7 @@ class ContinuationRunSummary:
     attachment_mode: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunSummary:
     run_id: str
     base_url: str
@@ -149,7 +148,7 @@ class FinalizationStage(str, Enum):
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class FinalizationHookError(RuntimeError):
     detail: str
 
@@ -165,7 +164,7 @@ def _empty_hook(_outcome: TerminalOutcome) -> RunArtifactUpdate:
     return EMPTY_ARTIFACT_UPDATE
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class FinalizationHooks:
     evidence_replay: FinalizationHook = _empty_hook
     trace_export: FinalizationHook = _empty_hook
@@ -197,7 +196,7 @@ class FinalizationHooks:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunFinalizationRequest:
     identity: RunIdentity
     execution: RunExecution
@@ -216,14 +215,14 @@ class RunFinalizationRequest:
         return self.authoritative_outcome
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class FinalizationDiagnostic:
     stage: FinalizationStage
     error_type: str
     detail: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class FinalizationResult:
     outcome: TerminalOutcome
     summary: RunSummary
@@ -255,7 +254,7 @@ class ReportAllocationErrorKind(str, Enum):
     CREATE_FAILED = "create_failed"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class ReportAllocationError(Exception):
     kind: ReportAllocationErrorKind
     detail: str
@@ -265,7 +264,7 @@ class ReportAllocationError(Exception):
         return f"{self.kind.value}: {self.detail}"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class SidecarWriteError(OSError):
     path: str
     detail: str

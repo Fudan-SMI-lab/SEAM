@@ -8,7 +8,7 @@ from enum import Enum, unique
 from pathlib import Path
 from typing import NamedTuple, NoReturn, final
 
-from typing_extensions import override
+from core.compat import SLOTS_KWARG, override
 
 
 class LockIdentity(NamedTuple):
@@ -152,7 +152,7 @@ def lock_identity_is_linked(identity: LockIdentity) -> bool:
     return stat.S_ISLNK(identity[2]) or bool(identity[3] & 0x400)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class LockPathSnapshot:
     identity: LockIdentity
     content: bytes
