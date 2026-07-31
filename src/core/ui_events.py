@@ -2,24 +2,25 @@ from __future__ import annotations
 
 import json
 import os
-import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Final
+
+from core.ui_event_sanitizer import (
+    details_preview,
+    normalize_details,
+    normalize_optional_text,
+    redact_head,
+    summarize_text,
+)
 
 SCHEMA_VERSION = "1.0"
 
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer <REDACTED>"),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "<REDACTED_API_KEY>"),
-    (
-        re.compile(
-            r"(?i)\b(HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|"
-            r"PASSWORD|PASSWD|SECRET)\s*([:=])\s*([^\s'\"`,;]+)"
-        ),
-        r"\1\2<REDACTED>",
-    ),
+_MAX_ENCODED_BYTES: Final = 64 * 1024
+_APPEND_FLAGS: Final = (
+    os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0)
 )
 
 
@@ -81,16 +82,6 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def summarize_text(text: object, limit: int = 160) -> str:
-    raw = "" if text is None else str(text)
-    raw = " ".join(raw.split())
-    for pattern, replacement in _SECRET_PATTERNS:
-        raw = pattern.sub(replacement, raw)
-    if len(raw) <= limit:
-        return raw
-    return raw[:limit].rstrip() + "..."
-
-
 def dashboard_enabled(
     mode: str,
     *,
@@ -141,27 +132,67 @@ class UIEventSink:
         details: Mapping[str, Any] | None = None,
         artifact_path: str | None = None,
     ) -> None:
+        """Append one bounded, recursively redacted event line, best effort.
+
+        The record always carries the 12 schema keys. Every string field is
+        redacted and capped at 500 chars; ``details`` keys and values are
+        recursively redacted and bounded (50 entries per mapping/sequence,
+        depth 6), and the encoded line plus newline stays strictly below
+        64 KiB; when it would not, ``details`` degrades to a redacted
+        bounded preview. Encoding happens once and the line is appended with
+        POSIX O_APPEND|O_CREAT|O_WRONLY writes. Transient short writes are
+        completed without truncating concurrent appenders. A serialization
+        failure, OS error, no-progress write, or record that still exceeds
+        the cap after every fallback disables only this sink.
+        """
         if not self.enabled:
             return
+        details_value = normalize_details(details)
         record = {
             "schema_version": SCHEMA_VERSION,
             "timestamp": _utc_now(),
-            "run_id": self.run_id,
-            "event_type": event_type,
-            "phase_id": phase_id,
-            "subphase_id": subphase_id,
-            "agent_role": agent_role,
-            "session_id": session_id,
-            "status": status,
+            "run_id": redact_head(self.run_id),
+            "event_type": redact_head(event_type),
+            "phase_id": normalize_optional_text(phase_id),
+            "subphase_id": normalize_optional_text(subphase_id),
+            "agent_role": normalize_optional_text(agent_role),
+            "session_id": normalize_optional_text(session_id),
+            "status": normalize_optional_text(status),
             "message": summarize_text(message, 500) if message else "",
-            "details": dict(details or {}),
-            "artifact_path": artifact_path,
+            "details": details_value,
+            "artifact_path": normalize_optional_text(artifact_path),
         }
         try:
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except OSError:
+            encoded = json.dumps(record, ensure_ascii=False).encode("utf-8")
+            if len(encoded) + 1 >= _MAX_ENCODED_BYTES:
+                record["details"] = {
+                    "truncated": True,
+                    "preview": details_preview(details_value),
+                }
+                encoded = json.dumps(record, ensure_ascii=False).encode("utf-8")
+                if len(encoded) + 1 >= _MAX_ENCODED_BYTES:
+                    record["details"] = {"truncated": True}
+                    encoded = json.dumps(record, ensure_ascii=False).encode("utf-8")
+            if len(encoded) + 1 >= _MAX_ENCODED_BYTES:
+                self.enabled = False
+                return
+            self._append_line(encoded + b"\n")
+        except (OSError, TypeError, ValueError):
             self.enabled = False
+
+    def _append_line(self, encoded: bytes) -> None:
+        """Append one encoded record, completing transient short writes."""
+        fd = os.open(self.path, _APPEND_FLAGS, 0o644)
+        offset = 0
+        try:
+            while offset < len(encoded):
+                written = os.write(fd, encoded[offset:])
+                if written <= 0:
+                    self.enabled = False
+                    return
+                offset += written
+        finally:
+            os.close(fd)
 
     def as_env(self) -> dict[str, str]:
         return {"SEAM_UI_EVENTS_PATH": str(self.path), "SEAM_RUN_ID": self.run_id}
