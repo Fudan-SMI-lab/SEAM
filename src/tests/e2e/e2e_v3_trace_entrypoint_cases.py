@@ -106,7 +106,7 @@ def test_v3_main_forwards_trace_policy(
         captured.append(value)
         return 0
 
-    def continuation(request: TerminalContinuationRunRequest) -> int:
+    def continuation(request: TerminalContinuationRunRequest, **_values: str) -> int:
         captured.append(request.invocation.save_agent_trace)
         return 0
 

@@ -15,13 +15,11 @@ from collections.abc import MutableMapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, NamedTuple
+from typing import ClassVar
 from uuid import uuid4
 
 from pydantic import ValidationError
 
-if TYPE_CHECKING:
-    from core.ui_events import UIEventSink
 
 from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
@@ -104,6 +102,7 @@ from harness.run.v3_trace_integration import (
     V3TraceIntegrationRequest,
     create_v3_trace_lifecycle,
 )
+from tests.e2e.dashboard_wiring import DashboardWiring
 
 DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
 DEFAULT_MAX_PHASE5_ITER = 5
@@ -402,6 +401,7 @@ def write_usage_guide(
     entry_script: str | None,
     overall_status: str,
     output_dir: Path,
+    ui_events_path: str | None = None,
 ) -> str:
     reports_dir = project_dir / "migration_reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -412,6 +412,13 @@ def write_usage_guide(
         if overall_status == "PASS"
         else "Migration did not fully pass validation"
     )
+    reports_entries = [
+        "- `migration_reports/USAGE.md`",
+        "- `migration_reports/SUMMARY_REPORT.md`",
+        "- `.sm-artifacts/`",
+    ]
+    if ui_events_path is not None:
+        reports_entries.append(f"- `{ui_events_path}`")
     content = "\n".join(
         [
             "# Migrated Project Usage",
@@ -433,9 +440,7 @@ def write_usage_guide(
             "",
             "## Reports",
             "",
-            "- `migration_reports/USAGE.md`",
-            "- `migration_reports/SUMMARY_REPORT.md`",
-            "- `.sm-artifacts/`",
+            *reports_entries,
             "",
             "## If Validation Failed",
             "",
@@ -577,6 +582,8 @@ def _install_sqlite_fallback_if_needed() -> None:
 
 def run_terminal_continuation(
     request: TerminalContinuationRunRequest,
+    *,
+    dashboard_mode: str = "auto",
 ) -> int:
     from core.continuation import ContinuationError, ContinuationHydrationError
     from core.continuation_environment import ContinuationEnvironmentError
@@ -608,6 +615,7 @@ def run_terminal_continuation(
                 continuation=continuation,
                 container_retention=request.invocation.container_retention,
                 save_agent_trace=request.invocation.save_agent_trace,
+                dashboard_mode=dashboard_mode,
             )
     except (
         ContinuationError,
@@ -622,13 +630,6 @@ def run_terminal_continuation(
         return 1
 
 
-class DashboardWiring(NamedTuple):
-    ui_event_sink: UIEventSink | None
-    dashboard_stop: threading.Event | None
-    dashboard_thread: threading.Thread | None
-    dashboard_on: bool
-
-
 def _prepare_dashboard_wiring(
     dashboard_mode: str,
     output_dir: Path,
@@ -641,14 +642,40 @@ def _prepare_dashboard_wiring(
 
     Off mode (explicit ``off``, or ``auto`` without an interactive TTY) is
     fully inert: no sink, no ``SEAM_UI_EVENTS_PATH``/``SEAM_RUN_ID``
-    environment variables, no events, no dashboard thread.
+    environment variables, no events, no dashboard thread. After mode/TTY/CI
+    enablement the renderer backend is probed once: textual is preferred,
+    rich is the fallback, and explicit ``on`` with neither raises a typed
+    actionable error before any side effect. ``auto`` with neither renderer
+    returns the same fully inert wiring as ``off``.
+
+    For an active wiring the returned ``DashboardWiring`` captures the exact
+    prior values of the two dashboard env keys so its ``close()`` can
+    restore or delete them idempotently from any exit path.
     """
-    from core.dashboard import SeamDashboardApp
+    from core.dashboard import (
+        DashboardBackend,
+        DashboardBackendUnavailableError,
+        SeamDashboardApp,
+        _activate_dashboard_backend,
+        resolve_dashboard_backend,
+    )
     from core.ui_events import UIEventSink, dashboard_enabled
 
     if not dashboard_enabled(dashboard_mode, is_tty=is_tty, environ=environ):
         return DashboardWiring(None, None, None, False)
+    backend = resolve_dashboard_backend()
+    if backend is DashboardBackend.NONE:
+        normalized_mode = str(dashboard_mode or "auto").strip().lower()
+        if normalized_mode == "on":
+            raise DashboardBackendUnavailableError()
+        return DashboardWiring(None, None, None, False)
+    _activate_dashboard_backend(backend)
     ui_event_sink = UIEventSink(output_dir, run_id)
+    prior_env = {
+        key: environ[key]
+        for key in ("SEAM_UI_EVENTS_PATH", "SEAM_RUN_ID")
+        if key in environ
+    }
     environ.update(ui_event_sink.as_env())
     ui_event_sink.emit(
         "runner_started",
@@ -657,13 +684,22 @@ def _prepare_dashboard_wiring(
         details={"dashboard_mode": dashboard_mode},
     )
     dashboard_stop = threading.Event()
-    dashboard_app = SeamDashboardApp(ui_event_sink.path, dashboard_stop)
+    dashboard_app = SeamDashboardApp(
+        ui_event_sink.path, dashboard_stop, backend=backend
+    )
     dashboard_thread = threading.Thread(
         target=dashboard_app.run,
         daemon=True,
     )
     dashboard_thread.start()
-    return DashboardWiring(ui_event_sink, dashboard_stop, dashboard_thread, True)
+    return DashboardWiring(
+        ui_event_sink,
+        dashboard_stop,
+        dashboard_thread,
+        True,
+        environ=environ,
+        prior_env=prior_env,
+    )
 
 
 def run_e2e_v3(
@@ -788,617 +824,615 @@ def run_e2e_v3(
         environ=os.environ,
     )
     ui_event_sink = dashboard_wiring.ui_event_sink
-    dashboard_stop = dashboard_wiring.dashboard_stop
-    dashboard_thread = dashboard_wiring.dashboard_thread
 
     try:
-        from harness.server.lifecycle import resolve_server_url
-
-        base_url, server_proc = resolve_server_url(
-            base_url,
-            auto_start=server_auto_start,
-            default_url=DEFAULT_SERVER_URL,
-            work_dir=str(REPO_ROOT),
-            server_port=server_port,
-        )
-        if server_proc is not None:
-            log(f"Auto-started OpenCode server at {base_url}")
-        check_server_running(
-            base_url,
-            readiness_mode=opencode_readiness,
-            message_timeout=opencode_message_timeout,
-        )
-        log(f"OpenCode server ready at {base_url}")
-        log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
-        if continuation is not None:
-            temp_dir = continuation.parent.output_project
-            keep_temp_dir = True
-            log(f"Continuing in lineage-shared project: {temp_dir}")
-        elif project_dir is not None:
-            project_name = project_dir.resolve().name
-            timestamp = started_at.strftime("%Y%m%d_%H%M%S")
-            output_project_base = (
-                output_project_dir
-                if output_project_dir
-                else default_output_projects_root()
-            )
-            output_project_base.mkdir(parents=True, exist_ok=True)
-            dest = output_project_base / f"{project_name}_{timestamp}"
-            log(f"Copying project {project_dir} to {dest}...")
-            copied_count = copy_project_light(project_dir, dest)
-            symlinked_count = symlink_large_files(dest, project_dir)
-            temp_dir = dest.resolve()
-            log(
-                f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}"
-            )
-            keep_temp_dir = True
-        else:
-            temp_dir = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-v3-"))
-            temp_dir_identity = directory_lock_identity(temp_dir, retain=True)
-            if TEMPLATE_DIR.exists():
-                _ = shutil.copytree(TEMPLATE_DIR, temp_dir, dirs_exist_ok=True)
-            log(f"Created temp dir: {temp_dir}")
-
-        if continuation is not None:
-            before_snapshot_path = str(continuation.evidence.namespace.baseline_path)
-        else:
-            before_snapshot = persist_python_snapshot(
-                temp_dir, output_dir / "before_snapshot.json"
-            )
-            before_snapshot_path = before_snapshot.path
-            log(f"Snapshot: {before_snapshot.file_count} .py files")
-
-        agent_io_logger = AgentIOLogger.from_env(output_dir, str(run_id))
-        observed_session = TelemetryObserver.create_observed_session(
-            lambda transport_observer: SessionManager(
-                work_dir=str(temp_dir),
-                base_url=base_url,
-                transport_observer=transport_observer,
-            ),
-            TelemetryObserverConfig(
-                output_dir=output_dir,
-                run_id=str(run_id),
-                agent_io_logger=agent_io_logger,
-                ui_event_sink=ui_event_sink,
-            ),
-        )
-        session_mgr = observed_session.session_manager
-        observer = observed_session.observer
-        if agent_name:
-            try:
-                canonical = session_mgr.override_agent(agent_name)
-            except ValueError as exc:
-                raise RuntimeError(
-                    f"Cannot use --agent '{agent_name}': {exc}. "
-                    f"Use one of the canonical names from /agent or ensure the server is running."
-                ) from exc
-        else:
-            canonical = session_mgr.active_agent
-        log(
-            f"SessionManager created: active_agent={canonical}, overridden={agent_name is not None}"
-        )
-
-        observer.set_metadata("base_url", base_url)
-        observer.set_metadata("review_gate", review_gate)
-
-        artifact_store = (
-            continuation.evidence.artifact_store
-            if continuation is not None
-            else ArtifactStore(str(temp_dir), str(run_id))
-        )
-        prompt_loader = PromptLoader()
-
-        # ── Workflow Selector resolution (before load_workflow) ──────────
-        original_workflow_path = effective_workflow_path
-        selector_resolved_path: str | None = None
         try:
-            if continuation is None and is_selector_file(str(effective_workflow_path)):
-                log(f"Detected selector YAML: {effective_workflow_path}")
-                project_ctx = _build_project_context(temp_dir)
-                materialized = resolve_workflow_from_selector(
-                    str(effective_workflow_path),
-                    observer,  # observer.send_command logs command + response automatically
-                    prompt_loader,
-                    project_context=project_ctx,
-                    user_constraints=user_constraints,
-                    output_dir=output_dir / "artifacts",
-                    telemetry=observer,  # selector-specific events via record_event
+            from harness.server.lifecycle import resolve_server_url
+
+            base_url, server_proc = resolve_server_url(
+                base_url,
+                auto_start=server_auto_start,
+                default_url=DEFAULT_SERVER_URL,
+                work_dir=str(REPO_ROOT),
+                server_port=server_port,
+            )
+            if server_proc is not None:
+                log(f"Auto-started OpenCode server at {base_url}")
+            check_server_running(
+                base_url,
+                readiness_mode=opencode_readiness,
+                message_timeout=opencode_message_timeout,
+            )
+            log(f"OpenCode server ready at {base_url}")
+            log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
+            if continuation is not None:
+                temp_dir = continuation.parent.output_project
+                keep_temp_dir = True
+                log(f"Continuing in lineage-shared project: {temp_dir}")
+            elif project_dir is not None:
+                project_name = project_dir.resolve().name
+                timestamp = started_at.strftime("%Y%m%d_%H%M%S")
+                output_project_base = (
+                    output_project_dir
+                    if output_project_dir
+                    else default_output_projects_root()
                 )
-                effective_workflow_path = materialized
-                selector_resolved_path = str(materialized)
-                selector_metadata = (
-                    read_selector_resolution_metadata(materialized) or {}
-                )
-                selected_workflow_path = selector_metadata.get(
-                    "selected_path", "(unknown)"
-                )
-                selector_path_for_log = selector_metadata.get(
-                    "selector_path", str(original_workflow_path)
-                )
-                materialized_path_for_log = selector_metadata.get(
-                    "materialized_path", str(materialized)
-                )
+                output_project_base.mkdir(parents=True, exist_ok=True)
+                dest = output_project_base / f"{project_name}_{timestamp}"
+                log(f"Copying project {project_dir} to {dest}...")
+                copied_count = copy_project_light(project_dir, dest)
+                symlinked_count = symlink_large_files(dest, project_dir)
+                temp_dir = dest.resolve()
                 log(
-                    _format_selector_result_log(
-                        selector_path_for_log,
-                        selected_workflow_path,
-                        materialized_path_for_log,
-                    )
+                    f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}"
                 )
-                observer.set_metadata("selector_path", str(original_workflow_path))
-                observer.set_metadata("selected_workflow_path", selected_workflow_path)
-                observer.set_metadata("resolved_workflow_path", selector_resolved_path)
-        except Exception:
-            log("Selector resolution failed; re-raising to surface the error")
-            raise
+                keep_temp_dir = True
+            else:
+                temp_dir = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-v3-"))
+                temp_dir_identity = directory_lock_identity(temp_dir, retain=True)
+                if TEMPLATE_DIR.exists():
+                    _ = shutil.copytree(TEMPLATE_DIR, temp_dir, dirs_exist_ok=True)
+                log(f"Created temp dir: {temp_dir}")
 
-        validator = ValidatorEngine()
-        validator.register_validator("env_detect", validate_env_detect)
-        validator.register_validator("project_analysis", validate_project_analysis)
-        validator.register_validator("venv", validate_venv)
-        validator.register_validator("entry_script", validate_entry_script)
-        validator.register_validator("entry_static", validate_entry_static)
-        validator.register_validator("rule_migration", validate_rule_migration)
-        validator.register_validator("validation_final", validate_validation_final)
-        validator.register_validator("reports", validate_reports)
-        validator.register_validator("constraint_summary", validate_constraint_summary)
-        validator.register_validator(
-            "repair_classification",
-            lambda d: {"passed": True, "errors": [], "warnings": []},
-        )
+            if continuation is not None:
+                before_snapshot_path = str(continuation.evidence.namespace.baseline_path)
+            else:
+                before_snapshot = persist_python_snapshot(
+                    temp_dir, output_dir / "before_snapshot.json"
+                )
+                before_snapshot_path = before_snapshot.path
+                log(f"Snapshot: {before_snapshot.file_count} .py files")
 
-        workflow = (
-            continuation.workflow
-            if continuation is not None
-            else load_workflow(str(effective_workflow_path))
-        )
-        log(
-            f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
-        )
-
-        raw_backend_mode = (
-            workflow.execution_backend.mode
-            if workflow.execution_backend is not None
-            else "local"
-        )
-        if raw_backend_mode == "auto":
-            requested_backend = "auto"
-        elif raw_backend_mode == "container":
-            requested_backend = "container"
-        else:
-            requested_backend = "local"
-        retention_policy = resolve_v3_container_retention(
-            workflow,
-            container_retention,
-            str(run_id),
-            continuation.eligibility if continuation is not None else None,
-        )
-
-        framework_config = load_framework_config(framework_config_path)
-        effective_review_policy = resolve_review_policy(
-            ReviewPolicyInputs(
-                cli=(
-                    review_policy_overrides
-                    if review_policy_overrides is not None
-                    else ReviewCliOverrides(max_iterations=None, fail_closed=None)
+            agent_io_logger = AgentIOLogger.from_env(output_dir, str(run_id))
+            observed_session = TelemetryObserver.create_observed_session(
+                lambda transport_observer: SessionManager(
+                    work_dir=str(temp_dir),
+                    base_url=base_url,
+                    transport_observer=transport_observer,
                 ),
-                workflow=workflow_review_defaults(workflow),
-                framework=framework_review_defaults(framework_config),
-            )
-        )
-        apply_review_policy(workflow, effective_review_policy)
-        log(
-            "Review policy resolved: "
-            f"max={effective_review_policy.max_iterations} "
-            f"fail_closed={effective_review_policy.fail_closed}"
-        )
-        observer.set_metadata(
-            "max_review_iterations", int(effective_review_policy.max_iterations)
-        )
-        observer.set_metadata("review_fail_closed", effective_review_policy.fail_closed)
-
-        if isinstance(workflow.globals, dict):
-            workflow.globals["max_repair_iterations"] = max_phase5_iter
-            workflow.globals["review_gate_enabled"] = review_gate
-
-        telemetry_bridge = TelemetryBridge(str(output_dir))
-
-        experience_store = None
-        if workflow.experience.enabled:
-            from core.experience_store import ExperienceStore
-
-            experience_store = ExperienceStore(str(REPO_ROOT))
-
-        execution_user_constraints = user_constraints
-        if continuation is not None:
-            continuation_context = continuation.prompt_facts.render()
-            execution_user_constraints = (
-                f"{user_constraints}\n\n{continuation_context}"
-                if user_constraints
-                else continuation_context
-            )
-
-        executor = WorkflowExecutor(
-            workflow=workflow,
-            session_mgr=observer,
-            artifact_store=artifact_store,
-            prompt_loader=prompt_loader,
-            validator_engine=validator,
-            telemetry_observer=observer,
-            framework_config=framework_config,
-            project_dir=str(temp_dir),
-            output_dir=str(output_dir),
-            user_constraints=execution_user_constraints,
-            telemetry_bridge=telemetry_bridge,
-            experience_store=experience_store,
-            continuation=(continuation.hydration if continuation is not None else None),
-            container_delete_authority=retention_policy.delete_authority,
-            defer_execution_backend_cleanup=True,
-            defer_execution_backend_preflight=True,
-            ui_event_sink=ui_event_sink,
-        )
-
-        retention_backend = (
-            executor.exec_backend
-            if isinstance(executor.exec_backend, ContainerBackend)
-            else None
-        )
-        retention_recorder = RetentionLifecycleRecorder()
-        retention_cleanup = ContainerRetentionFinalizer(
-            retention_policy,
-            retention_backend,
-            temp_dir,
-            retention_recorder,
-            lambda: continuation_evidence_sealed,
-        )
-        try:
-            executor._preflight_execution_backend()
-        except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
-            retention_manifest_error = ResourceManifestError(
-                ResourceManifestErrorKind.WRITE_INTERRUPTED,
-                f"backend preflight failed before manifest setup: {exc}",
-            )
-            raise
-        try:
-            resource_store = create_retention_manifest(
-                RetentionManifestRequest(
-                    report_dir=output_dir,
+                TelemetryObserverConfig(
+                    output_dir=output_dir,
                     run_id=str(run_id),
-                    requested_workflow=Path(original_workflow_path),
-                    effective_workflow=Path(effective_workflow_path),
-                    workspace=temp_dir,
-                    requested_backend=requested_backend,
-                    endpoint=base_url,
-                    server_process_id=(
-                        server_proc.pid if server_proc is not None else None
-                    ),
-                    policy=retention_policy,
-                    backend=retention_backend,
-                )
-            )
-            retention_manifest = RetentionManifestFinalizer(
-                resource_store,
-                retention_recorder,
-                retention_backend,
-            )
-        except (OSError, ResourceManifestError) as exc:
-            retention_manifest_error = exc
-        retention_cleanup = ContainerRetentionFinalizer(
-            retention_policy,
-            retention_backend,
-            temp_dir,
-            retention_recorder,
-            lambda: continuation_evidence_sealed,
-        )
-
-        execution_result = executor.execute(
-            {
-                "PROJECT_DIR": str(temp_dir),
-                "USER_CONSTRAINTS": execution_user_constraints,
-            }
-        )
-        outcome_value = execution_result.get("run_outcome")
-        if not isinstance(outcome_value, RunOutcome):
-            raise V3OutcomeUnavailableError(
-                detail="active V3 executor did not return a frozen RunOutcome"
-            )
-        authoritative_outcome = outcome_value
-
-        telemetry_bridge.set_metadata("agent_name", agent_name)
-        telemetry_bridge.set_metadata("workflow_name", workflow.name)
-        telemetry_bridge.set_metadata("workflow_version", workflow.version)
-
-        projection = project_workflow_result(
-            tuple(phase.id for phase in executor.workflow.phases or ()),
-            executor.phase_results,
-            executor.state,
-        )
-        phase_results.extend(projection.phases)
-        entry_script = projection.entry_script
-
-    except Exception as exc:
-        errors.append(f"{exc.__class__.__name__}: {exc}")
-        traceback_text = traceback.format_exc()
-        if observer is not None:
-            observer.record_event(
-                "runner_error", error=str(exc), traceback=traceback_text
-            )
-        if ui_event_sink is not None:
-            ui_event_sink.emit(
-                "runner_failed",
-                status="failed",
-                message=f"{exc.__class__.__name__}: {exc}",
-            )
-
-    telemetry = build_telemetry_sidecars(
-        V3TelemetrySources(
-            observer=observer,
-            bridge=telemetry_bridge,
-            agent=agent_io_logger,
-            keep_temp_dir=keep_temp_dir,
-            bridge_command_count=(
-                (lambda: len(telemetry_bridge._commands))
-                if telemetry_bridge is not None
-                else None
-            ),
-        )
-    )
-    lifecycle = V3RunLifecycle(
-        evidence=EvidencePersister(
-            EvidenceContext(
-                output_dir=output_dir,
-                temp_dir=temp_dir if continuation is None else None,
-                traceback_text=traceback_text,
-                phase_results=tuple(phase_results),
-            ),
-            telemetry,
-            log,
-        ),
-        cleanup=ResourceCleanup(
-            CleanupContext(
-                temp_dir=temp_dir,
-                keep_temp_dir=(
-                    keep_temp_dir
-                    or (
-                        retention_cleanup is not None
-                        and retention_cleanup.policy.effective
-                        is ContainerRetention.RETAIN
-                    )
+                    agent_io_logger=agent_io_logger,
+                    ui_event_sink=ui_event_sink,
                 ),
-                owns_temp_dir=continuation is None and project_dir is None,
-                observer=telemetry.observer,
-                server_process=server_proc,
-                owned_temp_identity=temp_dir_identity,
             )
-        ),
-        telemetry=telemetry,
-        started_at=started_at,
-    )
-    counts = lifecycle.counts()
-    finalization_hooks = lifecycle.hooks()
-
-    if ui_event_sink is not None:
-        ui_events_jsonl_path = str(ui_event_sink.path)
-
-        def record_ui_events_sidecar(_outcome: TerminalOutcome) -> RunArtifactUpdate:
-            return RunArtifactUpdate(
-                telemetry_paths=(("ui_events_jsonl", ui_events_jsonl_path),)
+            session_mgr = observed_session.session_manager
+            observer = observed_session.observer
+            if agent_name:
+                try:
+                    canonical = session_mgr.override_agent(agent_name)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"Cannot use --agent '{agent_name}': {exc}. "
+                        f"Use one of the canonical names from /agent or ensure the server is running."
+                    ) from exc
+            else:
+                canonical = session_mgr.active_agent
+            log(
+                f"SessionManager created: active_agent={canonical}, overridden={agent_name is not None}"
             )
 
-        finalization_hooks = replace(
-            finalization_hooks,
-            evidence_replay=compose_trace_hooks(
-                finalization_hooks.evidence_replay,
-                record_ui_events_sidecar,
-            ),
-        )
-    trace_destination = (
-        continuation.evidence.namespace.trace_dir
-        if continuation is not None
-        else output_dir / "trace"
-    )
+            observer.set_metadata("base_url", base_url)
+            observer.set_metadata("review_gate", review_gate)
 
-    def trace_observability_source() -> ObservabilitySummary:
-        return (
-            observer.observability_summary
-            if observer is not None
-            else EMPTY_OBSERVABILITY_SUMMARY
-        )
+            artifact_store = (
+                continuation.evidence.artifact_store
+                if continuation is not None
+                else ArtifactStore(str(temp_dir), str(run_id))
+            )
+            prompt_loader = PromptLoader()
 
-    trace_lifecycle = create_v3_trace_lifecycle(
-        V3TraceIntegrationRequest(
-            cli_value=save_agent_trace,
-            destination=trace_destination,
-            session=session_mgr,
-            overflow_roots=(temp_dir,) if temp_dir is not None else (),
-            telemetry=observer,
-            correlation_inputs=V3TraceCorrelationInputs(
-                run_id=run_id,
-                outcome=authoritative_outcome,
-                observability_source=trace_observability_source,
-                continuation=continuation,
-            ),
-        )
-    )
-    finalization_hooks = replace(
-        finalization_hooks,
-        trace_export=compose_trace_hooks(
-            trace_lifecycle,
-            finalization_hooks.trace_export,
-        ),
-    )
-    phase2_environment = None
-    if executor is not None:
-        phase2_value = executor.state.get("phase_2_venv_create")
-        if isinstance(phase2_value, dict):
+            # ── Workflow Selector resolution (before load_workflow) ──────────
+            original_workflow_path = effective_workflow_path
+            selector_resolved_path: str | None = None
             try:
-                phase2_report = Phase2EnvironmentReport.model_validate(phase2_value)
-            except ValidationError:
-                phase2_report = None
-            if phase2_report is not None:
-                phase2_environment = Phase2EnvironmentRequest(
-                    environment_id="phase2-project-venv",
-                    namespace=(
-                        f"container:{retention_backend.container_id}"
-                        if retention_backend is not None
-                        and retention_backend.container_id is not None
-                        else "host"
-                    ),
-                    container_id=(
-                        retention_backend.container_id
-                        if retention_backend is not None
-                        else None
-                    ),
-                    report=phase2_report,
-                )
-    runtime_report_request = prepare_runtime_report_request(
-        RuntimeReportingInputs(
-            manifest_store=resource_store,
-            artifact_store=artifact_store,
-            outcome=authoritative_outcome,
-            expected_run_id=str(run_id),
-            phase2_environment=phase2_environment,
-        )
-    )
-    runtime_report_recorder = None
-    if observer is not None:
-        runtime_report_recorder = V3RuntimeReportRecorder(
-            runtime_report_request,
-            observer,
-            finalization_hooks.post_cleanup_manifest,
-        )
-        finalization_hooks = FinalizationHooks(
-            evidence_replay=finalization_hooks.evidence_replay,
-            trace_export=finalization_hooks.trace_export,
-            authorized_cleanup=finalization_hooks.authorized_cleanup,
-            post_cleanup_manifest=runtime_report_recorder,
-        )
-    if retention_cleanup is not None:
-        finalization_hooks = _compose_v3_retention_hooks(
-            finalization_hooks,
-            lifecycle.cleanup,
-            retention_cleanup,
-            retention_manifest,
-            retention_manifest_error,
-        )
-    continuation_summary = None
-    if continuation is not None:
-        from core.continuation_evidence import (
-            seal_child_evidence,
-            verify_final_child_evidence,
-        )
+                if continuation is None and is_selector_file(str(effective_workflow_path)):
+                    log(f"Detected selector YAML: {effective_workflow_path}")
+                    project_ctx = _build_project_context(temp_dir)
+                    materialized = resolve_workflow_from_selector(
+                        str(effective_workflow_path),
+                        observer,  # observer.send_command logs command + response automatically
+                        prompt_loader,
+                        project_context=project_ctx,
+                        user_constraints=user_constraints,
+                        output_dir=output_dir / "artifacts",
+                        telemetry=observer,  # selector-specific events via record_event
+                    )
+                    effective_workflow_path = materialized
+                    selector_resolved_path = str(materialized)
+                    selector_metadata = (
+                        read_selector_resolution_metadata(materialized) or {}
+                    )
+                    selected_workflow_path = selector_metadata.get(
+                        "selected_path", "(unknown)"
+                    )
+                    selector_path_for_log = selector_metadata.get(
+                        "selector_path", str(original_workflow_path)
+                    )
+                    materialized_path_for_log = selector_metadata.get(
+                        "materialized_path", str(materialized)
+                    )
+                    log(
+                        _format_selector_result_log(
+                            selector_path_for_log,
+                            selected_workflow_path,
+                            materialized_path_for_log,
+                        )
+                    )
+                    observer.set_metadata("selector_path", str(original_workflow_path))
+                    observer.set_metadata("selected_workflow_path", selected_workflow_path)
+                    observer.set_metadata("resolved_workflow_path", selector_resolved_path)
+            except Exception:
+                log("Selector resolution failed; re-raising to surface the error")
+                raise
 
-        def seal_and_verify_child(_outcome: TerminalOutcome) -> RunArtifactUpdate:
-            nonlocal continuation_evidence_sealed
-            _ = seal_child_evidence(
-                continuation.evidence,
-                terminal_anchor=authoritative_outcome.terminal_anchor,
+            validator = ValidatorEngine()
+            validator.register_validator("env_detect", validate_env_detect)
+            validator.register_validator("project_analysis", validate_project_analysis)
+            validator.register_validator("venv", validate_venv)
+            validator.register_validator("entry_script", validate_entry_script)
+            validator.register_validator("entry_static", validate_entry_static)
+            validator.register_validator("rule_migration", validate_rule_migration)
+            validator.register_validator("validation_final", validate_validation_final)
+            validator.register_validator("reports", validate_reports)
+            validator.register_validator("constraint_summary", validate_constraint_summary)
+            validator.register_validator(
+                "repair_classification",
+                lambda d: {"passed": True, "errors": [], "warnings": []},
             )
-            _ = verify_final_child_evidence(continuation.evidence)
-            continuation_evidence_sealed = True
-            return RunArtifactUpdate()
 
-        finalization_hooks = FinalizationHooks(
-            evidence_replay=finalization_hooks.evidence_replay,
-            trace_export=compose_trace_hooks(
-                finalization_hooks.trace_export,
-                seal_and_verify_child,
-            ),
-            authorized_cleanup=finalization_hooks.authorized_cleanup,
-            post_cleanup_manifest=finalization_hooks.post_cleanup_manifest,
-        )
-        continuation_summary = ContinuationRunSummary(
-            parent_run_id=continuation.prompt_facts.parent_run_id,
-            anchor_phase_id=continuation.prompt_facts.anchor_phase_id,
-            inherited_phase_ids=continuation.prompt_facts.inherited_phase_ids,
-            resource_eligibility=continuation.prompt_facts.resource_eligibility,
-            attachment_mode=continuation.prompt_facts.attachment_mode,
-        )
+            workflow = (
+                continuation.workflow
+                if continuation is not None
+                else load_workflow(str(effective_workflow_path))
+            )
+            log(
+                f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
+            )
 
-    finalization = finalize_run(
-        RunFinalizationRequest(
-            identity=RunIdentity(
-                run_id=run_id,
-                base_url=base_url or DEFAULT_SERVER_URL,
-                workflow_path=str(effective_workflow_path),
+            raw_backend_mode = (
+                workflow.execution_backend.mode
+                if workflow.execution_backend is not None
+                else "local"
+            )
+            if raw_backend_mode == "auto":
+                requested_backend = "auto"
+            elif raw_backend_mode == "container":
+                requested_backend = "container"
+            else:
+                requested_backend = "local"
+            retention_policy = resolve_v3_container_retention(
+                workflow,
+                container_retention,
+                str(run_id),
+                continuation.eligibility if continuation is not None else None,
+            )
+
+            framework_config = load_framework_config(framework_config_path)
+            effective_review_policy = resolve_review_policy(
+                ReviewPolicyInputs(
+                    cli=(
+                        review_policy_overrides
+                        if review_policy_overrides is not None
+                        else ReviewCliOverrides(max_iterations=None, fail_closed=None)
+                    ),
+                    workflow=workflow_review_defaults(workflow),
+                    framework=framework_review_defaults(framework_config),
+                )
+            )
+            apply_review_policy(workflow, effective_review_policy)
+            log(
+                "Review policy resolved: "
+                f"max={effective_review_policy.max_iterations} "
+                f"fail_closed={effective_review_policy.fail_closed}"
+            )
+            observer.set_metadata(
+                "max_review_iterations", int(effective_review_policy.max_iterations)
+            )
+            observer.set_metadata("review_fail_closed", effective_review_policy.fail_closed)
+
+            if isinstance(workflow.globals, dict):
+                workflow.globals["max_repair_iterations"] = max_phase5_iter
+                workflow.globals["review_gate_enabled"] = review_gate
+
+            telemetry_bridge = TelemetryBridge(str(output_dir))
+
+            experience_store = None
+            if workflow.experience.enabled:
+                from core.experience_store import ExperienceStore
+
+                experience_store = ExperienceStore(str(REPO_ROOT))
+
+            execution_user_constraints = user_constraints
+            if continuation is not None:
+                continuation_context = continuation.prompt_facts.render()
+                execution_user_constraints = (
+                    f"{user_constraints}\n\n{continuation_context}"
+                    if user_constraints
+                    else continuation_context
+                )
+
+            executor = WorkflowExecutor(
+                workflow=workflow,
+                session_mgr=observer,
+                artifact_store=artifact_store,
+                prompt_loader=prompt_loader,
+                validator_engine=validator,
+                telemetry_observer=observer,
+                framework_config=framework_config,
+                project_dir=str(temp_dir),
                 output_dir=str(output_dir),
-                temp_dir=str(temp_dir or ""),
-            ),
-            execution=RunExecution(
+                user_constraints=execution_user_constraints,
+                telemetry_bridge=telemetry_bridge,
+                experience_store=experience_store,
+                continuation=(continuation.hydration if continuation is not None else None),
+                container_delete_authority=retention_policy.delete_authority,
+                defer_execution_backend_cleanup=True,
+                defer_execution_backend_preflight=True,
+                ui_event_sink=ui_event_sink,
+            )
+
+            retention_backend = (
+                executor.exec_backend
+                if isinstance(executor.exec_backend, ContainerBackend)
+                else None
+            )
+            retention_recorder = RetentionLifecycleRecorder()
+            retention_cleanup = ContainerRetentionFinalizer(
+                retention_policy,
+                retention_backend,
+                temp_dir,
+                retention_recorder,
+                lambda: continuation_evidence_sealed,
+            )
+            try:
+                executor._preflight_execution_backend()
+            except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+                retention_manifest_error = ResourceManifestError(
+                    ResourceManifestErrorKind.WRITE_INTERRUPTED,
+                    f"backend preflight failed before manifest setup: {exc}",
+                )
+                raise
+            try:
+                resource_store = create_retention_manifest(
+                    RetentionManifestRequest(
+                        report_dir=output_dir,
+                        run_id=str(run_id),
+                        requested_workflow=Path(original_workflow_path),
+                        effective_workflow=Path(effective_workflow_path),
+                        workspace=temp_dir,
+                        requested_backend=requested_backend,
+                        endpoint=base_url,
+                        server_process_id=(
+                            server_proc.pid if server_proc is not None else None
+                        ),
+                        policy=retention_policy,
+                        backend=retention_backend,
+                    )
+                )
+                retention_manifest = RetentionManifestFinalizer(
+                    resource_store,
+                    retention_recorder,
+                    retention_backend,
+                )
+            except (OSError, ResourceManifestError) as exc:
+                retention_manifest_error = exc
+            retention_cleanup = ContainerRetentionFinalizer(
+                retention_policy,
+                retention_backend,
+                temp_dir,
+                retention_recorder,
+                lambda: continuation_evidence_sealed,
+            )
+
+            execution_result = executor.execute(
+                {
+                    "PROJECT_DIR": str(temp_dir),
+                    "USER_CONSTRAINTS": execution_user_constraints,
+                }
+            )
+            outcome_value = execution_result.get("run_outcome")
+            if not isinstance(outcome_value, RunOutcome):
+                raise V3OutcomeUnavailableError(
+                    detail="active V3 executor did not return a frozen RunOutcome"
+                )
+            authoritative_outcome = outcome_value
+
+            telemetry_bridge.set_metadata("agent_name", agent_name)
+            telemetry_bridge.set_metadata("workflow_name", workflow.name)
+            telemetry_bridge.set_metadata("workflow_version", workflow.version)
+
+            projection = project_workflow_result(
+                tuple(phase.id for phase in executor.workflow.phases or ()),
+                executor.phase_results,
+                executor.state,
+            )
+            phase_results.extend(projection.phases)
+            entry_script = projection.entry_script
+
+        except Exception as exc:
+            errors.append(f"{exc.__class__.__name__}: {exc}")
+            traceback_text = traceback.format_exc()
+            if observer is not None:
+                observer.record_event(
+                    "runner_error", error=str(exc), traceback=traceback_text
+                )
+            if ui_event_sink is not None:
+                ui_event_sink.emit(
+                    "runner_failed",
+                    status="failed",
+                    message=f"{exc.__class__.__name__}: {exc}",
+                )
+
+        telemetry = build_telemetry_sidecars(
+            V3TelemetrySources(
+                observer=observer,
+                bridge=telemetry_bridge,
+                agent=agent_io_logger,
                 keep_temp_dir=keep_temp_dir,
-                requested_max_phase5_iter=max_phase5_iter,
-                effective_max_phase5_iter=max_phase5_iter,
-                phases=tuple(phase_results),
-                session_count=counts.session_count,
-                command_count=counts.command_count,
-                total_duration_seconds=0.0,
-                errors=tuple(errors),
-                duration_source=lifecycle.elapsed_seconds,
+                bridge_command_count=(
+                    (lambda: len(telemetry_bridge._commands))
+                    if telemetry_bridge is not None
+                    else None
+                ),
+            )
+        )
+        lifecycle = V3RunLifecycle(
+            evidence=EvidencePersister(
+                EvidenceContext(
+                    output_dir=output_dir,
+                    temp_dir=temp_dir if continuation is None else None,
+                    traceback_text=traceback_text,
+                    phase_results=tuple(phase_results),
+                ),
+                telemetry,
+                log,
             ),
-            initial_artifacts=RunArtifacts(
-                before_snapshot_path=before_snapshot_path,
-                entry_script=entry_script,
+            cleanup=ResourceCleanup(
+                CleanupContext(
+                    temp_dir=temp_dir,
+                    keep_temp_dir=(
+                        keep_temp_dir
+                        or (
+                            retention_cleanup is not None
+                            and retention_cleanup.policy.effective
+                            is ContainerRetention.RETAIN
+                        )
+                    ),
+                    owns_temp_dir=continuation is None and project_dir is None,
+                    observer=telemetry.observer,
+                    server_process=server_proc,
+                    owned_temp_identity=temp_dir_identity,
+                )
             ),
-            hooks=finalization_hooks,
-            authoritative_outcome=authoritative_outcome,
-            observability=(
+            telemetry=telemetry,
+            started_at=started_at,
+        )
+        counts = lifecycle.counts()
+        finalization_hooks = lifecycle.hooks()
+
+        if ui_event_sink is not None:
+            ui_events_jsonl_path = str(ui_event_sink.path)
+
+            def record_ui_events_sidecar(_outcome: TerminalOutcome) -> RunArtifactUpdate:
+                return RunArtifactUpdate(
+                    telemetry_paths=(("ui_events_jsonl", ui_events_jsonl_path),)
+                )
+
+            finalization_hooks = replace(
+                finalization_hooks,
+                evidence_replay=compose_trace_hooks(
+                    finalization_hooks.evidence_replay,
+                    record_ui_events_sidecar,
+                ),
+            )
+        trace_destination = (
+            continuation.evidence.namespace.trace_dir
+            if continuation is not None
+            else output_dir / "trace"
+        )
+
+        def trace_observability_source() -> ObservabilitySummary:
+            return (
                 observer.observability_summary
                 if observer is not None
                 else EMPTY_OBSERVABILITY_SUMMARY
+            )
+
+        trace_lifecycle = create_v3_trace_lifecycle(
+            V3TraceIntegrationRequest(
+                cli_value=save_agent_trace,
+                destination=trace_destination,
+                session=session_mgr,
+                overflow_roots=(temp_dir,) if temp_dir is not None else (),
+                telemetry=observer,
+                correlation_inputs=V3TraceCorrelationInputs(
+                    run_id=run_id,
+                    outcome=authoritative_outcome,
+                    observability_source=trace_observability_source,
+                    continuation=continuation,
+                ),
+            )
+        )
+        finalization_hooks = replace(
+            finalization_hooks,
+            trace_export=compose_trace_hooks(
+                trace_lifecycle,
+                finalization_hooks.trace_export,
             ),
-            continuation=continuation_summary,
-            required_stages=frozenset(
-                (
-                    {FinalizationStage.TRACE_EXPORT}
-                    if continuation is not None
-                    else set()
+        )
+        phase2_environment = None
+        if executor is not None:
+            phase2_value = executor.state.get("phase_2_venv_create")
+            if isinstance(phase2_value, dict):
+                try:
+                    phase2_report = Phase2EnvironmentReport.model_validate(phase2_value)
+                except ValidationError:
+                    phase2_report = None
+                if phase2_report is not None:
+                    phase2_environment = Phase2EnvironmentRequest(
+                        environment_id="phase2-project-venv",
+                        namespace=(
+                            f"container:{retention_backend.container_id}"
+                            if retention_backend is not None
+                            and retention_backend.container_id is not None
+                            else "host"
+                        ),
+                        container_id=(
+                            retention_backend.container_id
+                            if retention_backend is not None
+                            else None
+                        ),
+                        report=phase2_report,
+                    )
+        runtime_report_request = prepare_runtime_report_request(
+            RuntimeReportingInputs(
+                manifest_store=resource_store,
+                artifact_store=artifact_store,
+                outcome=authoritative_outcome,
+                expected_run_id=str(run_id),
+                phase2_environment=phase2_environment,
+            )
+        )
+        runtime_report_recorder = None
+        if observer is not None:
+            runtime_report_recorder = V3RuntimeReportRecorder(
+                runtime_report_request,
+                observer,
+                finalization_hooks.post_cleanup_manifest,
+            )
+            finalization_hooks = FinalizationHooks(
+                evidence_replay=finalization_hooks.evidence_replay,
+                trace_export=finalization_hooks.trace_export,
+                authorized_cleanup=finalization_hooks.authorized_cleanup,
+                post_cleanup_manifest=runtime_report_recorder,
+            )
+        if retention_cleanup is not None:
+            finalization_hooks = _compose_v3_retention_hooks(
+                finalization_hooks,
+                lifecycle.cleanup,
+                retention_cleanup,
+                retention_manifest,
+                retention_manifest_error,
+            )
+        continuation_summary = None
+        if continuation is not None:
+            from core.continuation_evidence import (
+                seal_child_evidence,
+                verify_final_child_evidence,
+            )
+
+            def seal_and_verify_child(_outcome: TerminalOutcome) -> RunArtifactUpdate:
+                nonlocal continuation_evidence_sealed
+                _ = seal_child_evidence(
+                    continuation.evidence,
+                    terminal_anchor=authoritative_outcome.terminal_anchor,
                 )
-                | (
-                    {FinalizationStage.POST_CLEANUP_MANIFEST}
-                    if retention_manifest is not None
-                    or retention_manifest_error is not None
-                    else set()
-                )
-            ),
-            summary_required=continuation is not None,
-            runtime_report_source=(
-                runtime_report_recorder.read
-                if runtime_report_recorder is not None
-                else None
-            ),
-            trace_status_source=trace_lifecycle.read,
+                _ = verify_final_child_evidence(continuation.evidence)
+                continuation_evidence_sealed = True
+                return RunArtifactUpdate()
+
+            finalization_hooks = FinalizationHooks(
+                evidence_replay=finalization_hooks.evidence_replay,
+                trace_export=compose_trace_hooks(
+                    finalization_hooks.trace_export,
+                    seal_and_verify_child,
+                ),
+                authorized_cleanup=finalization_hooks.authorized_cleanup,
+                post_cleanup_manifest=finalization_hooks.post_cleanup_manifest,
+            )
+            continuation_summary = ContinuationRunSummary(
+                parent_run_id=continuation.prompt_facts.parent_run_id,
+                anchor_phase_id=continuation.prompt_facts.anchor_phase_id,
+                inherited_phase_ids=continuation.prompt_facts.inherited_phase_ids,
+                resource_eligibility=continuation.prompt_facts.resource_eligibility,
+                attachment_mode=continuation.prompt_facts.attachment_mode,
+            )
+
+        finalization = finalize_run(
+            RunFinalizationRequest(
+                identity=RunIdentity(
+                    run_id=run_id,
+                    base_url=base_url or DEFAULT_SERVER_URL,
+                    workflow_path=str(effective_workflow_path),
+                    output_dir=str(output_dir),
+                    temp_dir=str(temp_dir or ""),
+                ),
+                execution=RunExecution(
+                    keep_temp_dir=keep_temp_dir,
+                    requested_max_phase5_iter=max_phase5_iter,
+                    effective_max_phase5_iter=max_phase5_iter,
+                    phases=tuple(phase_results),
+                    session_count=counts.session_count,
+                    command_count=counts.command_count,
+                    total_duration_seconds=0.0,
+                    errors=tuple(errors),
+                    duration_source=lifecycle.elapsed_seconds,
+                ),
+                initial_artifacts=RunArtifacts(
+                    before_snapshot_path=before_snapshot_path,
+                    entry_script=entry_script,
+                ),
+                hooks=finalization_hooks,
+                authoritative_outcome=authoritative_outcome,
+                observability=(
+                    observer.observability_summary
+                    if observer is not None
+                    else EMPTY_OBSERVABILITY_SUMMARY
+                ),
+                continuation=continuation_summary,
+                required_stages=frozenset(
+                    (
+                        {FinalizationStage.TRACE_EXPORT}
+                        if continuation is not None
+                        else set()
+                    )
+                    | (
+                        {FinalizationStage.POST_CLEANUP_MANIFEST}
+                        if retention_manifest is not None
+                        or retention_manifest_error is not None
+                        else set()
+                    )
+                ),
+                summary_required=continuation is not None,
+                runtime_report_source=(
+                    runtime_report_recorder.read
+                    if runtime_report_recorder is not None
+                    else None
+                ),
+                trace_status_source=trace_lifecycle.read,
+            )
         )
-    )
-    if temp_dir is not None and ui_event_sink is not None:
-        usage_path = write_usage_guide(
-            temp_dir,
-            entry_script=entry_script,
-            overall_status=finalization.summary.overall_status.value,
-            output_dir=output_dir,
+        if temp_dir is not None and ui_event_sink is not None:
+            usage_path = write_usage_guide(
+                temp_dir,
+                entry_script=entry_script,
+                overall_status=finalization.summary.overall_status.value,
+                output_dir=output_dir,
+                ui_events_path=str(ui_event_sink.path),
+            )
+            ui_event_sink.emit(
+                "usage_guide_written",
+                status="passed",
+                message="Usage guide written",
+                artifact_path=usage_path,
+            )
+        print_summary(
+            finalization.summary,
+            finalization_failed=finalization.finalization_failed,
+            runtime_report=finalization.runtime_report,
         )
-        ui_event_sink.emit(
-            "usage_guide_written",
-            status="passed",
-            message="Usage guide written",
-            artifact_path=usage_path,
-        )
-    print_summary(
-        finalization.summary,
-        finalization_failed=finalization.finalization_failed,
-        runtime_report=finalization.runtime_report,
-    )
-    if ui_event_sink is not None:
-        ui_event_sink.emit(
-            "runner_finished",
-            status=finalization.summary.overall_status.value.lower(),
-            message=f"E2E {finalization.summary.overall_status.value}",
-            details={"summary_path": str(output_dir / "summary.json")},
-        )
-    if dashboard_stop is not None:
-        dashboard_stop.set()
-    if dashboard_thread is not None:
-        dashboard_thread.join(timeout=2)
-    return finalization.exit_code
+        if ui_event_sink is not None:
+            ui_event_sink.emit(
+                "runner_finished",
+                status=finalization.summary.overall_status.value.lower(),
+                message=f"E2E {finalization.summary.overall_status.value}",
+                details={"summary_path": str(output_dir / "summary.json")},
+            )
+        return finalization.exit_code
+    finally:
+        dashboard_wiring.close()
 
 
 class _SingleContainerRetentionAction(argparse.Action):
@@ -1544,7 +1578,8 @@ def main() -> int:
                     readiness=args.opencode_readiness,
                     message_timeout=args.opencode_message_timeout,
                 ),
-            )
+            ),
+            dashboard_mode=dashboard_mode,
         )
 
     return run_e2e_v3(
