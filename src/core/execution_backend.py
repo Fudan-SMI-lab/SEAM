@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from pydantic import ValidationError
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from core.execution_env_context import EnvironmentProbe
 from core.phase5_attempt_receipt import BackendExecution, BackendKind
@@ -561,6 +561,7 @@ class ContainerBackend:
 
         proj = self._host_project_dir or "."
         cmd.extend(["-v", f"{proj}:{self.config.container_workdir}:rw"])
+        cmd.extend(["-w", str(self.config.container_workdir)])
         for vol in self.config.volumes:
             cmd.extend(["-v", vol])
         for k, v in self.config.env_vars.items():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from core.v3_runtime_report import (
     AcceptedReplaySource,
     RuntimeReportRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,19 @@ def _bind_environment(
             for fact in environment.facts
         )
     )
+    if len(executable_matches) > 1:
+        phase2_matches = tuple(
+            e for e in executable_matches
+            if any(f.name == "phase2.base_alias" for f in e.facts)
+        )
+        if len(phase2_matches) == 1:
+            executable_matches = phase2_matches
+        else:
+            executable_matches = (
+                max(executable_matches, key=lambda e: sum(
+                    1 for f in e.facts if f.value is not None
+                ),),
+            )
     if len(executable_matches) != 1:
         return
     _ = store.write(
@@ -125,6 +141,46 @@ def prepare_runtime_report_request(
                 )
         if store is not None and source is not None:
             _bind_environment(store, source)
+            current = store.read()
+            attempt_id = source.authority.attempt_id
+            already_bound = any(
+                ref.attempt_id == str(attempt_id)
+                for ref in current.phase5_environment_references
+            )
+            if not already_bound and current.environments:
+                try:
+                    receipt = load_attempt_receipt(source.receipt_path)
+                    ns_envs = tuple(
+                        e for e in current.environments
+                        if environment_namespace(e) == receipt.backend.namespace
+                    )
+                    target = ns_envs[0] if ns_envs else current.environments[0]
+                    _ = store.write(
+                        ResourceManifestUpdate(
+                            expected_revision=current.revision,
+                            phase5_environment_references=(
+                                build_phase5_reference(
+                                    Phase5ReferenceRequest(
+                                        attempt_id=receipt.attempt_id,
+                                        environment_id=target.environment_id,
+                                        namespace=receipt.backend.namespace,
+                                    )
+                                ),
+                            ),
+                        )
+                    )
+                    logger.warning(
+                        "Force-bound phase5 environment reference for attempt %s "
+                        "to %s (disambiguation fallback)",
+                        receipt.attempt_id,
+                        target.environment_id,
+                    )
+                except (AttemptReceiptError, ResourceManifestError):
+                    logger.warning(
+                        "Failed to force-bind phase5 environment reference for attempt %s",
+                        attempt_id,
+                        exc_info=True,
+                    )
     except ResourceManifestError:
         store = None
         source = None

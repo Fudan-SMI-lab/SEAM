@@ -27,15 +27,15 @@ def _fingerprint(record: EnvironmentRecord) -> EnvironmentFingerprint:
         container_id=known_fact(
             record.facts, "environment.container_id", required=False
         ),
-        interpreter_realpath=required_fact(record.facts, "interpreter.realpath"),
+        interpreter_realpath=known_fact(record.facts, "interpreter.realpath", required=False),
         sys_executable=required_fact(record.facts, "interpreter.sys_executable"),
         sys_prefix=required_fact(record.facts, "interpreter.sys_prefix"),
-        sys_base_prefix=required_fact(record.facts, "interpreter.sys_base_prefix"),
-        python_implementation=required_fact(record.facts, "python.implementation"),
-        python_version=required_fact(record.facts, "python.version"),
-        platform_system=required_fact(record.facts, "platform.system"),
-        platform_architecture=required_fact(record.facts, "platform.architecture"),
-        package_inventory_hash=required_fact(record.facts, "packages.inventory_sha256"),
+        sys_base_prefix=known_fact(record.facts, "interpreter.sys_base_prefix", required=False),
+        python_implementation=known_fact(record.facts, "python.implementation", required=False),
+        python_version=known_fact(record.facts, "python.version", required=False),
+        platform_system=known_fact(record.facts, "platform.system", required=False),
+        platform_architecture=known_fact(record.facts, "platform.architecture", required=False),
+        package_inventory_hash=known_fact(record.facts, "packages.inventory_sha256", required=False),
         interpreter_available=True,
         interpreter_executable=True,
     )
@@ -78,7 +78,7 @@ def target_environment(
             "interpreter.realpath",
             "recorded interpreter is missing or non-executable",
         )
-    if recorded.identity() != observed.identity():
+    if not recorded.matches(observed):
         raise error(
             ContinuationEnvironmentErrorKind.ENVIRONMENT_MISMATCH,
             "environment.fingerprint",

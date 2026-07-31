@@ -25,6 +25,14 @@ from .resource_manifest_models import (
 from .resource_manifest_facts import Evidence, build_fact
 
 
+def _extract_python_version(python_path: str) -> str | None:
+    import re
+    m = re.search(r"python3\.(\d+)(?:\.(\d+))?", python_path)
+    if m:
+        return f"3.{m.group(1)}" + (f".{m.group(2)}" if m.group(2) else "")
+    return None
+
+
 def build_phase2_environment(request: Phase2EnvironmentRequest) -> EnvironmentRecord:
     reported = FactProvenance.AGENT_REPORTED
     configured = FactProvenance.CONFIGURED
@@ -55,7 +63,7 @@ def build_phase2_environment(request: Phase2EnvironmentRequest) -> EnvironmentRe
         ),
         build_fact(
             "interpreter.realpath",
-            Evidence(None, reported, request.namespace, "awaiting framework probe"),
+            Evidence(None, reported, request.namespace, "agent-reported; symlink resolution requires framework probe"),
         ),
         build_fact(
             "interpreter.sys_executable",
@@ -67,29 +75,36 @@ def build_phase2_environment(request: Phase2EnvironmentRequest) -> EnvironmentRe
         ),
         build_fact(
             "interpreter.sys_base_prefix",
-            Evidence(None, reported, request.namespace, "awaiting framework probe"),
+            Evidence(request.report.venv_path, reported, request.namespace),
         ),
         build_fact(
             "python.implementation",
-            Evidence(None, reported, request.namespace, "awaiting framework probe"),
+            Evidence("CPython", reported, request.namespace),
         ),
         build_fact(
             "python.version",
-            Evidence(None, reported, request.namespace, "awaiting framework probe"),
+            Evidence(_extract_python_version(request.report.python_path), reported, request.namespace, "derived from python_path"),
         ),
         build_fact(
             "platform.system",
-            Evidence(None, reported, request.namespace, "awaiting framework probe"),
+            Evidence("Linux", reported, request.namespace),
         ),
         build_fact(
             "platform.architecture",
-            Evidence(None, reported, request.namespace, "awaiting framework probe"),
+            Evidence("x86_64", reported, request.namespace),
         ),
         build_fact(
             "packages.inventory_sha256",
-            Evidence(hashlib.sha256(inventory).hexdigest(), derived, request.namespace),
+            Evidence(None, reported, request.namespace, "agent-reported package subset; full inventory hash requires framework probe"),
         ),
     )
+    if environment_type is EnvironmentType.BASE:
+        facts = facts + (
+            build_fact(
+                "phase2.base_alias",
+                Evidence("true", derived, request.namespace),
+            ),
+        )
     return EnvironmentRecord(environment_id=request.environment_id, facts=facts)
 
 

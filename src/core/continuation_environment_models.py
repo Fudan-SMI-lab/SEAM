@@ -6,7 +6,7 @@ from pathlib import Path
 import typing
 from typing import TYPE_CHECKING, Literal, final
 
-from typing_extensions import TypeAlias, override
+from core.compat import TypeAlias, override
 
 from .resource_manifest_models import EnvironmentType, ResourceManifest
 
@@ -107,15 +107,15 @@ class EnvironmentFingerprint:
     environment_type: EnvironmentType
     namespace: str
     container_id: str | None
-    interpreter_realpath: str
+    interpreter_realpath: str | None
     sys_executable: str
     sys_prefix: str
-    sys_base_prefix: str
-    python_implementation: str
-    python_version: str
-    platform_system: str
-    platform_architecture: str
-    package_inventory_hash: str
+    sys_base_prefix: str | None
+    python_implementation: str | None
+    python_version: str | None
+    platform_system: str | None
+    platform_architecture: str | None
+    package_inventory_hash: str | None
     interpreter_available: bool
     interpreter_executable: bool
 
@@ -134,6 +134,12 @@ class EnvironmentFingerprint:
             self.platform_architecture,
             self.package_inventory_hash,
         )
+
+    def matches(self, observed: EnvironmentFingerprint) -> bool:
+        for recorded_val, observed_val in zip(self.identity(), observed.identity()):
+            if recorded_val is not None and recorded_val != observed_val:
+                return False
+        return True
 
 
 @dataclass(frozen=True)
