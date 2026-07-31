@@ -46,24 +46,23 @@ class LoopResultRecord(TypedDict):
 
 
 def _review_gate(outcome: ReviewOutcome) -> ReviewGate | None:
-    match outcome:
-        case ReviewOutcome.DISABLED:
-            return None
-        case ReviewOutcome.ACCEPTED:
-            return ReviewGate().record_judgment(ReviewVerdict.ACCEPT)
-        case ReviewOutcome.REJECTED:
-            return ReviewGate().record_judgment(ReviewVerdict.REJECT)
-        case ReviewOutcome.REJECT_EXHAUSTED:
-            return ReviewGate(max_rounds=1).record_judgment(ReviewVerdict.REJECT)
-        case ReviewOutcome.UNKNOWN:
-            return ReviewGate().record_judgment(ReviewVerdict.UNKNOWN)
-        case ReviewOutcome.SESSION_ERROR:
-            return ReviewGate().record_session_error()
-        case ReviewOutcome.IMPROVEMENT_ERROR:
-            rejected = ReviewGate().record_judgment(ReviewVerdict.REJECT)
-            return rejected.record_improvement_error()
-        case unreachable:
-            assert_never(unreachable)
+    if outcome is ReviewOutcome.DISABLED:
+        return None
+    elif outcome is ReviewOutcome.ACCEPTED:
+        return ReviewGate().record_judgment(ReviewVerdict.ACCEPT)
+    elif outcome is ReviewOutcome.REJECTED:
+        return ReviewGate().record_judgment(ReviewVerdict.REJECT)
+    elif outcome is ReviewOutcome.REJECT_EXHAUSTED:
+        return ReviewGate(max_rounds=1).record_judgment(ReviewVerdict.REJECT)
+    elif outcome is ReviewOutcome.UNKNOWN:
+        return ReviewGate().record_judgment(ReviewVerdict.UNKNOWN)
+    elif outcome is ReviewOutcome.SESSION_ERROR:
+        return ReviewGate().record_session_error()
+    elif outcome is ReviewOutcome.IMPROVEMENT_ERROR:
+        rejected = ReviewGate().record_judgment(ReviewVerdict.REJECT)
+        return rejected.record_improvement_error()
+    else:
+        assert_never(outcome)
 
 
 def _active_executor(

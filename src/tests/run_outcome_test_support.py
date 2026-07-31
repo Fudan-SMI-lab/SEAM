@@ -20,21 +20,20 @@ def review_round(
     max_rounds: int,
     outcome: ReviewOutcome,
 ) -> ReviewRound:
-    match outcome:
-        case ReviewOutcome.ACCEPTED:
-            verdict = ReviewVerdict.ACCEPT
-        case (
-            ReviewOutcome.REJECTED
-            | ReviewOutcome.REJECT_EXHAUSTED
-            | ReviewOutcome.IMPROVEMENT_ERROR
-        ):
-            verdict = ReviewVerdict.REJECT
-        case ReviewOutcome.UNKNOWN | ReviewOutcome.SESSION_ERROR:
-            verdict = ReviewVerdict.UNKNOWN
-        case ReviewOutcome.DISABLED:
-            pytest.fail("disabled review has no logical round")
-        case unreachable:
-            assert_never(unreachable)
+    if outcome is ReviewOutcome.ACCEPTED:
+        verdict = ReviewVerdict.ACCEPT
+    elif outcome in (
+        ReviewOutcome.REJECTED,
+        ReviewOutcome.REJECT_EXHAUSTED,
+        ReviewOutcome.IMPROVEMENT_ERROR,
+    ):
+        verdict = ReviewVerdict.REJECT
+    elif outcome in (ReviewOutcome.UNKNOWN, ReviewOutcome.SESSION_ERROR):
+        verdict = ReviewVerdict.UNKNOWN
+    elif outcome is ReviewOutcome.DISABLED:
+        pytest.fail("disabled review has no logical round")
+    else:
+        assert_never(outcome)
     return ReviewRound(round_number, max_rounds, verdict, outcome)
 
 
@@ -54,19 +53,18 @@ def _accepted_attempt(
     outcome: ReviewOutcome,
     attempt_id: AcceptedAttemptId | None,
 ) -> AcceptedAttemptId | None:
-    match outcome:
-        case ReviewOutcome.DISABLED | ReviewOutcome.ACCEPTED:
-            return attempt_id
-        case (
-            ReviewOutcome.REJECTED
-            | ReviewOutcome.REJECT_EXHAUSTED
-            | ReviewOutcome.UNKNOWN
-            | ReviewOutcome.SESSION_ERROR
-            | ReviewOutcome.IMPROVEMENT_ERROR
-        ):
-            return None
-        case unreachable:
-            assert_never(unreachable)
+    if outcome in (ReviewOutcome.DISABLED, ReviewOutcome.ACCEPTED):
+        return attempt_id
+    elif outcome in (
+        ReviewOutcome.REJECTED,
+        ReviewOutcome.REJECT_EXHAUSTED,
+        ReviewOutcome.UNKNOWN,
+        ReviewOutcome.SESSION_ERROR,
+        ReviewOutcome.IMPROVEMENT_ERROR,
+    ):
+        return None
+    else:
+        assert_never(outcome)
 
 
 def run_outcome(

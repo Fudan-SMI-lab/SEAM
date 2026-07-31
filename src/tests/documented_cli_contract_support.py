@@ -108,21 +108,20 @@ def review_outcome(
         if verdict is None:
             raise AssertionError(f"unsupported terminal fixture outcome: {review}")
         rounds = (ReviewRound(1, 1, verdict, review),)
-    match review:
-        case ReviewOutcome.DISABLED | ReviewOutcome.ACCEPTED:
-            accepted_attempt_id = (
-                AcceptedAttemptId("phase-5-attempt-cli") if validation else None
-            )
-        case (
-            ReviewOutcome.REJECTED
-            | ReviewOutcome.REJECT_EXHAUSTED
-            | ReviewOutcome.UNKNOWN
-            | ReviewOutcome.SESSION_ERROR
-            | ReviewOutcome.IMPROVEMENT_ERROR
-        ):
-            accepted_attempt_id = None
-        case unreachable:
-            assert_never(unreachable)
+    if review in (ReviewOutcome.DISABLED, ReviewOutcome.ACCEPTED):
+        accepted_attempt_id = (
+            AcceptedAttemptId("phase-5-attempt-cli") if validation else None
+        )
+    elif review in (
+        ReviewOutcome.REJECTED,
+        ReviewOutcome.REJECT_EXHAUSTED,
+        ReviewOutcome.UNKNOWN,
+        ReviewOutcome.SESSION_ERROR,
+        ReviewOutcome.IMPROVEMENT_ERROR,
+    ):
+        accepted_attempt_id = None
+    else:
+        assert_never(review)
     outcome = RunOutcome(
         validation_succeeded=validation,
         review_outcome=review,
