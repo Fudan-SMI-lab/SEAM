@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Final, Protocol
 
 if typing.TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+    from core.compat import TypeAlias
 
 
 MAX_CAPTURE_CHARS: Final = 64 * 1024 * 1024

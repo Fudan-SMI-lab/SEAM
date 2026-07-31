@@ -4,7 +4,7 @@ import logging
 import time
 from typing import Callable
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 from .events import (
     ActiveTransportAttempt,

@@ -6,7 +6,7 @@ from enum import Enum, unique
 from pathlib import Path
 from typing import Final
 
-from typing_extensions import override
+from core.compat import override
 
 from .continuation_environment import ContinuationEnvironmentEligibility
 from .continuation_evidence import PreparedChildEvidence

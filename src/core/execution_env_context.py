@@ -6,7 +6,7 @@ from typing import ClassVar, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from pydantic_core import PydanticCustomError
-from typing_extensions import Annotated, Self
+from core.compat import Annotated, Self
 
 from .resource_manifest_models import (
     EnvironmentRecord,

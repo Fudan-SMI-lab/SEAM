@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Protocol, Tuple, TypedDict, Union, cast
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 
 @dataclass

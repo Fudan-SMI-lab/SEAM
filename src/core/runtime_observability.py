@@ -5,7 +5,7 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from core.runtime_observability_models import (
     ObservabilityAggregate,

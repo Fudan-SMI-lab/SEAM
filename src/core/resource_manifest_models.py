@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic_core import PydanticCustomError
-from typing_extensions import Annotated, Self, override
+from core.compat import Annotated, Self, override
 
 RESOURCE_MANIFEST_FILENAME: Final = "resource-manifest.v1.json"
 RESOURCE_MANIFEST_SCHEMA: Final = "seam.resource-manifest"

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, unique
 from typing import Final
 
-from typing_extensions import override
+from core.compat import override
 
 from core.review_gate import ReviewGate
 from core.run_outcome import (

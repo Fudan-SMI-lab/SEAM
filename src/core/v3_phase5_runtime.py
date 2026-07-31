@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 from core.review_gate import ReviewGate
 from core.continuation_hydration_models import ParentAcceptedAttemptReference

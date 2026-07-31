@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import ClassVar, Literal, NamedTuple, Tuple, final
 
 from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import override
+from core.compat import override
 
 from .artifact_store import ArtifactStore
 from .continuation_models import ContinuationRequest, ResolvedTerminalParent

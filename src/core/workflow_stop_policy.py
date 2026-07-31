@@ -5,7 +5,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 from core.workflow_condition_policy import (
     ConditionEvaluationError,

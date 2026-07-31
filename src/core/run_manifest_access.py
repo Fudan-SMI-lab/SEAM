@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 from typing import NamedTuple, NoReturn, Protocol
 
-from typing_extensions import TypeAlias, override
+from core.compat import TypeAlias, override
 
 from core.continuation_lock_identity import BoundedReadError, read_verified_bytes
 from core.run_manifest_models import (

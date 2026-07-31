@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 from core.artifact_store import ArtifactStore
 from core.phase5_attempt_receipt import (

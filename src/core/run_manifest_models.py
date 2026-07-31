@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic_core import PydanticCustomError
-from typing_extensions import Annotated, Self, override
+from core.compat import Annotated, Self, override
 
 from core.run_outcome import PhaseId, TerminalAnchor
 

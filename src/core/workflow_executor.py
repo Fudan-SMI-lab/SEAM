@@ -20,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 if TYPE_CHECKING:
     from core.types import ExecutionBackendConfig

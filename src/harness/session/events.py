@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum, unique
 from typing import Callable, NewType, Union
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 TransportInvocationId = NewType("TransportInvocationId", str)
 

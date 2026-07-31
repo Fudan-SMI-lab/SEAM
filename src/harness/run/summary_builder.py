@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from core.continuation_models import SummaryStatus
 from core.run_outcome import TerminalOutcome

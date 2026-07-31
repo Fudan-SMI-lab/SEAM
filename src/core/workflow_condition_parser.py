@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence, Set
 from enum import Enum, unique
 from typing import final
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 
 ConditionScalar: TypeAlias = "str | int | float | bool | None"

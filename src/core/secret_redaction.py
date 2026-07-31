@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from itertools import pairwise
-from typing import Final, TypeAlias
+from typing import Final
+
+from core.compat import TypeAlias
 
 JsonScalar: TypeAlias = "str | int | float | bool | None"
 JsonValue: TypeAlias = "JsonScalar | Sequence[JsonValue] | Mapping[str, JsonValue]"

@@ -4,7 +4,7 @@ from enum import Enum, unique
 from pathlib import Path
 from typing import Final, Literal, NamedTuple, NoReturn, final
 
-from typing_extensions import TypeAlias, override
+from core.compat import TypeAlias, override
 
 from core.continuation_environment_models import (
     ExistingContainerAttachment,

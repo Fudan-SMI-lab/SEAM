@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum, unique
 from pathlib import Path
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from core.phase5_attempt_receipt import (
     ArtifactFileReceipt,

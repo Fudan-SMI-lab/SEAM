@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, final
 
-from typing_extensions import override
+from core.compat import override
 
 from harness.session.opencode_contract import JsonObject
 from harness.session.opencode_trace_models import EndpointCapture, SessionGraphRetrieval

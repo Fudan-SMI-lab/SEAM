@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NewType
 
-from typing_extensions import override
+from core.compat import override
 
 from core.run_manifest import RunId, Sha256Digest
 from core.run_outcome import PhaseId

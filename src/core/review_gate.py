@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Union
 
-from typing_extensions import TypeAlias, assert_never, override
+from core.compat import TypeAlias, assert_never, override
 
 from core.run_outcome import ReviewOutcome, ReviewRound, ReviewVerdict
 

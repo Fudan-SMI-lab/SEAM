@@ -7,7 +7,7 @@ import re
 from typing import ClassVar, Final, NewType, Optional, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
-from typing_extensions import Annotated, override
+from core.compat import Annotated, override
 
 from core.run_outcome import ReviewOutcome
 from core.types import TransitionDefinition, WorkflowDefinition

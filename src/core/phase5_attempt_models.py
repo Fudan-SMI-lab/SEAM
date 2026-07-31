@@ -9,7 +9,7 @@ from typing import ClassVar, Literal, NewType, Optional, Tuple, final
 from pydantic import BaseModel, ConfigDict, PositiveInt, StrictInt
 from pydantic import field_validator, model_validator
 from pydantic_core import PydanticCustomError
-from typing_extensions import Self, assert_never, override
+from core.compat import Self, assert_never, override
 
 from core.run_outcome import ReviewOutcome
 

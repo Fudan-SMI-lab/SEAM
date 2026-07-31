@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from typing_extensions import override
+from core.compat import override
 
 from harness.session.events import TransportAttemptEvent, TransportObserver
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import NamedTuple
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 
 RouteScalar: TypeAlias = "str | int | float | bool | None"

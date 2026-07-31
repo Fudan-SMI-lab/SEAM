@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
-from typing_extensions import TypeAlias, override
+from core.compat import TypeAlias, override
 
 from .finalization_contract import RunArtifactUpdate
 from .models import FinalizationStage, RunArtifacts

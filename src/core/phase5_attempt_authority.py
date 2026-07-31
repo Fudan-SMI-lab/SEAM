@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import NoReturn, Protocol, final
 
-from typing_extensions import override
+from core.compat import override
 
 from core.phase5_attempt_models import (
     Phase5AttemptId,

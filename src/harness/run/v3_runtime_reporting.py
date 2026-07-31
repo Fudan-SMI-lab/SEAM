@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import Callable, Protocol, Union, final
 
-from typing_extensions import TypeAlias
+from core.compat import TypeAlias
 
 from core.phase5_attempt_receipt import AttemptReceiptError
 from core.resource_manifest import ResourceManifestError

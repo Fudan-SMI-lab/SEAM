@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from core.resource_retention import ContainerDeletionError
 from core.resource_retention_finalizer import (

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Final, NamedTuple
 
 from pydantic import ValidationError
-from typing_extensions import assert_never
+from core.compat import assert_never
 
 from .continuation_models import (
     ContinuationError,

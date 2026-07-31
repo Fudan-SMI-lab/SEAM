@@ -13,7 +13,7 @@ from harness.session.opencode_contract_json import (
 )
 
 if typing.TYPE_CHECKING:
-    from typing_extensions import TypeAlias
+    from core.compat import TypeAlias
 
 
 PINNED_VERSION: Final = "1.18.5"

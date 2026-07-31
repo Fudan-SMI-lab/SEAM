@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Final, final
 
 from pydantic import JsonValue, TypeAdapter
-from typing_extensions import TypeAlias, override
+from core.compat import TypeAlias, override
 
 from core.continuation_models import ResolvedTerminalParent
 from core.run_manifest import (

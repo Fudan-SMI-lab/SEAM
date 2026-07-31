@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import ClassVar, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
-from typing_extensions import Annotated
+from core.compat import Annotated
 
 from core.phase5_attempt_receipt import Phase5AttemptAuthority
 from core.resource_manifest import (

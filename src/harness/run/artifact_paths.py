@@ -7,7 +7,7 @@ from enum import Enum, unique
 from hashlib import sha256
 from pathlib import Path
 
-from typing_extensions import override
+from core.compat import override
 
 from core.evidence_limits import EvidenceBudget, MAX_EVIDENCE_FILE_BYTES
 from core.run_manifest import RunManifestError
