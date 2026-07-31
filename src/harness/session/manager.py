@@ -6,8 +6,11 @@ import logging
 import math
 import os
 import re
-import sqlite3
 import time
+try:
+    import sqlite3
+except ImportError:
+    from pysqlite3 import dbapi2 as sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
