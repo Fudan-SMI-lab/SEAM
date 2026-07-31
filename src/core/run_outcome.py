@@ -7,7 +7,7 @@ from typing import ClassVar, final
 
 from pydantic import GetCoreSchemaHandler, JsonValue
 from pydantic_core import CoreSchema, core_schema
-from typing_extensions import Self, assert_never, override
+from core.compat import SLOTS_KWARG, Self, assert_never, override
 
 
 class _SafeIdentifier(str):
@@ -119,7 +119,7 @@ def _expected_verdict(outcome: ReviewOutcome) -> ReviewVerdict | None:
     assert_never(outcome)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class ReviewRound:
     """One immutable logical reviewer judgment within the review budget."""
 
@@ -140,33 +140,33 @@ class ReviewRound:
         if self.verdict is not expected_verdict:
             raise OutcomeContractError(reason="review outcome conflicts with verdict")
 
-        match self.outcome:
-            case ReviewOutcome.REJECTED if self.round_number >= self.max_rounds:
-                raise OutcomeContractError(
-                    reason="rejected is intermediate and requires a remaining round"
-                )
-            case ReviewOutcome.REJECT_EXHAUSTED if self.round_number != self.max_rounds:
-                raise OutcomeContractError(
-                    reason="reject_exhausted requires the final review round"
-                )
-            case (
-                ReviewOutcome.ACCEPTED
-                | ReviewOutcome.REJECTED
-                | ReviewOutcome.REJECT_EXHAUSTED
-                | ReviewOutcome.UNKNOWN
-                | ReviewOutcome.SESSION_ERROR
-                | ReviewOutcome.IMPROVEMENT_ERROR
-            ):
-                pass
-            case ReviewOutcome.DISABLED:
-                raise OutcomeContractError(
-                    reason="disabled review cannot create a round"
-                )
-            case unreachable:
-                assert_never(unreachable)
+        outcome = self.outcome
+        if outcome is ReviewOutcome.REJECTED and self.round_number >= self.max_rounds:
+            raise OutcomeContractError(
+                reason="rejected is intermediate and requires a remaining round"
+            )
+        elif outcome is ReviewOutcome.REJECT_EXHAUSTED and self.round_number != self.max_rounds:
+            raise OutcomeContractError(
+                reason="reject_exhausted requires the final review round"
+            )
+        elif outcome in (
+            ReviewOutcome.ACCEPTED,
+            ReviewOutcome.REJECTED,
+            ReviewOutcome.REJECT_EXHAUSTED,
+            ReviewOutcome.UNKNOWN,
+            ReviewOutcome.SESSION_ERROR,
+            ReviewOutcome.IMPROVEMENT_ERROR,
+        ):
+            pass
+        elif outcome is ReviewOutcome.DISABLED:
+            raise OutcomeContractError(
+                reason="disabled review cannot create a round"
+            )
+        else:
+            assert_never(outcome)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class TerminalAnchor:
     """The phase from which a terminal run may be diagnosed or continued."""
 
@@ -200,7 +200,7 @@ def _validate_review_history(review_rounds: tuple[ReviewRound, ...]) -> None:
             )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, **SLOTS_KWARG)
 class RunOutcome:
     """Authoritative V3 result with terminal, workflow, attempt, and review facts."""
 
@@ -232,22 +232,22 @@ class RunOutcome:
 
         _validate_review_history(self.review_rounds)
 
-        match self.review_outcome:
-            case ReviewOutcome.DISABLED | ReviewOutcome.ACCEPTED:
-                pass
-            case (
-                ReviewOutcome.REJECTED
-                | ReviewOutcome.REJECT_EXHAUSTED
-                | ReviewOutcome.UNKNOWN
-                | ReviewOutcome.SESSION_ERROR
-                | ReviewOutcome.IMPROVEMENT_ERROR
-            ):
-                if self.accepted_attempt_id is not None:
-                    raise OutcomeContractError(
-                        reason="non-accepting review cannot retain an accepted attempt"
-                    )
-            case unreachable:
-                assert_never(unreachable)
+        review_outcome = self.review_outcome
+        if review_outcome in (ReviewOutcome.DISABLED, ReviewOutcome.ACCEPTED):
+            pass
+        elif review_outcome in (
+            ReviewOutcome.REJECTED,
+            ReviewOutcome.REJECT_EXHAUSTED,
+            ReviewOutcome.UNKNOWN,
+            ReviewOutcome.SESSION_ERROR,
+            ReviewOutcome.IMPROVEMENT_ERROR,
+        ):
+            if self.accepted_attempt_id is not None:
+                raise OutcomeContractError(
+                    reason="non-accepting review cannot retain an accepted attempt"
+                )
+        else:
+            assert_never(review_outcome)
 
         if (
             self.validation_succeeded
@@ -275,15 +275,17 @@ class RunOutcome:
             else:
                 terminal_outcome = TerminalOutcome.FAILED
 
-        match terminal_outcome:
-            case TerminalOutcome.PASSED:
-                if self.accepted_attempt_id is None:
-                    raise OutcomeContractError(
-                        reason="passed outcome requires an accepted attempt"
-                    )
-            case TerminalOutcome.PASSED_WITH_REVIEWS | TerminalOutcome.FAILED:
-                pass
-            case unreachable:
-                assert_never(unreachable)
+        if terminal_outcome is TerminalOutcome.PASSED:
+            if self.accepted_attempt_id is None:
+                raise OutcomeContractError(
+                    reason="passed outcome requires an accepted attempt"
+                )
+        elif terminal_outcome in (
+            TerminalOutcome.PASSED_WITH_REVIEWS,
+            TerminalOutcome.FAILED,
+        ):
+            pass
+        else:
+            assert_never(terminal_outcome)
 
         object.__setattr__(self, "terminal_outcome", terminal_outcome)
