@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from typing import TypeAlias
 
 import pytest
 import yaml
+from pydantic import TypeAdapter
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -23,18 +25,19 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPOSITORY_ROOT / "src" / "pyproject.toml"
 WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "hardware-free-pytest.yml"
 PYLINT_WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "pylint.yml"
-JUNIT_NAME = "task-26-seam-runtime-continuation-trace.xml"
 SUPPORTED_PYTHON_VERSIONS = ("3.10", "3.12")
+PUSH_BRANCH = "v1.2.1-dev"
 HARDWARE_FREE_COMMAND = (
-    "python -m pytest tests -q -m 'not opencode and not docker and not slow' "
-    f"--junitxml=../../.omo/evidence/{JUNIT_NAME}"
+    "python -m pytest tests -q -m 'not opencode and not docker and not slow'"
 )
-INSTALL_DEV_COMMAND = "python -m pip install '.[dev]'"
+BASE_IMPORT_SMOKE_COMMAND = (
+    "python -c \"from core.run_outcome import RunOutcome; from core.compat import SLOTS_KWARG\""
+)
+INSTALL_COMMAND = "python -m pip install '.[dev]'"
 EXPECTED_DEV_EXTRAS = (
     "pytest>=7.4,<9",
     "PyYAML>=6.0,<7",
     "pydantic>=2.8,<3",
-    "typing_extensions>=4.12,<5",
     "tomli>=2.0,<3; python_version < '3.11'",
 )
 EXPECTED_PACKAGES = (
@@ -63,18 +66,54 @@ EXPECTED_MARKERS = {
     ),
 }
 
+# yaml.BaseLoader emits only str, list, and dict nodes; this recursive alias
+# captures that shape so isinstance narrowing in the tests yields precise
+# dict[str, _YamlValue] / list[_YamlValue] types rather than Any/Unknown.
+_YamlValue: TypeAlias = str | list["_YamlValue"] | dict[str, "_YamlValue"]
+
+_MAPPING_ADAPTER: TypeAdapter[dict[str, object]] = TypeAdapter(dict[str, object])
+_SEQUENCE_ADAPTER: TypeAdapter[list[object]] = TypeAdapter(list[object])
+
+
+def _coerce_yaml_value(value: object) -> _YamlValue:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        items = _SEQUENCE_ADAPTER.validate_python(value)
+        return [_coerce_yaml_value(item) for item in items]
+    if isinstance(value, dict):
+        mapping = _MAPPING_ADAPTER.validate_python(value)
+        return {key: _coerce_yaml_value(val) for key, val in mapping.items()}
+    raise ValueError(f"unsupported YAML node: {type(value).__name__}")
+
 
 def _load_pyproject():
     with PYPROJECT_PATH.open("rb") as stream:
         return tomllib.load(stream)
 
 
-def _load_workflow(path: Path = WORKFLOW_PATH):
+def _load_workflow(path: Path = WORKFLOW_PATH) -> dict[str, _YamlValue]:
     assert path.is_file(), f"CI contract missing: expected {path}"
     with path.open(encoding="utf-8") as stream:
-        workflow = yaml.load(stream, Loader=yaml.BaseLoader)
-    assert isinstance(workflow, dict)
-    return workflow
+        parsed = _MAPPING_ADAPTER.validate_python(
+            yaml.load(stream, Loader=yaml.BaseLoader)
+        )
+    return {key: _coerce_yaml_value(val) for key, val in parsed.items()}
+
+
+def test_coerce_yaml_value_recursively_rejects_unsupported_nodes() -> None:
+    # Given values that are not str, list, or dict — including ones nested
+    # inside otherwise-valid containers.
+    bad_leaves = (42, 3.14, None, True, object())
+    nested = {"ok": ["fine", {"bad": 42}]}
+
+    # Then the recursive validator rejects every unsupported leaf and does not
+    # silently pass the nested int through.
+    for bad in bad_leaves:
+        with pytest.raises(ValueError, match="unsupported YAML node"):
+            _ = _coerce_yaml_value(bad)
+    with pytest.raises(ValueError, match="unsupported YAML node"):
+        _ = _coerce_yaml_value(nested)
 
 
 def test_ci_project_declares_hardware_free_dev_contract() -> None:
@@ -103,60 +142,82 @@ def test_pull_request_workflow_runs_exact_hardware_free_gate() -> None:
     # Given the Task 26 workflow parsed without YAML 1.1's `on` coercion.
     workflow = _load_workflow()
 
-    # When its mandatory job and steps are selected structurally.
-    assert workflow["on"] == "pull_request"
+    # When its triggers, job and steps are selected structurally.
+    triggers = workflow["on"]
+    assert isinstance(triggers, dict)
+    assert "pull_request" in triggers
+    assert triggers["push"] == {"branches": [PUSH_BRANCH]}
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
     assert list(jobs) == ["hardware-free"]
     job = jobs["hardware-free"]
+    assert isinstance(job, dict)
     steps = job["steps"]
+    assert isinstance(steps, list)
     setup = next(
-        step for step in steps if step.get("uses") == "actions/setup-python@v5"
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("uses") == "actions/setup-python@v5"
     )
-    install = next(step for step in steps if step.get("name") == "Install dev extras")
-    test = next(step for step in steps if step.get("name") == "Run hardware-free suite")
-    checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v4")
+    install = next(
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("name") == "Install base package and test tooling"
+    )
+    smoke = next(
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("name") == "Base import smoke"
+    )
+    test = next(
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("name") == "Run hardware-free suite"
+    )
+    checkout = next(
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("uses") == "actions/checkout@v4"
+    )
 
-    # Then a standard CPU runner installs the declared extra and runs the exact gate.
+    # Then a standard CPU runner installs the declared extra, smoke-imports the
+    # base package, and runs the exact hardware-free gate.
     assert job["runs-on"] == "ubuntu-latest"
     assert job["timeout-minutes"] == "20"
     assert job["env"] == {"PYTHONUTF8": "1"}
     assert job["strategy"] == {
         "matrix": {"python-version": list(SUPPORTED_PYTHON_VERSIONS)}
     }
-    assert job["defaults"]["run"]["working-directory"] == "src"
+    defaults = job["defaults"]
+    assert isinstance(defaults, dict)
+    run_section = defaults["run"]
+    assert isinstance(run_section, dict)
+    assert run_section["working-directory"] == "src"
     assert setup["name"] == "Set up Python ${{ matrix.python-version }}"
     assert setup["with"] == {"python-version": "${{ matrix.python-version }}"}
-    assert install["run"] == INSTALL_DEV_COMMAND
+    assert install["run"] == INSTALL_COMMAND
+    assert smoke["run"] == BASE_IMPORT_SMOKE_COMMAND
     assert test["run"] == HARDWARE_FREE_COMMAND
     assert checkout["with"] == {"persist-credentials": "false"}
     assert "continue-on-error" not in job
     assert "continue-on-error" not in test
-    assert any(step.get("uses") == "actions/checkout@v4" for step in steps)
-    assert any(step.get("uses") == "actions/setup-python@v5" for step in steps)
+    # The smoke must run after install and before the gate.
+    assert steps.index(smoke) > steps.index(install)
+    assert steps.index(test) > steps.index(smoke)
 
 
-def test_workflow_uploads_failure_evidence_without_privileged_resources() -> None:
+def test_workflow_declares_no_privileged_resources_or_secrets() -> None:
     # Given the structurally parsed mandatory workflow.
     workflow = _load_workflow()
-    job = workflow["jobs"]["hardware-free"]
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["hardware-free"]
+    assert isinstance(job, dict)
 
-    # When the failure artifact step and job capabilities are inspected.
-    upload = next(
-        step
-        for step in job["steps"]
-        if step.get("uses") == "actions/upload-artifact@v4"
-    )
-
-    # Then failed pytest evidence is retained without services, secrets, or devices.
-    assert upload["if"] == "failure()"
-    assert upload["with"] == {
-        "name": "hardware-free-pytest-junit-${{ matrix.python-version }}",
-        "path": f"../.omo/evidence/{JUNIT_NAME}",
-        "if-no-files-found": "error",
-        "include-hidden-files": "true",
-        "retention-days": "7",
-    }
+    # When the job capabilities and workflow text are inspected.
+    # Then the gate needs no services, containers, devices, secrets, or privilege.
     assert not {"services", "container", "environment"} & set(job)
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8").lower()
     assert all(
@@ -177,8 +238,16 @@ def test_pylint_workflow_uses_supported_linux_interpreters() -> None:
     workflow = _load_workflow(PYLINT_WORKFLOW_PATH)
 
     # When its runner and interpreter matrix are inspected.
-    job = workflow["jobs"]["build"]
-    versions = job["strategy"]["matrix"]["python-version"]
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["build"]
+    assert isinstance(job, dict)
+    strategy = job["strategy"]
+    assert isinstance(strategy, dict)
+    matrix = strategy["matrix"]
+    assert isinstance(matrix, dict)
+    versions = matrix["python-version"]
+    assert isinstance(versions, list)
 
     # Then lint runs only on supported Linux Python versions, including the floor.
     assert job["runs-on"] == "ubuntu-latest"

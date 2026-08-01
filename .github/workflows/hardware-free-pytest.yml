@@ -1,6 +1,10 @@
 name: Hardware-free pytest
 
-on: pull_request
+on:
+  pull_request:
+  push:
+    branches:
+      - v1.2.1-dev
 
 permissions:
   contents: read
@@ -26,18 +30,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Prepare evidence directory
-        run: mkdir -p ../../.omo/evidence
-      - name: Install dev extras
+      - name: Install base package and test tooling
         run: python -m pip install '.[dev]'
+      - name: Base import smoke
+        run: python -c "from core.run_outcome import RunOutcome; from core.compat import SLOTS_KWARG"
       - name: Run hardware-free suite
-        run: python -m pytest tests -q -m 'not opencode and not docker and not slow' --junitxml=../../.omo/evidence/task-26-seam-runtime-continuation-trace.xml
-      - name: Upload failed-test evidence
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hardware-free-pytest-junit-${{ matrix.python-version }}
-          path: ../.omo/evidence/task-26-seam-runtime-continuation-trace.xml
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 7
+        run: python -m pytest tests -q -m 'not opencode and not docker and not slow'

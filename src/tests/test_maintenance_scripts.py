@@ -1,9 +1,11 @@
+import io
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+from contextlib import redirect_stderr
 from pathlib import Path
 from typing import cast
 
@@ -32,6 +34,57 @@ FAKE_SEAM_PYTHON = (
 )
 
 WRAPPER_TIMEOUT_SECONDS = 180
+
+_DASHBOARD_BACKEND_CHOICES = ("auto", "textual", "rich")
+
+
+def _dashboard_backend_choices_from_parser() -> tuple[str, ...]:
+    """Derive the verified ``--dashboard-backend`` choices from the real parser.
+
+    Probes the public parser's invalid-choice error so the shell help contract
+    cannot drift from the parser's actual ``choices=`` tuple, without
+    introspecting private/untyped argparse internals.
+    """
+    from tests.e2e import e2e_test_v3 as target
+
+    parser = target.build_parser()
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        with pytest.raises(SystemExit):
+            _ = parser.parse_args(["--dashboard-backend", "__probe__"])
+    message = stderr.getvalue()
+    marker = "(choose from "
+    start = message.rfind(marker)
+    assert start != -1, f"argparse did not list choices: {message!r}"
+    rest = message[start + len(marker) :]
+    end = rest.find(")")
+    assert end != -1, f"argparse did not close choices list: {message!r}"
+    return tuple(
+        token.strip().strip("'\"")
+        for token in rest[:end].split(",")
+        if token.strip()
+    )
+
+
+def _run_shell_raw(launcher: str, cli_args: list[str]) -> tuple[int, str]:
+    """Run a launcher via ``bash -s`` without the fake-Python project harness.
+
+    Used for ``--help`` and pre-Python validation/conflict paths where the
+    script exits before resolving the Python interpreter.
+    """
+    driver = f'exec bash scripts/{launcher} "$@"\n'
+    result = subprocess.run(
+        ["bash", "-s", "--", *cli_args],
+        input=driver.encode("utf-8"),
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        timeout=WRAPPER_TIMEOUT_SECONDS,
+        check=False,
+    )
+    combined = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode(
+        "utf-8", errors="replace"
+    )
+    return result.returncode, combined
 
 
 def _run_wrapper_via_bash(
@@ -269,3 +322,98 @@ def test_public_launcher_forwards_dashboard_mode_tokens(tmp_path: Path) -> None:
     assert tokens[tokens.index("--dashboard-mode") + 1] == "off"
     assert tokens.count("--verbose") == 1
     assert tokens[tokens.index("--container-retention") + 1] == "retain"
+
+
+@NEEDS_BASH
+@pytest.mark.parametrize("launcher", ["run_e2e_v3.sh", "run_seam.sh"])
+def test_shell_help_documents_dashboard_backend_choices(launcher: str) -> None:
+    # Given the real parser's verified --dashboard-backend choices.
+    expected_choices = _dashboard_backend_choices_from_parser()
+
+    # When the launcher help text is captured.
+    rc, combined = _run_shell_raw(launcher, ["--help"])
+
+    # Then the help documents the flag and every verified choice.
+    assert rc == 0, combined
+    assert "--dashboard-backend" in combined
+    assert "Dashboard renderer" in combined
+    for choice in expected_choices:
+        assert choice in combined
+    assert tuple(sorted(expected_choices)) == tuple(sorted(_DASHBOARD_BACKEND_CHOICES))
+
+
+@NEEDS_BASH
+@pytest.mark.parametrize("launcher", ["run_e2e_v3.sh", "run_seam.sh"])
+def test_shell_help_documents_seal_manifest_and_continue_conflict(launcher: str) -> None:
+    # Given the launcher help text.
+    rc, combined = _run_shell_raw(launcher, ["--help"])
+
+    # Then it documents --seal-manifest as opt-in direct-run sealing.
+    assert rc == 0, combined
+    assert "--seal-manifest" in combined
+    assert "run-manifest.v1.json" in combined
+    # And it states the --continue-from conflict.
+    assert "--continue-from" in combined
+    assert "conflicts with --continue-from" in combined
+
+
+@NEEDS_BASH
+@pytest.mark.parametrize(
+    ("launcher", "cli_args"),
+    [
+        ("run_e2e_v3.sh", ["demo-project", "--dashboard-backend", "banana"]),
+        ("run_e2e_v3.sh", ["demo-project", "--dashboard-backend"]),
+        ("run_seam.sh", ["demo-project", "--dashboard-backend", "banana"]),
+        ("run_seam.sh", ["demo-project", "--dashboard-backend"]),
+    ],
+)
+def test_dashboard_backend_validation_is_actionable(
+    launcher: str,
+    cli_args: list[str],
+) -> None:
+    # Given an invalid or missing --dashboard-backend value on either launcher.
+    rc, combined = _run_shell_raw(launcher, cli_args)
+
+    # Then the launcher exits nonzero with actionable guidance and never launches.
+    assert rc != 0, combined
+    assert "--dashboard-backend requires one of:" in combined
+    for choice in _DASHBOARD_BACKEND_CHOICES:
+        assert choice in combined
+
+
+@NEEDS_BASH
+@pytest.mark.parametrize(
+    "cli_args",
+    [
+        ["--continue-from", "/tmp/parent/summary.json", "--seal-manifest"],
+        ["--seal-manifest", "--continue-from", "/tmp/parent/summary.json"],
+    ],
+)
+def test_run_e2e_v3_seal_manifest_conflicts_with_continue_from_both_orders(
+    cli_args: list[str],
+) -> None:
+    # Given --seal-manifest combined with --continue-from in either order.
+    rc, combined = _run_shell_raw("run_e2e_v3.sh", cli_args)
+
+    # Then the launcher exits nonzero with the actionable conflict text.
+    assert rc != 0, combined
+    assert "--seal-manifest is not valid with --continue-from" in combined
+
+
+@NEEDS_BASH
+@pytest.mark.parametrize(
+    "cli_args",
+    [
+        ["--continue-from", "/tmp/parent/summary.json", "--seal-manifest"],
+        ["--seal-manifest", "--continue-from", "/tmp/parent/summary.json"],
+    ],
+)
+def test_run_seam_seal_manifest_conflicts_with_continue_from_both_orders(
+    cli_args: list[str],
+) -> None:
+    # Given the public launcher with both flags in either order.
+    rc, combined = _run_shell_raw("run_seam.sh", cli_args)
+
+    # Then it rejects the conflict before forwarding to the V3 wrapper.
+    assert rc != 0, combined
+    assert "--seal-manifest is not valid with --continue-from" in combined
