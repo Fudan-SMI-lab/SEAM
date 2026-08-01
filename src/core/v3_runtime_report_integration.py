@@ -97,7 +97,7 @@ def _bind_environment(
             return
         target_matches = tuple(
             environment
-            for environment in executable_matches
+            for environment in namespace_environments
             if environment.environment_id == target.environment_id
         )
         if len(target_matches) != 1:
