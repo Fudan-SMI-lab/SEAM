@@ -58,6 +58,7 @@ from .resource_manifest_models import (
     RESOURCE_MANIFEST_FILENAME as RESOURCE_MANIFEST_FILENAME,
     RESOURCE_MANIFEST_SCHEMA as RESOURCE_MANIFEST_SCHEMA,
     RESOURCE_MANIFEST_SCHEMA_VERSION as RESOURCE_MANIFEST_SCHEMA_VERSION,
+    ContinuationTargetReference as ContinuationTargetReference,
     EnvironmentRecord as EnvironmentRecord,
     EnvironmentType as EnvironmentType,
     FactProvenance as FactProvenance,

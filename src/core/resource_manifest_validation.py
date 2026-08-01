@@ -4,6 +4,10 @@ import typing
 
 from pydantic import ValidationError
 
+from .resource_manifest_continuation_target import (
+    merge_continuation_target,
+    validate_continuation_target,
+)
 from .resource_manifest_models import (
     EnvironmentRecord,
     FactProvenance,
@@ -100,6 +104,10 @@ def validate_manifest_structure(manifest: ResourceManifest) -> None:
     environment_ids = tuple(item.environment_id for item in manifest.environments)
     if len(environment_ids) != len(set(environment_ids)):
         raise _error(ResourceManifestErrorKind.DUPLICATE_FACT, "duplicate environment")
+    environments_by_id = {
+        item.environment_id: item for item in manifest.environments
+    }
+    validate_continuation_target(manifest, environments_by_id)
     for environment in manifest.environments:
         environment_names = frozenset(fact.name for fact in environment.facts)
         if not _REQUIRED_ENVIRONMENT_FACTS.issubset(environment_names):
@@ -109,14 +117,14 @@ def validate_manifest_structure(manifest: ResourceManifest) -> None:
             )
         _ = environment_namespace(environment)
         require_observed_receipts(environment, manifest.probe_receipts)
-    environment_namespaces = {
-        item.environment_id: environment_namespace(item)
-        for item in manifest.environments
-    }
     require_receipt_contexts(
         manifest.facts, manifest.environments, manifest.probe_receipts
     )
     require_backend_resource_context(manifest)
+    environment_namespaces = {
+        env_id: environment_namespace(env)
+        for env_id, env in environments_by_id.items()
+    }
     for reference in manifest.phase5_environment_references:
         target = reference.environment_reference
         valid = (
@@ -225,6 +233,10 @@ def merge_update(
         current.environments, update.environments, update.probe_receipts
     )
     require_receipt_contexts(combined_facts, environments, receipts)
+    continuation_target = merge_continuation_target(
+        current.continuation_target,
+        update.continuation_target,
+    )
     try:
         manifest = ResourceManifest.model_validate(
             {
@@ -234,6 +246,7 @@ def merge_update(
                 "environments": environments,
                 "phase5_environment_references": references,
                 "probe_receipts": receipts,
+                "continuation_target": continuation_target,
             }
         )
         if not terminal_seal:

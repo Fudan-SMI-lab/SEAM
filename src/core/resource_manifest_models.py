@@ -196,6 +196,29 @@ class Phase5EnvironmentReference(_FrozenModel):
     environment_reference: ProvenanceFact
 
 
+class ContinuationTargetReference(_FrozenModel):
+    """Typed explicit continuation-target environment reference.
+
+    Carries the exact Phase-2 environment identifier plus the namespace
+    the direct runner recorded, so structural validation can prove
+    namespace consistency between the reference and the recorded
+    environment — not merely that a namespace mapping exists.
+    """
+
+    environment_id: _SafeId
+    namespace: str
+
+    @field_validator("namespace")
+    @classmethod
+    def require_exact_namespace(cls, value: str) -> str:
+        if _SAFE_NAMESPACE.fullmatch(value) is None:
+            raise PydanticCustomError(
+                "unsafe_namespace",
+                "continuation target namespace must be host or container:<safe-id>",
+            )
+        return value
+
+
 class ResourceManifestIdentity(_FrozenModel):
     run_id: _SafeId
     workflow_digest: _Digest
@@ -222,6 +245,7 @@ class ResourceManifest(_FrozenModel):
     probe_receipts: Annotated[
         typing.Tuple[ProbeReceipt, ...], Field(max_length=32)
     ] = ()
+    continuation_target: typing.Optional[ContinuationTargetReference] = None
 
 
 class ResourceManifestUpdate(_FrozenModel):
@@ -236,3 +260,4 @@ class ResourceManifestUpdate(_FrozenModel):
     probe_receipts: Annotated[
         typing.Tuple[ProbeReceipt, ...], Field(max_length=16)
     ] = ()
+    continuation_target: typing.Optional[ContinuationTargetReference] = None
