@@ -37,6 +37,8 @@ class RuntimeScenario:
     container_runtime: FakeContainerRuntime | None = None
     server_cleanup_error: RuntimeError | None = None
     resource_seal_error: OSError | None = None
+    seal_manifest: bool = False
+    validation_fails: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +132,7 @@ def run_runtime_scenario(
         opencode_readiness="off",
         container_retention=scenario.container_retention,
         save_agent_trace=scenario.save_agent_trace,
+        seal_manifest=scenario.seal_manifest,
     )
     assert server_calls == ["resolve"]
     assert manager is not None
@@ -152,14 +155,20 @@ def read_json(path: Path) -> JsonObject:
 def _write_workflow(tmp_path: Path, scenario: RuntimeScenario) -> Path:
     validation = tmp_path / "v.py"
     count_path = tmp_path / "validation-count.txt"
-    _ = validation.write_text(
-        "from pathlib import Path\n"
-        f"count_path = Path({str(count_path)!r})\n"
-        "count = int(count_path.read_text()) if count_path.exists() else 0\n"
-        "count_path.write_text(str(count + 1), encoding='utf-8')\n"
-        "print('validated runtime')\n",
-        encoding="utf-8",
-    )
+    if scenario.validation_fails:
+        _ = validation.write_text(
+            "import sys\nprint('validation failed')\nsys.exit(1)\n",
+            encoding="utf-8",
+        )
+    else:
+        _ = validation.write_text(
+            "from pathlib import Path\n"
+            + f"count_path = Path({str(count_path)!r})\n"
+            + "count = int(count_path.read_text()) if count_path.exists() else 0\n"
+            + "count_path.write_text(str(count + 1), encoding='utf-8')\n"
+            + "print('validated runtime')\n",
+            encoding="utf-8",
+        )
     command = json.dumps(f'"{sys.executable}" "{validation}"')
     backend = ""
     if scenario.container_source is not None:

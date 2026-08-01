@@ -28,6 +28,22 @@ from .e2e_v3_runtime_continuation_cases import (
     test_v3_runtime_continuation_anchor_matrix_runs_fresh_child_only as test_v3_runtime_continuation_anchor_matrix_runs_fresh_child_only,
     test_v3_runtime_missing_environment_refuses_before_child_side_effects as test_v3_runtime_missing_environment_refuses_before_child_side_effects,
 )
+from .e2e_v3_runtime_sealing_cases import (
+    test_v3_runtime_faulted_seal_preserves_pass_headline_and_exit_code as test_v3_runtime_faulted_seal_preserves_pass_headline_and_exit_code,
+    test_v3_runtime_seal_emits_exactly_one_manifest_sealing_line as test_v3_runtime_seal_emits_exactly_one_manifest_sealing_line,
+    test_v3_runtime_seal_preserves_fail_headline_and_exit_code as test_v3_runtime_seal_preserves_fail_headline_and_exit_code,
+    test_v3_runtime_seal_preserves_pass_headline_and_exit_code as test_v3_runtime_seal_preserves_pass_headline_and_exit_code,
+)
+from .e2e_v3_direct_seal_continuation_cases import (
+    test_direct_seal_matrix_continuation_succeeds as test_direct_seal_matrix_continuation_succeeds,
+    test_direct_seal_sidecar_projection_and_digest_agree as test_direct_seal_sidecar_projection_and_digest_agree,
+    test_direct_seal_trace_continuation_preserves_lineage_without_raw_copy as test_direct_seal_trace_continuation_preserves_lineage_without_raw_copy,
+)
+from .e2e_v3_direct_seal_refusal_cases import (
+    test_direct_seal_faulted_seal_outcome_neutral_and_refuses as test_direct_seal_faulted_seal_outcome_neutral_and_refuses,
+    test_direct_seal_tamper_refuses_before_child_side_effects as test_direct_seal_tamper_refuses_before_child_side_effects,
+    test_direct_seal_tamper_public_main_refuses as test_direct_seal_tamper_public_main_refuses,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -39,6 +55,7 @@ __all__ = (
     "test_v3_runtime_deletes_owned_container_in_stop_remove_order",
     "test_v3_runtime_exporter_failure_preserves_pass_and_omits_trace_artifacts",
     "test_v3_runtime_exports_recursive_raw_trace_once_without_summary_duplication",
+    "test_v3_runtime_faulted_seal_preserves_pass_headline_and_exit_code",
     "test_v3_runtime_never_deletes_external_existing_container",
     "test_v3_runtime_missing_environment_refuses_before_child_side_effects",
     "test_v3_runtime_owned_cleanup_failure_preserves_pass_and_exits_two",
@@ -48,4 +65,13 @@ __all__ = (
     "test_v3_runtime_required_resource_failure_preserves_phase_result_but_exits_one",
     "test_v3_runtime_retains_owned_container_without_auto_remove_or_delete",
     "test_v3_runtime_review_exhaustion_respects_strict_and_compatibility",
+    "test_v3_runtime_seal_emits_exactly_one_manifest_sealing_line",
+    "test_v3_runtime_seal_preserves_fail_headline_and_exit_code",
+    "test_v3_runtime_seal_preserves_pass_headline_and_exit_code",
+    "test_direct_seal_matrix_continuation_succeeds",
+    "test_direct_seal_sidecar_projection_and_digest_agree",
+    "test_direct_seal_trace_continuation_preserves_lineage_without_raw_copy",
+    "test_direct_seal_faulted_seal_outcome_neutral_and_refuses",
+    "test_direct_seal_tamper_refuses_before_child_side_effects",
+    "test_direct_seal_tamper_public_main_refuses",
 )
