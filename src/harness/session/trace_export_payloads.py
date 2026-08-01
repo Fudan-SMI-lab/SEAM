@@ -43,8 +43,6 @@ def session_reasons(
     contract = retrieval.contract
     if contract.raw is None:
         reasons.append("raw_contract_unavailable")
-    if contract.server_version != "1.18.5":
-        reasons.append("unsupported_server_version")
     if contract.compatibility is Compatibility.INCOMPATIBLE:
         reasons.append("contract_incompatible")
     if not contract.messages.is_full_history:
