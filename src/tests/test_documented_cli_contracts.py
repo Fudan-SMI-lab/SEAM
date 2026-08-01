@@ -220,3 +220,116 @@ def test_documented_review_matrix_uses_run_outcome_authority(
     assert (
         review_outcome(validation=validation, review=review, strict=strict) is expected
     )
+
+
+def test_parser_rejects_seal_manifest_with_continue_from_in_either_order() -> None:
+    # Given the public V3 parser.
+    parser = target.build_parser()
+
+    # When --seal-manifest precedes or follows --continue-from.
+    # Then parse_args exits with the argparse conflict code (2) for both orders.
+    for argv in (
+        ["--continue-from", "summary.json", "--seal-manifest"],
+        ["--seal-manifest", "--continue-from", "summary.json"],
+    ):
+        with pytest.raises(SystemExit) as raised:
+            _ = parser.parse_args(argv)
+        assert raised.value.code == 2
+
+
+_STALE_DIRECT_RUN_CLAIMS = (
+    "Ordinary direct runs currently do not create the sealed root run manifest",
+    "当前普通直接运行尚未生成 continuation 所需的 sealed root run manifest",
+    "普通 direct V3 会写 resource manifest 和 summary，但不会创建",
+)
+
+
+def test_guides_do_not_claim_direct_runs_never_generate_root_manifests() -> None:
+    # Given every public guide that has historically described continuation.
+    guides = (
+        ROOT / "README.md",
+        ROOT / "README.en.md",
+        ROOT / "src" / "docs" / "E2E_TESTING.md",
+    )
+
+    # When each guide is inspected for the stale "direct runs never seal" claim.
+    # Then none of the guides retain the disproved limitation wording.
+    for path in guides:
+        text = path.read_text(encoding="utf-8")
+        for stale in _STALE_DIRECT_RUN_CLAIMS:
+            assert stale not in text, f"stale claim {stale!r} still in {path}"
+
+
+def test_e2e_guide_documents_direct_sealing_model() -> None:
+    # Given the authoritative E2E guide.
+    guide = (ROOT / "src" / "docs" / "E2E_TESTING.md").read_text(encoding="utf-8")
+
+    # Then it documents manifest-sealing.v1.json as opt-in, outcome-neutral,
+    # sidecar/summary-projected observability, with success-only eligibility.
+    assert "manifest-sealing.v1.json" in guide
+    for status in ("not_requested", "succeeded", "failed"):
+        assert status in guide
+    assert "continuation_eligible" in guide
+    assert "opt-in" in guide or "opt in" in guide
+    assert "outcome-neutral" in guide or "outcome neutral" in guide
+    assert "summary.json" in guide
+    # Sealing failure must not change migration PASS/FAIL or the exit code.
+    assert "does not change" in guide or "不改写" in guide or "不改变" in guide
+
+
+_ALL_CONTINUATION_GUIDES = (
+    ROOT / "README.md",
+    ROOT / "README.en.md",
+    ROOT / "README.zh.md",
+    ROOT / "docs" / "User_Guide.md",
+    ROOT / "src" / "README.md",
+    ROOT / "src" / "docs" / "E2E_TESTING.md",
+)
+
+
+def test_all_guides_document_exact_environment_id_plus_namespace_authority() -> None:
+    # Given every public guide that describes continuation environment binding.
+    # Then each guide requires an exact environment_id plus a matching namespace,
+    # explicitly states that namespace alone / list order / fact count are not
+    # authority, and fails closed on missing or ambiguous references.
+    for path in _ALL_CONTINUATION_GUIDES:
+        text = path.read_text(encoding="utf-8")
+        assert "environment_id" in text, (
+            f"{path.name} must document the exact environment_id requirement"
+        )
+        assert "namespace" in text
+        assert (
+            "namespace 单独不是 authority" in text
+            or "namespace alone is never authority" in text
+        ), f"{path.name} must state namespace alone is not authority"
+        assert "list-order" in text or "list order" in text
+        assert "fact-count" in text or "fact count" in text
+        assert "fail closed" in text or "fail-closed" in text
+        assert "namespace-only" not in text, (
+            f"{path.name} retains the disproved namespace-only authority claim"
+        )
+
+
+def test_e2e_guide_documents_optional_sqlite_and_typing_extensions_floor() -> None:
+    # Given the authoritative E2E guide.
+    guide = (ROOT / "src" / "docs" / "E2E_TESTING.md").read_text(encoding="utf-8")
+
+    # Then it documents the optional [sqlite] extra and base typing_extensions,
+    # and keeps the Linux / Python 3.10+ production floor without 3.8/3.9 claims.
+    assert "[sqlite]" in guide
+    assert "pysqlite3-binary" in guide
+    assert "typing_extensions" in guide
+    assert "3.10" in guide
+    assert "3.8" not in guide
+    assert "3.9" not in guide
+
+
+def test_readmes_keep_linux_python_3_10_floor() -> None:
+    # Given the public READMEs.
+    for path in (ROOT / "README.md", ROOT / "README.en.md", ROOT / "docs" / "User_Guide.md"):
+        text = path.read_text(encoding="utf-8")
+        # Then the production floor is Linux / Python 3.10+ with no 3.8/3.9 claim.
+        assert "3.10" in text
+        assert "Linux" in text
+        assert "3.8" not in text
+        assert "3.9" not in text

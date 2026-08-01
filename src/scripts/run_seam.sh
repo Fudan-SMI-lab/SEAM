@@ -66,6 +66,10 @@ Options:
   --dashboard                 Force live terminal dashboard on
   --no-dashboard              Force live terminal dashboard off
   --dashboard-mode MODE       Dashboard mode: auto, on, or off (default: auto)
+  --dashboard-backend BACKEND
+                              Dashboard renderer: auto, textual, or rich (default: auto)
+  --seal-manifest             Seal a root run-manifest.v1.json after a direct run so it is
+                              eligible for --continue-from; conflicts with --continue-from
   --dry-run                   Validate paths without running migration
   --extra 'ARGS...'           Pass extra arguments to the E2E harness
   --verbose                   Enable verbose debug logging
@@ -115,6 +119,7 @@ CONTINUE_FROM=""
 PROJECT_ARG=""
 CONTAINER_RETENTION=""
 SAVE_AGENT_TRACE=""
+SEAL_MANIFEST=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -264,11 +269,15 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --dashboard-backend)
+            if [[ $# -lt 2 || ( "$2" != "auto" && "$2" != "textual" && "$2" != "rich" ) ]]; then
+                echo -e "${RED}Error: --dashboard-backend requires one of: auto, textual, rich.${NC}" >&2
+                exit 1
+            fi
             FORWARD_ARGS+=("--dashboard-backend" "$2")
             shift 2
             ;;
         --seal-manifest)
-            FORWARD_ARGS+=("--seal-manifest")
+            SEAL_MANIFEST=true
             shift
             ;;
         --dry-run)
@@ -320,6 +329,13 @@ fi
 if [[ -n "$CONTINUE_FROM" && "$HAS_WORKFLOW" == true ]]; then
     echo -e "${RED}Error: --workflow is not valid with --continue-from; the parent workflow is pinned.${NC}" >&2
     exit 1
+fi
+if [[ -n "$CONTINUE_FROM" && "$SEAL_MANIFEST" == true ]]; then
+    echo -e "${RED}Error: --seal-manifest is not valid with --continue-from; a continuation child must consume the parent's already-sealed evidence rather than re-seal its own root manifest.${NC}" >&2
+    exit 1
+fi
+if [[ "$SEAL_MANIFEST" == true ]]; then
+    FORWARD_ARGS+=("--seal-manifest")
 fi
 if [[ -n "$CONTINUE_FROM" ]]; then
     CONTINUE_PARENT="$(cd "$(dirname "$CONTINUE_FROM")" 2>/dev/null && pwd -P)" || {
