@@ -50,6 +50,7 @@ def test_public_facade_preserves_original_authored_surface() -> None:
 
     # When / Then
     assert set(contract_module.__all__) == expected
+    assert contract_module.PINNED_VERSION == "1.18.5"
 
 
 def test_complete_capture_parses_version_features_and_round_trips_losslessly() -> None:

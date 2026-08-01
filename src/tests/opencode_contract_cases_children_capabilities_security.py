@@ -57,15 +57,35 @@ def test_unsupported_children_can_never_look_complete(status: int) -> None:
     assert contract.completeness is Completeness.PARTIAL
 
 
-def test_non_pinned_server_version_is_explicitly_incompatible() -> None:
+def test_non_pinned_server_version_is_compatible_when_shapes_are_valid() -> None:
     # Given / When
-    contract = parse_trace_contract(fixture("trace_unsupported_version.json"))
+    contract = parse_trace_contract(fixture("trace_non_pinned_compatible.json"))
 
     # Then
-    assert contract.server_version == "1.19.0"
+    assert contract.server_version == "1.18.10"
+    assert contract.features.health is CapabilityState.SUPPORTED
+    assert contract.compatibility is Compatibility.COMPATIBLE
+    assert contract.completeness is Completeness.COMPLETE
+    assert contract.features.v2_history is CapabilityState.SUPPORTED
+
+
+def test_missing_server_version_is_incompatible_and_health_unknown() -> None:
+    # Given
+    raw = fixture("trace_complete.json").replace(
+        '"healthy": true, "version": "1.18.5"',
+        '"healthy": true',
+        1,
+    )
+
+    # When
+    contract = parse_trace_contract(raw)
+
+    # Then
+    assert contract.server_version == ""
+    assert contract.features.health is CapabilityState.UNKNOWN
     assert contract.compatibility is Compatibility.INCOMPATIBLE
     assert contract.completeness is Completeness.INCOMPATIBLE
-    assert contract.features.v2_history is CapabilityState.SUPPORTED
+    assert contract.to_json_value() is not None
 
 
 def test_hostile_text_is_inert_and_unknown_fields_remain_opaque(
@@ -252,8 +272,11 @@ class TestChildrenCapabilitiesSecurity:
     test_unsupported_children_can_never_look_complete = staticmethod(
         test_unsupported_children_can_never_look_complete
     )
-    test_non_pinned_server_version_is_explicitly_incompatible = staticmethod(
-        test_non_pinned_server_version_is_explicitly_incompatible
+    test_non_pinned_server_version_is_compatible_when_shapes_are_valid = staticmethod(
+        test_non_pinned_server_version_is_compatible_when_shapes_are_valid
+    )
+    test_missing_server_version_is_incompatible_and_health_unknown = staticmethod(
+        test_missing_server_version_is_incompatible_and_health_unknown
     )
     test_hostile_text_is_inert_and_unknown_fields_remain_opaque = staticmethod(
         test_hostile_text_is_inert_and_unknown_fields_remain_opaque
