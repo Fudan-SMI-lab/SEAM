@@ -201,6 +201,22 @@ class _TraceLifecycleSummary(_FrozenModel):
     correlation: Optional[_TraceCorrelationSummary] = None
 
 
+class ManifestSealingSummaryProjection(_FrozenModel):
+    """Bounded projection of the direct-run sealing result into summary.json.
+
+    This optional field is written only by the outcome-neutral projection
+    in :mod:`core.manifest_sealing_projection` after the ordinary
+    finalizer freezes ``summary.json``. It is never result authority: a
+    ``failed`` projection never rewrites ``overall_status`` or makes a
+    passing migration ineligible for any other reason than the parent's
+    own sealing outcome.
+    """
+
+    status: _Status
+    sidecar_path: _Text
+    continuation_eligible: bool
+
+
 class RunSummaryDocument(_FrozenModel):
     run_id: _SafeId
     base_url: _Text
@@ -225,6 +241,7 @@ class RunSummaryDocument(_FrozenModel):
     trace: _TraceLifecycleSummary = _TraceLifecycleSummary()
     continuation: Optional[_ContinuationRunSummary] = None
     runtime: Optional[V3RuntimeReport] = None
+    manifest_sealing: Optional[ManifestSealingSummaryProjection] = None
 
     @field_validator("overall_status", mode="before")
     @classmethod
