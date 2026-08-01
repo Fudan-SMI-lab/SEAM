@@ -151,7 +151,7 @@ def graph(
     }
     contract = parse_trace_contract(json.dumps(payload, ensure_ascii=False))
     errors = _errors(child_status, malformed_messages)
-    state = _state(contract.compatibility, contract.completeness, version, errors)
+    state = _state(contract.compatibility, contract.completeness, errors)
     fallback_children = None
     fallback_capture = None
     if fallback_ids or fallback_capture_only:
@@ -262,13 +262,12 @@ def _errors(child_status: int, malformed_messages: bool) -> tuple[str, ...]:
 def _state(
     compatibility: Compatibility,
     completeness: Completeness,
-    version: str,
     errors: tuple[str, ...],
 ) -> TraceCapabilityState:
-    if errors or compatibility is Compatibility.INCOMPATIBLE:
+    if errors:
         return TraceCapabilityState.ERROR
-    if version != "1.18.5":
-        return TraceCapabilityState.UNSUPPORTED
+    if compatibility is Compatibility.INCOMPATIBLE:
+        return TraceCapabilityState.ERROR
     if completeness is Completeness.COMPLETE:
         return TraceCapabilityState.COMPATIBLE
     return TraceCapabilityState.PARTIAL
