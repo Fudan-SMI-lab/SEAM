@@ -66,7 +66,7 @@ PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
 ```
 
 - Review Gate 默认关闭；启用后，有效验证加显式 `accept` 才是普通 PASS。严格模式是最终有效默认值，只有 `reject_exhausted` 可由 `--no-review-fail-closed` 放宽为 `passed_with_reviews`；unknown、session error、improvement error 和验证失败仍然 FAIL。
-- `--continue-from` 只接受显式的终态父运行 `summary.json`。它会创建全新子会话和独立子证据，父报告保持不可变；不是崩溃恢复，也不恢复进行中的 Agent 或 Phase 状态。当前普通直接运行尚未生成 continuation 所需的 sealed root run manifest，因此不要宣称任意直接运行都可继续。
+- `--continue-from` 只接受显式的终态父运行 `summary.json`。它会创建全新子会话和独立子证据，父报告保持不可变；不是崩溃恢复，也不恢复进行中的 Agent 或 Phase 状态。直接运行只有在显式传入 `--seal-manifest` 且封存成功时才具备 continuation 资格；该可选封存结果会投影到 `summary.json` 并写出 `manifest-sealing.v1.json` sidecar（状态 `not_requested|succeeded|failed`、`continuation_eligible`），但它是 outcome-neutral 的——封存失败不改变迁移 PASS/FAIL、`RunOutcome` 或原始退出码。环境绑定 authority 要求精确的 `environment_id` 加上匹配的 `namespace`；namespace 单独不是 authority，不接受 list-order、fact-count 或 silent fallback，缺失或歧义时 fail closed。
 - 容器默认保留。`delete` 只对 SEAM 明确拥有且现场复核通过的 image 容器生效；外部或用户容器永不删除。已通过的运行若请求清理但清理失败，迁移结果仍是 PASS，但最终进程退出码为 2。
 - `--save-agent-trace` 是默认关闭的可选旁路。它递归导出 OpenCode 可访问的原始数据，不脱敏、不截断已接受的数据，但受容量和图边界限制；不可访问、分页、未知或不支持的数据会明确标为 partial。它不能导出提供方隐藏的 reasoning，也不改变 continuation authority 或冻结的 `RunOutcome`。普通可选 trace 失败不改变退出码，但 continuation 的 required evidence publication 失败会使 finalization 退出 1。
 - Replay 只显示同一进程中已接受的真实 Phase 5 receipt 所对应的命令。SEAM 不自动执行 replay，也不保证确定性复现。
