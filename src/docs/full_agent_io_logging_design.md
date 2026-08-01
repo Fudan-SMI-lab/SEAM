@@ -48,13 +48,13 @@ Trace export、server/session cleanup 或可选 telemetry 失败会形成诊断�
 
 超过任一上限时，导出器不会截断后宣称 complete。它拒绝越界数据或停止扩展对应范围，记录明确 reason，并使 manifest partial/error。Destination 在 publish 前必须不存在；全部 session/overflow artifacts 在 private sibling staging tree 中写入，`manifest.json` 完成后才整体原子发布。未发布 staging 会清理，清理失败也进入诊断。
 
-## 3. OpenCode v1.18.5 feature detection
+## 3. OpenCode capability detection（capability 由 endpoint 和 body shape 决定）
 
-Capability 来自 endpoint 状态和 body schema，不从 version 字符串单独猜测。
+Capability 来自 endpoint status 和 response body shape。任何健康的非空 product version（包括非参考版本）只作为 metadata 投影到 `manifest.server.versions`，不单独作为兼容性结论。`PINNED_VERSION`（当前为 `1.18.5`）是 verified reference/deployment baseline，publicly exported 但不是 runtime equality gate；version 字符串与参考版本不等本身是 non-authoritative（non-gating），实际 capability 仍由可观察的 endpoint response、body shape 和 error 决定。这里不承诺 blanket future-version support，只承诺 version inequality 单独不否决 capability。
 
-| 能力 | 1.18.5 integrated V1 行为 | 不完整或错误边界 |
+| 能力 | integrated V1 行为 | 不完整或错误边界 |
 | --- | --- | --- |
-| Health/version | health 200、`healthy=true`、version `1.18.5` | 非 pinned version 为 unsupported；malformed pinned response 为 error |
+| Health/version | health 200、`healthy=true`、非空 string version；`1.18.5` 是 verified reference baseline | missing、非-string 或 malformed health/version 为 unknown/error，fail-closed；version 字符串差异单独 non-authoritative |
 | Feature doc | `GET /doc` | 404/405 为 unsupported；其他非 200 为 error |
 | Message history | `GET /session/{sessionID}/message`，不发送正 `limit` | positive limit、pagination cursor、foreign session 或 malformed history 不能称为完整 |
 | Direct children | `GET /session/{sessionID}/children` | 404/405 为 unsupported；401/403/429/5xx 为 error |
@@ -62,7 +62,7 @@ Capability 来自 endpoint 状态和 body schema，不从 version 字符串单�
 
 V1 message history 是 authoritative persisted message projection；V2 durable history 只做 optional enrichment。Direct children 返回 immediate children，recursive graph 由 exporter 按 seed order 和 response order 做 deterministic breadth-first traversal。
 
-Feature state 使用 supported、unsupported、unknown；组合 contract 使用 compatible、partial、unsupported、error。404/405 的 clean unsupported 不等于空 complete，transport/auth/rate-limit/server/malformed 错误也不 silent fallback。
+Feature state 使用 supported、unsupported、unknown；组合 contract 使用 compatible、partial、unsupported、error。404/405 的 clean unsupported 不等于空 complete，transport/auth/rate-limit/server/malformed 错误也不 silent fallback。Missing、非-string 或 malformed version/health evidence 保持 unknown/error，属于 fail-closed 边界，绝不 silent 升级为 compatible 或 complete。
 
 ## 4. Recursive session artifact
 

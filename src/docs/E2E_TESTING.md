@@ -230,17 +230,19 @@ Writer-backed canonical paths are `artifacts/pre-continuation/migration-reports/
 
 Finalizer 只接受位于 report root 内、由当前 hook 新建或实质修改、经过 fingerprint 冻结的文件或目录。Stale destination、symlink escape 和 unchanged pre-existing claim 都拒绝。Raw trace directory 使用 private staging 并在 manifest 完成后整体发布。
 
-## 9. Raw trace 和 OpenCode v1.18.5
+## 9. Raw trace 和 OpenCode capability detection
 
 `--save-agent-trace` 是显式 opt-in；省略和 `--no-save-agent-trace` 都不导出。Active V3 导出 schema v2 correlation，standalone legacy exporter 在没有 typed correlation context 时保留 schema v1。
 
-Pinned OpenCode feature detection 以真实 endpoint 和 body shape 为准：
+OpenCode capability detection 以真实 endpoint status 和 response body shape 为权威。任何健康的非空 product version（包括非参考版本）作为 metadata 投影到 `manifest.server.versions`；`PINNED_VERSION`（当前为 `1.18.5`）是 verified reference/deployment baseline，publicly exported 但不是 runtime equality gate。Version 字符串与 `1.18.5` 不等本身 non-authoritative（non-gating），实际 capability 由可观察 endpoint/shape/error 决定；missing、非-string 或 malformed version/health evidence 保持 unknown/error（fail-closed），不 silent 升级。这里不承诺 blanket future-version support。
 
-- integrated V1 的 `GET /doc` 用于 1.18.5 feature detection。
+Capability 以真实 endpoint 和 body shape 为准：
+
+- integrated V1 的 `GET /doc` 提供 feature detection；capability 由 endpoint status/body shape 决定，不绑定 `1.18.5` 字面值。
 - `GET /session/{id}/message` 不发送正 limit；无 limit 的完整 chronological history 是主消息投影。
 - direct `GET /session/{id}/children` 提供 immediate children。
 - direct children 404/405 时可读取无分页 `GET /session` fallback listing 作为可访问补充，但 direct capability 仍是 unsupported，完整性仍为 partial。
-- `/doc` 或 `/children` 的 404/405 是 honest unsupported；401/403/429、5xx、malformed pinned body、分页 cursor 和 foreign identity 是 error/partial，不是空成功。
+- `/doc` 或 `/children` 的 404/405 是 honest unsupported；401/403/429、5xx、malformed body、分页 cursor 和 foreign identity 是 error/partial，不是空成功。
 
 Trace 是 raw、recursive、transactional、bounded、outcome-neutral。Accessible data 不脱敏且在接受后不截断；超过 byte/graph bounds、未知 part/tool state、不可访问 outputPath、provider-hidden reasoning、unsupported endpoint、分页或 transport error 都保留 truthful partial reason。详见 [`full_agent_io_logging_design.md`](full_agent_io_logging_design.md)。
 
