@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,14 +18,18 @@ from core.resource_manifest import (
     build_phase2_environment,
     build_phase5_reference,
 )
+from core.resource_manifest_models import (
+    ContinuationTargetReference,
+    EnvironmentRecord,
+    FactStatus,
+    ResourceManifestErrorKind,
+)
 from core.resource_manifest_provenance import environment_namespace
 from core.run_outcome import RunOutcome
 from core.v3_runtime_report import (
     AcceptedReplaySource,
     RuntimeReportRequest,
 )
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -86,19 +89,6 @@ def _bind_environment(
             for fact in environment.facts
         )
     )
-    if len(executable_matches) > 1:
-        phase2_matches = tuple(
-            e for e in executable_matches
-            if any(f.name == "phase2.base_alias" for f in e.facts)
-        )
-        if len(phase2_matches) == 1:
-            executable_matches = phase2_matches
-        else:
-            executable_matches = (
-                max(executable_matches, key=lambda e: sum(
-                    1 for f in e.facts if f.value is not None
-                ),),
-            )
     if len(executable_matches) != 1:
         return
     _ = store.write(
@@ -117,6 +107,128 @@ def _bind_environment(
     )
 
 
+def _environment_known_executables(
+    environment: EnvironmentRecord,
+) -> frozenset[str]:
+    """Collect every KNOWN non-null ``interpreter.sys_executable`` value.
+
+    The environment model permits multiple provenance facts with the same
+    semantic name. Returning only the first would silently mask ambiguity;
+    returning all distinct known values lets the caller require exactly
+    one before treating the executable as identity proof.
+    """
+    return frozenset(
+        fact.value
+        for fact in environment.facts
+        if fact.name == "interpreter.sys_executable"
+        and fact.status is FactStatus.KNOWN
+        and fact.value is not None
+    )
+
+
+def _require_phase2_identity_compatible(
+    environment: EnvironmentRecord,
+    request: Phase2EnvironmentRequest,
+) -> None:
+    """Refuse a same-ID record whose namespace or executable is not exact.
+
+    A pre-existing environment with the same identifier may carry richer
+    framework-observed facts (e.g. from a probe). Those facts must be
+    preserved. But before the explicit continuation target can be set or
+    reasserted against that environment, its recorded namespace and
+    interpreter executable must be the exact identity the Phase-2 request
+    names.
+
+    Identity proof requires exactly one known, non-null
+    ``interpreter.sys_executable`` value that equals the Phase-2 request's
+    ``python_path``. Zero known values (failed probe, unknown status) and
+    multiple distinct values (ambiguous provenance) are both refused —
+    absence and ambiguity can never substitute for exact identity proof.
+    A same-ID impostor from a different namespace is likewise refused.
+    """
+    existing_namespace = environment_namespace(environment)
+    if existing_namespace != request.namespace:
+        raise ResourceManifestError(
+            ResourceManifestErrorKind.RUN_CONTEXT_MISMATCH,
+            "Phase-2 environment namespace conflicts with an existing "
+            + f"same-ID record: {request.environment_id}",
+        )
+    known_executables = _environment_known_executables(environment)
+    if len(known_executables) != 1:
+        raise ResourceManifestError(
+            ResourceManifestErrorKind.RUN_CONTEXT_MISMATCH,
+            "Phase-2 target requires exactly one known interpreter "
+            + f"executable for same-ID record: {request.environment_id}",
+        )
+    known_executable = next(iter(known_executables))
+    if known_executable != request.report.python_path:
+        raise ResourceManifestError(
+            ResourceManifestErrorKind.RUN_CONTEXT_MISMATCH,
+            "Phase-2 interpreter executable conflicts with an existing "
+            + f"same-ID record: {request.environment_id}",
+        )
+
+
+def _continuation_target_for(
+    request: Phase2EnvironmentRequest,
+) -> ContinuationTargetReference:
+    return ContinuationTargetReference(
+        environment_id=request.environment_id,
+        namespace=request.namespace,
+    )
+
+
+def _record_phase2_environment(
+    store: ResourceManifestStore,
+    phase2_environment: Phase2EnvironmentRequest,
+) -> None:
+    """Record the Phase-2 environment and pin its exact authority atomically.
+
+    For a new Phase-2 environment the environment record and the typed
+    continuation-target reference are written in a SINGLE
+    ``ResourceManifestUpdate`` so there is no intermediate committed
+    manifest containing the newly recorded environment without its
+    explicit authority.
+
+    For a pre-existing same-ID environment the function verifies the
+    recorded namespace and interpreter executable are compatible with the
+    Phase-2 request, then sets or reasserts the continuation target
+    WITHOUT re-writing the environment facts (preserving richer
+    framework-observed evidence). A same-ID impostor from a different
+    namespace or executable is refused.
+    """
+    current = store.read()
+    existing = next(
+        (
+            environment
+            for environment in current.environments
+            if environment.environment_id == phase2_environment.environment_id
+        ),
+        None,
+    )
+    target = _continuation_target_for(phase2_environment)
+    if current.continuation_target == target:
+        if existing is not None:
+            _require_phase2_identity_compatible(existing, phase2_environment)
+        return
+    if existing is not None:
+        _require_phase2_identity_compatible(existing, phase2_environment)
+        _ = store.write(
+            ResourceManifestUpdate(
+                expected_revision=current.revision,
+                continuation_target=target,
+            )
+        )
+        return
+    _ = store.write(
+        ResourceManifestUpdate(
+            expected_revision=current.revision,
+            environments=(build_phase2_environment(phase2_environment),),
+            continuation_target=target,
+        )
+    )
+
+
 def prepare_runtime_report_request(
     inputs: RuntimeReportingInputs,
 ) -> RuntimeReportRequest:
@@ -128,59 +240,9 @@ def prepare_runtime_report_request(
     phase2_environment = inputs.phase2_environment
     try:
         if store is not None and phase2_environment is not None:
-            current = store.read()
-            if not any(
-                environment.environment_id == phase2_environment.environment_id
-                for environment in current.environments
-            ):
-                _ = store.write(
-                    ResourceManifestUpdate(
-                        expected_revision=current.revision,
-                        environments=(build_phase2_environment(phase2_environment),),
-                    )
-                )
+            _record_phase2_environment(store, phase2_environment)
         if store is not None and source is not None:
             _bind_environment(store, source)
-            current = store.read()
-            attempt_id = source.authority.attempt_id
-            already_bound = any(
-                ref.attempt_id == str(attempt_id)
-                for ref in current.phase5_environment_references
-            )
-            if not already_bound and current.environments:
-                try:
-                    receipt = load_attempt_receipt(source.receipt_path)
-                    ns_envs = tuple(
-                        e for e in current.environments
-                        if environment_namespace(e) == receipt.backend.namespace
-                    )
-                    target = ns_envs[0] if ns_envs else current.environments[0]
-                    _ = store.write(
-                        ResourceManifestUpdate(
-                            expected_revision=current.revision,
-                            phase5_environment_references=(
-                                build_phase5_reference(
-                                    Phase5ReferenceRequest(
-                                        attempt_id=receipt.attempt_id,
-                                        environment_id=target.environment_id,
-                                        namespace=receipt.backend.namespace,
-                                    )
-                                ),
-                            ),
-                        )
-                    )
-                    logger.warning(
-                        "Force-bound phase5 environment reference for attempt %s "
-                        "to %s (disambiguation fallback)",
-                        receipt.attempt_id,
-                        target.environment_id,
-                    )
-                except (AttemptReceiptError, ResourceManifestError):
-                    logger.warning(
-                        "Failed to force-bind phase5 environment reference for attempt %s",
-                        attempt_id,
-                        exc_info=True,
-                    )
     except ResourceManifestError:
         store = None
         source = None
