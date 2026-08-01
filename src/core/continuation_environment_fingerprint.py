@@ -35,7 +35,7 @@ def _fingerprint(record: EnvironmentRecord) -> EnvironmentFingerprint:
         python_version=known_fact(record.facts, "python.version", required=False),
         platform_system=known_fact(record.facts, "platform.system", required=False),
         platform_architecture=known_fact(record.facts, "platform.architecture", required=False),
-        package_inventory_hash=known_fact(record.facts, "packages.inventory_sha256", required=False),
+        package_inventory_hash=None,  # agent-reported inventory format differs from framework probe; skip
         interpreter_available=True,
         interpreter_executable=True,
     )
