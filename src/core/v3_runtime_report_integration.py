@@ -89,8 +89,20 @@ def _bind_environment(
             for fact in environment.facts
         )
     )
-    if len(executable_matches) != 1:
-        return
+    if len(executable_matches) == 1:
+        selected_environment = executable_matches[0]
+    else:
+        target = manifest.continuation_target
+        if target is None:
+            return
+        target_matches = tuple(
+            environment
+            for environment in executable_matches
+            if environment.environment_id == target.environment_id
+        )
+        if len(target_matches) != 1:
+            return
+        selected_environment = target_matches[0]
     _ = store.write(
         ResourceManifestUpdate(
             expected_revision=manifest.revision,
@@ -98,7 +110,7 @@ def _bind_environment(
                 build_phase5_reference(
                     Phase5ReferenceRequest(
                         attempt_id=receipt.attempt_id,
-                        environment_id=executable_matches[0].environment_id,
+                        environment_id=selected_environment.environment_id,
                         namespace=receipt.backend.namespace,
                     )
                 ),
