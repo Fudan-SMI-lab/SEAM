@@ -201,3 +201,119 @@ def test_target_outside_executable_matches_fails_closed(
     _bind_environment(store, source)
 
     assert store.read().phase5_environment_references == ()
+
+
+def test_bare_command_receipt_binds_via_recorded_full_path_basename(
+    tmp_path: Path,
+) -> None:
+    """A bare receipt token resolves duplicate recorded full-path basenames.
+
+    Given a Phase-5 receipt whose ``argv[0]`` is the POSIX bare token
+    ``python`` and two same-namespace environments whose recorded
+    ``interpreter.sys_executable`` is the full path ``/usr/local/bin/python``
+    (basename ``python``), with a validated ``continuation_target`` selecting
+    one of them.  When ``_bind_environment`` resolves the accepted attempt.
+    Then exactly one Phase-5 reference is written to the target and
+    ``_target_environment_id`` with a non-null accepted attempt resolves it
+    -- the producer/consumer format mismatch (bare command vs full path) is
+    bridged by POSIX basename candidate discovery, never by namespace.
+    """
+    store = runtime_store(tmp_path, effective_backend="container")
+    add_container_environment(store)
+    _add_phase2_env(store, _TARGET_ENV)
+    _set_target(store, _TARGET_ENV)
+
+    receipt, source = _accepted_source(tmp_path, executable="python")
+    _bind_environment(store, source)
+
+    references = store.read().phase5_environment_references
+    assert len(references) == 1
+    assert references[0].environment_reference.value == _TARGET_ENV
+
+    resolved_id = _target_environment_id(
+        _resolved_parent(store, tmp_path),
+        _accepted_reference(str(receipt.attempt_id)),
+    )
+    assert resolved_id == _TARGET_ENV
+
+
+def test_bare_command_receipt_with_mismatched_recorded_basename_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A bare token whose basename matches no recorded executable must refuse.
+
+    Given a Phase-5 receipt whose ``argv[0]`` is the POSIX bare token
+    ``python3`` and two same-namespace environments whose recorded
+    ``interpreter.sys_executable`` basename is ``python`` (no environment
+    records ``python3``), with a validated ``continuation_target`` pointing
+    at one of them.  When ``_bind_environment`` resolves the accepted
+    attempt.  Then no Phase-5 reference is written: the bare token is only
+    a candidate filter on recorded basenames, so a token that matches no
+    recorded basename cannot bind -- even when the target is set.
+    """
+    store = runtime_store(tmp_path, effective_backend="container")
+    add_container_environment(store)
+    _add_phase2_env(store, _TARGET_ENV)
+    _set_target(store, _TARGET_ENV)
+
+    _receipt, source = _accepted_source(tmp_path, executable="python3")
+    _bind_environment(store, source)
+
+    assert store.read().phase5_environment_references == ()
+
+
+def test_path_bearing_receipt_with_zero_exact_matches_remains_empty(
+    tmp_path: Path,
+) -> None:
+    """A path-bearing token with no exact match never falls back to basename.
+
+    Given a Phase-5 receipt whose ``argv[0]`` is the POSIX path-bearing
+    token ``/opt/different/python`` and two same-namespace environments
+    whose recorded ``interpreter.sys_executable`` is
+    ``/usr/local/bin/python`` (no exact match), with a validated
+    ``continuation_target`` pointing at one of them.  When
+    ``_bind_environment`` resolves the accepted attempt.  Then no Phase-5
+    reference is written: basename candidate discovery is reserved for bare
+    tokens, so a path-bearing token that does not exactly match any
+    recorded executable cannot bind through basename equivalence or
+    namespace fallback.
+    """
+    store = runtime_store(tmp_path, effective_backend="container")
+    add_container_environment(store)
+    _add_phase2_env(store, _TARGET_ENV)
+    _set_target(store, _TARGET_ENV)
+
+    _receipt, source = _accepted_source(
+        tmp_path, executable="/opt/different/python"
+    )
+    _bind_environment(store, source)
+
+    assert store.read().phase5_environment_references == ()
+
+
+def test_unique_exact_executable_wins_before_basename_candidate_target(
+    tmp_path: Path,
+) -> None:
+    """A unique exact executable match wins even when the target points elsewhere.
+
+    Given a Phase-5 receipt whose ``argv[0]`` is the bare token ``python``,
+    one environment whose recorded ``interpreter.sys_executable`` is exactly
+    ``python`` (unique exact match), another whose recorded executable is
+    ``/usr/local/bin/python`` (basename candidate only), and a validated
+    ``continuation_target`` pointing at the basename-only candidate.  When
+    ``_bind_environment`` resolves the accepted attempt.  Then exactly one
+    Phase-5 reference is written to the unique exact-match environment: the
+    precedence is exact wins, target disambiguates only among multiple
+    candidates, never overrides a unique exact identity.
+    """
+    store = runtime_store(tmp_path, effective_backend="container")
+    _add_phase2_env(store, "bare-exact-venv", executable="python")
+    _add_phase2_env(store, _TARGET_ENV)
+    _set_target(store, _TARGET_ENV)
+
+    _receipt, source = _accepted_source(tmp_path, executable="python")
+    _bind_environment(store, source)
+
+    references = store.read().phase5_environment_references
+    assert len(references) == 1
+    assert references[0].environment_reference.value == "bare-exact-venv"

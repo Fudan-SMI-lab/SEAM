@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from core.artifact_store import ArtifactStore
 from core.execution_env_context import Phase5ReferenceRequest
@@ -80,24 +80,32 @@ def _bind_environment(
         for environment in manifest.environments
         if environment_namespace(environment) == receipt.backend.namespace
     )
-    executable = receipt.invocation.argv[0]
-    executable_matches = tuple(
+    executable_token = receipt.invocation.argv[0]
+    exact_matches = tuple(
         environment
         for environment in namespace_environments
-        if any(
-            fact.name == "interpreter.sys_executable" and fact.value == executable
-            for fact in environment.facts
-        )
+        if executable_token in _environment_known_executables(environment)
     )
-    if len(executable_matches) == 1:
-        selected_environment = executable_matches[0]
+    if exact_matches:
+        candidate_environments = exact_matches
+    elif "/" not in executable_token:
+        candidate_environments = tuple(
+            environment
+            for environment in namespace_environments
+            if executable_token
+            in _environment_known_executable_basenames(environment)
+        )
+    else:
+        candidate_environments = ()
+    if len(candidate_environments) == 1:
+        selected_environment = candidate_environments[0]
     else:
         target = manifest.continuation_target
         if target is None:
             return
         target_matches = tuple(
             environment
-            for environment in namespace_environments
+            for environment in candidate_environments
             if environment.environment_id == target.environment_id
         )
         if len(target_matches) != 1:
@@ -135,6 +143,27 @@ def _environment_known_executables(
         if fact.name == "interpreter.sys_executable"
         and fact.status is FactStatus.KNOWN
         and fact.value is not None
+    )
+
+
+def _environment_known_executable_basenames(
+    environment: EnvironmentRecord,
+) -> frozenset[str]:
+    """Return POSIX basenames of every KNOWN non-null recorded executable.
+
+    Used only when a Phase-5 receipt records a bare POSIX command token
+    (no ``/``) and no environment records that token as an exact
+    ``interpreter.sys_executable`` value. The bare token is then treated
+    as a candidate filter on the POSIX basename of each recorded
+    full-path executable, so a producer/consumer format mismatch (bare
+    command vs full path) is bridged without ever widening selection to
+    the whole namespace. ``PurePosixPath`` is mandatory: the recorded
+    values are Linux container paths and must never be interpreted with
+    host ``os.path`` semantics.
+    """
+    return frozenset(
+        PurePosixPath(value).name
+        for value in _environment_known_executables(environment)
     )
 
 
