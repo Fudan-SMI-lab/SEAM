@@ -11,7 +11,7 @@ from core.continuation_environment import (
     ContinuationEnvironmentErrorKind,
 )
 from core.terminal_continuation import prepare_terminal_continuation
-from tests.opencode_contract_test_helpers import object_member
+from tests.opencode_contract_test_helpers import object_list_member, object_member
 from tests.terminal_run_continuation_test_support import tree_bytes
 from tests.trace_export_part_fixtures import task_part
 from tests.trace_export_test_support import FakeTraceClient, graph, seed
@@ -147,6 +147,64 @@ def test_v3_runtime_missing_environment_refuses_before_child_side_effects(
     child_runner.assert_not_called()
     assert tree_bytes(parent.report_dir) == parent_before
     assert not (parent.reports_root / "child-missing-env-24").exists()
+
+
+def test_v3_runtime_observed_package_drift_refuses_before_child_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a post-Phase-2 parent that records a genuine FRAMEWORK_OBSERVED
+    # execution-python target via the real probe_retained_environment ->
+    # _capture_environment_probe path before sealing.
+    spec = ContinuationParentSpec(
+        "observed-drift",
+        "FAIL",
+        "phase_5_validation",
+        ("passed", "passed", "passed", "failed", "skipped"),
+        3,
+    )
+    parent = create_runtime_parent(tmp_path, monkeypatch, spec)
+    parent_before = tree_bytes(parent.report_dir)
+    child_runner = Mock()
+
+    # And the sealed target's packages.inventory_sha256 is FRAMEWORK_OBSERVED.
+    manifest = read_json(parent.report_dir / "resource-manifest.v1.json")
+    environments = object_list_member(manifest, "environments")
+    target_envs = [
+        env for env in environments if env.get("environment_id") == "execution-python"
+    ]
+    assert len(target_envs) == 1
+    pkg_facts = [
+        fact
+        for fact in object_list_member(target_envs[0], "facts")
+        if fact.get("name") == "packages.inventory_sha256"
+    ]
+    assert len(pkg_facts) == 1
+    assert pkg_facts[0].get("provenance") == "framework_observed"
+
+    # When drift is exposed AFTER parent creation via PYTHONPATH so only the
+    # continuation subprocess's real importlib.metadata probe sees the sentinel.
+    drift_root = tmp_path / "drift-sentinel-root"
+    dist = drift_root / "drift_sentinel-9.9.dist-info"
+    dist.mkdir(parents=True)
+    _ = (dist / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: drift-sentinel\nVersion: 9.9\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(drift_root))
+
+    # Then continuation preparation refuses before child/session/backend side effects.
+    with pytest.raises(ContinuationEnvironmentError) as raised:
+        with prepare_terminal_continuation(
+            parent.summary_path,
+            "child-observed-drift-24",
+        ) as prepared:
+            child_runner(prepared)
+
+    assert raised.value.kind is ContinuationEnvironmentErrorKind.ENVIRONMENT_MISMATCH
+    child_runner.assert_not_called()
+    assert tree_bytes(parent.report_dir) == parent_before
+    assert not (parent.reports_root / "child-observed-drift-24").exists()
 
 
 def test_v3_runtime_child_trace_references_parent_hash_without_copying_payload(

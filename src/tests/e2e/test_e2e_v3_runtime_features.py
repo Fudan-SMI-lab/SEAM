@@ -27,6 +27,7 @@ from .e2e_v3_runtime_continuation_cases import (
     test_v3_runtime_child_trace_references_parent_hash_without_copying_payload as test_v3_runtime_child_trace_references_parent_hash_without_copying_payload,
     test_v3_runtime_continuation_anchor_matrix_runs_fresh_child_only as test_v3_runtime_continuation_anchor_matrix_runs_fresh_child_only,
     test_v3_runtime_missing_environment_refuses_before_child_side_effects as test_v3_runtime_missing_environment_refuses_before_child_side_effects,
+    test_v3_runtime_observed_package_drift_refuses_before_child_side_effects as test_v3_runtime_observed_package_drift_refuses_before_child_side_effects,
 )
 from .e2e_v3_runtime_sealing_cases import (
     test_v3_runtime_faulted_seal_preserves_pass_headline_and_exit_code as test_v3_runtime_faulted_seal_preserves_pass_headline_and_exit_code,
@@ -58,6 +59,7 @@ __all__ = (
     "test_v3_runtime_faulted_seal_preserves_pass_headline_and_exit_code",
     "test_v3_runtime_never_deletes_external_existing_container",
     "test_v3_runtime_missing_environment_refuses_before_child_side_effects",
+    "test_v3_runtime_observed_package_drift_refuses_before_child_side_effects",
     "test_v3_runtime_owned_cleanup_failure_preserves_pass_and_exits_two",
     "test_v3_runtime_post_acceptance_timeout_logs_attempt_without_repost",
     "test_v3_runtime_reject_then_accept_continues_with_exact_review_budget",

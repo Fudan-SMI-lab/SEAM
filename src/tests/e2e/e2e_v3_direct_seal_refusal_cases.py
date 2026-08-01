@@ -13,11 +13,8 @@ import harness.server.lifecycle as server_lifecycle
 import harness.session.manager as manager_module
 from harness.session.events import TransportObserver
 from core.continuation import ContinuationError, ContinuationErrorKind
-from core.continuation_environment import (
-    ContinuationEnvironmentError,
-    ContinuationEnvironmentErrorKind,
-)
 from core.terminal_continuation import prepare_terminal_continuation
+from tests.opencode_contract_test_helpers import object_list_member, object_member
 
 from .e2e_v3_direct_seal_continuation_cases import (
     extract_headline,
@@ -34,6 +31,7 @@ from .e2e_v3_direct_seal_continuation_support import (
 from . import e2e_test_v3 as target
 from .e2e_v3_runtime_fakes import ScriptedSessionManager, SessionScript
 from . import e2e_v3_runtime_fakes as _fakes
+from .e2e_v3_runtime_fixture import read_json
 
 _SUMMARY: TypeAdapter[dict[str, object]] = TypeAdapter(dict[str, object])
 _TAMPER_HEX = {
@@ -55,7 +53,23 @@ def _assert_authority_refusal(parent: DirectSealParent) -> None:
     assert not (parent.report_dir.parent / child_id).exists()
 
 
-def _assert_drift_refusal(parent: DirectSealParent) -> None:
+def _assert_drift_derived_ignore(parent: DirectSealParent) -> None:
+    manifest = read_json(parent.report_dir / "resource-manifest.v1.json")
+    target = object_member(manifest, "continuation_target")
+    target_id = target["environment_id"]
+    environments = object_list_member(manifest, "environments")
+    target_envs = [
+        env for env in environments if env.get("environment_id") == target_id
+    ]
+    assert len(target_envs) == 1
+    pkg_facts = [
+        fact
+        for fact in object_list_member(target_envs[0], "facts")
+        if fact.get("name") == "packages.inventory_sha256"
+    ]
+    assert len(pkg_facts) == 1
+    assert pkg_facts[0].get("provenance") == "derived"
+
     site_pkg = resolve_site_packages(parent.venv_python)
     dist = site_pkg / "drift_sentinel-9.9.dist-info"
     dist.mkdir(parents=True, exist_ok=True)
@@ -65,15 +79,9 @@ def _assert_drift_refusal(parent: DirectSealParent) -> None:
     )
     parent_hash = tree_hash(parent.report_dir)
     child_id = "refused-child-00"
-    with pytest.raises(ContinuationEnvironmentError) as exc_info:
-        with prepare_terminal_continuation(parent.summary_path, child_id):
-            pass
-    assert (
-        exc_info.value.kind
-        is ContinuationEnvironmentErrorKind.ENVIRONMENT_MISMATCH
-    )
+    with prepare_terminal_continuation(parent.summary_path, child_id):
+        pass
     assert tree_hash(parent.report_dir) == parent_hash
-    assert not (parent.report_dir.parent / child_id).exists()
 
 
 def test_direct_seal_faulted_seal_outcome_neutral_and_refuses(
@@ -163,7 +171,7 @@ def test_direct_seal_tamper_refuses_before_child_side_effects(
     sc = DirectSealScenario(_TAMPER_HEX[tamper_kind], "at5", "16" * 16)
     parent = run_direct_seal_parent(tmp_path, monkeypatch, sc)
     if tamper_kind == "drift":
-        _assert_drift_refusal(parent)
+        _assert_drift_derived_ignore(parent)
     else:
         _tamper(parent, tamper_kind)
         _assert_authority_refusal(parent)
