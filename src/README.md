@@ -102,6 +102,12 @@ python -m pip install -e "./src[dashboard]"
 | `--review-gate` / `--review` | 开启可选 review gate。 |
 | `--server-url` | OpenCode server 地址；推荐使用 `http://127.0.0.1:4098`。 |
 
+### 6. Continuation sealing 与包依赖
+
+`--seal-manifest` 是直接运行的可选、独立、outcome-neutral 旁路：只有显式请求且封存成功时，该运行才具备 `--continue-from` 续做资格。封存结果投影到 `summary.json` 并写出 `manifest-sealing.v1.json` sidecar（`not_requested|succeeded|failed`、`continuation_eligible`），但封存失败不改变迁移 PASS/FAIL 或退出码。`--seal-manifest` 与 `--continue-from` 互斥，会被 parser 和两个 shell 启动器拒绝。环境绑定 authority 要求精确的 `environment_id` 加上匹配的 `namespace`；namespace 单独不是 authority，不接受 list-order、fact-count 或 silent fallback，缺失或歧义时 fail closed。详见 [`docs/E2E_TESTING.md`](docs/E2E_TESTING.md) 第 5 节和 5.1 节。
+
+包依赖边界：base 安装包含 `typing_extensions>=4.12,<5`；`[sqlite]` 是可选 extra（`pysqlite3-binary`），不安装只会禁用 SQLite completion evidence，不影响常规 import；`[dev]` 是测试工具链；`[dashboard]` 是渲染器。生产 floor 为 Linux / Python 3.10+。
+
 ## YAML runtime skills
 
 在 `workflows/` 下的 YAML 文件的 agent、phase 或 sub-workflow phase 上添加：

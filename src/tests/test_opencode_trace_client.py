@@ -129,17 +129,56 @@ def test_unsupported_children_remain_unsupported_with_filtered_fallback(
     }
 
 
-def test_non_pinned_server_is_deterministically_unsupported() -> None:
-    # Given a healthy non-1.18.5 server.
-    client, _http = _client_for_fixture("trace_unsupported_version.json")
+def test_non_pinned_server_uses_observed_capabilities() -> None:
+    # Given a structurally valid 1.18.10 capture that differs from the pinned version.
+    client, _http = _client_for_fixture("trace_non_pinned_compatible.json")
 
-    # When capability is detected.
+    # When capability is detected from observed endpoint evidence.
     result = client.retrieve_session_graph("ses_root")
 
-    # Then version mismatch is unsupported rather than fabricated compatible data.
-    assert result.state is TraceCapabilityState.UNSUPPORTED
+    # Then the non-pinned version is metadata, not a verdict: state is COMPATIBLE,
+    # the contract is COMPATIBLE/COMPLETE, the observed version is retained, and
+    # no retrieval or annotation errors were emitted.
+    assert result.state is TraceCapabilityState.COMPATIBLE
+    assert result.contract.compatibility is Compatibility.COMPATIBLE
+    assert result.contract.completeness is Completeness.COMPLETE
+    assert result.contract.server_version == "1.18.10"
+    assert result.errors == ()
+
+
+def test_missing_server_version_remains_unknown_and_errors() -> None:
+    # Given a structurally complete capture whose health body has no version.
+    capture = json_object(fixture("trace_non_pinned_compatible.json"))
+    health_body = object_member(capture, "health").get("body")
+    assert isinstance(health_body, dict)
+    assert "version" in health_body
+    del health_body["version"]
+    routes: dict[tuple[str, str], JsonObject] = {
+        ("GET", "/global/health"): _http_response(object_member(capture, "health")),
+        ("GET", "/doc"): _http_response(object_member(capture, "doc")),
+        ("GET", "/session/ses_root/message"): _http_response(
+            object_member(capture, "messages")
+        ),
+        ("GET", "/session/ses_root/children"): _http_response(
+            object_member(capture, "children")
+        ),
+    }
+    http = FakeTraceHttp(routes)
+    client = OpenCodeTraceClient(http)
+
+    # When health and graph are retrieved from the version-less capture.
+    health = client.get_health()
+    result = client.retrieve_session_graph("ses_root")
+
+    # Then health is UNKNOWN, the contract is incompatible/non-complete, and the
+    # graph is an explicit ERROR annotated with malformed_contract (no endpoint
+    # or identity error explains the failure, so the contract itself is blamed).
+    assert health.capability is CapabilityState.UNKNOWN
+    assert health.server_version == ""
+    assert result.state is TraceCapabilityState.ERROR
     assert result.contract.compatibility is Compatibility.INCOMPATIBLE
-    assert result.contract.server_version == "1.19.0"
+    assert result.contract.completeness is Completeness.INCOMPATIBLE
+    assert "malformed_contract" in result.errors
 
 
 def test_malformed_part_is_error_and_never_complete() -> None:

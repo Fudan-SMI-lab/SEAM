@@ -1,6 +1,6 @@
 {
   "fixtureVersion": 1,
-  "health": {"status": 200, "body": {"healthy": true, "version": "1.19.0", "build": "future"}},
+  "health": {"status": 200, "body": {"healthy": true, "version": "1.18.10", "build": "future"}},
   "doc": {
     "status": 200,
     "body": {

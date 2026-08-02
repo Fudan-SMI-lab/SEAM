@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from .continuation_environment_manifest import error, known_fact, required_fact
+from .continuation_environment_manifest import (
+    error,
+    known_fact,
+    known_framework_fact,
+    required_fact,
+)
 from .continuation_environment_models import (
     AnchorRelation,
     ContinuationEnvironmentErrorKind,
@@ -35,7 +40,9 @@ def _fingerprint(record: EnvironmentRecord) -> EnvironmentFingerprint:
         python_version=known_fact(record.facts, "python.version", required=False),
         platform_system=known_fact(record.facts, "platform.system", required=False),
         platform_architecture=known_fact(record.facts, "platform.architecture", required=False),
-        package_inventory_hash=known_fact(record.facts, "packages.inventory_sha256", required=False),
+        package_inventory_hash=known_framework_fact(
+            record.facts, "packages.inventory_sha256", required=False
+        ),
         interpreter_available=True,
         interpreter_executable=True,
     )

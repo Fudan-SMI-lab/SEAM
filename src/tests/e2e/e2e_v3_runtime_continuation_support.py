@@ -22,6 +22,7 @@ from core.resource_manifest import (
     ResourceManifestUpdate,
 )
 from core.resource_manifest import build_phase5_reference
+from core.resource_manifest_models import ContinuationTargetReference
 from core.resource_manifest_status import TerminalResourceStatus
 from core.resource_retention import ContainerRetention
 from core.terminal_continuation_models import PreparedTerminalContinuation
@@ -118,6 +119,10 @@ def create_runtime_parent(
                 environments=(captured.environment,),
                 phase5_environment_references=references,
                 probe_receipts=(captured.receipt,),
+                continuation_target=ContinuationTargetReference(
+                    environment_id="execution-python",
+                    namespace="host",
+                ),
             )
         )
         return original_seal(store, revised.revision, terminal_status)

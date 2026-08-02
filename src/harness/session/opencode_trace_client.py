@@ -4,7 +4,6 @@ import urllib.parse
 from typing import final
 
 from harness.session.opencode_contract import (
-    PINNED_VERSION,
     CapabilityState,
     ChildrenResult,
     Completeness,
@@ -113,13 +112,10 @@ class OpenCodeTraceClient:
         errors.extend(identity_errors(session_id, contract))
         if (
             contract.compatibility is Compatibility.INCOMPATIBLE
-            and contract.server_version == PINNED_VERSION
             and not errors
         ):
             errors.append("malformed_contract")
-        state = self._state(
-            contract.compatibility, contract.completeness, errors, health
-        )
+        state = self._state(contract.compatibility, contract.completeness, errors)
         return SessionGraphRetrieval(
             state,
             contract,
@@ -216,12 +212,9 @@ class OpenCodeTraceClient:
         compatibility: Compatibility,
         completeness: Completeness,
         errors: list[str],
-        health: HealthRetrieval,
     ) -> TraceCapabilityState:
         if errors:
             return TraceCapabilityState.ERROR
-        if health.server_version and health.server_version != PINNED_VERSION:
-            return TraceCapabilityState.UNSUPPORTED
         if compatibility is Compatibility.INCOMPATIBLE:
             return TraceCapabilityState.ERROR
         if completeness is Completeness.COMPLETE:

@@ -1,66 +1,24 @@
 """Test configuration for migration_utils.
 
-Python 3.10 on this system lacks the ``sqlite3`` C extension (``_sqlite3``),
-which blocks import of ``harness.session.manager`` during test collection.
-Provide a minimal stub only when ``_sqlite3`` is truly missing. On properly
-built Python installations this code is never executed.
+SQLite availability is resolved through the typed provider boundary in
+``core.sqlite_provider``. No ``sys.modules`` stubs are injected: when the
+stdlib ``sqlite3`` C extension is missing, the provider returns a typed
+unavailable state and the session manager skips SQLite evidence
+gracefully. Test files that require real SQLite create databases through
+the provider's ``connect`` function, which is a no-op (raises) when
+unavailable, and tests are skipped via ``_sqlite_provider.available``.
 """
 
-import sys
+from __future__ import annotations
+
 from pathlib import Path
-from types import ModuleType
 from typing import Iterator
 
 import pytest
 
+from core.sqlite_provider import available as SQLITE_AVAILABLE
 
-class _FakeSqliteError(Exception):
-    pass
-
-
-class _FakeSqliteConnection:
-    """Minimal context-manager stub for Python without _sqlite3."""
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def execute(self, sql, params=None):
-        raise _FakeSqliteError("sqlite connect unavailable")
-
-    def cursor(self):
-        raise _FakeSqliteError("sqlite connect unavailable")
-
-
-def _fake_sqlite_module(name: str) -> ModuleType:
-    module = ModuleType(name)
-    setattr(module, "apilevel", "2.0")
-    setattr(module, "paramstyle", "qmark")
-    setattr(module, "threadsafety", 1)
-    setattr(module, "Error", _FakeSqliteError)
-    setattr(module, "Row", type("Row", (), {}))
-    setattr(module, "connect", _FakeSqliteConnection)
-    return module
-
-
-_no_real_sqlite3 = False
-if "_sqlite3" not in sys.modules:
-    try:
-        import sqlite3  # noqa: F401
-    except ImportError:
-        sqlite_stub = _fake_sqlite_module("sqlite3")
-        sys.modules["_sqlite3"] = sqlite_stub
-        sys.modules["sqlite3.dbapi2"] = sqlite_stub
-        sys.modules["sqlite3"] = sqlite_stub
-        _no_real_sqlite3 = True
-
-# Expose so test files can skip when real sqlite3 is unavailable.
-NO_REAL_SQLITE3 = _no_real_sqlite3
+NO_REAL_SQLITE3: bool = not SQLITE_AVAILABLE
 
 
 @pytest.fixture

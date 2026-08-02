@@ -4,6 +4,8 @@
 
 生产支持契约是 Linux 和 Python 3.10+。Mandatory CI 只在无硬件 Linux runner 上验证支持下限和当前解释器，不声称验证真实 NPU/GPU。Real accelerator checks remain optional and non-gating.
 
+包依赖边界：base 安装包含 `typing_extensions>=4.12,<5`（`core.compat` 在 Python < 3.10 时回退使用，但生产 floor 已是 3.10+）。`[sqlite]` 是可选 extra，提供 `pysqlite3-binary>=0.5,<1` 作为 stdlib sqlite3 的二进制回退；不安装 `[sqlite]` 只会禁用 session manager 的 SQLite completion evidence，不会让任何常规 runtime import 崩溃。`[dev]` 提供 pytest/PyYAML/pydantic/tomli 测试工具链；`[dashboard]` 提供 rich/textual 渲染器。CI 永远只安装 base + `[dev]`，不把 `[sqlite]` 设为必需。
+
 ## 1. 公共入口
 
 日常入口是 `src/scripts/run_seam.sh`。它把参数交给 `run_e2e_v3.sh`，默认服务器为 `http://127.0.0.1:4098`，默认 workflow 为 `src/workflows/seam_auto_default.yaml`，Phase 5 上限为 8，Review Gate 关闭，输出项目保留，容器保留，raw trace 关闭。
@@ -128,9 +130,23 @@ Continuation 只消费 terminal PASS 或 FAIL。输入必须是绝对、无 trav
 
 每次 continuation 都创建新 child run ID、全新 OpenCode root/role sessions 和独立报告命名空间。它不复制 session，不恢复 in-flight Agent，不从 `.sm-artifacts/state.json` 或 checkpoint 接续，也不重用 parent selector。Parent summary、report、sealed artifacts 和 trace payload 保持 byte-immutable，child 只保留有 digest/size 的 parent evidence 或 parent trace reference。
 
-Retained environment verification 在创建 session、backend 或 child side effect 前执行。Local backend 必须匹配 interpreter/package fingerprint；container backend 必须匹配 immutable ID、runtime、image、mount、workdir、devices、状态和 ownership facts。缺失、变化、停止或外部环境不会 silent fallback、重建或自动切换；请求会 fail closed。
+Retained environment verification 在创建 session、backend 或 child side effect 前执行。绑定 authority 是显式 `continuation_target` 引用，它携带精确的 `environment_id` 和匹配的 `namespace`，并验证两者与已记录环境一致：namespace 单独不是 authority，不接受 list-order、fact-count tiebreaker 或 namespace 缺失时的猜测；引用的环境缺失、重复、或 namespace 不匹配时直接 fail closed。Local backend 必须匹配 interpreter/package fingerprint；container backend 必须匹配 immutable ID、runtime、image、mount、workdir、devices、状态和 ownership facts。缺失、变化、停止或外部环境不会 silent fallback、重建或自动切换；请求会 fail closed。
 
-当前限制：普通 direct V3 会写 resource manifest 和 summary，但不会创建 continuation resolver 要求的 sealed root `run-manifest.v1.json`。Continuation fixtures 会显式构造并封存该 manifest，continuation children 也会生成它。除非报告中确有全部 sealed authority，不应将普通 direct summary 宣传为可继续。
+### 5.1 直接运行的 manifest 封存（opt-in，outcome-neutral）
+
+`--seal-manifest` 是直接运行的可选、独立、outcome-neutral 旁路。只有显式请求且封存成功时，该运行才具备 continuation 资格；不请求、请求但输入不可用、或封存失败的运行都不具备资格。
+
+封存结果通过两个独立 observability 通道发布：
+
+- `manifest-sealing.v1.json` sidecar：`status` 为 `not_requested|succeeded|failed`，附带 `continuation_eligible`、`run_id`，以及成功时的 `manifest_path`/`evidence_dir_path` 或失败时的 redacted `error`。
+- `summary.json` 的可选 `manifest_sealing` 投影：`{status, sidecar_path, continuation_eligible}`，由 finalizer 冻结 `overall_status` 之后写入，绝不改写 `overall_status`。
+
+关键不变量：
+
+- 成功封存才会发布根 `run-manifest.v1.json` 和 sealed-artifacts evidence 目录，并设置 `continuation_eligible=true`。封存失败的运行没有根 manifest。
+- 封存失败不改变迁移 PASS/FAIL、`RunOutcome`、E2E headline 或封存前的退出码。它只通过 sidecar 和 summary 投影单独提供结果。
+- continuation child 的 evidence 封存仍是 required/fatal：子运行必须消费父运行已封存的 evidence，不能用 `--seal-manifest` 重新封存自己的根 manifest（`--seal-manifest` 与 `--continue-from` 冲突，会被 parser 和两个 shell 启动器拒绝）。
+- summary 投影是 observability，不是 outcome authority：投影为 `failed` 不会让一个已 PASS 的迁移失去资格，除非父运行自身的封存结果确实未成功。
 
 ## 6. Runtime、resource 和 cleanup
 
@@ -164,7 +180,7 @@ e2e-reports/src/e2e-v3-<run-id>/
 │   ├── runtime              # sanitized environments, retention, access, replay
 │   └── trace                # bounded status and correlation only, no raw payload
 ├── resource-manifest.v1.json
-├── run-manifest.v1.json     # continuation child or explicitly prepared sealed parent only
+├── run-manifest.v1.json     # continuation child, or direct run when --seal-manifest succeeds
 ├── before_snapshot.json
 ├── after_snapshot.json
 ├── phase_results.json
@@ -214,17 +230,19 @@ Writer-backed canonical paths are `artifacts/pre-continuation/migration-reports/
 
 Finalizer 只接受位于 report root 内、由当前 hook 新建或实质修改、经过 fingerprint 冻结的文件或目录。Stale destination、symlink escape 和 unchanged pre-existing claim 都拒绝。Raw trace directory 使用 private staging 并在 manifest 完成后整体发布。
 
-## 9. Raw trace 和 OpenCode v1.18.5
+## 9. Raw trace 和 OpenCode capability detection
 
 `--save-agent-trace` 是显式 opt-in；省略和 `--no-save-agent-trace` 都不导出。Active V3 导出 schema v2 correlation，standalone legacy exporter 在没有 typed correlation context 时保留 schema v1。
 
-Pinned OpenCode feature detection 以真实 endpoint 和 body shape 为准：
+OpenCode capability detection 以真实 endpoint status 和 response body shape 为权威。任何健康的非空 product version（包括非参考版本）作为 metadata 投影到 `manifest.server.versions`；`PINNED_VERSION`（当前为 `1.18.5`）是 verified reference/deployment baseline，publicly exported 但不是 runtime equality gate。Version 字符串与 `1.18.5` 不等本身 non-authoritative（non-gating），实际 capability 由可观察 endpoint/shape/error 决定；missing、非-string 或 malformed version/health evidence 保持 unknown/error（fail-closed），不 silent 升级。这里不承诺 blanket future-version support。
 
-- integrated V1 的 `GET /doc` 用于 1.18.5 feature detection。
+Capability 以真实 endpoint 和 body shape 为准：
+
+- integrated V1 的 `GET /doc` 提供 feature detection；capability 由 endpoint status/body shape 决定，不绑定 `1.18.5` 字面值。
 - `GET /session/{id}/message` 不发送正 limit；无 limit 的完整 chronological history 是主消息投影。
 - direct `GET /session/{id}/children` 提供 immediate children。
 - direct children 404/405 时可读取无分页 `GET /session` fallback listing 作为可访问补充，但 direct capability 仍是 unsupported，完整性仍为 partial。
-- `/doc` 或 `/children` 的 404/405 是 honest unsupported；401/403/429、5xx、malformed pinned body、分页 cursor 和 foreign identity 是 error/partial，不是空成功。
+- `/doc` 或 `/children` 的 404/405 是 honest unsupported；401/403/429、5xx、malformed body、分页 cursor 和 foreign identity 是 error/partial，不是空成功。
 
 Trace 是 raw、recursive、transactional、bounded、outcome-neutral。Accessible data 不脱敏且在接受后不截断；超过 byte/graph bounds、未知 part/tool state、不可访问 outputPath、provider-hidden reasoning、unsupported endpoint、分页或 transport error 都保留 truthful partial reason。详见 [`full_agent_io_logging_design.md`](full_agent_io_logging_design.md)。
 

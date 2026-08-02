@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -9,18 +8,13 @@ from typing import Any
 import pytest
 
 import harness.session.manager as manager_module
+from core.sqlite_provider import available as _sqlite_available
+from core.sqlite_provider import connect as _sqlite_connect
 from harness.session.manager import MigrationSessionManager
 
-# Import after manager_module to ensure conftest has already configured _sqlite3 stub if needed.
-try:
-    import _sqlite3  # noqa: F401
-except NameError:
-    _sqlite3 = None  # type: ignore[misc, assignment]
-
-# Use conftest flag to detect whether real sqlite3 C extension is available.
-from tests.conftest import NO_REAL_SQLITE3 as _NO_REAL_SQLITE
-
-_SKIP_SQLITE = pytest.mark.skipif(_NO_REAL_SQLITE, reason="no sqlite3 C extension on this system")
+_SKIP_SQLITE = pytest.mark.skipif(
+    not _sqlite_available, reason="no SQLite backend resolved on this system"
+)
 
 
 Response = dict[str, Any]
@@ -268,7 +262,7 @@ def test_send_command_times_out_for_incomplete_todos_without_reposting(monkeypat
 @_SKIP_SQLITE
 def test_sqlite_fallback_ignores_unrelated_incomplete_todos(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO todos ("sessionID", status, content) VALUES (?, ?, ?)', ("other-session", "pending", "other work"))
         conn.execute('INSERT INTO todos ("sessionID", status, content) VALUES (?, ?, ?)', ("ses-1", "completed", "own work"))
@@ -281,7 +275,7 @@ def test_sqlite_fallback_ignores_unrelated_incomplete_todos(tmp_path: Path) -> N
 @_SKIP_SQLITE
 def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE tasks ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO tasks ("sessionID", status, content) VALUES (?, ?, ?)', ("ses-1", "pending", "rerun validator"))
         conn.execute('INSERT INTO tasks ("sessionID", status, content) VALUES (?, ?, ?)', ("other-session", "completed", "other work"))
@@ -300,7 +294,7 @@ def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, m
 @_SKIP_SQLITE
 def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, status TEXT)')
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO session (id, status) VALUES (?, ?)', ("ses-1", "idle"))
@@ -320,7 +314,7 @@ def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, mon
 @_SKIP_SQLITE
 def test_sqlite_idle_session_with_completed_todos_is_complete(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, status TEXT)')
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO session (id, status) VALUES (?, ?)', ("ses-1", "idle"))
@@ -341,7 +335,7 @@ def test_send_command_timeout_none_uses_sqlite_assistant_completion_without_todo
         "time": {"completed": 1710000000},
         "parts": [{"type": "text", "text": '{"platform":"npu","npu_detected":true}'}],
     }
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, title TEXT, time_compacting INTEGER)')
         conn.execute('CREATE TABLE message ("sessionID" TEXT, role TEXT, data TEXT, timeCreated INTEGER)')
         conn.execute('INSERT INTO session (id, title, time_compacting) VALUES (?, ?, ?)', ("ses-1", "migration-main_engineer", None))
@@ -364,7 +358,7 @@ def test_sqlite_assistant_completion_still_blocks_same_session_pending_todo(tmp_
         "time": {"completed": 1710000000},
         "parts": [{"type": "text", "text": '{"platform":"npu","npu_detected":true}'}],
     }
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, title TEXT, time_compacting INTEGER)')
         conn.execute('CREATE TABLE message ("sessionID" TEXT, role TEXT, data TEXT, timeCreated INTEGER)')
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
@@ -395,7 +389,7 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
         "time": {"completed": 1710000000},
         "parts": [{"type": "text", "text": '{"platform":"npu","npu_detected":true}'}],
     }
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, title TEXT, time_compacting INTEGER)')
         conn.execute('CREATE TABLE message ("sessionID" TEXT, role TEXT, data TEXT, timeCreated INTEGER)')
         conn.execute('INSERT INTO session (id, title, time_compacting) VALUES (?, ?, ?)', ("ses-1", "migration-main_engineer", 1))
@@ -424,7 +418,7 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
 @_SKIP_SQLITE
 def test_sqlite_fallback_skips_todo_tables_without_session_column(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE todos (status TEXT, content TEXT)')
         conn.execute('INSERT INTO todos (status, content) VALUES (?, ?)', ("pending", "unscoped work"))
 

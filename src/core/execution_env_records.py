@@ -25,14 +25,6 @@ from .resource_manifest_models import (
 from .resource_manifest_facts import Evidence, build_fact
 
 
-def _extract_python_version(python_path: str) -> str | None:
-    import re
-    m = re.search(r"python3\.(\d+)(?:\.(\d+))?", python_path)
-    if m:
-        return f"3.{m.group(1)}" + (f".{m.group(2)}" if m.group(2) else "")
-    return None
-
-
 def build_phase2_environment(request: Phase2EnvironmentRequest) -> EnvironmentRecord:
     reported = FactProvenance.AGENT_REPORTED
     configured = FactProvenance.CONFIGURED
@@ -75,27 +67,27 @@ def build_phase2_environment(request: Phase2EnvironmentRequest) -> EnvironmentRe
         ),
         build_fact(
             "interpreter.sys_base_prefix",
-            Evidence(request.report.venv_path, reported, request.namespace),
+            Evidence(None, reported, request.namespace, "awaiting framework probe"),
         ),
         build_fact(
             "python.implementation",
-            Evidence("CPython", reported, request.namespace),
+            Evidence(None, reported, request.namespace, "awaiting framework probe"),
         ),
         build_fact(
             "python.version",
-            Evidence(_extract_python_version(request.report.python_path), reported, request.namespace, "derived from python_path"),
+            Evidence(None, reported, request.namespace, "awaiting framework probe"),
         ),
         build_fact(
             "platform.system",
-            Evidence("Linux", reported, request.namespace),
+            Evidence(None, reported, request.namespace, "awaiting framework probe"),
         ),
         build_fact(
             "platform.architecture",
-            Evidence("x86_64", reported, request.namespace),
+            Evidence(None, reported, request.namespace, "awaiting framework probe"),
         ),
         build_fact(
             "packages.inventory_sha256",
-            Evidence(None, reported, request.namespace, "agent-reported package subset; full inventory hash requires framework probe"),
+            Evidence(hashlib.sha256(inventory).hexdigest(), derived, request.namespace),
         ),
     )
     if environment_type is EnvironmentType.BASE:

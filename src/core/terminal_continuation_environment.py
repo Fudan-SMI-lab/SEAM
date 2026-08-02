@@ -49,13 +49,21 @@ def _target_environment_id(
                 "accepted Phase 5 has no unique retained environment",
             )
         return references[0]
+    explicit_target = manifest.continuation_target
+    if explicit_target is not None:
+        return explicit_target.environment_id
     environment_ids = tuple(item.environment_id for item in manifest.environments)
     if len(environment_ids) > 1:
         raise TerminalContinuationError(
             TerminalContinuationErrorKind.RESOURCE_CONTEXT_AMBIGUOUS,
-            "parent has multiple environments without an accepted-attempt binding",
+            "parent has multiple environments without an explicit continuation target",
         )
-    return environment_ids[0] if environment_ids else None
+    if environment_ids:
+        raise TerminalContinuationError(
+            TerminalContinuationErrorKind.RESOURCE_CONTEXT_AMBIGUOUS,
+            "parent has an environment without an explicit continuation target",
+        )
+    return None
 
 
 def _environment_record(

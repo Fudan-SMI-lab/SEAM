@@ -53,6 +53,8 @@ bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
 
 可选实时仪表盘：dashboard extra 默认不安装，使用前运行 `python -m pip install -e "./src[dashboard]"`。`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）：`auto`（默认）仅在非 CI 的交互式 TTY 上启用，否则与无仪表盘运行完全一致；`on` 强制启用，未安装渲染器时（textual 优先，rich 回退）在任何副作用之前报错并给出上述安装命令；`off` 完全关闭。仪表盘激活时按 `q` 仅退出仪表盘视图，迁移与日志继续。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 不创建该文件。
 
+Continuation 续做：`--continue-from <summary.json>` 只接受显式终态父运行。直接运行只有在显式传入 `--seal-manifest` 且封存成功时才具备续做资格；封存结果投影到 `summary.json` 和 `manifest-sealing.v1.json` sidecar（`not_requested|succeeded|failed`、`continuation_eligible`），但 outcome-neutral，不改变迁移 PASS/FAIL 或退出码。环境绑定 authority 要求精确的 `environment_id` 加上匹配的 `namespace`（`continuation_target` 携带两者并验证一致性）；namespace 单独不是 authority，不接受 list-order、fact-count 或 silent fallback，缺失或歧义时 fail closed。详见 [`src/docs/E2E_TESTING.md`](src/docs/E2E_TESTING.md)。
+
 运行后：
 *   是否跑通：终端最后会直接显示 `E2E TEST PASSED` / `E2E PASS` 或失败信息；也可以通过 `./e2e-reports/src/<时间戳>/summary.json`获取更具体的信息
     

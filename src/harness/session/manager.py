@@ -7,10 +7,6 @@ import math
 import os
 import re
 import time
-try:
-    import sqlite3
-except ImportError:
-    from pysqlite3 import dbapi2 as sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from core import sqlite_provider as _sqlite
 
 from .event_lifecycle import (
     TransportLifecycle,
@@ -854,7 +852,7 @@ class MigrationSessionManager:
                 seen.add(key)
         return unique
 
-    def _sqlite_table_names(self, conn: sqlite3.Connection) -> set[str]:
+    def _sqlite_table_names(self, conn: _sqlite.Connection) -> set[str]:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
@@ -879,7 +877,7 @@ class MigrationSessionManager:
     def _quote_sql_identifier(identifier: str) -> str:
         return '"' + identifier.replace('"', '""') + '"'
 
-    def _sqlite_row_state(self, row: sqlite3.Row) -> bool | None:
+    def _sqlite_row_state(self, row: _sqlite.Row) -> bool | None:
         mapping = {key: row[key] for key in row.keys()}
         signal = self._todo_signal_from_payload(mapping)
         if signal is not None:
@@ -906,7 +904,7 @@ class MigrationSessionManager:
 
     def _sqlite_assistant_completion_evidence(
         self,
-        conn: sqlite3.Connection,
+        conn: _sqlite.Connection,
         tables: set[str],
         session_id: str,
     ) -> bool | None:
@@ -957,7 +955,7 @@ class MigrationSessionManager:
         return None
 
     def _sqlite_message_completion_state(
-        self, row: sqlite3.Row, data_column: str
+        self, row: _sqlite.Row, data_column: str
     ) -> bool | None:
         payload = self._sqlite_json_value(row[data_column])
         if not isinstance(payload, dict):
@@ -1024,14 +1022,16 @@ class MigrationSessionManager:
         return False
 
     def _session_completion_from_sqlite(self, session_id: str) -> bool | None:
+        if not _sqlite.available:
+            return None
         for db_path in self._candidate_sqlite_paths():
             if not db_path.is_file():
                 continue
             try:
-                with sqlite3.connect(
+                with _sqlite.connect(
                     f"file:{db_path}?mode=ro", uri=True, timeout=0.2
                 ) as conn:
-                    conn.row_factory = sqlite3.Row
+                    conn.row_factory = _sqlite.RowFactory
                     conn.execute("PRAGMA query_only=ON")
                     tables = self._sqlite_table_names(conn)
                     if not tables:
@@ -1142,7 +1142,7 @@ class MigrationSessionManager:
                         session_row_seen or session_not_running
                     ):
                         return False
-            except sqlite3.Error:
+            except _sqlite.Error:
                 continue
         return None
 

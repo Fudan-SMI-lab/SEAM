@@ -4,7 +4,7 @@ from .continuation_environment_models import (
     ContinuationEnvironmentError,
     ContinuationEnvironmentErrorKind,
 )
-from .resource_manifest_models import FactStatus, ProvenanceFact
+from .resource_manifest_models import FactProvenance, FactStatus, ProvenanceFact
 
 
 def error(
@@ -58,3 +58,17 @@ def required_fact(facts: tuple[ProvenanceFact, ...], name: str) -> str:
     if value is None:
         raise AssertionError("required manifest fact unexpectedly absent")
     return value
+
+
+def known_framework_fact(
+    facts: tuple[ProvenanceFact, ...],
+    name: str,
+    *,
+    required: bool = True,
+) -> str | None:
+    framework_observed = tuple(
+        fact
+        for fact in facts
+        if fact.provenance is FactProvenance.FRAMEWORK_OBSERVED
+    )
+    return known_fact(framework_observed, name, required=required)

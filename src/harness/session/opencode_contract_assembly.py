@@ -4,7 +4,6 @@ from harness.session.opencode_contract_children import parse_children, parse_doc
 from harness.session.opencode_contract_json import RawCapture, decode_capture
 from harness.session.opencode_contract_messages import parse_messages
 from harness.session.opencode_contract_models import (
-    PINNED_VERSION,
     CapabilityState,
     ChildrenResult,
     Completeness,
@@ -62,6 +61,7 @@ def assemble_trace_contract(payload: str | bytes) -> TraceContract:
         and response_status(health) == 200
         and health_body is not None
         and health_body.get("healthy") is True
+        and version != ""
     )
     messages_response = object_value(root.get("messages")) if root is not None else None
     children_response = object_value(root.get("children")) if root is not None else None
@@ -78,9 +78,7 @@ def assemble_trace_contract(payload: str | bytes) -> TraceContract:
     )
     features = EndpointFeatures(
         document,
-        CapabilityState.SUPPORTED
-        if response_status(health) == 200
-        else CapabilityState.UNKNOWN,
+        CapabilityState.SUPPORTED if health_ok else CapabilityState.UNKNOWN,
         CapabilityState.SUPPORTED
         if response_status(messages_response) == 200
         else CapabilityState.UNKNOWN,
@@ -94,7 +92,6 @@ def assemble_trace_contract(payload: str | bytes) -> TraceContract:
     incompatible = (
         root is None
         or not health_ok
-        or version != PINNED_VERSION
         or messages_bad
         or children_bad
         or document_bad

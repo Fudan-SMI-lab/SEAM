@@ -15,7 +15,6 @@ from collections.abc import MutableMapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import ClassVar
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -46,6 +45,7 @@ from core.resource_retention_manifest import (
 )
 from core.run_manifest import RunId
 from core.run_outcome import RunOutcome, TerminalOutcome, WorkflowTerminal
+from core.manifest_sealing_runner import run_direct_manifest_sealing
 from core.v3_runtime_report import V3RuntimeReport
 from core.v3_runtime_report_integration import (
     RuntimeReportingInputs,
@@ -452,96 +452,6 @@ def write_usage_guide(
     return str(usage_path)
 
 
-def _seal_root_run_manifest(
-    *,
-    run_id: str,
-    report_dir: Path,
-    project_dir: Path,
-    workflow_path: Path,
-    artifact_store: ArtifactStore | None,
-    terminal_anchor: TerminalAnchor,
-) -> bool:
-    """Create and seal a root ``run-manifest.v1.json`` for continuation eligibility.
-
-    Returns True on success, False on failure (logged as warning).
-    """
-    import hashlib as _hashlib
-    from core.run_manifest import (
-        ResourceReference,
-        RunId,
-        RunManifest,
-        RunManifestStore,
-        RunStorageContext,
-        Sha256Digest,
-        SharedWorkspaceMarker,
-    )
-
-    try:
-        import shutil
-        import tempfile
-        from core.run_manifest import (
-            ResourceReference,
-            RunId,
-            RunManifest,
-            RunManifestStore,
-            RunStorageContext,
-            Sha256Digest,
-            SharedWorkspaceMarker,
-        )
-
-        workflow_bytes = workflow_path.read_bytes()
-        workflow_digest = Sha256Digest(_hashlib.sha256(workflow_bytes).hexdigest())
-        rid = RunId(str(run_id))
-        manifest = RunManifest(
-            run_id=rid,
-            parent_run_id=None,
-            lineage_root_run_id=rid,
-            revision=1,
-            terminal_anchor=terminal_anchor,
-            workflow_digest=workflow_digest,
-            inherited_canonical=(),
-            shared_workspace=SharedWorkspaceMarker(
-                workspace_digest=RunStorageContext.bind(
-                    report_dir.parent, project_dir
-                ).workspace_digest
-            ),
-            resource_references=(
-                ResourceReference(
-                    kind="environment", reference_id=f"resource-{rid}"
-                ),
-            ),
-            parent_evidence_digests=(),
-            evidence_sealed=False,
-            sealed_evidence=(),
-        )
-        with tempfile.TemporaryDirectory() as tmp_root:
-            tmp_reports = Path(tmp_root) / "reports"
-            tmp_reports.mkdir()
-            tmp_context = RunStorageContext.bind(tmp_reports, project_dir)
-            store = RunManifestStore.create(tmp_context, manifest)
-            if artifact_store is not None:
-                store.seal_working_evidence(artifact_store)
-            tmp_run_dir = tmp_reports / str(rid)
-            shutil.copy2(
-                tmp_run_dir / "run-manifest.v1.json",
-                report_dir / "run-manifest.v1.json",
-            )
-            sealed_src = tmp_run_dir / "sealed-artifacts"
-            if sealed_src.exists():
-                shutil.copytree(
-                    sealed_src, report_dir / "sealed-artifacts"
-                )
-        logging.getLogger("tests.e2e.e2e_test_v3").info(
-            "Sealed root run-manifest.v1.json in %s", report_dir
-        )
-        return True
-    except Exception:
-        logging.getLogger("tests.e2e.e2e_test_v3").warning(
-            "Failed to seal root run-manifest", exc_info=True
-        )
-        return False
-
-
 def build_v3_summary(
     *,
     authoritative_outcome: RunOutcome,
@@ -611,63 +521,6 @@ def _build_project_context(project_dir: Path) -> dict[str, object]:
         "file_count": sum(1 for path in project_dir.rglob("*") if path.is_file()),
         "build_system": build_system,
     }
-
-
-def _install_sqlite_fallback_if_needed() -> None:
-    """Install a minimal sqlite3 stub for Python builds missing the _sqlite3 C extension.
-
-    The stub raises sqlite3.Error on connect so optional sqlite fallback paths in
-    harness.session.manager are safely skipped (via except sqlite3.Error) while the
-    HTTP session flow continues normally. This is only needed for python3.10 builds
-    compiled without the _sqlite3 extension. The standard library sqlite3 module is
-    used when available.
-    """
-    if "sqlite3" in sys.modules:
-        return
-    try:
-        __import__("sqlite3")
-        return
-    except ModuleNotFoundError:
-        pass
-
-    class _SqliteError(Exception):
-        """Placeholder for sqlite3.Error so except clauses skip the sqlite path."""
-
-        pass
-
-    class _StubDBModule:
-        """Minimal DB-API 2.0 stub so 'import sqlite3' does not crash."""
-
-        dbapi2: ClassVar[type[_StubDBModule]]
-        apilevel = "2.0"
-        paramstyle = "qmark"
-        threadsafety = 1
-
-        # Expose sqlite3.Error so harness.session.manager's except clause works.
-        Error = _SqliteError
-        Warning = Exception
-        InterfaceError = _SqliteError
-        DatabaseError = _SqliteError
-        DataError = _SqliteError
-        OperationalError = _SqliteError
-        IntegrityError = _SqliteError
-        InternalError = _SqliteError
-        ProgrammingError = _SqliteError
-        NotSupportedError = _SqliteError
-
-        @staticmethod
-        def connect(*_args, **_kwargs):
-            raise _SqliteError(
-                "sqlite3 unavailable: _sqlite3 C extension is not installed"
-            )
-
-    class _StubDbapi2(_StubDBModule):
-        pass
-
-    _StubDBModule.dbapi2 = _StubDbapi2
-    stub = _StubDBModule()
-    sys.modules["sqlite3"] = stub
-    sys.modules["sqlite3.dbapi2"] = _StubDbapi2
 
 
 def run_terminal_continuation(
@@ -824,8 +677,6 @@ def run_e2e_v3(
     dashboard_backend: str = "auto",
     seal_manifest: bool = False,
 ) -> int:
-    _install_sqlite_fallback_if_needed()
-
     from core.agent_io_logger import AgentIOLogger
     from core.artifact_store import ArtifactStore
     from core.config import load_workflow
@@ -1531,21 +1382,25 @@ def run_e2e_v3(
                 message=f"E2E {finalization.summary.overall_status.value}",
                 details={"summary_path": str(output_dir / "summary.json")},
             )
-        if (
-            seal_manifest
-            and continuation is None
-            and temp_dir is not None
-            and artifact_store is not None
-        ):
-            _seal_root_run_manifest(
-                run_id=str(run_id),
-                report_dir=output_dir,
-                project_dir=temp_dir,
-                workflow_path=effective_workflow_path,
-                artifact_store=artifact_store,
-                terminal_anchor=authoritative_outcome.terminal_anchor,
-            )
-        return finalization.exit_code
+        # Sealing runs after the headline/exit code freeze so any sealing
+        # fault stays outcome-neutral (never mutates RunOutcome/exit code).
+        frozen_exit_code = finalization.exit_code
+        run_direct_manifest_sealing(
+            seal_requested=seal_manifest,
+            is_continuation=continuation is not None,
+            report_dir=output_dir,
+            run_id=str(run_id),
+            project_dir=temp_dir,
+            workflow_path=effective_workflow_path,
+            artifact_store=artifact_store,
+            terminal_anchor=authoritative_outcome.terminal_anchor,
+            summary_path=(
+                Path(finalization.summary_path)
+                if finalization.summary_path is not None
+                else None
+            ),
+        )
+        return frozen_exit_code
     finally:
         dashboard_wiring.close()
 
@@ -1565,6 +1420,44 @@ class _SingleContainerRetentionAction(argparse.Action):
             parser.error("--container-retention requires one value")
         setattr(namespace, self.dest, values)
         setattr(namespace, "_container_retention_seen", True)
+
+
+class _ContinueFromAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        del option_string
+        if getattr(namespace, "_seal_manifest_seen", False):
+            parser.error(
+                "--continue-from is not valid with --seal-manifest; a "
+                "continuation child must consume the parent's already-sealed "
+                "evidence rather than re-seal its own root manifest."
+            )
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "_continue_from_seen", True)
+
+
+class _SealManifestAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        del values, option_string
+        if getattr(namespace, "_continue_from_seen", False):
+            parser.error(
+                "--seal-manifest is not valid with --continue-from; a "
+                "continuation child must consume the parent's already-sealed "
+                "evidence rather than re-seal its own root manifest."
+            )
+        setattr(namespace, self.dest, True)
+        setattr(namespace, "_seal_manifest_seen", True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1595,7 +1488,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(save_agent_trace=None)
     run_mode = parser.add_mutually_exclusive_group(required=True)
     _ = run_mode.add_argument("--project-dir", type=Path, default=None)
-    _ = run_mode.add_argument("--continue-from", type=Path, default=None)
+    _ = run_mode.add_argument(
+        "--continue-from",
+        type=Path,
+        default=None,
+        action=_ContinueFromAction,
+    )
     _ = parser.add_argument("--agent", type=str, default=None)
     _ = parser.add_argument("--output-dir", type=Path, default=None)
     _ = parser.add_argument("--user-constraints", type=Path, default=None)
@@ -1627,7 +1525,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _ = parser.add_argument(
         "--seal-manifest",
-        action="store_true",
+        nargs=0,
+        action=_SealManifestAction,
+        default=False,
         help="Create and seal a root run-manifest.v1.json so the run is eligible for --continue-from.",
     )
     _ = parser.add_argument("--verbose", action="store_true")

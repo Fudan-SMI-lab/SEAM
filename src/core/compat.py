@@ -31,6 +31,7 @@ supported versions, so the fallback is always available.
 from __future__ import annotations
 
 import sys
+from typing import TypedDict
 
 __all__ = [
     "Annotated",
@@ -47,9 +48,14 @@ __all__ = [
     "SLOTS_KWARG",
 ]
 
+
+class _SlotsKwarg(TypedDict, total=False):
+    slots: bool
+
+
 # Conditional ``slots=True`` for ``@dataclass``: active on 3.10+ (identical to
 # current behaviour), omitted on 3.8/3.9 where the parameter does not exist.
-SLOTS_KWARG: dict[str, object] = (
+SLOTS_KWARG: _SlotsKwarg = (
     {"slots": True} if sys.version_info >= (3, 10) else {}
 )
 
