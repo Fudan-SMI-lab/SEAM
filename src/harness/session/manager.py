@@ -56,6 +56,8 @@ DEFAULT_TODO_STABILIZE_WAIT_S = 10.0
 DEFAULT_MAX_TODO_NUDGES = 2
 # 是否默认启用 TODO 追问
 DEFAULT_TODO_NUDGE_ENABLED = True
+# 一次命令最多执行多少次 compaction 恢复（bounded wait + refetch）
+DEFAULT_MAX_RECOVERIES_PER_COMMAND = 1
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -196,6 +198,7 @@ class MigrationSessionManager:
         todo_nudge_enabled: bool = DEFAULT_TODO_NUDGE_ENABLED,
         todo_stabilize_wait_s: float = DEFAULT_TODO_STABILIZE_WAIT_S,
         max_todo_nudges: int = DEFAULT_MAX_TODO_NUDGES,
+        max_recoveries_per_command: int = DEFAULT_MAX_RECOVERIES_PER_COMMAND,
         transport_observer: TransportObserver | None = None,
     ) -> None:
         self._work_dir = Path(work_dir).resolve()
@@ -216,6 +219,12 @@ class MigrationSessionManager:
         )
         self._max_todo_nudges = max(
             0, _env_int("SEAM_MAX_TODO_NUDGES", int(max_todo_nudges))
+        )
+        self._max_recoveries_per_command = max(
+            0,
+            _env_int(
+                "SEAM_MAX_RECOVERIES_PER_COMMAND", int(max_recoveries_per_command)
+            ),
         )
         self._last_todo_summary = ""
         self._transport_lifecycle = TransportLifecycle(transport_observer)
@@ -406,6 +415,36 @@ class MigrationSessionManager:
                 session_id, initial_prompt, agent=record.agent, timeout=120
             )
         return session_id
+
+    def register_session(self, record: SessionRecord) -> str:
+        """Register a :class:`SessionRecord` in the manager session layer.
+
+        Dual-layer sync helper for the registry ``rotate`` contract (Metis
+        Q5): ``SessionRegistry.rotate`` atomically swaps only its own
+        ``_cache``; the caller MUST keep ``manager._sessions`` consistent by
+        handing the returned record back through this helper::
+
+            rec = registry.rotate(agent_id, reason, handoff_snapshot)
+            manager.register_session(rec)
+
+        Registration is idempotent: re-registering an existing ``session_id``
+        overwrites the stored record (e.g. after a rotation that reuses the
+        same id through a custom ``session_factory``) and never duplicates
+        the trace seed (``TraceSeedRegistry.record`` short-circuits on an
+        existing seed).
+
+        Returns:
+            The registered ``session_id``.
+        """
+        self._sessions[record.session_id] = record
+        _ = self._trace_seed_registry.record(
+            session_id=record.session_id,
+            logical_role=record.role,
+            lifecycle=record.lifecycle,
+            agent=record.agent,
+            working_directory=record.working_dir,
+        )
+        return record.session_id
 
     def attach_session(
         self,
@@ -1514,7 +1553,17 @@ class MigrationSessionManager:
                 raise RuntimeError(self._extract_error_text(info.get("error")))
 
             if self._is_compaction_payload(data):
-                raise SessionCompacted("Compaction response is incomplete")
+                # Bug #16: compaction is an intermediate state, not a failure.
+                # Recover with one bounded wait + refetch instead of re-POSTing.
+                return self._recover_from_compaction(
+                    session_id=session_id,
+                    previous_text=previous_text,
+                    command_text=command_text,
+                    timeout=timeout,
+                    transport_attempt=transport_attempt,
+                    active_transport=active_transport,
+                    data=data,
+                )
 
             finish = (
                 str(info.get("finish", "")).lower() if isinstance(info, dict) else ""
@@ -1580,6 +1629,83 @@ class MigrationSessionManager:
             raise
         self._transport_lifecycle.complete(active_transport)
         return final_text
+
+    @staticmethod
+    def _tokens_used_from_payload(data: Any) -> int:
+        info = data.get("info") if isinstance(data, dict) else None
+        if not isinstance(info, dict):
+            return 0
+        tokens = info.get("tokens")
+        if isinstance(tokens, dict):
+            total = 0
+            for key in ("input", "output", "reasoning"):
+                value = tokens.get(key)
+                if isinstance(value, (int, float)):
+                    total += int(value)
+            return total
+        if isinstance(tokens, (int, float)):
+            return int(tokens)
+        return 0
+
+    def _wait_for_session_to_leave_compacting(
+        self,
+        session_id: str,
+        timeout: int | float | None,
+        interval_s: float = 1.0,
+    ) -> None:
+        started = time.time()
+        hard_error_timeout = (
+            DEFAULT_HARD_ERROR_WAIT_TIMEOUT
+            if timeout is None
+            else min(
+                self._effective_wait_timeout(timeout),
+                DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+            )
+        )
+        deadline = started + hard_error_timeout
+        while time.time() < deadline:
+            status = self._http("GET", "/session/status")
+            if status.get("ok"):
+                token = self._extract_status_token(status.get("data"), session_id)
+                if token in RUNNING_TOKENS:
+                    time.sleep(interval_s)
+                    continue
+                if token:
+                    return
+            sqlite_state = self._session_completion_from_sqlite(session_id)
+            if sqlite_state is True:
+                time.sleep(interval_s)
+                continue
+            if sqlite_state is False:
+                return
+            return
+
+    def _recover_from_compaction(
+        self,
+        session_id: str,
+        previous_text: str,
+        command_text: str,
+        timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
+        active_transport: ActiveTransportAttempt,
+        data: dict[str, Any],
+    ) -> str:
+        from core.session_registry import ContextExhaustedError
+
+        for _ in range(self._max_recoveries_per_command):
+            self._wait_for_session_to_leave_compacting(session_id, timeout)
+            latest = self._last_message_text_tolerant(session_id)
+            if self._is_usable_refetched_text(latest, previous_text, command_text):
+                self._transport_lifecycle.complete(active_transport)
+                return latest
+        self._transport_lifecycle.post_acceptance_session_failure(transport_attempt)
+        raise ContextExhaustedError(
+            session_id=session_id,
+            agent_id=self.active_agent,
+            tokens_used=self._tokens_used_from_payload(data),
+            compaction_count=self._max_recoveries_per_command,
+            reason="compaction response is incomplete; recovery budget exhausted",
+        )
 
     def _post_message_only(
         self,

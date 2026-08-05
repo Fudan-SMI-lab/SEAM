@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import harness.session.manager as manager_module
+from core.session_registry import ContextExhaustedError
 from core.sqlite_provider import available as _sqlite_available
 from core.sqlite_provider import connect as _sqlite_connect
 from harness.session.manager import MigrationSessionManager
@@ -139,17 +140,40 @@ def test_detect_agent_prefers_exact_sisyphus_then_contains_sisyphus() -> None:
     assert containing.active_agent == "custom-sisyphus-agent"
 
 
-def test_send_command_rejects_compaction_response_as_incomplete() -> None:
-    manager = _manager_with_message({
-        "info": {"mode": "compaction", "agent": "compaction", "summary": True, "sessionID": "ses-1"},
-        "parts": [{"type": "step-start"}],
+def test_send_command_recovers_from_compaction_after_bounded_wait_and_refetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # rationale: compaction is an intermediate state; bounded wait + single
+    # refetch must recover without re-POSTing (Bug #16) or consuming retries.
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {
+                "info": {"mode": "compaction", "agent": "compaction", "summary": True, "sessionID": "ses-1"},
+                "parts": [{"type": "step-start"}],
+            },
+        },
+        ("GET", "/session/status"): [
+            {"ok": True, "data": {"ses-1": {"type": "compacting"}}},
+            {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ],
+        ("GET", "/session/ses-1/message"): [
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "old assistant text"}]}]},
+            {"ok": True, "data": [{"parts": [{"type": "text", "text": "post-compaction summary"}]}]},
+        ],
     })
 
-    result = json.loads(manager.send_command("ses-1", "do work", retries=0))
+    result = manager.send_command("ses-1", "do work", retries=0)
 
-    assert result["ok"] is False
-    assert "Compaction response is incomplete" in result["error"]
-    assert not any(call["method"] == "GET" and call["path"] == "/session/status" for call in manager.calls)
+    posts = [call for call in manager.calls if call["method"] == "POST"]
+    status_calls = [call for call in manager.calls if call["method"] == "GET" and call["path"] == "/session/status"]
+    # rationale: refetch after the bounded wait supplies the final message.
+    assert result == "post-compaction summary"
+    # rationale: the compaction was never re-POSTed (Bug #16).
+    assert len(posts) == 1
+    # rationale: the manager polled status until the session left "compacting".
+    assert len(status_calls) >= 2
 
 
 def test_send_command_recovers_empty_post_response_from_latest_history() -> None:
@@ -381,7 +405,12 @@ def test_sqlite_assistant_completion_still_blocks_same_session_pending_todo(tmp_
 
 
 @_SKIP_SQLITE
-def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sqlite_active_compaction_exhausts_recovery_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # rationale: while SQLite reports time_compacting=1 the stale assistant
+    # completion must NOT be treated as converged; bounded wait cannot observe
+    # the session leaving "compacting", so recovery terminates structurally.
     db_path = tmp_path / "opencode.db"
     assistant_data = {
         "role": "assistant",
@@ -398,21 +427,43 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
             ("ses-1", "assistant", json.dumps(assistant_data), 2),
         )
 
-    manager = _sqlite_backed_manager(db_path, status_data={})
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {
+                "info": {"mode": "compaction", "agent": "compaction", "summary": True},
+                "parts": [{"type": "step-start"}],
+            },
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {}},
+        ("GET", "/session/ses-1/message"): {"ok": True, "data": [{"parts": [{"type": "text", "text": "No structured todo list."}]}]},
+    })
+    manager._candidate_sqlite_paths = lambda: [db_path]  # type: ignore[method-assign]
     manager._todo_nudge_enabled = False
     clock = {"t": 0.0}
 
     def fake_time() -> float:
-        clock["t"] += 1.0
+        clock["t"] += 0.1
         return clock["t"]
 
     monkeypatch.setattr(manager_module.time, "time", fake_time)
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
-    result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
+    with pytest.raises(ContextExhaustedError) as exc_info:
+        manager.send_command("ses-1", "do work", timeout=1, retries=0)
 
-    assert result["ok"] is False
-    assert "Session still running" in result["error"]
+    # rationale: the structured signal names the affected session/agent.
+    assert exc_info.value.session_id == "ses-1"
+    assert exc_info.value.agent_id == "sisyphus"
+    # rationale: one bounded wait was attempted before the recovery budget (1) ran out.
+    assert exc_info.value.compaction_count == 1
+    assert "compaction" in exc_info.value.reason.lower()
+    posts = [call for call in manager.calls if call["method"] == "POST"]
+    status_calls = [call for call in manager.calls if call["method"] == "GET" and call["path"] == "/session/status"]
+    # rationale: the command was never re-POSTed (Bug #16).
+    assert len(posts) == 1
+    # rationale: the bounded wait actually polled status before exhausting.
+    assert len(status_calls) >= 1
 
 
 @_SKIP_SQLITE
