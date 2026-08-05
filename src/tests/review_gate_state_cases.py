@@ -161,7 +161,8 @@ def test_improvement_error_replaces_rejection_without_adding_judgment() -> None:
             command_count=2,
         ),
         ReviewBoundaryCase(
-            responses=('{"ok": false, "error": "compaction response is incomplete"}',),
+            # rationale: Task 6 contract — compaction raises ContextExhaustedError; lowercase envelope stays SESSION_ERROR (Edge 14).
+            responses=('{"ok": false, "error": "transport failure"}',),
             expected=ReviewOutcome.SESSION_ERROR,
             command_count=1,
         ),

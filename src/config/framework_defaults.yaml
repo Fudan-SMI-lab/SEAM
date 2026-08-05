@@ -22,3 +22,14 @@ framework:
   omo_mode_directives:
     enabled: true                     # OMO-style mode directives
     scope: current_phase              # scoped to current phase only
+
+context_management:
+  enabled: true
+  context_tokens: auto                # auto = estimate from provider metadata; explicit int uses directly
+  reserve_output_tokens: 8192
+  compact_threshold_ratio: 0.72
+  rotate_threshold_ratio: 0.88
+  summary_budget_tokens: 12000
+  keep_recent_turns: 2
+  max_compactions_per_session: 2
+  max_recoveries_per_command: 1
