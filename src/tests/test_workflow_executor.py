@@ -3,9 +3,11 @@
 import logging
 import json
 import pytest
+import re
 import tempfile
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 from typing import cast
@@ -20,6 +22,14 @@ from core.types import (
     ExperienceConfig,
 )
 from core.workflow_executor import WorkflowExecutor
+from core.session_registry import ContextExhaustedError
+from core.context_management import (
+    CONTEXT_SNAPSHOT_FILENAME,
+    CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+    ContextBudgetState,
+    ContextSnapshot,
+    LOOP_HISTORY_FILENAME,
+)
 from core.execution_backend import ContainerBackend, ExecResult
 from core.artifact_store import ArtifactStore
 from core.experience_store import ExperienceStore
@@ -1478,10 +1488,23 @@ def test_operator_fix_session_error_fails_subworkflow_without_validated_artifact
     artifact_store.raw_dir = str(tmp_path / ".sm-artifacts" / "testrun" / "raw")
     session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
     session_mgr.create_session.return_value = "session:operator_fixer_retry"
+    # rationale: Task 6 contract — compaction exhaustion raises ContextExhaustedError, not an ok:false envelope.
     session_mgr.send_command.side_effect = [
         '{"repair_role": "operator_fixer", "category": "operator", "root_cause": "unsupported custom op", "suggested_fix": "port custom op"}',
-        '{"ok": false, "error": "Compaction response is incomplete"}',
-        '{"ok": false, "error": "Compaction response is incomplete"}',
+        ContextExhaustedError(
+            session_id="session:operator_fixer",
+            agent_id="operator_fixer",
+            tokens_used=900,
+            compaction_count=1,
+            reason="compaction response is incomplete",
+        ),
+        ContextExhaustedError(
+            session_id="session:operator_fixer",
+            agent_id="operator_fixer",
+            tokens_used=900,
+            compaction_count=2,
+            reason="compaction response is incomplete",
+        ),
     ]
     prompt_loader.load_prompt.side_effect = lambda template, _ctx: template
     executor = WorkflowExecutor(
@@ -1495,23 +1518,27 @@ def test_operator_fix_session_error_fails_subworkflow_without_validated_artifact
         experience_store=MagicMock(),
     )
 
-    result = executor._run_sub_workflow(
-        sub_workflow,
-        loop_vars={"entry_script": "python main.py"},
-        state={},
-        context={},
-        sub_wf_phases=sub_workflow.phases,
-        step_outputs={"script_stderr": "RuntimeError: unsupported custom op"},
-        loop_history=[],
-        loop_state={},
-    )
-
-    assert result["status"] == "failure"
-    assert result["step_outputs"]["repair_dispatch"]["dispatched_to"] == "fix_operator"
-    assert (
-        "Compaction response is incomplete"
-        in result["step_outputs"]["fix_operator"]["error"]
-    )
+    result = None
+    step_outputs = {"script_stderr": "RuntimeError: unsupported custom op"}
+    # rationale: Task 7 bounded-recovery contract — re-exhaust re-raises ContextExhaustedError (old/new session ids) for _execute_loop_phase to emit structured context_exhausted.
+    with pytest.raises(ContextExhaustedError) as exc_info:
+        result = executor._run_sub_workflow(
+            sub_workflow,
+            loop_vars={"entry_script": "python main.py"},
+            state={},
+            context={},
+            sub_wf_phases=sub_workflow.phases,
+            step_outputs=step_outputs,
+            loop_history=[],
+            loop_state={},
+        )
+    assert result is None
+    assert step_outputs["repair_dispatch"]["dispatched_to"] == "fix_operator"
+    exc = exc_info.value
+    assert exc.compaction_count == 2
+    assert exc.reason.lower() == "compaction response is incomplete"
+    assert exc.old_session_id == "session:operator_fixer"
+    assert exc.new_session_id == "session:operator_fixer_rotated_1"
     saved_phase_ids = [
         call.args[0] for call in artifact_store.save_phase_output.call_args_list
     ]
@@ -7070,3 +7097,607 @@ class TestProductionWorkflowPlatformPolicy:
         devices = get_performance_baseline_device_values(ppu)
         assert "cpu" not in devices, "Default baseline must NOT include CPU"
         assert "cuda" in devices
+
+
+# ── Task 7: Phase-5 loop-top budget checks (bug #16 §5.7) ──────────────
+
+
+class _Task7ScriptedBudgetEstimator:
+    """Deterministic estimator replaying scripted states; NORMAL when exhausted."""
+
+    scripted_states: list[ContextBudgetState] = []
+
+    def __init__(self, config: object, token_provider: object = None) -> None:
+        self.config = config
+        self.token_provider = token_provider
+
+    def estimate(self, message_info: dict | None = None) -> SimpleNamespace:
+        state = (
+            self.scripted_states.pop(0)
+            if self.scripted_states
+            else ContextBudgetState.NORMAL
+        )
+        return SimpleNamespace(
+            state=state, tokens_used=0, context_limit=0, estimated=True
+        )
+
+
+def _task7_feature_config(
+    overrides: dict[str, object] | None = None,
+) -> dict[str, object]:
+    base: dict[str, object] = {
+        "enabled": True,
+        "context_tokens": 10_000,
+        "reserve_output_tokens": 1024,
+        "compact_threshold_ratio": 0.72,
+        "rotate_threshold_ratio": 0.88,
+        "summary_budget_tokens": 4096,
+        "keep_recent_turns": 2,
+        "max_compactions_per_session": 2,
+        "max_recoveries_per_command": 1,
+    }
+    base.update(overrides or {})
+    return {"context_management": base}
+
+
+def _build_task7_loop_executor(
+    tmp_path: Path, max_iterations: int = 2, session_mgr: object | None = None
+):
+    """Build a Phase-5 ``repair_loop`` executor over the shared loop fixture.
+
+    Mirrors the loop fixture used throughout this file (``run_entry_script``
+    always fails → ``analyze_error`` classifies → ``repair_dispatch`` routes →
+    fixer returns fixed). Returns ``(executor, session_mgr, artifact_store,
+    prompt_loader)`` so tests can assert on session / snapshot / prompt wiring.
+    Pass ``session_mgr`` to inject a recording/raising manager (Test C/D).
+    """
+    sub_workflow = SubWorkflowDefinition(
+        id="repair_loop",
+        type="loop",
+        max_iterations=max_iterations,
+        phases=[
+            {
+                "id": "run_entry_script",
+                "type": "shell",
+                "command": 'python -c "import sys; sys.exit(1)"',
+                "on_failure": "continue",
+            },
+            {
+                "id": "analyze_error",
+                "type": "llm",
+                "condition": "$.script_exit_code != 0",
+                "prompt_template": "analyze_prompt",
+                "agent": "error_analyzer",
+                "output_as": "error_analysis",
+            },
+            {
+                "id": "repair_dispatch",
+                "type": "dispatch",
+                "condition": "$.script_exit_code != 0",
+                "route_field": "${error_analysis.repair_role}",
+                "routes": {
+                    "dependency_fixer": "fix_dependency",
+                    "operator_fixer": "fix_operator",
+                },
+            },
+            {
+                "id": "fix_dependency",
+                "condition": "$.script_exit_code != 0",
+                "type": "llm",
+                "prompt_template": "fix_dependency_prompt",
+                "agent": "dependency_fixer",
+            },
+            {
+                "id": "fix_operator",
+                "condition": "$.script_exit_code != 0",
+                "type": "llm",
+                "prompt_template": "fix_operator_prompt",
+                "agent": "operator_fixer",
+            },
+        ],
+    )
+    workflow = WorkflowDefinition(
+        name="task7_budget_loop",
+        version="1.0",
+        phases=[],
+        terminals=["complete"],
+        agents={
+            "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"},
+            "dependency_fixer": {"role": "dependency_fixer", "lifecycle": "persistent"},
+            "operator_fixer": {"role": "operator_fixer", "lifecycle": "persistent"},
+        },
+        sub_workflows={"repair_loop": sub_workflow},
+    )
+    artifact_store = MagicMock()
+    prompt_loader = MagicMock()
+    validator = MagicMock()
+    artifact_store.artifact_dir = str(tmp_path / "artifacts")
+    artifact_store.raw_dir = str(tmp_path / "raw")
+    if session_mgr is not None:
+        prompt_loader.load_prompt.side_effect = lambda template, ctx: template
+        executor = WorkflowExecutor(
+            workflow,
+            session_mgr,
+            artifact_store,
+            prompt_loader,
+            validator,
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
+            framework_config=_task7_feature_config(),
+        )
+        return executor, session_mgr, artifact_store, prompt_loader
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = lambda role, lifecycle: f"session:{role}"
+    analyzer_outputs = iter(
+        [
+            {
+                "repair_role": "dependency_fixer",
+                "category": "dependency",
+                "root_cause": "missing",
+                "suggested_fix": "install",
+            },
+            {
+                "repair_role": "operator_fixer",
+                "category": "operator",
+                "root_cause": "unsupported",
+                "suggested_fix": "replace op",
+            },
+            {
+                "repair_role": "dependency_fixer",
+                "category": "dependency",
+                "root_cause": "missing",
+                "suggested_fix": "install",
+            },
+        ]
+    )
+
+    def respond(session_id: str, _prompt: str, timeout: int = 600) -> str:
+        if session_id.startswith("session:error_analyzer"):
+            try:
+                return json.dumps(next(analyzer_outputs))
+            except StopIteration:
+                return json.dumps(
+                    {
+                        "repair_role": "dependency_fixer",
+                        "category": "dependency",
+                        "root_cause": "stall",
+                        "suggested_fix": "retry",
+                    }
+                )
+        return json.dumps(
+            {
+                "fixed": True,
+                "summary": "Installed dependency; verified closure",
+                "modified_files": ["requirements.txt"],
+                "agent_diagnostics": {"verified": True},
+            }
+        )
+
+    session_mgr.send_command.side_effect = respond
+    prompt_loader.load_prompt.side_effect = lambda template, ctx: template
+    executor = WorkflowExecutor(
+        workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        validator,
+        project_dir=str(tmp_path),
+        output_dir=str(tmp_path),
+        framework_config=_task7_feature_config(),
+    )
+    return executor, session_mgr, artifact_store, prompt_loader
+
+
+def test_task7_loop_top_compact_snapshot_bounds_history(
+    tmp_path: Path, monkeypatch
+):
+    """Task 7 Test A (COMPACT): loop-top budget check persists a snapshot,
+    bounds the analyzer history to ``keep_recent_turns``, and the loop
+    continues without rotating any session (plan §5.7 / QA compact_snapshot)."""
+    monkeypatch.setattr(
+        "core.workflow_executor.ContextBudgetEstimator",
+        _Task7ScriptedBudgetEstimator,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _Task7ScriptedBudgetEstimator,
+        "scripted_states",
+        [
+            ContextBudgetState.NORMAL,
+            ContextBudgetState.COMPACT,
+            ContextBudgetState.NORMAL,
+        ],
+    )
+    executor, session_mgr, artifact_store, prompt_loader = _build_task7_loop_executor(
+        tmp_path
+    )
+    executor.framework_config = _task7_feature_config({"keep_recent_turns": 1})
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    # COMPACT must persist a versioned snapshot under the artifact dir.
+    snapshot_path = Path(artifact_store.artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+    assert snapshot_path.exists(), "COMPACT state must persist a context snapshot"
+    snapshot = ContextSnapshot.from_json(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot.schema_version == CONTEXT_SNAPSHOT_SCHEMA_VERSION
+    assert snapshot.phase == "phase_5_validation"
+
+    # COMPACT must NOT rotate any session.
+    rotated = [
+        str(call.args[0])
+        for call in session_mgr.get_or_create.call_args_list
+        if "_rotated_" in str(call.args[0])
+    ]
+    assert rotated == [], "COMPACT must not rotate any session"
+
+    # Loop continued past the compaction point (no early termination).
+    assert result["iterations"] == 2
+    assert len(result["loop_history"]) == 2
+    assert result["status"] != "context_exhausted"
+
+    # Analyzer prompt history is bounded: only the latest keep_recent_turns=1
+    # iteration survives (all N iterations are NOT passed to the analyzer).
+    analyzer_ctx = None
+    for call in prompt_loader.load_prompt.call_args_list:
+        if call.args[0] == "analyze_prompt":
+            analyzer_ctx = call.args[1]
+    assert analyzer_ctx is not None, "analyze_prompt must be sent"
+    rows = analyzer_ctx.get("previous_outputs", "")
+    assert "| Iter 1 |" in rows
+    assert "| Iter 2 |" not in rows
+
+
+def test_task7_loop_top_rotate_handoff_resumes(tmp_path: Path, monkeypatch):
+    """Task 7 Test A (ROTATE): loop-top budget check persists a snapshot,
+    rotates the analyzer session via ``session_registry.rotate``, keeps the
+    manager layer in sync, and sends the snapshot handoff as the FIRST message
+    to the new session (plan §5.7 / QA rotate_handoff)."""
+    monkeypatch.setattr(
+        "core.workflow_executor.ContextBudgetEstimator",
+        _Task7ScriptedBudgetEstimator,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _Task7ScriptedBudgetEstimator,
+        "scripted_states",
+        [
+            ContextBudgetState.NORMAL,
+            ContextBudgetState.ROTATE,
+            ContextBudgetState.NORMAL,
+        ],
+    )
+    executor, session_mgr, artifact_store, _prompt_loader = _build_task7_loop_executor(
+        tmp_path
+    )
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    # ROTATE must persist a snapshot for the handoff.
+    snapshot_path = Path(artifact_store.artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+    assert snapshot_path.exists(), "ROTATE state must persist a context snapshot"
+
+    # Registry cache now points at the rotated analyzer session.
+    assert executor.session_registry is not None
+    assert (
+        executor.session_registry._cache["error_analyzer"]
+        == "session:error_analyzer_rotated_1"
+    )
+    assert ("error_analyzer_rotated_1", "persistent") in [
+        (call.args[0], call.args[1])
+        for call in session_mgr.get_or_create.call_args_list
+    ]
+
+    # Dual-layer sync (Metis Q5): manager-side register_session called.
+    assert session_mgr.register_session.call_count >= 1
+
+    # The FIRST message to the new session carries the snapshot handoff.
+    rotated_calls = [
+        call.args
+        for call in session_mgr.send_command.call_args_list
+        if call.args[0] == "session:error_analyzer_rotated_1"
+    ]
+    assert rotated_calls, "rotated session must receive messages"
+    first_prompt = rotated_calls[0][1]
+    assert CONTEXT_SNAPSHOT_SCHEMA_VERSION in first_prompt, (
+        "first message to the new session must contain the snapshot handoff"
+    )
+
+    # Loop continued after rotation (no early termination).
+    assert result["iterations"] == 2
+
+
+def test_task7_loop_history_full_persistence_with_bounded_prompts(
+    tmp_path: Path, monkeypatch
+):
+    """Task 7 Test B: the FULL loop_history (every iteration) is persisted to
+    ``.sm-artifacts/<run_id>/loop_history.v1.json`` while every prompt call
+    site (``_format_history_summary`` / ``_format_error_analyzer_history`` /
+    ``_format_loop_history``) receives only the bounded window
+    (keep_recent_turns), with artifact refs retained."""
+    monkeypatch.setattr(
+        "core.workflow_executor.ContextBudgetEstimator",
+        _Task7ScriptedBudgetEstimator,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _Task7ScriptedBudgetEstimator,
+        "scripted_states",
+        [
+            ContextBudgetState.NORMAL,
+            ContextBudgetState.COMPACT,
+            ContextBudgetState.NORMAL,
+            ContextBudgetState.NORMAL,
+        ],
+    )
+    executor, session_mgr, artifact_store, prompt_loader = _build_task7_loop_executor(
+        tmp_path, max_iterations=3
+    )
+    executor.framework_config = _task7_feature_config({"keep_recent_turns": 1})
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    # Full loop_history is persisted under the artifact dir (all iterations,
+    # unbounded on disk) — the file must exist and carry every iteration.
+    loop_history_path = Path(artifact_store.artifact_dir) / LOOP_HISTORY_FILENAME
+    assert loop_history_path.exists(), (
+        "full loop_history must be persisted to .sm-artifacts/<run_id>/"
+    )
+    persisted = json.loads(loop_history_path.read_text(encoding="utf-8"))
+    assert len(persisted) == 3
+    assert [entry["iteration"] for entry in persisted] == [1, 2, 3]
+    assert result["iterations"] == 3
+
+    # Analyzer prompt at iteration 3 shows ONLY the bounded window (last
+    # keep_recent_turns=1 iteration), with artifact refs retained.
+    analyzer_ctxs = [
+        call.args[1]
+        for call in prompt_loader.load_prompt.call_args_list
+        if call.args[0] == "analyze_prompt"
+    ]
+    assert len(analyzer_ctxs) == 3
+    last_analyzer = analyzer_ctxs[-1]
+    rows = re.findall(r"\| Iter (\d+) \|", last_analyzer.get("previous_outputs", ""))
+    assert rows == ["2"], "analyzer must see only the bounded window (iteration 2)"
+    assert "artifact_base_path" in last_analyzer
+
+    # Fixer prompt history summary is bounded the same way.
+    fixer_ctxs = [
+        call.args[1]
+        for call in prompt_loader.load_prompt.call_args_list
+        if call.args[0] in ("fix_dependency_prompt", "fix_operator_prompt")
+    ]
+    assert len(fixer_ctxs) == 3
+    last_fixer = fixer_ctxs[-1]
+    fixer_rows = re.findall(r"\| (\d+) \|", last_fixer.get("history_summary", ""))
+    assert fixer_rows == ["2"], "fixer history_summary must be bounded too"
+
+
+class _Task7ExhaustedOnceSessionManager:
+    """Session manager that raises ``ContextExhaustedError`` exactly once for
+    the first ``dependency_fixer`` send, then succeeds on the rotated resend.
+
+    Records ``get_or_create`` / ``send_command`` / ``register_session`` calls so
+    the test can assert the Task 7 recovery contract: catch
+    ``ContextExhaustedError`` -> persist snapshot -> rotate registry -> notify
+    manager (dual-layer sync) -> resend the current command once."""
+
+    def __init__(self) -> None:
+        self.get_or_create_calls: list[tuple[str, str]] = []
+        self.send_command_calls: list[tuple[str, str, int]] = []
+        self.register_session_calls: list[object] = []
+        self._exhausted = False
+
+    def get_or_create(self, role: str, lifecycle: str) -> str:
+        self.get_or_create_calls.append((role, lifecycle))
+        return f"session:{role}"
+
+    def register_session(self, record: object) -> None:
+        self.register_session_calls.append(record)
+
+    def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
+        self.send_command_calls.append((session_id, command, timeout))
+        if session_id.startswith("session:error_analyzer"):
+            return json.dumps(
+                {
+                    "repair_role": "dependency_fixer",
+                    "category": "dependency",
+                    "root_cause": "missing",
+                    "suggested_fix": "install",
+                }
+            )
+        if session_id == "session:dependency_fixer" and not self._exhausted:
+            self._exhausted = True
+            raise ContextExhaustedError(
+                session_id=session_id,
+                agent_id="dependency_fixer",
+                tokens_used=80_000,
+                compaction_count=1,
+                reason="max_recoveries",
+            )
+        return json.dumps(
+            {
+                "fixed": True,
+                "summary": "Installed missing dependency; closure verified",
+                "modified_files": ["requirements.txt"],
+                "agent_diagnostics": {"verified": True},
+            }
+        )
+
+
+def test_task7_exhausted_rotate_resend_once(tmp_path: Path, monkeypatch):
+    """Task 7 Test C: a ``ContextExhaustedError`` during a sub-workflow send is
+    recovered exactly once per logical command — snapshot persisted, registry
+    rotated, manager notified (dual-layer sync), and the SAME command resent on
+    the rotated session — with no structured ``context_exhausted`` termination."""
+    monkeypatch.setattr(
+        "core.workflow_executor.ContextBudgetEstimator",
+        _Task7ScriptedBudgetEstimator,
+        raising=False,
+    )
+    manager = _Task7ExhaustedOnceSessionManager()
+    executor, session_mgr, artifact_store, _ = _build_task7_loop_executor(
+        tmp_path, max_iterations=2, session_mgr=manager
+    )
+    assert session_mgr is manager
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    # Recovery: a snapshot was persisted for the handoff.
+    snapshot_path = Path(artifact_store.artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+    assert snapshot_path.exists(), "ContextExhaustedError recovery must persist a snapshot"
+
+    # Recovery: the registry cache now points at the rotated fixer session.
+    assert executor.session_registry is not None
+    assert (
+        executor.session_registry._cache["dependency_fixer"]
+        == "session:dependency_fixer_rotated_1"
+    )
+
+    # Recovery: dual-layer sync — manager-side register_session called.
+    assert manager.register_session_calls, "manager must be notified of the rotated session"
+
+    # Recovery: the SAME command text was resent exactly once on the rotated
+    # session (resend once per logical command, not a retry storm).
+    fixer_calls = [
+        call for call in manager.send_command_calls if "dependency_fixer" in call[0]
+    ]
+    original_calls = [c for c in fixer_calls if c[0] == "session:dependency_fixer"]
+    rotated_calls = [
+        c for c in fixer_calls if c[0] == "session:dependency_fixer_rotated_1"
+    ]
+    assert len(original_calls) >= 1, "the fixer command must have been sent"
+    assert len(rotated_calls) >= 1, "the fixer command must be resent on the rotated session"
+    assert original_calls[0][1] == rotated_calls[0][1], (
+        "the resent command must be identical to the original"
+    )
+
+    # Recovery: no structured termination — the loop continued to completion.
+    assert result["iterations"] == 2
+    assert "context_exhausted" not in result, (
+        "a single recovered exhaustion must not terminate the loop"
+    )
+
+
+class _Task7AlwaysExhaustedSessionManager(_Task7ExhaustedOnceSessionManager):
+    """Session manager that raises ``ContextExhaustedError`` on EVERY
+    ``dependency_fixer`` send — including the rotated resend — so the recovery
+    path must stop after the bounded retry and terminate with a structured
+    ``context_exhausted`` result instead of spawning an infinite rotation
+    chain (plan L751 / Metis Q1)."""
+
+    def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
+        self.send_command_calls.append((session_id, command, timeout))
+        if session_id.startswith("session:error_analyzer"):
+            return json.dumps(
+                {
+                    "repair_role": "dependency_fixer",
+                    "category": "dependency",
+                    "root_cause": "missing",
+                    "suggested_fix": "install",
+                }
+            )
+        raise ContextExhaustedError(
+            session_id=session_id,
+            agent_id="dependency_fixer",
+            tokens_used=80_000,
+            compaction_count=1,
+            reason="max_recoveries",
+        )
+
+
+def test_task7_reexhaust_terminates_structured(tmp_path: Path, monkeypatch):
+    """Task 7 Test D: when the rotated resend ALSO exhausts the context, the
+    loop must terminate with a structured ``context_exhausted`` payload
+    (recovered is False, old/new session ids, reason), and must NOT create a
+    ``*_rotated_2`` session (no infinite rotation chain)."""
+    monkeypatch.setattr(
+        "core.workflow_executor.ContextBudgetEstimator",
+        _Task7ScriptedBudgetEstimator,
+        raising=False,
+    )
+    manager = _Task7AlwaysExhaustedSessionManager()
+    executor, session_mgr, artifact_store, _ = _build_task7_loop_executor(
+        tmp_path, max_iterations=2, session_mgr=manager
+    )
+    assert session_mgr is manager
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+        ),
+        state={},
+        context={},
+    )
+
+    # Termination: a snapshot was persisted before rotating.
+    snapshot_path = Path(artifact_store.artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+    assert snapshot_path.exists(), "re-exhaust termination must still persist a snapshot"
+
+    # Termination: structured payload, not a bare exception.
+    assert "context_exhausted" in result, (
+        "re-exhaust must produce a structured context_exhausted payload"
+    )
+    payload = result["context_exhausted"]
+    assert payload["recovered"] is False
+    assert payload["reason"] == "max_recoveries"
+    assert payload["old_session_id"] == "session:dependency_fixer"
+    assert payload["new_session_id"] == "session:dependency_fixer_rotated_1"
+    assert "tokens_used" in payload and "compaction_count" in payload
+
+    # Termination: bounded rotation — no second-generation rotated session.
+    assert executor.session_registry is not None
+    assert "dependency_fixer_rotated_2" not in executor.session_registry._cache, (
+        "re-exhaust must not spawn an infinite rotation chain"
+    )
+    assert result["iterations"] == 1, (
+        "re-exhaust must stop the loop after the bounded recovery"
+    )
