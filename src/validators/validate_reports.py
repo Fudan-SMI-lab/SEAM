@@ -19,4 +19,25 @@ def validate(data: dict[str, object]) -> ValidationDict:
     if not isinstance(data.get("migration_summary"), dict):
         errors.append("migration_summary must be a dictionary")
 
+    run_timeline = data.get("run_timeline")
+    if run_timeline is not None and not isinstance(run_timeline, dict):
+        errors.append("run_timeline must be a dictionary")
+    elif isinstance(run_timeline, dict):
+        phases = run_timeline.get("phases")
+        if not isinstance(phases, list):
+            errors.append("run_timeline.phases must be a list")
+        else:
+            for idx, phase_entry in enumerate(phases):
+                if not isinstance(phase_entry, dict):
+                    errors.append(
+                        f"run_timeline.phases[{idx}] must be a dictionary"
+                    )
+                    continue
+                for field in ("started_at", "ended_at"):
+                    value = phase_entry.get(field)
+                    if not isinstance(value, str) or not value or value == "\u2014":
+                        errors.append(
+                            f"run_timeline.phases[{idx}].{field} must be a real ISO-8601 UTC timestamp"
+                        )
+
     return {"passed": not errors, "errors": errors, "warnings": []}
