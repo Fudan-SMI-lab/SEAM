@@ -55,6 +55,10 @@ from core.context_management import (
 from core.config_loader import ContextManagementConfig, load_context_management_config
 from core.atomic_file import atomic_write_bytes
 from core.accelerator_context import extract_accelerator_context
+from core.execution_env_records import (
+    persist_dependency_plan,
+    replay_dependency_plan,
+)
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
 from core.phase_boundary import inject_phase_boundary
@@ -3646,6 +3650,9 @@ class WorkflowExecutor:
                 state, context, loop_vars, loop_state
             )
 
+        if operation == "dependency_reinstall":
+            return self._execute_dependency_reinstall(loop_state, state)
+
         # Generic: just return
         if not operation:
             return (
@@ -3667,14 +3674,31 @@ class WorkflowExecutor:
     ) -> tuple[str, dict]:
         contract = state.get("phase_3_entry_script")
         if not isinstance(contract, dict) or not self._has_custom_op_contract(contract):
-            result = {
-                "operation": "custom_op_final_gate",
-                "skipped": True,
-                "passed": True,
-            }
-            if loop_state is not None:
-                loop_state["custom_op_final_gate"] = result
-            return "success", result
+            # Bug #14 Gap A: a workflow that DECLARES the custom_op_final_gate
+            # phase while the custom-op route is disabled (e.g. ppu_vllm.yaml)
+            # must still execute the gate fail-closed instead of silently
+            # reporting {skipped: true, passed: true}. The gate only defers when
+            # an active review gate owns final acceptance for the loop.
+            workflow_globals = (
+                getattr(getattr(self, "workflow", None), "globals", None) or {}
+            )
+            review_gate_active = bool(
+                (loop_state or {}).get("review_gate_enabled")
+                or workflow_globals.get("review_gate_enabled") is True
+            )
+            if (
+                not self._workflow_declares_custom_op_final_gate()
+                or not self._custom_op_route_disabled(workflow_globals)
+                or review_gate_active
+            ):
+                result = {
+                    "operation": "custom_op_final_gate",
+                    "skipped": True,
+                    "passed": True,
+                }
+                if loop_state is not None:
+                    loop_state["custom_op_final_gate"] = result
+                return "success", result
 
         reports_dir = self._resolve_custom_op_reports_dir(contract, context, loop_vars)
         gate_path = reports_dir / "custom_op_final_gate.json"
@@ -3748,6 +3772,30 @@ class WorkflowExecutor:
                 "required_checks",
             )
         )
+
+    def _workflow_declares_custom_op_final_gate(self) -> bool:
+        workflow = getattr(self, "workflow", None)
+        if workflow is None:
+            return False
+        phase_lists: list[Iterable[Any]] = [getattr(workflow, "phases", None) or []]
+        sub_workflows = getattr(workflow, "sub_workflows", None) or {}
+        if isinstance(sub_workflows, dict):
+            phase_lists.extend(
+                getattr(sub_wf, "phases", None) or [] for sub_wf in sub_workflows.values()
+            )
+        for phases in phase_lists:
+            for phase in phases:
+                if isinstance(phase, dict):
+                    phase_id = phase.get("id")
+                    params = phase.get("params")
+                else:
+                    phase_id = getattr(phase, "id", None)
+                    params = getattr(phase, "params", None)
+                if str(phase_id or "") == "custom_op_final_gate":
+                    return True
+                if isinstance(params, dict) and params.get("operation") == "custom_op_final_gate":
+                    return True
+        return False
 
     def _resolve_custom_op_reports_dir(
         self,
@@ -5482,6 +5530,7 @@ class WorkflowExecutor:
         request["applied"] = True
         request["reset_number"] = reset_count + 1
         request["reset_metadata"] = reset_metadata
+        self._persist_and_record_dependency_plan(loop_state)
         result = {
             **normalized,
             "applied": True,
@@ -5494,6 +5543,81 @@ class WorkflowExecutor:
             history.append(result)
         step_outputs["environment_action"] = normalized
         return result
+
+    def _persist_and_record_dependency_plan(self, loop_state: dict[str, Any]) -> dict[str, Any]:
+        installed = self._collect_recorded_installed_packages()
+        loop_state["dependency_plan"] = list(installed)
+        manifest = persist_dependency_plan(
+            installed, destination=str(self._dependency_plan_path())
+        )
+        loop_state["dependency_plan_manifest"] = manifest
+        return manifest
+
+    def _collect_recorded_installed_packages(self) -> list[str]:
+        installed: list[str] = []
+        if isinstance(self.state, dict):
+            for key in ("phase_2_venv_create", "phase_2"):
+                phase_state = self.state.get(key)
+                if isinstance(phase_state, dict):
+                    packages = phase_state.get("installed_packages")
+                    if isinstance(packages, (list, tuple)):
+                        installed = [str(package) for package in packages]
+                        break
+        if not installed:
+            for entry in self.phase_results.values():
+                output = entry.get("output") if isinstance(entry, dict) else None
+                if isinstance(output, dict):
+                    packages = output.get("installed_packages")
+                    if isinstance(packages, (list, tuple)):
+                        installed = [str(package) for package in packages]
+                        break
+        return installed
+
+    def _dependency_plan_path(self) -> Path:
+        return Path(str(self.project_dir)).resolve() / ".seam" / "dependency_plan.json"
+
+    def _execute_dependency_reinstall(
+        self,
+        loop_state: dict[str, Any] | None,
+        state: dict[str, Any],
+    ) -> tuple[str, dict]:
+        manifest_path = self._dependency_plan_path()
+        packages: list[str] = []
+        source = "none"
+        if manifest_path.exists():
+            try:
+                packages = replay_dependency_plan(manifest_path)
+                source = str(manifest_path)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                source = f"unreadable:{exc}"
+        elif isinstance(loop_state, dict):
+            plan = loop_state.get("dependency_plan")
+            if isinstance(plan, (list, tuple)):
+                packages = [str(package) for package in plan]
+                source = "loop_state"
+        if packages:
+            reinstall_command = " && ".join(
+                f"{sys.executable} -m pip install '{package}'" for package in packages
+            )
+            result: dict[str, Any] = {
+                "operation": "dependency_reinstall",
+                "replayable": True,
+                "packages": packages,
+                "source": source,
+                "reinstalled": False,
+                "reinstall_command": reinstall_command,
+            }
+        else:
+            result = {
+                "operation": "dependency_reinstall",
+                "replayable": False,
+                "packages": [],
+                "reinstalled": False,
+                "reason": "no_persisted_dependency_plan",
+            }
+        if loop_state is not None:
+            loop_state["dependency_reinstall"] = result
+        return "success", result
 
     @staticmethod
     def _normalize_environment_action(action: dict[str, Any]) -> dict[str, Any]:

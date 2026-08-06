@@ -4987,12 +4987,15 @@ def _write_native_custom_op_gate_artifacts(project_dir: Path) -> None:
     )
 
 
-def _custom_op_gate_workflow(max_iterations: int = 1) -> WorkflowDefinition:
+def _custom_op_gate_workflow(
+    max_iterations: int = 1, globals_: dict | None = None
+) -> WorkflowDefinition:
     return WorkflowDefinition(
         name="npu_migration_custom_gate",
         version="1.0",
         phases=[],
         terminals=["complete"],
+        globals=globals_ or {},
         agents={
             "error_analyzer": {"role": "error_analyzer", "lifecycle": "persistent"}
         },
@@ -5031,7 +5034,9 @@ def _custom_op_gate_workflow(max_iterations: int = 1) -> WorkflowDefinition:
     )
 
 
-def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
+def _custom_op_gate_executor(
+    tmp_path: Path, globals_: dict | None = None
+) -> WorkflowExecutor:
     session_mgr = MagicMock()
     artifact_store = MagicMock()
     prompt_loader = MagicMock()
@@ -5049,7 +5054,7 @@ def _custom_op_gate_executor(tmp_path: Path) -> WorkflowExecutor:
     )
     prompt_loader.load_prompt.side_effect = lambda template, ctx: template
     return WorkflowExecutor(
-        _custom_op_gate_workflow(),
+        _custom_op_gate_workflow(globals_=globals_),
         session_mgr,
         artifact_store,
         prompt_loader,
@@ -5621,6 +5626,85 @@ def test_non_custom_project_skips_custom_op_final_gate(tmp_path: Path) -> None:
         "passed": True,
     }
     executor.session_mgr.send_command.assert_not_called()
+
+
+# ── #14 Gap A: declared custom_op_final_gate must NOT auto-skip ─────────────
+# ppu_vllm.yaml declares the gate phase (L242-246) with custom_op_route_enabled
+# false (L59). These contract tests FAIL on current code (that IS the RED).
+
+
+def test_declared_custom_op_gate_phase_does_not_auto_skip_when_route_disabled(
+    tmp_path: Path,
+) -> None:
+    """Workflow declares custom_op_final_gate while custom_op_route_enabled is
+    false (ppu_vllm.yaml L59 + L242-246 shape): the gate must still execute
+    instead of silently returning {skipped: true, passed: true}."""
+    executor = _custom_op_gate_executor(
+        tmp_path, globals_={"custom_op_route_enabled": False}
+    )
+    state = {"phase_3_entry_script": {"run_command": "python validate.py"}}
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
+        ),
+        state=state,
+        context={},
+    )
+
+    gate = result["loop_state"]["custom_op_final_gate"]
+    assert gate["skipped"] is False, (
+        "declared custom_op_final_gate phase auto-skipped "
+        f"{gate!r} even though the workflow declares the gate phase"
+    )
+
+
+def test_declared_custom_op_gate_phase_missing_report_fails_explicitly(
+    tmp_path: Path,
+) -> None:
+    """Workflow declares custom_op_final_gate with custom_op_route_enabled false
+    and no gate report exists: the gate must fail explicitly (fail-closed)
+    instead of silently reporting {passed: true}."""
+    executor = _custom_op_gate_executor(
+        tmp_path, globals_={"custom_op_route_enabled": False}
+    )
+    state = {"phase_3_entry_script": {"run_command": "python validate.py"}}
+
+    result = executor._execute_loop_phase(
+        PhaseDefinition(
+            id="phase_5_validation",
+            name="Validation",
+            prompt_template="",
+            output_schema={},
+            type="loop",
+            sub_workflow="repair_loop",
+            input_mapping={
+                "entry_script": "${state.phase_3_entry_script.run_command}",
+                "project_dir": str(tmp_path),
+            },
+        ),
+        state=state,
+        context={},
+    )
+
+    gate = result["loop_state"]["custom_op_final_gate"]
+    assert gate["passed"] is False, (
+        "declared custom_op_final_gate phase passed without reading a gate "
+        f"report: {gate!r}"
+    )
+    assert any(
+        "missing" in str(error).lower()
+        for error in gate.get("errors", [])
+    ), "gate failure must report the missing gate report file"
 
 
 class FakePhase7SessionManager:
