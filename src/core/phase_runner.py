@@ -127,6 +127,8 @@ class SessionManagerLike(Protocol):
         retries: int = 2,
     ) -> str: ...
 
+    def get_session_token_usage(self, session_id: str) -> dict | None: ...
+
 
 @runtime_checkable
 class InlineSessionLike(Protocol):

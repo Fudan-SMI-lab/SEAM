@@ -191,9 +191,9 @@ def _valid_tokens_dict(value: object) -> dict | None:
 
     Mirrors ``harness.session.opencode_contract_values.valid_tokens``: finite
     numeric ``input``/``output``/``reasoning`` plus a ``cache`` sub-dict with
-    finite numeric ``read``/``write``; ``total`` optional. Values must also be
-    strictly positive — negative/zero token values are untrustworthy and route
-    to the estimation path (Metis Edge 6).
+    finite numeric ``read``/``write``; ``total`` optional. Zero is a legitimate
+    value (e.g. ``reasoning: 0`` on non-reasoning models, ``cache.read: 0``
+    before a cache hit), so only negative or non-finite numbers are rejected.
     """
     if not isinstance(value, dict):
         return None
@@ -202,11 +202,11 @@ def _valid_tokens_dict(value: object) -> dict | None:
         return None
     for key in ("input", "output", "reasoning"):
         number = value.get(key)
-        if not _finite_number(number) or number <= 0:
+        if not _finite_number(number) or number < 0:
             return None
     for key in ("read", "write"):
         number = cache.get(key)
-        if not _finite_number(number) or number <= 0:
+        if not _finite_number(number) or number < 0:
             return None
     if "total" in value and not _finite_number(value.get("total")):
         return None

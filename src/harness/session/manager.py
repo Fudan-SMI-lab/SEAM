@@ -607,6 +607,29 @@ class MigrationSessionManager:
             return ""
         return self._extract_message_text(resp.get("data"))
 
+    def get_session_token_usage(self, session_id: str) -> dict | None:
+        """Return the latest message's ``info.tokens`` dict, or None.
+
+        Used by context-budget estimators as a ``TokenProvider`` so that
+        real usage feeds threshold decisions instead of the conservative
+        character-estimation path.
+        """
+        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 1})
+        if not resp.get("ok"):
+            return None
+        data = resp.get("data")
+        if isinstance(data, list) and data:
+            last = data[-1]
+        else:
+            last = data
+        if not isinstance(last, dict):
+            return None
+        info = last.get("info")
+        if not isinstance(info, dict):
+            return None
+        tokens = info.get("tokens")
+        return tokens if isinstance(tokens, dict) else None
+
     def _extract_error_text(self, payload: Any) -> str:
         if isinstance(payload, str) and payload:
             return payload

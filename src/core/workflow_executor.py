@@ -4591,12 +4591,43 @@ class WorkflowExecutor:
     ) -> None:
         if not self._context_budget_active():
             return
-        budget_state = ContextBudgetEstimator(self._context_config()).estimate().state
+        budget_state = ContextBudgetEstimator(
+            self._context_config(),
+            token_provider=self._loop_analyzer_token_provider(),
+        ).estimate().state
         if budget_state is ContextBudgetState.COMPACT:
             self._persist_loop_context_snapshot(phase, iteration, loop_state)
         elif budget_state is ContextBudgetState.ROTATE:
             snapshot = self._persist_loop_context_snapshot(phase, iteration, loop_state)
             self._rotate_loop_analyzer_session(snapshot)
+
+    def _loop_analyzer_token_provider(self) -> Callable[[], object]:
+        """Build a ``TokenProvider`` polling the current error-analyzer session.
+
+        Resolves the analyzer session id lazily (registry-first, mirroring
+        ``_send_sub_workflow_llm_command``) so the estimator feeds real
+        ``info.tokens`` usage into budget decisions. Degrades to estimation
+        when no session exists yet or the manager lacks the accessor.
+        """
+
+        def _resolve_analyzer_sid() -> str | None:
+            if self.session_registry is not None:
+                try:
+                    return self.session_registry.resolve("error_analyzer")
+                except KeyError:
+                    return None
+            return None
+
+        def _poll() -> object:
+            sid = _resolve_analyzer_sid()
+            if not sid:
+                return None
+            get_usage = getattr(self.session_mgr, "get_session_token_usage", None)
+            if not callable(get_usage):
+                return None
+            return get_usage(sid)
+
+        return _poll
 
     def _persist_loop_context_snapshot(
         self,

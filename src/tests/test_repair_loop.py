@@ -53,6 +53,9 @@ class MockSessionManager:
             return json.dumps(self.analyzer_response)
         return json.dumps({"status": "ok", "session_id": session_id})
 
+    def get_session_token_usage(self, session_id: str) -> dict | None:
+        return None
+
 
 def build_engine(base_dir: Path, session_mgr: MockSessionManager) -> tuple[RepairLoopEngine, ArtifactStore]:
     artifact_store = ArtifactStore(str(base_dir), "testrun")

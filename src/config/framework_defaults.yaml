@@ -25,7 +25,7 @@ framework:
 
 context_management:
   enabled: true
-  context_tokens: auto                # auto = estimate from provider metadata; explicit int uses directly
+  context_tokens: 128000               # deepseek-v4 context window; 'auto' also resolves to 128000
   reserve_output_tokens: 8192
   compact_threshold_ratio: 0.72
   rotate_threshold_ratio: 0.88

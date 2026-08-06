@@ -903,6 +903,8 @@ class SessionManagerLike(Protocol):
         self, session_id: str, command: str, timeout: Any = None
     ) -> str: ...
 
+    def get_session_token_usage(self, session_id: str) -> dict | None: ...
+
 
 class RepairLoopEngine:
     """Run Phase 5 execution, analysis, and targeted repair retries."""
@@ -946,9 +948,30 @@ class RepairLoopEngine:
             raw = self.config.get("context_management")
         return load_context_management_config(raw if isinstance(raw, dict) else {})
 
-    def _context_budget_state(self) -> ContextBudgetState:
-        """Current budget verdict; estimator degrades internally, never raises."""
-        return ContextBudgetEstimator(self._context_config()).estimate().state
+    def _context_budget_state(self, session_id: str) -> ContextBudgetState:
+        """Current budget verdict for *session_id*; never raises.
+
+        Token usage is sourced from the live session via the session manager
+        (``info.tokens`` of the latest message), so the estimator feeds real
+        usage into threshold decisions instead of the conservative estimation
+        path. Provider outages degrade internally to estimation.
+        """
+        estimator = ContextBudgetEstimator(
+            self._context_config(),
+            token_provider=self._session_token_provider(session_id),
+        )
+        return estimator.estimate().state
+
+    def _session_token_provider(self, session_id: str) -> Callable[[], object]:
+        """Build a ``TokenProvider`` polling *session_id* latest usage."""
+
+        def _poll() -> object:
+            get_usage = getattr(self.session_mgr, "get_session_token_usage", None)
+            if not callable(get_usage):
+                return None
+            return get_usage(session_id)
+
+        return _poll
 
     def _bounded_history(self, history: list[object]) -> list[object]:
         """History window fed to prompt formatters (feature-gated bounding)."""
@@ -1236,7 +1259,7 @@ class RepairLoopEngine:
                 error_text = ""
 
                 if self._context_budget_active():
-                    budget_state = self._context_budget_state()
+                    budget_state = self._context_budget_state(analyzer_session_id)
                     if budget_state in (
                         ContextBudgetState.COMPACT,
                         ContextBudgetState.ROTATE,
@@ -1696,7 +1719,7 @@ class RepairLoopEngine:
                         )
                     else:
                         if self._context_budget_active():
-                            budget_state = self._context_budget_state()
+                            budget_state = self._context_budget_state(repair_session_id)
                             if budget_state in (
                                 ContextBudgetState.COMPACT,
                                 ContextBudgetState.ROTATE,

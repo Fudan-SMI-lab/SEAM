@@ -86,6 +86,9 @@ class MockSessionManager:
             return self.responses["phase_0"].pop(0)
         raise AssertionError(f"Unexpected prompt: {command}")
 
+    def get_session_token_usage(self, session_id: str) -> dict | None:
+        return None
+
 
 class StaticPromptLoader(PromptLoader):
     @override
