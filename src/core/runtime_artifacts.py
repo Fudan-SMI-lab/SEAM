@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import json
 from pathlib import Path
@@ -9,11 +10,68 @@ from typing import cast
 
 NO_EXPERIENCE_CARDS_NOTE = "(No analyzer-selected experience cards)"
 
+# POSIX NAME_MAX on typical filesystems is 255 bytes; NPU hosts hit
+# OSError: [Errno 36] File name too long when a component exceeds it.
+_DEFAULT_NAME_MAX_BYTES = 255
+_PATH_MAX_BYTES = 4096
+
 
 def sanitize_project_name(project_dir: str) -> str:
     name = Path(project_dir).resolve().name
     sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     return sanitized or "project"
+
+
+def bounded_runtime_filename(
+    prefix: str,
+    project_name: str,
+    extension: str,
+    *,
+    name_max_bytes: int = _DEFAULT_NAME_MAX_BYTES,
+) -> str:
+    """Return ``prefix + project_name + extension`` capped at ``name_max_bytes``.
+
+    Byte-identical to the plain concatenation for short names, so existing
+    artifact filenames never change. For over-long names the sanitized project
+    name is truncated on a UTF-8 character boundary and a stable short SHA-256
+    suffix is appended so distinct long names never collide.
+    """
+    extension = extension if extension.startswith(".") else f".{extension}"
+    full_name = f"{prefix}{project_name}{extension}"
+    if len(full_name.encode("utf-8")) <= name_max_bytes:
+        return full_name
+
+    digest = hashlib.sha256(project_name.encode("utf-8")).hexdigest()[:8]
+    hash_suffix = f"_{digest}"
+    available = name_max_bytes - len(prefix.encode("utf-8")) - len(
+        hash_suffix.encode("utf-8")
+    ) - len(extension.encode("utf-8"))
+    if available < 1:
+        raise RuntimeError(
+            "Runtime artifact filename prefix and hash suffix exceed the "
+            f"{name_max_bytes}-byte component limit: {prefix!r} + {hash_suffix!r}"
+        )
+    truncated = project_name.encode("utf-8")[:available].decode(
+        "utf-8", errors="ignore"
+    )
+    return f"{prefix}{truncated}{hash_suffix}{extension}"
+
+
+def guard_artifact_path(path: Path) -> Path:
+    """Reject artifact paths that would exceed PATH_MAX.
+
+    The project-name truncation above fixes the common case (over-long single
+    component). When the surrounding directory tree alone is already too deep,
+    no truncation can help, so fail with a clear diagnostic instead of letting
+    the OS raise an opaque ``Errno 36`` mid-write.
+    """
+    resolved = path.resolve()
+    if len(str(resolved).encode("utf-8")) > _PATH_MAX_BYTES:
+        raise RuntimeError(
+            "Runtime artifact path exceeds the 4096-byte path limit: "
+            f"{len(str(resolved).encode('utf-8'))} bytes for {resolved}"
+        )
+    return resolved
 
 
 def write_repair_runtime_artifacts(
@@ -28,12 +86,16 @@ def write_repair_runtime_artifacts(
     repair_role: str,
     experience_action_cards: object = None,
 ) -> tuple[str, str]:
-    runtime_dir = Path(artifact_dir) / "runtime"
+    runtime_dir = guard_artifact_path(Path(artifact_dir) / "runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     project_name = sanitize_project_name(project_dir)
 
-    runtime_error_path = runtime_dir / f"runtime_error_{project_name}.md"
-    runtime_card_path = runtime_dir / f"runtimeCard_{project_name}.md"
+    runtime_error_path = runtime_dir / bounded_runtime_filename(
+        "runtime_error_", project_name, ".md"
+    )
+    runtime_card_path = runtime_dir / bounded_runtime_filename(
+        "runtimeCard_", project_name, ".md"
+    )
 
     _ = runtime_error_path.write_text(
         _repair_runtime_error_markdown(
@@ -87,10 +149,12 @@ def write_operator_repair_context_artifact(
     entry_script: str,
     phase3_contract: dict[str, object] | None = None,
 ) -> str:
-    runtime_dir = Path(artifact_dir) / "runtime"
+    runtime_dir = guard_artifact_path(Path(artifact_dir) / "runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     project_name = sanitize_project_name(project_dir)
-    context_path = runtime_dir / f"operatorRepairContext_{project_name}.md"
+    context_path = runtime_dir / bounded_runtime_filename(
+        "operatorRepairContext_", project_name, ".md"
+    )
     contract = dict(phase3_contract or {})
 
     _ = context_path.write_text(

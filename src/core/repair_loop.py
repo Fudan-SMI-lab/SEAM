@@ -26,6 +26,8 @@ from core.execution_backend import (
 from core.paths import migration_utils_root, workspace_root
 from core.prompt_loader import PromptLoader
 from core.runtime_artifacts import (
+    bounded_runtime_filename,
+    guard_artifact_path,
     sanitize_project_name,
     write_operator_repair_context_artifact,
     write_repair_runtime_artifacts,
@@ -246,10 +248,12 @@ def _write_final_gate_validator_runner(
     The script is executable (chmod 0o700) and self-contained: it changes
     directory to ``migration_utils_root()`` and runs the validator heredoc.
     """
-    runtime_dir = Path(artifact_dir) / "runtime"
+    runtime_dir = guard_artifact_path(Path(artifact_dir) / "runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     project_name = sanitize_project_name(project_dir)
-    script_path = runtime_dir / f"finalGateValidator_{project_name}.sh"
+    script_path = runtime_dir / bounded_runtime_filename(
+        "finalGateValidator_", project_name, ".sh"
+    )
 
     mu_root = str(migration_utils_root())
     python_script = _build_final_gate_validator_python_script(
