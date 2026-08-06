@@ -1,0 +1,17 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/data/miniconda3/bin/python
+cachedir: .pytest_cache
+rootdir: /home/yiding/SEAM/src
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 7 items
+
+tests/test_platform_capability.py::TestPlatformCapabilityPrecheck::test_get_platform_capabilities_function_exists PASSED [ 14%]
+tests/test_platform_capability.py::TestPlatformCapabilityPrecheck::test_get_platform_capabilities_returns_per_family_dict PASSED [ 28%]
+tests/test_platform_capability.py::TestUnsupportedBackendClassification::test_unsupported_backend_classification_triggerable PASSED [ 42%]
+tests/test_platform_capability.py::TestPlatformPolicySatisfaction::test_satisfies_platform_requirements_function_exists PASSED [ 57%]
+tests/test_platform_capability.py::TestPlatformPolicySatisfaction::test_satisfies_platform_requirements_returns_bool PASSED [ 71%]
+tests/test_platform_capability.py::TestCpuFallbackDegradationAnnotation::test_cpu_fallback_annotated_as_degraded PASSED [ 85%]
+tests/test_platform_capability.py::TestNpuRecognitionControl::test_npu_family_is_recognized_control PASSED [100%]
+
+============================== 7 passed in 0.10s ===============================

@@ -969,3 +969,63 @@ def get_performance_baseline_boolean_fields(policy: PlatformPolicy | None) -> li
             "baseline_cuda_invoked",
         ]
     return list(policy.custom_op_evidence.performance_baseline_boolean_fields)
+
+
+# ---------------------------------------------------------------------------
+# Policy satisfaction predicate (bug #8 / #17 platform_policy_satisfied)
+# ---------------------------------------------------------------------------
+
+
+def satisfies_platform_requirements(
+    policy: PlatformPolicy | None, evidence: dict[str, object]
+) -> bool:
+    """Minimal satisfaction predicate for a platform policy against evidence.
+
+    #17's ``platform_policy_satisfied`` success-contract dependency. Rule:
+
+    * evidence must be a dict, else ``False``;
+    * if evidence carries a ``target_device`` / ``backend`` / ``custom_device``
+      value matching the policy's platform family (its declared
+      ``target_device_values``, else a family derived from ``policy.id``),
+      the policy is satisfied;
+    * a policy whose family cannot be matched to the given evidence imposes no
+      hard requirement on it → satisfied (never blocks on unrelated evidence).
+
+    Does NOT alter native-build-log token semantics (Gap guardrail).
+    """
+    if not isinstance(evidence, dict):
+        return False
+    target = ""
+    for key in ("target_device", "backend", "custom_device", "device"):
+        raw = evidence.get(key)
+        if isinstance(raw, str) and raw.strip():
+            target = raw.strip().lower()
+            break
+    if not target:
+        return True
+    accepted = {str(v).strip().lower() for v in get_target_device_values(policy)}
+    if target in accepted:
+        return True
+    if policy is not None and isinstance(policy.id, str):
+        family_tokens = _family_tokens_from_id(policy.id)
+        if family_tokens and any(token in target for token in family_tokens):
+            return True
+    return False
+
+
+def _family_tokens_from_id(policy_id: str) -> tuple[str, ...]:
+    """Map a PlatformPolicy id to platform-family substrings for matching."""
+    pid = policy_id.strip().lower()
+    if "npu" in pid or "ascend" in pid:
+        return ("npu", "ascend", "torch_npu")
+    if "ppu" in pid:
+        return ("ppu",)
+    if "cuda" in pid or "nvidia" in pid:
+        return ("cuda", "nvidia", "gpu")
+    if "rocm" in pid or "hip" in pid or "amd" in pid:
+        return ("rocm", "hip", "amd")
+    if "musa" in pid or "maca" in pid or "metax" in pid or "muxi" in pid:
+        return ("musa", "maca", "metax", "muxi")
+    if "mlu" in pid or "cambrian" in pid:
+        return ("mlu", "cambrian")
+    return ()
