@@ -35,6 +35,17 @@ _ACCELERATOR_PREFIXES: list[str] = [
     "cuda",
     "cudnn",
     "nccl",
+    # MUSA (Moore Threads) / MACA (Hygon DCU) / Metax (MetaX GPU)
+    # Order matters: torch_musa/torch_maca/torch_muxi/torch_metax MUST come
+    # before the "torch" catch-all below (first-prefix-match semantics).
+    "torch_musa",
+    "musa",
+    "torch_maca",
+    "maca",
+    "torch_muxi",
+    "muxi",
+    "torch_metax",
+    "metax",
     # Base torch (catch-all last)
     "torch",
     "pytorch",
@@ -133,18 +144,26 @@ def extract_accelerator_context(
 
 
 # ---------------------------------------------------------------------------
-# Platform-capability classification infrastructure (bug #8)
+# Platform-capability classification infrastructure (bug #8 + #9)
 # ---------------------------------------------------------------------------
-# NOTE (T8 scope): only npu/cuda/ppu/cpu family detection is implemented here.
-# MUSA/MACA/Metax prefixes are #9/T9's scope and are intentionally NOT added.
+# NOTE (T8 scope): npu/cuda/ppu/cpu family detection. musa/maca/muxi/metax
+# families are #9/T9's scope and were added by T11 (see _FAMILY_PREFIXES,
+# _CAPABILITY_FAMILIES and the _ACCELERATOR_PREFIXES entries above).
 
 # Family → accelerator prefixes derived from _ACCELERATOR_PREFIXES (T8 scope).
 # ``torch``/``pytorch``/``numpy`` are the generic-CPU markers (catch-all).
+# musa/maca/muxi/metax families added by #9 (T11): each includes the bare
+# family token plus its torch_* wrapper so first-prefix-match resolves
+# torch_musa → musa (not the torch catch-all) and musa/musa_* → musa.
 _FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
     "npu": ("torch_npu", "torch_npu_"),
     "ppu": ("torch_ppu", "ppukernel", "ppuccl", "ppu_", "ppu"),
     "cuda": ("cuda", "cudnn", "nccl"),
     "cpu": ("torch", "pytorch", "numpy"),
+    "musa": ("torch_musa", "musa"),
+    "maca": ("torch_maca", "maca"),
+    "muxi": ("torch_muxi", "muxi"),
+    "metax": ("torch_metax", "metax"),
 }
 
 # gguf-style model backends that bind to CUDA and are NOT usable on other
@@ -159,8 +178,17 @@ _CUDA_BOUND_BACKEND_PREFIXES: tuple[str, ...] = (
     "ctransformers",
 )
 
-# Families recognized for capability prechecking (T8 scope).
-_CAPABILITY_FAMILIES: tuple[str, ...] = ("npu", "ppu", "cuda", "cpu")
+# Families recognized for capability prechecking (T8 scope + #9/T11 families).
+_CAPABILITY_FAMILIES: tuple[str, ...] = (
+    "npu",
+    "ppu",
+    "cuda",
+    "cpu",
+    "musa",
+    "maca",
+    "muxi",
+    "metax",
+)
 
 
 def _family_for_prefix(prefix: str) -> str | None:

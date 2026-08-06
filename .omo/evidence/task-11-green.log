@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.15, pytest-9.0.3, pluggy-1.6.0 -- /opt/data/miniconda3/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /home/yiding/SEAM/src
+configfile: pyproject.toml
+plugins: anyio-4.12.1
+collecting ... collected 12 items / 8 deselected / 4 selected
+
+src/tests/test_platform_capability.py::TestMusaMacaMetaxPrefixRecognition::test_accelerator_prefixes_contain_musa_maca_muxi_metax PASSED [ 25%]
+src/tests/test_platform_capability.py::TestMusaCapabilityPrecheckSuccessPath::test_musa_env_yields_musa_capability_and_supported_precheck PASSED [ 50%]
+src/tests/test_platform_capability.py::TestGgufMusaMacaUnsupportedBackend::test_gguf_backend_on_musa_classified_unsupported_backend PASSED [ 75%]
+src/tests/test_platform_capability.py::TestGgufMusaMacaUnsupportedBackend::test_gguf_backend_on_maca_classified_unsupported_backend PASSED [100%]
+
+======================= 4 passed, 8 deselected in 0.09s ========================

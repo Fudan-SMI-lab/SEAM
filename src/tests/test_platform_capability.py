@@ -164,3 +164,129 @@ class TestNpuRecognitionControl:
         result = extract_accelerator_context(["torch_npu==2.1.0"])
         assert "torch_npu" in result["accelerator_packages"]
         assert result["torch_npu_version"] == "2.1.0"
+
+
+# ---------------------------------------------------------------------------
+# T9 RED — #9 MUSA/MACA/Metax capability-recognition gap (RED track, no impl)
+# ---------------------------------------------------------------------------
+# #9 original bug: a GGUF model (llama-cpp-python / gguf / ctransformers, all
+# CUDA-bound) on a MUSA/MACA environment WITHOUT a matching native backend must
+# be classified ``blocked_reason: "unsupported_backend"`` — never a silent CPU
+# fallback. T8 deliberately scoped MUSA/MACA/Metax OUT (accelerator_context.py
+# L138-139: "_FAMILY_PREFIXES currently has npu/ppu/cuda/cpu only — MUSA/MACA/
+# Metax prefixes are #9/T9's scope and are intentionally NOT added"; L162-163:
+# _CAPABILITY_FAMILIES = ("npu","ppu","cuda","cpu"); L17-41 _ACCELERATOR_PREFIXES
+# has no musa/maca/muxi/metax). These tests lock the #9 gap; T11 implements the
+# prefixes + family recognition. They must FAIL on current code (e3d003d) for
+# the correct reason — missing prefix / missing recognition / missing
+# classification — and turn GREEN only with T11's implementation.
+
+
+class TestMusaMacaMetaxPrefixRecognition:
+    """(a) #9: MUSA/MACA/Metax accelerator prefixes must be recognized.
+
+    RED: ``_ACCELERATOR_PREFIXES`` has no ``musa``/``maca``/``muxi``/``metax``
+    entries at HEAD (e3d003d), so this assertion fails with a plain
+    AssertionError — missing feature, exactly the #9 gap.
+    """
+
+    def test_accelerator_prefixes_contain_musa_maca_muxi_metax(self):
+        prefixes = set(accelerator_context._ACCELERATOR_PREFIXES)
+        for family in ("musa", "maca", "muxi", "metax"):
+            assert family in prefixes, (
+                f"#9: accelerator_context._ACCELERATOR_PREFIXES is missing "
+                f"{family!r} — MUSA/MACA/Metax prefix recognition not "
+                f"implemented (T8 scope, T9/T11 gap)"
+            )
+
+
+class TestMusaCapabilityPrecheckSuccessPath:
+    """(b) #9: a MUSA environment must trigger the capability-precheck success
+    path — musa recognized as a capability family AND precheck supported=True."""
+
+    def test_musa_env_yields_musa_capability_and_supported_precheck(self):
+        installed = ["torch_musa==1.0.0", "torch==2.0.1"]  # MUSA env (torch-musa)
+        capabilities = accelerator_context.get_platform_capabilities(installed)
+        assert capabilities.get("musa") is True, (
+            "#9: get_platform_capabilities() must report capabilities['musa'] "
+            "is True for a torch_musa environment — musa family missing from "
+            "_FAMILY_PREFIXES (got %r)" % capabilities
+        )
+        classification = accelerator_context.precheck_platform_capability(
+            installed, target_family="musa"
+        )
+        assert classification["supported"] is True, (
+            "#9: MUSA env targeting family 'musa' must precheck as "
+            f"supported: True — got {classification}"
+        )
+
+
+class TestGgufMusaMacaUnsupportedBackend:
+    """(c) #9 original bug: a GGUF-style CUDA-bound backend (llama-cpp-python)
+    on a musa/maca environment with no matching native backend must classify as
+    ``blocked_reason: "unsupported_backend"`` — never silent CPU success.
+
+    NOTE: on current code ``precheck_platform_capability`` already returns
+    ``unsupported_backend`` for target='musa'/'maca' — but only because the
+    family is UNRECOGNIZED (target not in capabilities). The musa/maca
+    recognition assertions below are therefore the true RED gate: they fail at
+    HEAD for the correct reason (missing recognition) and, once T11 adds the
+    families, the blocked_reason/supported assertions lock the #9 semantic so a
+    wrong T11 (recognize-but-silently-CPU) cannot sneak through.
+    """
+
+    def test_gguf_backend_on_musa_classified_unsupported_backend(self):
+        installed = [
+            "torch_musa==1.0.0",  # musa family present
+            "llama-cpp-python==0.2.90",  # gguf-style CUDA-bound backend
+        ]
+        capabilities = accelerator_context.get_platform_capabilities(installed)
+        assert capabilities.get("musa") is True, (
+            "#9: musa environment must be recognized before backend "
+            "classification — musa family missing (got %r)" % capabilities
+        )
+        classification = accelerator_context.precheck_platform_capability(
+            installed, target_family="musa"
+        )
+        assert classification["blocked_reason"] == "unsupported_backend", (
+            "#9: GGUF model on musa without matching backend must classify "
+            f"unsupported_backend — got {classification}"
+        )
+        assert classification["supported"] is False
+        assert classification["degraded_fallback"] is False
+
+    def test_gguf_backend_on_maca_classified_unsupported_backend(self):
+        installed = [
+            "torch_maca==0.6.0",  # maca family present
+            "llama-cpp-python==0.2.90",  # gguf-style CUDA-bound backend
+        ]
+        capabilities = accelerator_context.get_platform_capabilities(installed)
+        assert capabilities.get("maca") is True, (
+            "#9: maca environment must be recognized before backend "
+            "classification — maca family missing (got %r)" % capabilities
+        )
+        classification = accelerator_context.precheck_platform_capability(
+            installed, target_family="maca"
+        )
+        assert classification["blocked_reason"] == "unsupported_backend", (
+            "#9: GGUF model on maca without matching backend must classify "
+            f"unsupported_backend — got {classification}"
+        )
+        assert classification["supported"] is False
+        assert classification["degraded_fallback"] is False
+
+
+class TestNpuRecognitionStaysIntactControl:
+    """CONTROL — must PASS on current code and stay passing after T11.
+
+    #9 RED adds musa/maca/muxi/metax assertions; this control locks the
+    positive premise that existing npu recognition is NOT affected by the #9
+    gap. Do NOT weaken or delete this test.
+    """
+
+    def test_npu_capability_still_recognized_control(self):
+        capabilities = accelerator_context.get_platform_capabilities(
+            ["torch_npu==2.1.0"]
+        )
+        assert capabilities.get("npu") is True
+        assert capabilities.get("cpu") is False
