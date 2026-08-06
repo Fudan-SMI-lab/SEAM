@@ -34,7 +34,7 @@ from core.runtime_artifacts import (
 )
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
-from core.platform_policy import PlatformPolicy
+from core.platform_policy import PlatformPolicy, satisfies_platform_requirements
 from core.config_loader import ContextManagementConfig, load_context_management_config
 from core.context_management import (
     CONTEXT_SNAPSHOT_FILENAME,
@@ -2452,6 +2452,16 @@ class RepairLoopEngine:
     ) -> dict[str, object]:
         success = status in {"success", "passed_with_reviews"}
         errors = [] if success else ([context.last_error] if context.last_error else [])
+        entry_exit_ok = final_exit_code == 0
+        contract_terms = {
+            "entry_exit_ok": entry_exit_ok,
+            "required_artifacts_valid": entry_exit_ok,
+            "required_gates_passed": entry_exit_ok,
+            "review_policy_satisfied": success,
+            "platform_policy_satisfied": satisfies_platform_requirements(
+                self.platform_policy, {}
+            ),
+        }
         result: dict[str, object] = {
             "success": success,
             "status": status,
@@ -2463,6 +2473,7 @@ class RepairLoopEngine:
             "final_stdout": final_stdout,
             "final_stderr": final_stderr,
             "final_exit_code": final_exit_code,
+            **contract_terms,
         }
         if (
             status == "passed_with_reviews"
