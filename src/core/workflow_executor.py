@@ -17,6 +17,7 @@ import sys
 import time
 import traceback
 from collections.abc import Iterable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
@@ -323,6 +324,8 @@ class WorkflowExecutor:
             )
         self.ui_event_sink = ui_event_sink
         self._ui_active_phase: str | None = None
+        self._run_started_at: str | None = None
+        self._run_ended_at: str | None = None
         # Resolve platform policy from workflow definition
         self.platform_policy: PlatformPolicy = resolve_policy(
             getattr(workflow, "target_platform", None),
@@ -617,6 +620,38 @@ class WorkflowExecutor:
         except Exception:  # pylint: disable=broad-exception-caught
             logger.debug("UI event emission failed", exc_info=True)
 
+    def _build_run_timeline(self) -> dict:
+        phases = []
+        for phase_id, entry in self.phase_results.items():
+            if not isinstance(entry, dict):
+                continue
+            phases.append(
+                {
+                    "phase_id": phase_id,
+                    "status": entry.get("status", "unknown"),
+                    "started_at": entry.get("started_at"),
+                    "ended_at": entry.get("ended_at"),
+                    "duration_seconds": entry.get("duration_seconds"),
+                }
+            )
+        return {
+            "run_started_at": self._run_started_at,
+            "run_ended_at": self._run_ended_at,
+            "phases": phases,
+        }
+
+    def _persist_run_timeline(self) -> None:
+        try:
+            timeline_path = Path(self.output_dir) / "run_timeline.json"
+            timeline_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = self._build_run_timeline()
+            atomic_write_bytes(
+                timeline_path,
+                json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+        except Exception as exc:
+            logger.error("Failed to persist run_timeline.json: %s", exc)
+
     # ── Main entry point ────────────────────────────────────────────────
 
     def execute(self, context: dict) -> dict:
@@ -634,6 +669,8 @@ class WorkflowExecutor:
             "USER_CONSTRAINTS": self.user_constraints,
         }
         ctx.update(context)
+        self._run_started_at = datetime.now(timezone.utc).isoformat()
+        self._run_ended_at = None
 
         # 2. workflow_start hooks
         try:
@@ -745,10 +782,17 @@ class WorkflowExecutor:
             # Execute phase based on type
             phase_type = (phase.type or "llm").lower()
             start_t = time.time()
+            started_at = datetime.now(timezone.utc).isoformat()
+            start_mono = time.monotonic()
             status: str = "success"
             output: Any = {}
             self._ui_active_phase = phase.id
             self._set_telemetry_active_phase(phase.id)
+            if self.telemetry_bridge is not None:
+                try:
+                    self.telemetry_bridge.on_phase_start(phase.id)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.debug("on_phase_start failed for %s", phase.id, exc_info=True)
             self._emit_ui_event(
                 "phase_started",
                 phase_id=phase.id,
@@ -790,11 +834,25 @@ class WorkflowExecutor:
                     )
                     if next_id:
                         current_phase_id = next_id
+                        dispatch_end = time.monotonic()
                         self.phase_results[phase.id] = {
                             "status": "dispatched",
                             "duration": time.time() - start_t,
+                            "started_at": started_at,
+                            "ended_at": datetime.now(timezone.utc).isoformat(),
+                            "duration_seconds": round(dispatch_end - start_mono, 3),
                             "target": next_id,
                         }
+                        if self.telemetry_bridge is not None:
+                            try:
+                                self.telemetry_bridge.on_phase_end(
+                                    phase.id, "dispatched", dispatch_end - start_mono
+                                )
+                            except Exception:  # pylint: disable=broad-exception-caught
+                                logger.debug(
+                                    "on_phase_end failed for %s", phase.id, exc_info=True
+                                )
+                        self._persist_run_timeline()
                         if self._continuation is not None:
                             self.phase_results[phase.id]["inherited"] = False
                         self._emit_ui_event(
@@ -830,6 +888,13 @@ class WorkflowExecutor:
                 output = {"error": str(exc), "traceback": traceback.format_exc()}
 
             duration = time.time() - start_t
+            ended_at = datetime.now(timezone.utc).isoformat()
+            duration_mono = time.monotonic() - start_mono
+            if self.telemetry_bridge is not None:
+                try:
+                    self.telemetry_bridge.on_phase_end(phase.id, status, duration_mono)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.debug("on_phase_end failed for %s", phase.id, exc_info=True)
             self._emit_ui_event(
                 "phase_finished",
                 phase_id=phase.id,
@@ -866,10 +931,14 @@ class WorkflowExecutor:
             self.phase_results[phase.id] = {
                 "status": status,
                 "duration": round(duration, 3),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_seconds": round(duration_mono, 3),
                 "output_summary": str(output)[:500] if output else "",
             }
             if self._continuation is not None:
                 self.phase_results[phase.id]["inherited"] = False
+            self._persist_run_timeline()
 
             # Update state
             if isinstance(output, dict):
@@ -911,6 +980,8 @@ class WorkflowExecutor:
 
         self._ui_active_phase = None
         self._set_telemetry_active_phase(None)
+        self._run_ended_at = datetime.now(timezone.utc).isoformat()
+        self._persist_run_timeline()
         self._emit_ui_event(
             "workflow_finished",
             status="complete",
@@ -1909,6 +1980,7 @@ class WorkflowExecutor:
             input_ctx.setdefault(
                 "report_dir", os.path.join(self.artifact_store.artifact_dir, "reports")
             )
+            input_ctx.setdefault("run_timeline", self._build_run_timeline())
 
     def _inject_container_env_context(self, input_ctx: dict) -> None:
         if not isinstance(self.exec_backend, ContainerBackend):
