@@ -924,6 +924,7 @@ class RepairLoopEngine:
         config: ConfigDict | None = None,
         exec_backend: object = None,
         platform_policy: PlatformPolicy | None = None,
+        workflow: object | None = None,
     ) -> None:
         self.session_mgr = session_mgr
         self.artifact_store = artifact_store
@@ -932,9 +933,11 @@ class RepairLoopEngine:
         self.config = config
         self.exec_backend = exec_backend
         self.platform_policy = platform_policy
+        self.workflow = workflow
+        self._dispatch_route_map = self._extract_dispatch_route_map(workflow)
         self.validator.register_validator("validation_final", validate_validation_final)
         self.validator.register_validator(
-            "repair_classification", self._validate_classification
+            "repair_classification", self._validate_repair_classification
         )
 
     def _context_budget_active(self) -> bool:
@@ -2898,7 +2901,10 @@ class RepairLoopEngine:
         return self.prompt_loader.load_prompt(prompt_id, context)
 
     @staticmethod
-    def _validate_classification(data: dict[str, object]) -> dict[str, object]:
+    def _validate_classification(
+        data: dict[str, object],
+        route_map: dict[str, str] | None = None,
+    ) -> dict[str, object]:
         errors: list[str] = []
         for field_name in ("category", "root_cause", "suggested_fix", "repair_role"):
             value = data.get(field_name)
@@ -2906,10 +2912,50 @@ class RepairLoopEngine:
                 errors.append(f"{field_name} must be a non-empty string")
 
         repair_role = data.get("repair_role")
-        if isinstance(repair_role, str) and repair_role not in _REPAIR_ROLES:
-            errors.append(f"repair_role must be one of {sorted(_REPAIR_ROLES)}")
+        if isinstance(repair_role, str):
+            if repair_role not in _REPAIR_ROLES:
+                errors.append(f"repair_role must be one of {sorted(_REPAIR_ROLES)}")
+            if route_map is not None and repair_role not in route_map:
+                errors.append(
+                    f"repair_role must be declared in the workflow dispatch route "
+                    f"map ({sorted(route_map)})"
+                )
 
         return {"passed": not errors, "errors": errors, "warnings": []}
+
+    def _validate_repair_classification(
+        self, data: dict[str, object]
+    ) -> dict[str, object]:
+        return self._validate_classification(data, route_map=self._dispatch_route_map)
+
+    @staticmethod
+    def _extract_dispatch_route_map(workflow: object) -> dict[str, str] | None:
+        """Prefer the repair_dispatch phase's routes; fall back to first dispatch map."""
+        if workflow is None:
+            return None
+        containers: list[object] = []
+        containers.append(getattr(workflow, "phases", None) or [])
+        for sw in (getattr(workflow, "sub_workflows", None) or {}).values():
+            containers.append(getattr(sw, "phases", None) or [])
+            for block in (getattr(sw, "blocks", None) or {}).values():
+                if isinstance(block, dict):
+                    containers.append(block.get("phases") or [])
+        candidates: list[tuple[str, dict[str, str]]] = []
+        for phases in containers:
+            for phase in phases or []:
+                if not isinstance(phase, dict):
+                    continue
+                if str(phase.get("type", "")).lower() != "dispatch":
+                    continue
+                routes = phase.get("routes")
+                if isinstance(routes, dict) and routes:
+                    candidates.append((str(phase.get("id", "")), dict(routes)))
+        if not candidates:
+            return None
+        for phase_id, routes in candidates:
+            if phase_id == "repair_dispatch":
+                return routes
+        return candidates[0][1]
 
     def _snapshot_project_files(
         self, project_dir: str, label: str

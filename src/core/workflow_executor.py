@@ -4059,12 +4059,14 @@ class WorkflowExecutor:
                 decision.target,
             )
             return decision.target
-        logger.warning(
-            "Dispatch route '%s' not found in %s",
-            decision.route_key,
-            list(decision.available_routes),
+        if not decision.route_key:
+            # Empty route value (e.g. repair_role="") → no routing requested;
+            # preserve the legacy no-dispatch behavior (entry_script_action flows).
+            return None
+        raise ValueError(
+            "Dispatch route '%s' has no target in %s"
+            % (decision.route_key, list(decision.available_routes))
         )
-        return None
 
     # ── Loop phase ──────────────────────────────────────────────────────
 
@@ -5206,20 +5208,38 @@ class WorkflowExecutor:
                         phase_status = "success"
 
                 elif phase_type == "dispatch":
-                    next_id = self._execute_dispatch_phase(
-                        self._mini_phase(sub_phase),
-                        state,
-                        context,
-                        loop_vars=loop_vars,
-                        loop_state=step_outputs,
-                        step_outputs=step_outputs,
-                    )
-                    if next_id:
-                        dispatch_route = dispatch_targets.get(phase_id)
-                        dispatch_active = next_id
+                    try:
+                        next_id = self._execute_dispatch_phase(
+                            self._mini_phase(sub_phase),
+                            state,
+                            context,
+                            loop_vars=loop_vars,
+                            loop_state=step_outputs,
+                            step_outputs=step_outputs,
+                        )
+                    except (KeyError, ValueError, RuntimeError) as exc:
+                        # Bug #15: dispatch failed closed (route key absent from the
+                        # route map). Keep dispatch_route None — otherwise L4934
+                        # would skip every fix phase and the loop would deadlock.
+                        phase_output = {"dispatched_to": f"dispatch_error: {exc}"}
+                        logger.warning(
+                            "Dispatch phase '%s' failed closed: %s", phase_id, exc
+                        )
+                        if isinstance(loop_state, dict):
+                            loop_state.setdefault("dispatch_errors", []).append(
+                                f"{phase_id}: {exc}"
+                            )
                     else:
-                        dispatch_route = dispatch_targets.get(phase_id)
-                    phase_output = {"dispatched_to": next_id}
+                        if next_id:
+                            dispatch_route = dispatch_targets.get(phase_id)
+                            dispatch_active = next_id
+                            phase_output = {"dispatched_to": next_id}
+                        else:
+                            # Empty route value (no routing requested) — keep the
+                            # legacy behavior so fix phases are skipped and the
+                            # entry_script_action revision loop can proceed.
+                            dispatch_route = dispatch_targets.get(phase_id)
+                            phase_output = {"dispatched_to": next_id}
 
                 elif phase_type == "builtin":
                     phase_status, phase_output = self._execute_builtin_phase(
