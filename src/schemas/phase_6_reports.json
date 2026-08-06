@@ -1,5 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0",
   "title": "Phase 6: Reports Output",
   "type": "object",
   "properties": {

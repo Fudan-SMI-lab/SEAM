@@ -1,8 +1,33 @@
-"""Validation for Phase 6 reports output."""
+"""Validation for Phase 6 reports output.
 
+The Phase-6 report contract is declared once in ``schemas/phase_6_reports.json``
+(bug #18): this module consumes that schema via ``jsonschema`` so nested type
+violations (e.g. ``migration_summary.files_migrated`` given as a string) are
+rejected instead of silently passing the old hand-rolled dict checks. The
+hand-rolled checks are kept because the schema alone cannot express the
+time-facts contract (a ``—`` em-dash placeholder is a valid JSON string but a
+violation of the run-timeline contract locked by bug #13).
+
+The declared schema version is surfaced through ``REPORT_SCHEMA_VERSION``.
+"""
+
+from __future__ import annotations
+
+import json
 from typing import cast
 
+import jsonschema
+from jsonschema import Draft7Validator
+
+from core.paths import src_root
 from core.validator_engine import ValidationDict
+
+REPORT_SCHEMA_PATH = src_root() / "schemas" / "phase_6_reports.json"
+REPORT_SCHEMA_VERSION = "1.0"
+
+with open(REPORT_SCHEMA_PATH, encoding="utf-8") as _schema_fh:
+    _REPORT_SCHEMA = json.load(_schema_fh)
+_REPORT_SCHEMA_VALIDATOR = Draft7Validator(_REPORT_SCHEMA)
 
 
 def validate(data: dict[str, object]) -> ValidationDict:
@@ -40,4 +65,14 @@ def validate(data: dict[str, object]) -> ValidationDict:
                             f"run_timeline.phases[{idx}].{field} must be a real ISO-8601 UTC timestamp"
                         )
 
-    return {"passed": not errors, "errors": errors, "warnings": []}
+    # JSON-Schema pass against schemas/phase_6_reports.json. Catches nested
+    # type violations the hand-rolled checks cannot see (e.g.
+    # migration_summary.files_migrated given as a string instead of integer).
+    for schema_error in _REPORT_SCHEMA_VALIDATOR.iter_errors(data):
+        errors.append(schema_error.message)
+
+    return {
+        "passed": not errors,
+        "errors": errors,
+        "warnings": [],
+    }
