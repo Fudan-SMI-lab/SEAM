@@ -4916,6 +4916,7 @@ class WorkflowExecutor:
             step_outputs={},
             loop_history=[],
             loop_state=loop_state,
+            stop_on_dispatch_error=True,
         )
         outputs = result.get("step_outputs", {})
         if isinstance(outputs, dict):
@@ -4948,8 +4949,17 @@ class WorkflowExecutor:
         loop_history: list | None = None,
         loop_state: dict | None = None,
         validation_only: bool = False,
+        stop_on_dispatch_error: bool = False,
     ) -> dict:
-        """Execute sub-workflow phases in order, collecting step_outputs."""
+        """Execute sub-workflow phases in order, collecting step_outputs.
+
+        ``stop_on_dispatch_error``: when True, a failed (fail-closed) dispatch
+        phase aborts the remaining sub-workflow phases instead of continuing.
+        Used by the improvement_block so a failed improvement SELECTION never
+        runs a fixer phase. The repair_loop main path keeps the default False:
+        a dispatch failure there must still let fix phases run (bug #15 deadlock
+        fix).
+        """
         if step_outputs is None:
             step_outputs = {}
 
@@ -5277,6 +5287,11 @@ class WorkflowExecutor:
                             loop_state.setdefault("dispatch_errors", []).append(
                                 f"{phase_id}: {exc}"
                             )
+                        if stop_on_dispatch_error:
+                            # A failed improvement SELECTION must close the round
+                            # here — do not run any subsequent fixer phase.
+                            phase_status = "failure"
+                            break
                     else:
                         if next_id:
                             dispatch_route = dispatch_targets.get(phase_id)

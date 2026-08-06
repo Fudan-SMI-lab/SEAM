@@ -256,7 +256,14 @@ class TestDispatchRouting:
         assert target == "fix_code"
 
     def test_dispatch_unknown_route(self, temp_dir):
-        """Unknown route should return None."""
+        """Unknown route must fail closed (bug #15): raise ValueError.
+
+        Pre-#15, a non-empty undeclared route key returned None (silent
+        no-dispatch), which deadlocked the repair loop. Bug #15 replaced that
+        with fail-closed semantics: _execute_dispatch_phase must raise
+        ValueError for a non-empty route key absent from the route map. Only an
+        EMPTY route value preserves the legacy no-dispatch (None) behavior.
+        """
         wf = WorkflowDefinition(name="disp", version="1.0", phases=[], terminals=[])
         session_mgr = MagicMock()
         artifact_store = MagicMock()
@@ -276,12 +283,12 @@ class TestDispatchRouting:
             "routes": {"code_adapter": "fix_code"},
         }
 
-        target = executor._execute_dispatch_phase(
-            phase, {}, {},
-            loop_vars={}, loop_state={},
-            step_outputs={"error_analysis": {"repair_role": "unknown_role"}},
-        )
-        assert target is None
+        with pytest.raises(ValueError):
+            executor._execute_dispatch_phase(
+                phase, {}, {},
+                loop_vars={}, loop_state={},
+                step_outputs={"error_analysis": {"repair_role": "unknown_role"}},
+            )
 
     def test_dispatch_uses_error_analysis_repair_role_not_handoff_role(self, temp_dir):
         wf = WorkflowDefinition(name="disp", version="1.0", phases=[], terminals=[])
