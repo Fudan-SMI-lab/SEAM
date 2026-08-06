@@ -25,6 +25,19 @@ dashboard = [
     "textual>=0.50",
 ]
 
+[project.scripts]
+seam = "scripts.sm_adapt_cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+workflows = ["*.yaml"]
+prompts = ["*.md"]
+config = ["*.yaml"]
+schemas = ["*.json"]
+test_project_template = ["*.py", "*.md", "*.txt"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
@@ -35,6 +48,10 @@ include = [
     "scripts*",
     "validators*",
     "workflows*",
+    "prompts*",
+    "config*",
+    "schemas*",
+    "test_project_template*",
 ]
 
 [tool.basedpyright]

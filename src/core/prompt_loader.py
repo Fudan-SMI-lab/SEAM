@@ -3,8 +3,23 @@
 from __future__ import annotations
 
 import re
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import ClassVar
+
+
+def _default_prompts_dir() -> Path:
+    """Resolve the prompts directory (source tree or installed wheel).
+
+    Uses ``importlib.resources`` so installed-wheel installs resolve the
+    shipped ``prompts`` package; falls back to the absolute source-tree path
+    for uninstalled runs.
+    """
+    try:
+        with as_file(files("prompts")) as prompts_path:
+            return Path(prompts_path)
+    except Exception:
+        return Path(__file__).resolve().parent.parent / "prompts"
 
 
 class PromptLoader:
@@ -35,7 +50,7 @@ class PromptLoader:
                          Defaults to `prompts/` relative to this package.
         """
         if prompts_dir is None:
-            prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
+            prompts_dir = _default_prompts_dir()
         self.prompts_dir = Path(prompts_dir)
 
     def load_prompt(self, phase_id: str, context: dict[str, str] | None = None) -> str:

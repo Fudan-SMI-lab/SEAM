@@ -3,13 +3,27 @@
 import os
 import re
 from dataclasses import dataclass
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import cast
 import yaml
 from core.paths import resolve_relative_path
 
+
+def _default_config_path() -> Path:
+    """Locate ``framework_defaults.yaml`` (source tree or installed wheel)."""
+    try:
+        with as_file(files("config")) as config_dir:
+            candidate = Path(config_dir) / "framework_defaults.yaml"
+        if candidate.is_file():
+            return candidate
+    except Exception:
+        pass
+    return Path(__file__).resolve().parent.parent / "config" / "framework_defaults.yaml"
+
+
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_CONFIG = _PACKAGE_ROOT / "config" / "framework_defaults.yaml"
+_DEFAULT_CONFIG = _default_config_path()
 
 
 @dataclass(frozen=True)

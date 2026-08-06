@@ -48,6 +48,10 @@ EXPECTED_PACKAGES = (
     "scripts*",
     "validators*",
     "workflows*",
+    "prompts*",
+    "config*",
+    "schemas*",
+    "test_project_template*",
 )
 EXPECTED_MARKERS = {
     "integration": (
