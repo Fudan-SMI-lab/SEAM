@@ -26,6 +26,11 @@ Create a short final report bundle for the MUXI-family migration run. Do not reg
 - Keep each report concise; avoid long copied logs.
 - End with exactly one JSON object and no other JSON.
 
+## Time Facts
+- Use `{run_timeline}` as the authoritative source for run and phase timing.
+- Every entry in `run_timeline.phases` carries `started_at` and `ended_at` as ISO-8601 UTC timestamps (e.g. `2026-08-06T00:00:00+00:00`) plus `duration_seconds`; `run_timeline.run_started_at`/`run_ended_at` mark the whole run.
+- Record real timestamps from `run_timeline` in the operations log and summary; never use placeholder values such as `—` for `started_at`/`ended_at`.
+
 ## Output Format
 ```json
 {

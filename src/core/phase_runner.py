@@ -699,6 +699,11 @@ class PhaseRunner:
             "project_dir": str(project_dir),
             "previous_outputs": self._serialize_context(prior_artifacts),
             "report_dir": report_dir,
+            "run_timeline": {
+                "run_started_at": None,
+                "run_ended_at": None,
+                "phases": [],
+            },
         }
         for k, v in self._container_context.items():
             prompt_context.setdefault(k, v)
