@@ -35,6 +35,17 @@ _ACCELERATOR_PREFIXES: list[str] = [
     "cuda",
     "cudnn",
     "nccl",
+    # MUSA (Moore Threads) / MACA (Hygon DCU) / Metax (MetaX GPU)
+    # Order matters: torch_musa/torch_maca/torch_muxi/torch_metax MUST come
+    # before the "torch" catch-all below (first-prefix-match semantics).
+    "torch_musa",
+    "musa",
+    "torch_maca",
+    "maca",
+    "torch_muxi",
+    "muxi",
+    "torch_metax",
+    "metax",
     # Base torch (catch-all last)
     "torch",
     "pytorch",
@@ -130,3 +141,178 @@ def extract_accelerator_context(
     result["accelerator_packages"] = accelerator_packages
     result["accelerator_package_versions"] = accelerator_package_versions
     return result
+
+
+# ---------------------------------------------------------------------------
+# Platform-capability classification infrastructure (bug #8 + #9)
+# ---------------------------------------------------------------------------
+# NOTE (T8 scope): npu/cuda/ppu/cpu family detection. musa/maca/muxi/metax
+# families are #9/T9's scope and were added by T11 (see _FAMILY_PREFIXES,
+# _CAPABILITY_FAMILIES and the _ACCELERATOR_PREFIXES entries above).
+
+# Family → accelerator prefixes derived from _ACCELERATOR_PREFIXES (T8 scope).
+# ``torch``/``pytorch``/``numpy`` are the generic-CPU markers (catch-all).
+# musa/maca/muxi/metax families added by #9 (T11): each includes the bare
+# family token plus its torch_* wrapper so first-prefix-match resolves
+# torch_musa → musa (not the torch catch-all) and musa/musa_* → musa.
+_FAMILY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "npu": ("torch_npu", "torch_npu_"),
+    "ppu": ("torch_ppu", "ppukernel", "ppuccl", "ppu_", "ppu"),
+    "cuda": ("cuda", "cudnn", "nccl"),
+    "cpu": ("torch", "pytorch", "numpy"),
+    "musa": ("torch_musa", "musa"),
+    "maca": ("torch_maca", "maca"),
+    "muxi": ("torch_muxi", "muxi"),
+    "metax": ("torch_metax", "metax"),
+}
+
+# gguf-style model backends that bind to CUDA and are NOT usable on other
+# accelerator targets (npu/ppu). When such a backend is the only model-serving
+# path for a non-CUDA target, the precheck must classify it as
+# ``blocked_reason: "unsupported_backend"`` instead of silently running on CPU.
+_CUDA_BOUND_BACKEND_PREFIXES: tuple[str, ...] = (
+    "llama_cpp_python",
+    "llama_cpp",
+    "llamacpp",
+    "gguf",
+    "ctransformers",
+)
+
+# Families recognized for capability prechecking (T8 scope + #9/T11 families).
+_CAPABILITY_FAMILIES: tuple[str, ...] = (
+    "npu",
+    "ppu",
+    "cuda",
+    "cpu",
+    "musa",
+    "maca",
+    "muxi",
+    "metax",
+)
+
+
+def _family_for_prefix(prefix: str) -> str | None:
+    """Map a ``_ACCELERATOR_PREFIXES`` entry to a T8 capability family."""
+    for family, prefixes in _FAMILY_PREFIXES.items():
+        if prefix in prefixes:
+            return family
+    return None
+
+
+def _package_matches_any(normed: str, candidates: tuple[str, ...]) -> bool:
+    """True when *normed* equals or starts with any candidate prefix + '_'."""
+    for candidate in candidates:
+        if normed == candidate or normed.startswith(candidate + "_"):
+            return True
+    return False
+
+
+def get_platform_capabilities(installed_packages: object) -> dict[str, bool]:
+    """Per-family capability booleans for an installed_packages list.
+
+    Returns a dict with at least the ``"npu"`` key (guaranteed present) plus
+    ``ppu``/``cuda``/``cpu``, each mapping to a bool. Detection reuses
+    ``_ACCELERATOR_PREFIXES`` (first-prefix-match semantics identical to
+    ``extract_accelerator_context``) and maps each matched prefix to its family.
+    """
+    capabilities: dict[str, bool] = {family: False for family in _CAPABILITY_FAMILIES}
+    if not isinstance(installed_packages, list):
+        return capabilities
+
+    for pkg in cast(list[object], installed_packages):
+        if not isinstance(pkg, str):
+            continue
+        name, _version = _parse_package_spec(pkg)
+        normed = _normalize_name(name)
+
+        # First-prefix-match against _ACCELERATOR_PREFIXES (same loop as
+        # extract_accelerator_context, so torch_npu wins over the torch catch-all).
+        matched_family: str | None = None
+        for prefix in _ACCELERATOR_PREFIXES:
+            if normed == prefix or normed.startswith(prefix + "_"):
+                matched_family = _family_for_prefix(prefix)
+                break
+
+        if matched_family is not None:
+            capabilities[matched_family] = True
+        elif _package_matches_any(normed, _FAMILY_PREFIXES["cpu"]):
+            # Generic CPU marker (numpy etc.) not in _ACCELERATOR_PREFIXES.
+            capabilities["cpu"] = True
+    return capabilities
+
+
+def _detect_cuda_bound_backends(installed_packages: object) -> list[str]:
+    """Return normalized names of CUDA-bound (gguf-style) inference backends."""
+    detected: list[str] = []
+    if not isinstance(installed_packages, list):
+        return detected
+    for pkg in cast(list[object], installed_packages):
+        if not isinstance(pkg, str):
+            continue
+        name, _version = _parse_package_spec(pkg)
+        normed = _normalize_name(name)
+        if _package_matches_any(normed, _CUDA_BOUND_BACKEND_PREFIXES):
+            detected.append(normed)
+    return detected
+
+
+def precheck_platform_capability(
+    installed_packages: object, target_family: str
+) -> dict[str, object]:
+    """Capability classifier for a target accelerator family.
+
+    Returns a dict shaped like the ``blocked_reason: "unsupported_backend"``
+    pattern in workflow_executor.py ``_maybe_recreate_execution_environment``::
+
+        {
+            "supported": bool,
+            "blocked_reason": "unsupported_backend" | None,
+            "usable_backend": str | None,
+            "degraded_fallback": bool,
+            "platform_degraded": bool,   # explicit degraded/降级 marker (CPU fallback)
+        }
+
+    Semantics:
+
+    * (a) target family has a usable backend → ``supported=True``,
+      ``blocked_reason=None``.
+    * (b) target family present but no USABLE backend for it (e.g. a
+      CUDA-bound gguf backend like llama-cpp-python when target is npu) →
+      ``supported=False``, ``blocked_reason="unsupported_backend"``,
+      ``degraded_fallback=False`` (NOT silent CPU success).
+    * (c) CPU-only environment targeting an accelerator family → CPU is
+      available as an explicit *degraded* fallback:
+      ``platform_degraded=True`` and ``degraded_fallback=True`` (a reportable
+      降级 outcome, never silent success).
+    """
+    target = str(target_family or "").strip().lower()
+    capabilities = get_platform_capabilities(installed_packages)
+
+    def _result(
+        supported: bool,
+        blocked_reason: str | None,
+        usable_backend: str | None,
+        degraded_fallback: bool,
+        platform_degraded: bool,
+    ) -> dict[str, object]:
+        return {
+            "supported": supported,
+            "blocked_reason": blocked_reason,
+            "usable_backend": usable_backend,
+            "degraded_fallback": degraded_fallback,
+            "platform_degraded": platform_degraded,
+        }
+
+    if target not in capabilities:
+        return _result(False, "unsupported_backend", None, False, False)
+
+    if capabilities[target]:
+        cuda_bound_backends = _detect_cuda_bound_backends(installed_packages)
+        if target != "cuda" and cuda_bound_backends:
+            return _result(False, "unsupported_backend", None, False, False)
+        return _result(True, None, target, False, False)
+
+    if capabilities.get("cpu"):
+        return _result(True, None, "cpu", True, True)
+
+    return _result(False, "unsupported_backend", None, False, False)

@@ -17,7 +17,8 @@ import sys
 import time
 import traceback
 from collections.abc import Iterable, Mapping
-from pathlib import Path, PurePosixPath
+from datetime import datetime, timezone
+from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from core.compat import assert_never
@@ -41,8 +42,23 @@ from core.workflow_stagnation_policy import StagnationState, reduce_stagnation
 from core.workflow_stop_policy import StopCondition, select_stop_status
 from core.workflow_transition_policy import TransitionRequest, plan_next_phase
 from core.workflow_shell_capture import capture_shell_output
-from core.session_registry import SessionRegistry
+from core.session_registry import ContextExhaustedError, SessionRegistry
+from core.context_management import (
+    ContextBudgetEstimator,
+    ContextBudgetState,
+    ContextSnapshot,
+    CONTEXT_SNAPSHOT_FILENAME,
+    CONTEXT_SNAPSHOT_SCHEMA_VERSION,
+    LOOP_HISTORY_FILENAME,
+    write_snapshot_atomic,
+)
+from core.config_loader import ContextManagementConfig, load_context_management_config
+from core.atomic_file import atomic_write_bytes
 from core.accelerator_context import extract_accelerator_context
+from core.execution_env_records import (
+    persist_dependency_plan,
+    replay_dependency_plan,
+)
 from core.hook_manager import HookManager
 from core.paths import resolve_relative_path, workspace_root
 from core.phase_boundary import inject_phase_boundary
@@ -312,6 +328,8 @@ class WorkflowExecutor:
             )
         self.ui_event_sink = ui_event_sink
         self._ui_active_phase: str | None = None
+        self._run_started_at: str | None = None
+        self._run_ended_at: str | None = None
         # Resolve platform policy from workflow definition
         self.platform_policy: PlatformPolicy = resolve_policy(
             getattr(workflow, "target_platform", None),
@@ -606,6 +624,38 @@ class WorkflowExecutor:
         except Exception:  # pylint: disable=broad-exception-caught
             logger.debug("UI event emission failed", exc_info=True)
 
+    def _build_run_timeline(self) -> dict:
+        phases = []
+        for phase_id, entry in self.phase_results.items():
+            if not isinstance(entry, dict):
+                continue
+            phases.append(
+                {
+                    "phase_id": phase_id,
+                    "status": entry.get("status", "unknown"),
+                    "started_at": entry.get("started_at"),
+                    "ended_at": entry.get("ended_at"),
+                    "duration_seconds": entry.get("duration_seconds"),
+                }
+            )
+        return {
+            "run_started_at": self._run_started_at,
+            "run_ended_at": self._run_ended_at,
+            "phases": phases,
+        }
+
+    def _persist_run_timeline(self) -> None:
+        try:
+            timeline_path = Path(self.output_dir) / "run_timeline.json"
+            timeline_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = self._build_run_timeline()
+            atomic_write_bytes(
+                timeline_path,
+                json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+        except Exception as exc:
+            logger.error("Failed to persist run_timeline.json: %s", exc)
+
     # ── Main entry point ────────────────────────────────────────────────
 
     def execute(self, context: dict) -> dict:
@@ -623,6 +673,8 @@ class WorkflowExecutor:
             "USER_CONSTRAINTS": self.user_constraints,
         }
         ctx.update(context)
+        self._run_started_at = datetime.now(timezone.utc).isoformat()
+        self._run_ended_at = None
 
         # 2. workflow_start hooks
         try:
@@ -734,10 +786,17 @@ class WorkflowExecutor:
             # Execute phase based on type
             phase_type = (phase.type or "llm").lower()
             start_t = time.time()
+            started_at = datetime.now(timezone.utc).isoformat()
+            start_mono = time.monotonic()
             status: str = "success"
             output: Any = {}
             self._ui_active_phase = phase.id
             self._set_telemetry_active_phase(phase.id)
+            if self.telemetry_bridge is not None:
+                try:
+                    self.telemetry_bridge.on_phase_start(phase.id)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.debug("on_phase_start failed for %s", phase.id, exc_info=True)
             self._emit_ui_event(
                 "phase_started",
                 phase_id=phase.id,
@@ -779,11 +838,25 @@ class WorkflowExecutor:
                     )
                     if next_id:
                         current_phase_id = next_id
+                        dispatch_end = time.monotonic()
                         self.phase_results[phase.id] = {
                             "status": "dispatched",
                             "duration": time.time() - start_t,
+                            "started_at": started_at,
+                            "ended_at": datetime.now(timezone.utc).isoformat(),
+                            "duration_seconds": round(dispatch_end - start_mono, 3),
                             "target": next_id,
                         }
+                        if self.telemetry_bridge is not None:
+                            try:
+                                self.telemetry_bridge.on_phase_end(
+                                    phase.id, "dispatched", dispatch_end - start_mono
+                                )
+                            except Exception:  # pylint: disable=broad-exception-caught
+                                logger.debug(
+                                    "on_phase_end failed for %s", phase.id, exc_info=True
+                                )
+                        self._persist_run_timeline()
                         if self._continuation is not None:
                             self.phase_results[phase.id]["inherited"] = False
                         self._emit_ui_event(
@@ -819,6 +892,13 @@ class WorkflowExecutor:
                 output = {"error": str(exc), "traceback": traceback.format_exc()}
 
             duration = time.time() - start_t
+            ended_at = datetime.now(timezone.utc).isoformat()
+            duration_mono = time.monotonic() - start_mono
+            if self.telemetry_bridge is not None:
+                try:
+                    self.telemetry_bridge.on_phase_end(phase.id, status, duration_mono)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    logger.debug("on_phase_end failed for %s", phase.id, exc_info=True)
             self._emit_ui_event(
                 "phase_finished",
                 phase_id=phase.id,
@@ -855,10 +935,14 @@ class WorkflowExecutor:
             self.phase_results[phase.id] = {
                 "status": status,
                 "duration": round(duration, 3),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_seconds": round(duration_mono, 3),
                 "output_summary": str(output)[:500] if output else "",
             }
             if self._continuation is not None:
                 self.phase_results[phase.id]["inherited"] = False
+            self._persist_run_timeline()
 
             # Update state
             if isinstance(output, dict):
@@ -900,6 +984,8 @@ class WorkflowExecutor:
 
         self._ui_active_phase = None
         self._set_telemetry_active_phase(None)
+        self._run_ended_at = datetime.now(timezone.utc).isoformat()
+        self._persist_run_timeline()
         self._emit_ui_event(
             "workflow_finished",
             status="complete",
@@ -1898,6 +1984,7 @@ class WorkflowExecutor:
             input_ctx.setdefault(
                 "report_dir", os.path.join(self.artifact_store.artifact_dir, "reports")
             )
+            input_ctx.setdefault("run_timeline", self._build_run_timeline())
 
     def _inject_container_env_context(self, input_ctx: dict) -> None:
         if not isinstance(self.exec_backend, ContainerBackend):
@@ -1957,7 +2044,7 @@ class WorkflowExecutor:
         raw_files = self._list_attempt_files()
         latest_artifacts = self._latest_shell_attempt_artifacts()
         constraint = self._resolve_constraint_summary(state)
-        hist_summary = self._format_history_summary(loop_history)
+        hist_summary = self._format_history_summary(self._bounded_loop_history(loop_history))
 
         # Inject container execution context for Phase 5 sub-workflow phases
         es = str(entry_script)
@@ -2218,7 +2305,7 @@ class WorkflowExecutor:
                     ),
                     "failure_log": failure_evidence,
                     "previous_outputs": self._format_error_analyzer_history(
-                        loop_history, step_outputs, state
+                        self._bounded_loop_history(loop_history), step_outputs, state
                     ),
                     "last_review": self._serialize_last_review(step_outputs)
                     or "(No review available)",
@@ -3563,6 +3650,9 @@ class WorkflowExecutor:
                 state, context, loop_vars, loop_state
             )
 
+        if operation == "dependency_reinstall":
+            return self._execute_dependency_reinstall(loop_state, state)
+
         # Generic: just return
         if not operation:
             return (
@@ -3584,14 +3674,31 @@ class WorkflowExecutor:
     ) -> tuple[str, dict]:
         contract = state.get("phase_3_entry_script")
         if not isinstance(contract, dict) or not self._has_custom_op_contract(contract):
-            result = {
-                "operation": "custom_op_final_gate",
-                "skipped": True,
-                "passed": True,
-            }
-            if loop_state is not None:
-                loop_state["custom_op_final_gate"] = result
-            return "success", result
+            # Bug #14 Gap A: a workflow that DECLARES the custom_op_final_gate
+            # phase while the custom-op route is disabled (e.g. ppu_vllm.yaml)
+            # must still execute the gate fail-closed instead of silently
+            # reporting {skipped: true, passed: true}. The gate only defers when
+            # an active review gate owns final acceptance for the loop.
+            workflow_globals = (
+                getattr(getattr(self, "workflow", None), "globals", None) or {}
+            )
+            review_gate_active = bool(
+                (loop_state or {}).get("review_gate_enabled")
+                or workflow_globals.get("review_gate_enabled") is True
+            )
+            if (
+                not self._workflow_declares_custom_op_final_gate()
+                or not self._custom_op_route_disabled(workflow_globals)
+                or review_gate_active
+            ):
+                result = {
+                    "operation": "custom_op_final_gate",
+                    "skipped": True,
+                    "passed": True,
+                }
+                if loop_state is not None:
+                    loop_state["custom_op_final_gate"] = result
+                return "success", result
 
         reports_dir = self._resolve_custom_op_reports_dir(contract, context, loop_vars)
         gate_path = reports_dir / "custom_op_final_gate.json"
@@ -3665,6 +3772,30 @@ class WorkflowExecutor:
                 "required_checks",
             )
         )
+
+    def _workflow_declares_custom_op_final_gate(self) -> bool:
+        workflow = getattr(self, "workflow", None)
+        if workflow is None:
+            return False
+        phase_lists: list[Iterable[Any]] = [getattr(workflow, "phases", None) or []]
+        sub_workflows = getattr(workflow, "sub_workflows", None) or {}
+        if isinstance(sub_workflows, dict):
+            phase_lists.extend(
+                getattr(sub_wf, "phases", None) or [] for sub_wf in sub_workflows.values()
+            )
+        for phases in phase_lists:
+            for phase in phases:
+                if isinstance(phase, dict):
+                    phase_id = phase.get("id")
+                    params = phase.get("params")
+                else:
+                    phase_id = getattr(phase, "id", None)
+                    params = getattr(phase, "params", None)
+                if str(phase_id or "") == "custom_op_final_gate":
+                    return True
+                if isinstance(params, dict) and params.get("operation") == "custom_op_final_gate":
+                    return True
+        return False
 
     def _resolve_custom_op_reports_dir(
         self,
@@ -3772,7 +3903,9 @@ class WorkflowExecutor:
         # 2. Build prompt context
         review_ctx = {
             "project_dir": self.project_dir,
-            "repair_history": self._format_loop_history(loop_history),
+            "repair_history": self._format_loop_history(
+                self._bounded_loop_history(loop_history)
+            ),
             "attempt_log_content": self._build_failure_evidence(loop_state),
             "execution_duration": str(
                 loop_state.get("script_duration", "not available")
@@ -3974,12 +4107,14 @@ class WorkflowExecutor:
                 decision.target,
             )
             return decision.target
-        logger.warning(
-            "Dispatch route '%s' not found in %s",
-            decision.route_key,
-            list(decision.available_routes),
+        if not decision.route_key:
+            # Empty route value (e.g. repair_role="") → no routing requested;
+            # preserve the legacy no-dispatch behavior (entry_script_action flows).
+            return None
+        raise ValueError(
+            "Dispatch route '%s' has no target in %s"
+            % (decision.route_key, list(decision.available_routes))
         )
-        return None
 
     # ── Loop phase ──────────────────────────────────────────────────────
 
@@ -4069,6 +4204,7 @@ class WorkflowExecutor:
 
         # 4. Iterate
         final_status = "success"
+        context_exhausted_payload: dict | None = None
         iteration = 0
         post_repair_validation_ran = False
         while iteration < max_iterations:
@@ -4091,6 +4227,7 @@ class WorkflowExecutor:
                     "stagnation_count": loop_state.get("stagnation_count", 0),
                 },
             )
+            self._enforce_loop_context_budget(phase, iteration, loop_state)
             iter_start = time.time()
             step_outputs: dict[str, Any] = {}
             if isinstance(self.artifact_store, ArtifactStore) and isinstance(
@@ -4107,17 +4244,51 @@ class WorkflowExecutor:
             self._carry_pending_experience_verifications(loop_state, step_outputs)
 
             # Execute sub-workflow
-            iter_result = self._run_sub_workflow(
-                sub_wf_def,
-                loop_vars,
-                state,
-                context,
-                sub_wf_phases,
-                sub_wf_blocks,
-                step_outputs,
-                loop_history,
-                loop_state,
-            )
+            try:
+                iter_result = self._run_sub_workflow(
+                    sub_wf_def,
+                    loop_vars,
+                    state,
+                    context,
+                    sub_wf_phases,
+                    sub_wf_blocks,
+                    step_outputs,
+                    loop_history,
+                    loop_state,
+                )
+            except ContextExhaustedError as exc:
+                # Bounded recovery failed on the rotated resend: terminate with
+                # a structured payload rather than spawning an infinite chain.
+                context_exhausted_payload = {
+                    "recovered": False,
+                    "reason": exc.reason,
+                    "old_session_id": exc.old_session_id,
+                    "new_session_id": exc.new_session_id,
+                    "tokens_used": exc.tokens_used,
+                    "compaction_count": exc.compaction_count,
+                }
+                loop_history.append(
+                    {
+                        "iteration": iteration,
+                        "status": "context_exhausted",
+                        "duration": round(time.time() - iter_start, 3),
+                        "step_outputs_summary": {
+                            k: type(v).__name__ for k, v in step_outputs.items()
+                        },
+                        "context_exhausted": context_exhausted_payload,
+                    }
+                )
+                self._persist_loop_history(loop_history)
+                loop_state["iteration"] = iteration
+                final_status = "context_exhausted"
+                logger.warning(
+                    "Loop terminated at iteration %d: context exhausted "
+                    "(session %r -> %r)",
+                    iteration,
+                    exc.old_session_id,
+                    exc.new_session_id,
+                )
+                break
             iter_duration = time.time() - iter_start
             iter_status = iter_result.get("status", "success")
 
@@ -4234,6 +4405,7 @@ class WorkflowExecutor:
             if fixer_outputs:
                 history_entry["fixer_outputs"] = fixer_outputs
             loop_history.append(history_entry)
+            self._persist_loop_history(loop_history)
             loop_state["iteration"] = iteration
             self._emit_ui_event(
                 "repair_iteration_finished",
@@ -4425,7 +4597,7 @@ class WorkflowExecutor:
             "loop_state": loop_state,
         }
 
-        return {
+        result = {
             "status": final_status,
             "iterations": len(loop_history),
             "loop_history": loop_history,
@@ -4433,6 +4605,208 @@ class WorkflowExecutor:
             "review_gate": review_gate,
             "review_outcome": review_gate.outcome if review_gate is not None else None,
         }
+        if context_exhausted_payload is not None:
+            result["context_exhausted"] = context_exhausted_payload
+        return result
+
+    def _context_budget_active(self) -> bool:
+        return (
+            isinstance(self.framework_config, dict)
+            and "context_management" in self.framework_config
+            and self._context_config().enabled
+        )
+
+    def _context_config(self) -> ContextManagementConfig:
+        raw: object = {}
+        if isinstance(self.framework_config, dict):
+            raw = self.framework_config.get("context_management")
+        if isinstance(raw, ContextManagementConfig):
+            return raw
+        return load_context_management_config(raw if isinstance(raw, dict) else {})
+
+    def _context_keep_recent_turns(self) -> int | None:
+        if not self._context_budget_active():
+            return None
+        turns = self._context_config().keep_recent_turns
+        return int(turns) if turns is not None else None
+
+    def _bounded_loop_history(self, loop_history: list) -> list:
+        keep = self._context_keep_recent_turns()
+        if keep is None or not loop_history:
+            return loop_history
+        if keep == 0:
+            return []
+        return loop_history[-keep:]
+
+    def _enforce_loop_context_budget(
+        self,
+        phase: PhaseDefinition,
+        iteration: int,
+        loop_state: dict,
+    ) -> None:
+        if not self._context_budget_active():
+            return
+        budget_state = ContextBudgetEstimator(
+            self._context_config(),
+            token_provider=self._loop_analyzer_token_provider(),
+        ).estimate().state
+        if budget_state is ContextBudgetState.COMPACT:
+            self._persist_loop_context_snapshot(phase, iteration, loop_state)
+        elif budget_state is ContextBudgetState.ROTATE:
+            snapshot = self._persist_loop_context_snapshot(phase, iteration, loop_state)
+            self._rotate_loop_analyzer_session(snapshot)
+
+    def _loop_analyzer_token_provider(self) -> Callable[[], object]:
+        """Build a ``TokenProvider`` polling the current error-analyzer session.
+
+        Resolves the analyzer session id lazily (registry-first, mirroring
+        ``_send_sub_workflow_llm_command``) so the estimator feeds real
+        ``info.tokens`` usage into budget decisions. Degrades to estimation
+        when no session exists yet or the manager lacks the accessor.
+        """
+
+        def _resolve_analyzer_sid() -> str | None:
+            if self.session_registry is not None:
+                try:
+                    return self.session_registry.resolve("error_analyzer")
+                except KeyError:
+                    return None
+            return None
+
+        def _poll() -> object:
+            sid = _resolve_analyzer_sid()
+            if not sid:
+                return None
+            get_usage = getattr(self.session_mgr, "get_session_token_usage", None)
+            if not callable(get_usage):
+                return None
+            return get_usage(sid)
+
+        return _poll
+
+    def _persist_loop_context_snapshot(
+        self,
+        phase: PhaseDefinition,
+        iteration: int,
+        loop_state: dict,
+    ) -> ContextSnapshot:
+        snapshot = self._build_loop_context_snapshot(phase, iteration, loop_state)
+        artifact_dir = getattr(self.artifact_store, "artifact_dir", None)
+        # rationale: strict str/PurePath check rejects MagicMock (os.PathLike protocol is faked by mocks)
+        if isinstance(artifact_dir, (str, PurePath)):
+            snapshot_path = Path(artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            write_snapshot_atomic(snapshot, snapshot_path)
+        return snapshot
+
+    def _build_loop_context_snapshot(
+        self,
+        phase: PhaseDefinition,
+        iteration: int,
+        loop_state: dict,
+    ) -> ContextSnapshot:
+        error_output = self._build_failure_evidence(loop_state)
+        error_analysis = loop_state.get("error_analysis") or {}
+        repair_role = (
+            str(error_analysis.get("repair_role", ""))
+            if isinstance(error_analysis, dict)
+            else ""
+        )
+        run_id = str(getattr(self.artifact_store, "run_id", "") or "")
+        return ContextSnapshot(
+            run_id=run_id,
+            phase=phase.id,
+            iteration=iteration,
+            current_error_signature=self._normalize_error_signature(error_output),
+            current_repair_role=repair_role,
+        )
+
+    def _rotate_loop_analyzer_session(self, snapshot: ContextSnapshot) -> None:
+        if self.session_registry is None:
+            return
+        record = self.session_registry.rotate(
+            "error_analyzer",
+            "context_budget_rotate",
+            snapshot.to_dict(),
+        )
+        register_session = getattr(self.session_mgr, "register_session", None)
+        if callable(register_session):
+            register_session(record)
+        send_command = getattr(self.session_mgr, "send_command", None)
+        if callable(send_command):
+            send_command(record.session_id, snapshot.to_json())
+
+    def _recover_exhausted_sub_workflow_command(
+        self,
+        exc: ContextExhaustedError,
+        agent_id: str,
+        phase_id: str,
+        prompt_text: str,
+        timeout: int | None,
+        loop_state: dict,
+    ) -> tuple[str, str]:
+        snapshot = self._build_exhausted_rotation_snapshot(agent_id, loop_state)
+        artifact_dir = getattr(self.artifact_store, "artifact_dir", None)
+        # rationale: strict str/PurePath check rejects MagicMock (os.PathLike protocol is faked by mocks)
+        if isinstance(artifact_dir, (str, PurePath)):
+            snapshot_path = Path(artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            write_snapshot_atomic(snapshot, snapshot_path)
+        rotated_sid: str | None = None
+        if self.session_registry is not None:
+            record = self.session_registry.rotate(
+                agent_id,
+                "context_exhausted_rotate",
+                snapshot.to_dict(),
+            )
+            register_session = getattr(self.session_mgr, "register_session", None)
+            if callable(register_session):
+                register_session(record)
+            rotated_sid = record.session_id
+        if rotated_sid is None:
+            rotated_sid = self.session_mgr.get_or_create(agent_id, "persistent")
+        try:
+            raw_response = self._send_sub_workflow_llm_command(
+                phase_id=phase_id,
+                agent_id=agent_id,
+                session_id=rotated_sid,
+                prompt_text=prompt_text,
+                timeout=timeout,
+            )
+        except ContextExhaustedError as reexc:
+            raise ContextExhaustedError(
+                session_id=reexc.session_id,
+                agent_id=reexc.agent_id,
+                tokens_used=reexc.tokens_used,
+                compaction_count=reexc.compaction_count,
+                reason=reexc.reason,
+                old_session_id=exc.session_id,
+                new_session_id=rotated_sid,
+            ) from reexc
+        return raw_response, rotated_sid
+
+    def _build_exhausted_rotation_snapshot(
+        self,
+        agent_id: str,
+        loop_state: dict,
+    ) -> ContextSnapshot:
+        error_output = self._build_failure_evidence(loop_state)
+        run_id = str(getattr(self.artifact_store, "run_id", "") or "")
+        return ContextSnapshot(
+            run_id=run_id,
+            phase="phase_5_validation",
+            agent_role=agent_id,
+            current_error_signature=self._normalize_error_signature(error_output),
+        )
+
+    def _persist_loop_history(self, loop_history: list) -> None:
+        artifact_dir = getattr(self.artifact_store, "artifact_dir", None)
+        # rationale: strict str/PurePath check rejects MagicMock (os.PathLike protocol is faked by mocks)
+        if not isinstance(artifact_dir, (str, PurePath)):
+            return
+        path = Path(artifact_dir) / LOOP_HISTORY_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(path, json.dumps(loop_history, ensure_ascii=False).encode("utf-8"))
 
     def _execute_orchestration_phase(
         self, phase: PhaseDefinition, state: dict, context: dict
@@ -4547,6 +4921,7 @@ class WorkflowExecutor:
             step_outputs={},
             loop_history=[],
             loop_state=loop_state,
+            stop_on_dispatch_error=True,
         )
         outputs = result.get("step_outputs", {})
         if isinstance(outputs, dict):
@@ -4579,8 +4954,17 @@ class WorkflowExecutor:
         loop_history: list | None = None,
         loop_state: dict | None = None,
         validation_only: bool = False,
+        stop_on_dispatch_error: bool = False,
     ) -> dict:
-        """Execute sub-workflow phases in order, collecting step_outputs."""
+        """Execute sub-workflow phases in order, collecting step_outputs.
+
+        ``stop_on_dispatch_error``: when True, a failed (fail-closed) dispatch
+        phase aborts the remaining sub-workflow phases instead of continuing.
+        Used by the improvement_block so a failed improvement SELECTION never
+        runs a fixer phase. The repair_loop main path keeps the default False:
+        a dispatch failure there must still let fix phases run (bug #15 deadlock
+        fix).
+        """
         if step_outputs is None:
             step_outputs = {}
 
@@ -4740,13 +5124,23 @@ class WorkflowExecutor:
                             role=agent_id, lifecycle="persistent"
                         )
 
-                    raw_response = self._send_sub_workflow_llm_command(
-                        phase_id=phase_id,
-                        agent_id=agent_id,
-                        session_id=sid,
-                        prompt_text=prompt_text,
-                        timeout=timeout,
-                    )
+                    try:
+                        raw_response = self._send_sub_workflow_llm_command(
+                            phase_id=phase_id,
+                            agent_id=agent_id,
+                            session_id=sid,
+                            prompt_text=prompt_text,
+                            timeout=timeout,
+                        )
+                    except ContextExhaustedError as exc:
+                        raw_response, sid = self._recover_exhausted_sub_workflow_command(
+                            exc=exc,
+                            agent_id=agent_id,
+                            phase_id=phase_id,
+                            prompt_text=prompt_text,
+                            timeout=timeout,
+                            loop_state=loop_state,
+                        )
                     phase_output = extract_json_response(raw_response)
                     self._raise_for_session_error_output(phase_output, phase_id)
 
@@ -4877,20 +5271,43 @@ class WorkflowExecutor:
                         phase_status = "success"
 
                 elif phase_type == "dispatch":
-                    next_id = self._execute_dispatch_phase(
-                        self._mini_phase(sub_phase),
-                        state,
-                        context,
-                        loop_vars=loop_vars,
-                        loop_state=step_outputs,
-                        step_outputs=step_outputs,
-                    )
-                    if next_id:
-                        dispatch_route = dispatch_targets.get(phase_id)
-                        dispatch_active = next_id
+                    try:
+                        next_id = self._execute_dispatch_phase(
+                            self._mini_phase(sub_phase),
+                            state,
+                            context,
+                            loop_vars=loop_vars,
+                            loop_state=step_outputs,
+                            step_outputs=step_outputs,
+                        )
+                    except (KeyError, ValueError, RuntimeError) as exc:
+                        # Bug #15: dispatch failed closed (route key absent from the
+                        # route map). Keep dispatch_route None — otherwise L4934
+                        # would skip every fix phase and the loop would deadlock.
+                        phase_output = {"dispatched_to": f"dispatch_error: {exc}"}
+                        logger.warning(
+                            "Dispatch phase '%s' failed closed: %s", phase_id, exc
+                        )
+                        if isinstance(loop_state, dict):
+                            loop_state.setdefault("dispatch_errors", []).append(
+                                f"{phase_id}: {exc}"
+                            )
+                        if stop_on_dispatch_error:
+                            # A failed improvement SELECTION must close the round
+                            # here — do not run any subsequent fixer phase.
+                            phase_status = "failure"
+                            break
                     else:
-                        dispatch_route = dispatch_targets.get(phase_id)
-                    phase_output = {"dispatched_to": next_id}
+                        if next_id:
+                            dispatch_route = dispatch_targets.get(phase_id)
+                            dispatch_active = next_id
+                            phase_output = {"dispatched_to": next_id}
+                        else:
+                            # Empty route value (no routing requested) — keep the
+                            # legacy behavior so fix phases are skipped and the
+                            # entry_script_action revision loop can proceed.
+                            dispatch_route = dispatch_targets.get(phase_id)
+                            phase_output = {"dispatched_to": next_id}
 
                 elif phase_type == "builtin":
                     phase_status, phase_output = self._execute_builtin_phase(
@@ -4954,6 +5371,8 @@ class WorkflowExecutor:
                 else:
                     logger.warning("Unknown sub-phase type '%s'", phase_type)
 
+            except ContextExhaustedError:
+                raise
             except SessionCommandError as exc:
                 logger.warning(
                     "Sub-phase '%s' session command failed: %s", phase_id, exc
@@ -5131,6 +5550,7 @@ class WorkflowExecutor:
         request["applied"] = True
         request["reset_number"] = reset_count + 1
         request["reset_metadata"] = reset_metadata
+        self._persist_and_record_dependency_plan(loop_state)
         result = {
             **normalized,
             "applied": True,
@@ -5143,6 +5563,81 @@ class WorkflowExecutor:
             history.append(result)
         step_outputs["environment_action"] = normalized
         return result
+
+    def _persist_and_record_dependency_plan(self, loop_state: dict[str, Any]) -> dict[str, Any]:
+        installed = self._collect_recorded_installed_packages()
+        loop_state["dependency_plan"] = list(installed)
+        manifest = persist_dependency_plan(
+            installed, destination=str(self._dependency_plan_path())
+        )
+        loop_state["dependency_plan_manifest"] = manifest
+        return manifest
+
+    def _collect_recorded_installed_packages(self) -> list[str]:
+        installed: list[str] = []
+        if isinstance(self.state, dict):
+            for key in ("phase_2_venv_create", "phase_2"):
+                phase_state = self.state.get(key)
+                if isinstance(phase_state, dict):
+                    packages = phase_state.get("installed_packages")
+                    if isinstance(packages, (list, tuple)):
+                        installed = [str(package) for package in packages]
+                        break
+        if not installed:
+            for entry in self.phase_results.values():
+                output = entry.get("output") if isinstance(entry, dict) else None
+                if isinstance(output, dict):
+                    packages = output.get("installed_packages")
+                    if isinstance(packages, (list, tuple)):
+                        installed = [str(package) for package in packages]
+                        break
+        return installed
+
+    def _dependency_plan_path(self) -> Path:
+        return Path(str(self.project_dir)).resolve() / ".seam" / "dependency_plan.json"
+
+    def _execute_dependency_reinstall(
+        self,
+        loop_state: dict[str, Any] | None,
+        state: dict[str, Any],
+    ) -> tuple[str, dict]:
+        manifest_path = self._dependency_plan_path()
+        packages: list[str] = []
+        source = "none"
+        if manifest_path.exists():
+            try:
+                packages = replay_dependency_plan(manifest_path)
+                source = str(manifest_path)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                source = f"unreadable:{exc}"
+        elif isinstance(loop_state, dict):
+            plan = loop_state.get("dependency_plan")
+            if isinstance(plan, (list, tuple)):
+                packages = [str(package) for package in plan]
+                source = "loop_state"
+        if packages:
+            reinstall_command = " && ".join(
+                f"{sys.executable} -m pip install '{package}'" for package in packages
+            )
+            result: dict[str, Any] = {
+                "operation": "dependency_reinstall",
+                "replayable": True,
+                "packages": packages,
+                "source": source,
+                "reinstalled": False,
+                "reinstall_command": reinstall_command,
+            }
+        else:
+            result = {
+                "operation": "dependency_reinstall",
+                "replayable": False,
+                "packages": [],
+                "reinstalled": False,
+                "reason": "no_persisted_dependency_plan",
+            }
+        if loop_state is not None:
+            loop_state["dependency_reinstall"] = result
+        return "success", result
 
     @staticmethod
     def _normalize_environment_action(action: dict[str, Any]) -> dict[str, Any]:

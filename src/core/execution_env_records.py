@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import json
 import os
 import platform
 import sys
@@ -222,6 +223,69 @@ def probe_environment_record(request: EnvironmentProbeRequest) -> ProbedEnvironm
         str, typing.Callable[[EnvironmentProbeRequest], ProbedEnvironment]
     ] = {"ok": _successful_probe, "error": _failed_probe}
     return builders[request.probe.status](request)
+
+
+# ── Replayable dependency plan (bug #14 Gap B) ─────────────────────────────
+# Phase-2 ``installed_packages`` was consumed but never persisted, so a
+# recreated execution environment lost every recorded dependency.
+
+DEPENDENCY_PLAN_SCHEMA_VERSION = 1
+DEPENDENCY_PLAN_KIND = "dependency_plan"
+
+
+def persist_dependency_plan(
+    installed_packages: typing.Iterable[str],
+    destination: typing.Union[str, os.PathLike, None] = None,
+) -> typing.Dict[str, object]:
+    """Persist a phase-2 ``installed_packages`` snapshot as a replayable manifest.
+
+    Returns a JSON-serializable manifest dict. When *destination* is given the
+    manifest is also written to that file so a recreated execution environment
+    can replay the recorded dependencies.
+    """
+    packages = [str(package) for package in (installed_packages or ())]
+    manifest: typing.Dict[str, object] = {
+        "schema_version": DEPENDENCY_PLAN_SCHEMA_VERSION,
+        "kind": DEPENDENCY_PLAN_KIND,
+        "replayable": True,
+        "installed_packages": packages,
+        "inventory_sha256": hashlib.sha256(
+            "\n".join(sorted(packages)).encode()
+        ).hexdigest(),
+    }
+    if destination is not None:
+        path = os.fspath(destination)
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+    return manifest
+
+
+def replay_dependency_plan(
+    manifest: typing.Union[typing.Dict[str, object], str, os.PathLike],
+) -> typing.List[str]:
+    """Replay a persisted dependency plan into the recorded package list.
+
+    Accepts the manifest dict returned by :func:`persist_dependency_plan` or
+    the path of a manifest file written to disk. Returns the package specs in
+    their recorded order.
+    """
+    if isinstance(manifest, typing.Mapping):
+        data: object = dict(manifest)
+    else:
+        with open(os.fspath(manifest), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    if not isinstance(data, typing.Mapping):
+        raise ValueError(
+            "dependency plan must be a JSON object with an 'installed_packages' list"
+        )
+    packages = data.get("installed_packages")
+    if not isinstance(packages, (list, tuple)):
+        raise ValueError("dependency plan is missing 'installed_packages' list")
+    return [str(package) for package in packages]
 
 
 def capture_local_environment(environment_id: str) -> ProbedEnvironment:

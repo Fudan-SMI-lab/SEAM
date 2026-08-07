@@ -6,6 +6,27 @@ from os import environ
 from pathlib import Path
 
 
+def _resource_root() -> Path:
+    """Locate the package data root (source tree or installed wheel).
+
+    Prefers ``importlib.resources`` resolution of the ``core`` package so an
+    installed wheel (where resources ship as sibling packages/dirs in
+    site-packages) resolves the same layout as the source tree. Falls back to
+    the absolute source-tree path so uninstalled runs (tests, scripts) behave
+    exactly as before.
+    """
+    try:
+        from importlib.resources import as_file, files
+
+        with as_file(files("core")) as core_dir:
+            root = Path(core_dir).resolve().parent
+        if (root / "prompts").is_dir():
+            return root
+    except Exception:
+        pass
+    return Path(__file__).resolve().parent.parent
+
+
 def _parent_workspace_root() -> Path:
     """Return the workspace directory that contains SEAM."""
     return src_root().parent.parent
@@ -13,7 +34,7 @@ def _parent_workspace_root() -> Path:
 
 def src_root() -> Path:
     """Return the canonical src/ package root."""
-    return Path(__file__).resolve().parent.parent
+    return _resource_root()
 
 
 def migration_utils_root() -> Path:

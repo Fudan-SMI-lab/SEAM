@@ -1,6 +1,7 @@
 # pyright: reportPrivateUsage=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportUnusedCallResult=false, reportUnusedParameter=false
 
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -51,6 +52,9 @@ class MockSessionManager:
         if session_id == "session-1":
             return json.dumps(self.analyzer_response)
         return json.dumps({"status": "ok", "session_id": session_id})
+
+    def get_session_token_usage(self, session_id: str) -> dict | None:
+        return None
 
 
 def build_engine(base_dir: Path, session_mgr: MockSessionManager) -> tuple[RepairLoopEngine, ArtifactStore]:
@@ -772,7 +776,9 @@ def test_review_gate_session_error_fails_closed_on_exit_zero(tmp_path: Path, mon
         review_calls.append(ctx)
         return {
             "verdict": "session_error",
+            # LOCK: session_error verdict -> review_failed; communication_error path unchanged by Task 8
             "session_error": "Compaction response is incomplete",
+            # LOCK: reason text preserved verbatim; Task 8 does not touch session_error recording
             "reasoning": "Review session command failed: Compaction response is incomplete",
         }
 
@@ -1070,6 +1076,7 @@ def test_analyze_error_success_no_retries(monkeypatch: pytest.MonkeyPatch) -> No
 def test_analyze_error_session_error_returns_communication_error(monkeypatch: pytest.MonkeyPatch) -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
+    # LOCK: session_error response -> communication_error; Task 8 rotates only on ContextExhaustedError exception
     session_mgr.send_command.return_value = '{"ok": false, "error": "Compaction response is incomplete"}'
     monkeypatch.setattr("time.sleep", MagicMock())
 
@@ -1084,7 +1091,9 @@ def test_analyze_error_session_error_returns_communication_error(monkeypatch: py
 
     assert result["category"] == "communication_error"
     assert result["repair_role"] == "dependency_fixer"
+    # LOCK: session_error text lands in root_cause; Task 8 keeps communication_error recording path
     assert "Compaction response is incomplete" in result["root_cause"]
+    # LOCK: raw_response passthrough unchanged; budget rotation never rewrites this path
     assert "Compaction response is incomplete" in result["raw_response"]
     session_mgr.send_command.assert_called_once()
 
@@ -1142,6 +1151,7 @@ def test_repair_session_error_marks_fix_attempt_communication_error(tmp_path: Pa
 
     def mock_send(session_id: str, _command: str, timeout: int = 600) -> str:
         if session_id == "repair-1":
+            # LOCK: repair session_error -> fix attempt communication_error; unchanged by Task 8
             return '{"ok": false, "error": "Compaction response is incomplete"}'
         return "{}"
 
@@ -1168,6 +1178,7 @@ def test_repair_session_error_marks_fix_attempt_communication_error(tmp_path: Pa
     assert result["success"] is False
     assert result["status"] == "max_iterations"
     assert result["error_history"][0].get("repair_role") == "operator_fixer"
+    # LOCK: session_error text persists into fix_summary via communication_error recording; Task 8 keeps this
     assert "Compaction response is incomplete" in str(result["error_history"][0].get("fix_summary", ""))
     extract_summary.assert_not_called()
 
@@ -1507,22 +1518,26 @@ def test_extract_fix_summary_session_error_skips_followup() -> None:
 
     result = engine._extract_fix_summary(
         "repair-1",
+        # LOCK: session_error raw_response -> no followup send; Task 8 does not alter _extract_fix_summary
         '{"ok": false, "error": "Compaction response is incomplete"}',
         max_retries=2,
     )
 
     assert result.get("modified_files") == []
+    # LOCK: session_error surfaced in summary, no followup retry; unchanged by Task 8
     assert "Compaction response is incomplete" in str(result.get("summary", ""))
     session_mgr.send_command.assert_not_called()
 
 
 def test_extract_fix_summary_followup_session_error_returns_summary() -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
+    # LOCK: followup send session_error -> summary fallback; unchanged by Task 8 rotation path
     session_mgr.send_command.return_value = '{"ok": false, "error": "Compaction response is incomplete"}'
 
     result = engine._extract_fix_summary("repair-1", "not json", max_retries=1)
 
     assert result.get("modified_files") == []
+    # LOCK: session_error surfaced in summary after followup retry; unchanged by Task 8
     assert "Compaction response is incomplete" in str(result.get("summary", ""))
     session_mgr.send_command.assert_called_once()
 
@@ -1530,6 +1545,7 @@ def test_extract_fix_summary_followup_session_error_returns_summary() -> None:
 def test_improvement_analyzer_session_error_fails() -> None:
     engine, session_mgr, _artifact_store, _prompt_loader, _validator = build_mocked_engine()
     session_mgr.get_or_create.return_value = "analyzer-1"
+    # LOCK: improvement analyzer session_error -> improvement_failed; unchanged by Task 8
     session_mgr.send_command.return_value = '{"ok": false, "error": "Compaction response is incomplete"}'
 
     result = engine._run_improvement_iteration(
@@ -1540,6 +1556,7 @@ def test_improvement_analyzer_session_error_fails() -> None:
     )
 
     assert result["status"] == "improvement_failed"
+    # LOCK: session_error surfaced in improvement error; unchanged by Task 8
     assert "Compaction response is incomplete" in str(result["error"])
 
 
@@ -1548,6 +1565,7 @@ def test_improvement_repair_session_error_fails() -> None:
     session_mgr.get_or_create.side_effect = ["analyzer-1", "repair-1"]
     session_mgr.send_command.side_effect = [
         '{"repair_role": "code_adapter", "improvement_area": "device", "suggested_direction": "fix fallback"}',
+        # LOCK: improvement repair session_error -> improvement_repair_failed; unchanged by Task 8
         '{"ok": false, "error": "Compaction response is incomplete"}',
     ]
 
@@ -1560,6 +1578,7 @@ def test_improvement_repair_session_error_fails() -> None:
 
     assert result["status"] == "improvement_repair_failed"
     assert result["repair_role"] == "code_adapter"
+    # LOCK: session_error surfaced in improvement repair error; unchanged by Task 8
     assert "Compaction response is incomplete" in str(result["error"])
 
 
@@ -1815,3 +1834,384 @@ def test_repair_loop_custom_op_gate_ignores_outside_reports_dir(tmp_path: Path, 
 
     assert result["success"] is False
     assert str(tmp_path / "migration_reports" / "custom_op_final_gate.json") in str(result["final_stderr"])
+
+
+# ---------------------------------------------------------------------------
+# Task 8 (bug #16 §5.6/§5.7): repair-loop context-budget integration — RED.
+# Tests A-D fail until the minimal fix lands in core/repair_loop.py.
+# ---------------------------------------------------------------------------
+
+from core.config_loader import load_context_management_config
+from core.context_management import (
+    CONTEXT_SNAPSHOT_FILENAME,
+    ContextBudgetState,
+    ContextSnapshot,
+)
+from core.session_registry import ContextExhaustedError
+
+
+class _ScriptedBudgetEstimator:
+    """Deterministic estimator replaying scripted states; NORMAL when exhausted."""
+    scripted_states: list[ContextBudgetState] = []
+
+    def __init__(self, config: object, token_provider: object = None) -> None:
+        self.config = config
+        self.token_provider = token_provider
+
+    def estimate(self, message_info: dict | None = None) -> SimpleNamespace:
+        state = (
+            self.scripted_states.pop(0)
+            if self.scripted_states
+            else ContextBudgetState.NORMAL
+        )
+        return SimpleNamespace(
+            state=state, tokens_used=0, context_limit=0, estimated=True
+        )
+
+
+class _AnalyzerAwareSessionManager(MockSessionManager):
+    """Analyzer classification flows to any analyzer-role session, rotated or not."""
+
+    def __init__(self, analyzer_response: dict[str, str]) -> None:
+        super().__init__(analyzer_response)
+        self._analyzer_session_ids: set[str] = set()
+
+    def get_or_create(self, role: str, lifecycle: str) -> str:
+        session_id = super().get_or_create(role, lifecycle)
+        if role.startswith("error_analyzer"):
+            self._analyzer_session_ids.add(session_id)
+        return session_id
+
+    def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
+        self.send_command_calls.append((session_id, command, timeout))
+        if session_id in self._analyzer_session_ids:
+            return json.dumps(self.analyzer_response)
+        return json.dumps({"status": "ok", "session_id": session_id})
+
+
+class _ExhaustedRepairSessionManager(MockSessionManager):
+    """Raises ContextExhaustedError on repair sends; overflow_on_resend makes
+    the rotated-session resend raise again (termination) instead of succeed."""
+
+    def __init__(self, analyzer_response: dict[str, str], overflow_on_resend: bool) -> None:
+        super().__init__(analyzer_response)
+        self.overflow_on_resend = overflow_on_resend
+        self.repair_send_count = 0
+        self.repair_send_session_ids: list[str] = []
+
+    def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
+        self.send_command_calls.append((session_id, command, timeout))
+        if session_id == "session-1":
+            return json.dumps(self.analyzer_response)
+        self.repair_send_count += 1
+        self.repair_send_session_ids.append(session_id)
+        if self.repair_send_count == 1 or (
+            self.overflow_on_resend and self.repair_send_count == 2
+        ):
+            raise ContextExhaustedError(
+                session_id=session_id,
+                agent_id=session_id,
+                tokens_used=88_000,
+                compaction_count=3,
+                reason="max_recoveries",
+            )
+        return json.dumps({"status": "ok", "session_id": session_id})
+
+
+def _feature_config(overrides: dict[str, object]) -> dict[str, object]:
+    base: dict[str, object] = {
+        "enabled": True,
+        "context_tokens": 10_000,
+        "reserve_output_tokens": 1024,
+        "compact_threshold_ratio": 0.72,
+        "rotate_threshold_ratio": 0.88,
+        "summary_budget_tokens": 4096,
+        "keep_recent_turns": 2,
+        "max_compactions_per_session": 2,
+        "max_recoveries_per_command": 1,
+    }
+    base.update(overrides)
+    return {"context_management": base}
+
+
+def test_context_management_uses_loaded_typed_config_and_honors_disabled(
+    tmp_path: Path,
+) -> None:
+    session_mgr = _AnalyzerAwareSessionManager(_error_classification())
+    engine, _ = build_engine(tmp_path, session_mgr)
+    typed = load_context_management_config(
+        _feature_config({"enabled": False, "keep_recent_turns": 0})[
+            "context_management"
+        ]
+    )
+    engine.config = {"context_management": typed}
+
+    assert engine._context_config() is typed
+    assert engine._context_budget_active() is False
+
+
+def test_context_management_zero_recent_turns_keeps_no_prompt_history(
+    tmp_path: Path,
+) -> None:
+    session_mgr = _AnalyzerAwareSessionManager(_error_classification())
+    engine, _ = build_engine(tmp_path, session_mgr)
+    engine.config = _feature_config({"keep_recent_turns": 0})
+
+    assert engine._bounded_history([{"iteration": 1}]) == []
+
+
+def _error_classification(detail: str = "validation failed: missing artifact") -> dict[str, str]:
+    return {
+        "category": "validation",
+        "root_cause": f"phase_5 missing {detail}",
+        "suggested_fix": "write the missing artifact",
+        "repair_role": "dependency_fixer",
+    }
+
+
+def _fail_entry_script(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Entry script that always exits 1, writing a distinct stderr per run so
+    the repair loop observes a real (non-empty, non-identical) error signature."""
+    counter = {"n": 0}
+
+    def fake_run(*_args: object, **kwargs: object) -> CompletedProcess[str]:
+        counter["n"] += 1
+        error_text = f"boom-{counter['n']}"
+        stderr_handle = kwargs.get("stderr")
+        if stderr_handle is not None:
+            cast(TextIO, stderr_handle).write(error_text)
+        return CompletedProcess(
+            args="", returncode=1, stderr=error_text
+        )
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+
+def _read_snapshot(artifact_store: ArtifactStore) -> ContextSnapshot:
+    path = Path(artifact_store.artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+    assert path.exists(), f"snapshot not written at {path}"
+    return ContextSnapshot.from_json(path.read_text(encoding="utf-8"))
+
+
+def test_task8_analyzer_budget_compact_snapshots_and_bounds_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Analyzer COMPACT at loop top -> snapshot + bounded history, no rotation."""
+    session_mgr = _AnalyzerAwareSessionManager(_error_classification())
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    engine.config = _feature_config({"keep_recent_turns": 1})
+    _fail_entry_script(monkeypatch)
+    monkeypatch.setattr(
+        "core.repair_loop.ContextBudgetEstimator",
+        _ScriptedBudgetEstimator,
+        raising=False,
+    )
+    _ScriptedBudgetEstimator.scripted_states = [
+        ContextBudgetState.NORMAL,
+        ContextBudgetState.NORMAL,
+        ContextBudgetState.COMPACT,
+    ]
+
+    result = engine.run(
+        str(tmp_path / "missing.py"),
+        str(tmp_path),
+        max_iterations=3,
+    )
+
+    assert len(result["error_history"]) == 1
+    assert result["error_history"][0]["iteration"] == 3
+    assert not any(
+        role.startswith("error_analyzer_rotated")
+        for role, _lifecycle in session_mgr.get_or_create_calls
+    )
+    snapshot = _read_snapshot(artifact_store)
+    assert snapshot.schema_version == "context_snapshot.v1"
+    assert snapshot.current_repair_role == "dependency_fixer"
+    assert snapshot.current_error_signature
+    analyzer_prompts = [
+        command
+        for session_id, command, _timeout in session_mgr.send_command_calls
+        if session_id == "session-1"
+    ]
+    assert analyzer_prompts
+    assert len(re.findall(r"\| Iter \d", analyzer_prompts[-1])) == 1
+
+
+def test_task8_analyzer_budget_rotate_snapshots_and_rotates_analyzer_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Analyzer ROTATE at loop top -> snapshot + analyzer session rotation."""
+    session_mgr = _AnalyzerAwareSessionManager(_error_classification())
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    engine.config = _feature_config({"keep_recent_turns": 2})
+    _fail_entry_script(monkeypatch)
+    monkeypatch.setattr(
+        "core.repair_loop.ContextBudgetEstimator",
+        _ScriptedBudgetEstimator,
+        raising=False,
+    )
+    _ScriptedBudgetEstimator.scripted_states = [
+        ContextBudgetState.NORMAL,
+        ContextBudgetState.ROTATE,
+    ]
+
+    result = engine.run(
+        str(tmp_path / "missing.py"),
+        str(tmp_path),
+        max_iterations=2,
+    )
+
+    rotated_analyzer = next(
+        session_id
+        for role, lifecycle in session_mgr.get_or_create_calls
+        for session_id in [session_mgr._session_ids.get((role, lifecycle), "")]
+        if role == "error_analyzer_rotated_1" and lifecycle == "persistent"
+    )
+    assert rotated_analyzer
+    assert ("error_analyzer_rotated_1", "persistent") in session_mgr.get_or_create_calls
+    assert any(
+        session_id == rotated_analyzer
+        for session_id, _command, _timeout in session_mgr.send_command_calls
+    )
+    assert result["error_analyzer_session_id"] == rotated_analyzer
+    assert result["repair_session_ids"]["dependency_fixer"] == "session-2"
+    snapshot = _read_snapshot(artifact_store)
+    assert snapshot.current_repair_role == "dependency_fixer"
+    assert snapshot.current_error_signature
+
+
+def test_task8_repair_session_budget_rotate_rotates_per_role_repair_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-role repair session ROTATE -> snapshot + rotated repair session."""
+    session_mgr = _AnalyzerAwareSessionManager(_error_classification())
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    engine.config = _feature_config({"keep_recent_turns": 2})
+    _fail_entry_script(monkeypatch)
+    monkeypatch.setattr(
+        "core.repair_loop.ContextBudgetEstimator",
+        _ScriptedBudgetEstimator,
+        raising=False,
+    )
+    _ScriptedBudgetEstimator.scripted_states = [
+        ContextBudgetState.NORMAL,
+        ContextBudgetState.NORMAL,
+        ContextBudgetState.ROTATE,
+    ]
+
+    result = engine.run(
+        str(tmp_path / "missing.py"),
+        str(tmp_path),
+        max_iterations=2,
+    )
+
+    assert ("dependency_fixer_rotated_1", "persistent") in session_mgr.get_or_create_calls
+    assert not any(
+        role == "dependency_fixer_rotated_2"
+        for role, _lifecycle in session_mgr.get_or_create_calls
+    )
+    assert result["repair_session_ids"]["dependency_fixer"] == "session-3"
+    assert any(
+        session_id == "session-3" and "| Iter " in command
+        for session_id, command, _timeout in session_mgr.send_command_calls
+    )
+    snapshot = _read_snapshot(artifact_store)
+    assert snapshot.current_repair_role == "dependency_fixer"
+
+
+def test_task8_history_bounded_at_record_iteration_with_full_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """History bounded to keep_recent_turns; raw records persist for every
+    iteration; every repair prompt shows only the bounded window."""
+    session_mgr = _AnalyzerAwareSessionManager(_error_classification())
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    engine.config = _feature_config({"keep_recent_turns": 2})
+    _fail_entry_script(monkeypatch)
+    monkeypatch.setattr(
+        "core.repair_loop.ContextBudgetEstimator",
+        _ScriptedBudgetEstimator,
+        raising=False,
+    )
+    _ScriptedBudgetEstimator.scripted_states = [ContextBudgetState.NORMAL] * 5
+
+    result = engine.run(
+        str(tmp_path / "missing.py"),
+        str(tmp_path),
+        max_iterations=5,
+    )
+
+    assert len(result["error_history"]) == 2
+    assert result["error_history"][0]["iteration"] == 4
+    assert result["error_history"][1]["iteration"] == 5
+    raw_files = sorted(
+        str(path) for path in Path(artifact_store.raw_dir).glob("phase_5_validation_attempt*.json")
+    )
+    assert len(raw_files) == 5
+    repair_prompts = [
+        command
+        for session_id, command, _timeout in session_mgr.send_command_calls
+        if session_id == "session-2" and "| Iter " in command
+    ]
+    assert repair_prompts
+    assert all(len(re.findall(r"\| Iter \d", command)) <= 2 for command in repair_prompts)
+    assert len(re.findall(r"\| Iter \d", repair_prompts[-1])) == 2
+
+
+def test_task8_context_exhausted_snapshot_rotate_and_bounded_single_resend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ContextExhaustedError -> snapshot + rotate + single bounded resend
+    succeeds; run completes without a context_exhausted verdict."""
+    session_mgr = _ExhaustedRepairSessionManager(
+        _error_classification(), overflow_on_resend=False
+    )
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    _fail_entry_script(monkeypatch)
+
+    result = engine.run(
+        str(tmp_path / "missing.py"),
+        str(tmp_path),
+        max_iterations=1,
+    )
+
+    assert ("dependency_fixer_rotated_1", "persistent") in session_mgr.get_or_create_calls
+    assert session_mgr.repair_send_session_ids == ["session-2", "session-3"]
+    assert result["repair_session_ids"]["dependency_fixer"] == "session-3"
+    assert result["status"] == "max_iterations"
+    assert result["success"] is False
+    assert result["context_exhausted"] is None
+    snapshot = _read_snapshot(artifact_store)
+    assert snapshot.current_repair_role == "dependency_fixer"
+
+
+def test_task8_context_exhausted_second_overflow_terminates_without_infinite_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second ContextExhaustedError -> structured context_exhausted
+    termination; no further rotation (bounded recovery)."""
+    session_mgr = _ExhaustedRepairSessionManager(
+        _error_classification(), overflow_on_resend=True
+    )
+    engine, artifact_store = build_engine(tmp_path, session_mgr)
+    _fail_entry_script(monkeypatch)
+
+    result = engine.run(
+        str(tmp_path / "missing.py"),
+        str(tmp_path),
+        max_iterations=2,
+    )
+
+    assert result["status"] == "context_exhausted"
+    assert result["success"] is False
+    assert result["context_exhausted"]["recovered"] is False
+    assert result["context_exhausted"]["reason"] == "max_recoveries"
+    assert result["context_exhausted"]["old_session_id"] == "session-2"
+    assert result["context_exhausted"]["new_session_id"] == "session-3"
+    assert not any(
+        role == "dependency_fixer_rotated_2"
+        for role, _lifecycle in session_mgr.get_or_create_calls
+    )
+    assert session_mgr.repair_send_session_ids == ["session-2", "session-3"]
+    snapshot = _read_snapshot(artifact_store)
+    assert snapshot.current_repair_role == "dependency_fixer"

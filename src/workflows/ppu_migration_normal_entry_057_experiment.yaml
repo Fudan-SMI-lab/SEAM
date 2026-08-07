@@ -12,8 +12,11 @@
 #        required_checks, etc.) by route policy.
 #   (c) Phase 3.5 validates ordinary headless/non-interactive entry
 #       behavior -- no custom-op contract gate.
-#   (d) Phase 5 custom_op_final_gate auto-skips because Phase 3 output
-#       has no custom-op contract fields (skipped=true, passed=true).
+#   (d) Phase 5 custom_op_final_gate is DECLARED in the repair loop. Per the
+#       #14 gate contract a declared gate phase is ENFORCED by the executor
+#       even when the custom-op route is disabled: it reads the gate report
+#       and fails explicitly when the report is missing (fail-closed). It no
+#       longer auto-skips with {skipped=true, passed=true}.
 #   (e) The production workflow and its prompts are NOT modified.
 #
 # PPU environments expose CUDA-compatible APIs (torch.cuda).
@@ -29,8 +32,9 @@ description: >
   CUDA to PPU automated migration workflow for normal application
   demo (057_example_fwi.py). Custom-op contract injection and
   final-gate route are disabled via workflow configuration. Phase 3
-  omits custom-op contract fields by route policy, and Phase 5
-  custom_op_final_gate auto-skips.
+  omits custom-op contract fields by route policy, but the declared
+  Phase 5 custom_op_final_gate is enforced by the executor (reads the
+  gate report and fails explicitly when it is missing).
 
 target_platform:
   preset: ppu_cuda_compatible

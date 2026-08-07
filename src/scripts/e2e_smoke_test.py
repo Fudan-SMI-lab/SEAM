@@ -137,6 +137,9 @@ class MockSessionManager:
             })
         raise AssertionError(f"Unexpected prompt for mock session: {command[:120]}")
 
+    def get_session_token_usage(self, session_id: str) -> dict | None:
+        return None
+
     @staticmethod
     def _extract_report_dir(command: str) -> Path:
         match = re.search(r"write reports into `([^`]+)`", command)

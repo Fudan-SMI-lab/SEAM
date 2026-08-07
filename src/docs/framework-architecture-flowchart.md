@@ -141,7 +141,7 @@
 | **success** | 入口脚本 exit_code == 0 | ✅ 通过 | 代码在 NPU 上正常运行 |
 | **stagnation** | 相同错误连续出现 3 次 | ❌ 失败 | 无法找到有效修复方案 |
 | **passed_with_reviews** | 审查门拒绝达到 max_review_iterations(3) | ⚠️ 通过 | 带审查摘要通过，记录了所有被拒修复 |
-| **max_iterations** | 达到 max_iterations(5) 上限 | ❌ 失败 | 迭代次数用尽 |
+| **max_iterations** | 达到 max_iterations(5) 安全上限，停止尝试 | ⚠️ 由 5 项布尔契约判定 | 仅安全上限，不等于成功/失败 |
 
 ### 5 个 Agent Session 角色
 
@@ -552,7 +552,7 @@ Phase 6 Output
 │  repair_session_ids = {} (按角色延迟创建)                         │
 │  gate_state = ReviewGateState()                                  │
 │  repeated_error_count = 0                                        │
-│  status = "max_iterations"                                       │
+│  status = "max_iterations" (安全上限，达到≠失败)                          │
 └────────────────────────┬─────────────────────────────────────────┘
                          │
                          ▼
@@ -642,7 +642,7 @@ Phase 6 Output
                 └─────┬─────┘                               │
                       │NO                                   │
                       ▼                                     │
-            status="max_iterations"                         │
+            status="max_iterations"  # 安全上限                 │
                       │                                     │
                       └─────────────────────────────────────┘
                       ▼
@@ -701,7 +701,7 @@ AND cpu_fallback_detected?
 | `"success"` | 入口脚本 exit_code == 0 | `true` | 验证通过 |
 | `"stagnation"` | 相同错误签名连续 3 次 | `false` | 停滞，不再尝试 |
 | `"passed_with_reviews"` | 审查门拒绝达 max_review_iterations 次 | `true` (强制) | 带审查摘要通过 |
-| `"max_iterations"` | 达到 max_iterations 限制 (默认 5) | `false` | 耗尽迭代次数 |
+| `"max_iterations"` | 达到 max_iterations 限制 (默认 5，安全上限) | `由 5 项布尔契约判定` | 停止尝试，非失败/成功 |
 
 ---
 
