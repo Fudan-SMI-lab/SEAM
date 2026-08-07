@@ -39,7 +39,7 @@ Accept only if runtime evidence shows meaningful accelerator execution and no fa
 ## Output Format
 ```json
 {
-  "verdict": "accept",
+  "verdict": "accept | reject",
   "cpu_fallback_detected": false,
   "cpu_fallback_necessary": false,
   "alternative_suggestions": "",

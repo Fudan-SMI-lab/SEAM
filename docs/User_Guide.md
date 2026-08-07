@@ -4,6 +4,13 @@
 ## 快速开始
 
 在您要用的中国产GPU服务器、容器环境里，下载和使用SEAM：
+
+SEAM 本版本仅支持在 Linux 生产环境运行，要求 Python 3.10+。强制 CI 不需要加速器硬件；真实 NPU/GPU 集成检查是可选、非 gating 验证。
+
+包安装：base 包含 `typing_extensions`；`[sqlite]` 是可选 extra（`pysqlite3-binary`），不安装只会禁用 SQLite completion evidence；`[dashboard]` 提供可选实时仪表盘渲染器。
+
+Continuation（续做）：`--continue-from <summary.json>` 只接受显式终态父运行。直接运行只有在显式传入 `--seal-manifest` 且封存成功时才具备续做资格；封存结果投影到 `summary.json` 和 `manifest-sealing.v1.json` sidecar，但 outcome-neutral，不改变迁移 PASS/FAIL。环境绑定 authority 要求精确的 `environment_id` 加上匹配的 `namespace`；namespace 单独不是 authority，不接受 list-order、fact-count 或 silent fallback，缺失或歧义时 fail closed。
+
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM

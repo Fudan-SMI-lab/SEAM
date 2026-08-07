@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="README.en.md">English</a> |
-  <a href="README.zh.md">简体中文</a> 
+  <a href="README.zh.md">简体中文</a>
 </p>
 
 
@@ -35,20 +35,32 @@ SEAM是一个自动化迁移AI工具，能把原来只能在NVIDIA显卡上运�
 
 ### 快速开始
 在您要用的中国产GPU服务器、容器环境里，下载和使用SEAM：
+
+本版本的生产运行目标仅为 Linux，要求 Python 3.10+。强制 CI 使用无硬件 Linux runner；真实 NPU/GPU 集成验证保持可选且不作为发布门禁。
+
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM
 bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
-  --server_type opencode \
-  --server_url http://127.0.0.1:5000
+  --server_type opencode
 ```
 
+请先确认本机 OpenCode Server 已启动，默认地址为 `http://127.0.0.1:4098`；如果端口不同，可以加 `--server_url` 显式指定。
+
+不传 `--workflow` 时，启动器会使用 `src/workflows/seam_auto_default.yaml` 自动选择流程，通常无需手动指定 workflow。
+
+项目根目录下的 `ADAPTATION_REQUIREMENTS.md` 会自动加载；非标准约束可以通过 `--extra '--user-constraints PATH'` 传入。
+
+可选实时仪表盘：dashboard extra 默认不安装，使用前运行 `python -m pip install -e "./src[dashboard]"`。`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）：`auto`（默认）仅在非 CI 的交互式 TTY 上启用，否则与无仪表盘运行完全一致；`on` 强制启用，未安装渲染器时（textual 优先，rich 回退）在任何副作用之前报错并给出上述安装命令；`off` 完全关闭。仪表盘激活时按 `q` 仅退出仪表盘视图，迁移与日志继续。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 不创建该文件。
+
+Continuation 续做：`--continue-from <summary.json>` 只接受显式终态父运行。直接运行只有在显式传入 `--seal-manifest` 且封存成功时才具备续做资格；封存结果投影到 `summary.json` 和 `manifest-sealing.v1.json` sidecar（`not_requested|succeeded|failed`、`continuation_eligible`），但 outcome-neutral，不改变迁移 PASS/FAIL 或退出码。环境绑定 authority 要求精确的 `environment_id` 加上匹配的 `namespace`（`continuation_target` 携带两者并验证一致性）；namespace 单独不是 authority，不接受 list-order、fact-count 或 silent fallback，缺失或歧义时 fail closed。详见 [`src/docs/E2E_TESTING.md`](src/docs/E2E_TESTING.md)。
+
 运行后：
-*   是否跑通：终端最后会直接显示 `E2E TEST PASSED` / `E2E PASS` 或失败信息；也可以通过 `./e2e-reports/migration_utils/<时间戳>/summary.json`获取更具体的信息
+*   是否跑通：终端最后会直接显示 `E2E TEST PASSED` / `E2E PASS` 或失败信息；也可以通过 `./e2e-reports/src/<时间戳>/summary.json`获取更具体的信息
     
-*   迁移的代码库：会默认写入 `./output_projects/<项目名>_<时间戳>/`，或是执行时输入的参数 `--output-dir`。
+*   迁移的代码库：默认写入 SEAM 仓库同级目录 `../output_projects/<项目名>_<时间戳>/`；也可以用环境变量 `MIGRATION_OUTPUT_PROJECTS_ROOT` 改默认根目录，或用 `--output-dir` 显式指定本次输出项目根目录。
     
-*   迁移报告：会在迁移后的代码库下创建`.migration_reports/`文件夹, 用于查看迁移后项目本身的验收结果、性能、custom-op迁移情况、构建日志等。
+*   迁移报告：会在迁移后的代码库下创建`migration_reports/`文件夹, 用于查看迁移后项目本身的验收结果、性能、custom-op迁移情况、构建日志等。
     
 *   详细运行时log：在迁移后项目的 `.sm-artifacts/` 下；如果运行失败，可以把运行报告和 `.sm-artifacts/` 一起反馈给我们排查。
     

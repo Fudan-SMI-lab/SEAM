@@ -70,6 +70,17 @@ def test_no_opencode_wording_in_early_prompts(prompt_file: Path) -> None:
 EXPERIENCE_PHASE1 = PROMPTS_DIR / "experience_query_phase1.md"
 CONSTRAINT_SUMMARY = PROMPTS_DIR / "phase_1_5_constraint_summary.md"
 CONSTRAINT_SUMMARY_PPU = PROMPTS_DIR / "phase_1_5_constraint_summary_ppu.md"
+PHASE35_STATIC_PROMPTS = tuple(
+    sorted(PROMPTS_DIR.glob("phase_35_static_validate*.md"))
+)
+PHASE35_STATIC_PROMPT_NAMES = {
+    "phase_35_static_validate.md",
+    "phase_35_static_validate_musa_baseaware.md",
+    "phase_35_static_validate_npu_baseaware.md",
+    "phase_35_static_validate_ppu.md",
+    "phase_35_static_validate_ppu_baseaware.md",
+    "phase_35_static_validate_ppu_normal_entry_057.md",
+}
 
 
 def test_experience_query_phase1_no_phase5() -> None:
@@ -102,6 +113,63 @@ def test_constraint_summary_ppu_already_neutral() -> None:
     assert "ALL subsequent phases" in text, (
         "expected neutral 'ALL subsequent phases' wording"
     )
+
+
+@pytest.mark.parametrize("prompt_file", PHASE35_STATIC_PROMPTS)
+def test_phase35_static_prompts_have_generic_serving_backed_entry_gate(prompt_file: Path) -> None:
+    text = _read_prompt(prompt_file)
+
+    assert {path.name for path in PHASE35_STATIC_PROMPTS} == PHASE35_STATIC_PROMPT_NAMES
+
+    required_phrases = (
+        "## Serving-Backed Entry Gate",
+        "self-hosted/local inference",
+        "vLLM",
+        "SGLang",
+        "Ollama",
+        "OpenAI-compatible local APIs",
+        "localhost endpoints",
+        "/v1/chat/completions",
+        "client call",
+        "unmanaged, manually pre-started service",
+        "server lifecycle",
+        "readiness polling",
+        "client validation",
+        "log capture",
+        "cleanup inside the framework-managed runtime",
+        "subprocess.PIPE",
+        "communicate()",
+        "reader threads/tasks",
+        "redirected log files",
+        "stdout/stderr",
+        "pipe deadlocks",
+        "finite timeout",
+        "failure/log evidence",
+        "busy ports",
+        "preflight checks",
+        "dynamic free-port fallback",
+        "final port/base URL",
+        "propagated to the client",
+        "own child processes/process groups",
+        "unrelated processes",
+        "user constraints may express simple intent",
+        "execution contract is complete and runnable",
+    )
+    for phrase in required_phrases:
+        assert phrase in text, f"{prompt_file.name} missing serving guidance {phrase!r}"
+
+    forbidden_phrases = (
+        "vllm_serving_validation",
+        "sglang_serving_validation",
+        "serving_final_gate.json",
+        "GLM-OCR",
+        "SGLang-only",
+        "MUSA-only",
+        "PPU-only",
+        "MetaX-only",
+    )
+    for phrase in forbidden_phrases:
+        assert phrase not in text, f"{prompt_file.name} contains wrapper-specific serving wording"
 
 
 # ── Phase 3 MUSA/MUXI entryfix prompt contract tests ─────────────────────────

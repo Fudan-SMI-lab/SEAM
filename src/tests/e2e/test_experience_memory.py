@@ -228,14 +228,14 @@ def test_yaml_load():
 
 # ── Test: _safe_eval_bool comparison operators ──────────────────
 def test_safe_eval_bool():
-    from core.workflow_executor import _safe_eval_bool
-    assert _safe_eval_bool('1 != 0', {}) == True
-    assert _safe_eval_bool('0 < 3', {}) == True
-    assert _safe_eval_bool('1 == 1', {}) == True
-    assert _safe_eval_bool('1 != 0 and 0 < 3', {}) == True
-    assert _safe_eval_bool('false', {}) == False
-    assert _safe_eval_bool('true', {}) == True
-    assert _safe_eval_bool('0 == 0', {}) == True
+    from core.workflow_condition_policy import evaluate_boolean_expression
+    assert evaluate_boolean_expression('1 != 0', {}) == True
+    assert evaluate_boolean_expression('0 < 3', {}) == True
+    assert evaluate_boolean_expression('1 == 1', {}) == True
+    assert evaluate_boolean_expression('1 != 0 and 0 < 3', {}) == True
+    assert evaluate_boolean_expression('false', {}) == False
+    assert evaluate_boolean_expression('true', {}) == True
+    assert evaluate_boolean_expression('0 == 0', {}) == True
 
 # ── Test: variable_resolver bare-name → state lookup ────────────
 def test_resolver_bare_name_to_state():
@@ -247,12 +247,12 @@ def test_resolver_bare_name_to_state():
 
 # ── Test: Sub-workflow dispatch chain end-to-end ────────────────
 def test_sub_workflow_dispatch_chain():
-    from core.workflow_executor import _safe_eval_bool
+    from core.workflow_condition_policy import evaluate_boolean_expression
     from core.variable_resolver import VariableResolver
     vr = VariableResolver()
     state = {'error_analysis': {'repair_role': 'dependency_fixer'}}
     expr = '1 != 0 and 0 < 3'
-    assert _safe_eval_bool(expr, {}) == True
+    assert evaluate_boolean_expression(expr, {}) == True
     route_value = vr.resolve('${error_analysis.repair_role}', state=state)
     assert route_value == 'dependency_fixer'
 

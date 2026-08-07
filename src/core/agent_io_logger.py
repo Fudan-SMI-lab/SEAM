@@ -3,26 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 
-
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer <REDACTED>"),
-    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "<REDACTED_API_KEY>"),
-    (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}"), "<REDACTED_GITHUB_TOKEN>"),
-    (
-        re.compile(
-            r"(?i)([\"']?(?:HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)[\"']?\s*[:=]\s*[\"'])([^\"']+)([\"'])"
-        ),
-        r"\1<REDACTED>\3",
-    ),
-    (
-        re.compile(
-            r"(?i)\b(HF_TOKEN|HUGGINGFACE_TOKEN|OPENAI_API_KEY|API_KEY|TOKEN|PASSWORD|PASSWD|SECRET)\s*([:=])\s*([^\s\'\"`,;]+)"
-        ),
-        r"\1\2<REDACTED>",
-    ),
+from core.secret_redaction import (
+    JsonScalar as JsonScalar,
+    JsonValue as JsonValue,
+    redact_cli_arguments as redact_cli_arguments,
+    redact_json_value as redact_json_value,
+    redact_named_value as redact_named_value,
+    redact_sensitive_text as redact_sensitive_text,
 )
 
 
@@ -125,7 +114,9 @@ class AgentIOLogger:
             "duration_seconds": duration_seconds,
             "timeout_seconds": timeout_seconds,
             "status": status,
-            "error": error,
+            "error": (
+                self._redact(error) if self.redact and error is not None else error
+            ),
             "redacted": self.redact,
             "max_bytes": self.max_bytes,
             "command_length": len(command),
@@ -156,10 +147,7 @@ class AgentIOLogger:
         return self._truncate_utf8(payload)
 
     def _redact(self, text: str) -> str:
-        redacted = text
-        for pattern, replacement in _SECRET_PATTERNS:
-            redacted = pattern.sub(replacement, redacted)
-        return redacted
+        return redact_sensitive_text(text)
 
     def _truncate_utf8(self, text: str) -> tuple[str, bool]:
         if self.max_bytes <= 0:

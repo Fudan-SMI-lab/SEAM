@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -25,6 +27,28 @@ from validators.validate_venv import validate as validate_venv
 
 ValidatorCallable: TypeAlias = Callable[[dict[str, object]], ValidationDict]
 ValidatorCase: TypeAlias = tuple[ValidatorCallable, dict[str, object]]
+
+
+def _directory_link(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            encoding="mbcs",
+            errors="replace",
+            check=False,
+        )
+        if created.returncode != 0:
+            pytest.skip(f"junction unavailable: {created.stderr or created.stdout}")
+        return
+    link.symlink_to(target, target_is_directory=True)
+
+
+def _remove_directory_link(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    else:
+        os.rmdir(link)
 
 
 VALID_CASES: list[ValidatorCase] = [
@@ -601,12 +625,15 @@ def test_entry_script_validator_rejects_project_escape_custom_op_entry_script(tm
     external_dir.mkdir()
     outside_script = external_dir / "validate_custom_ops_full.py"
     _ = outside_script.write_text("print('outside project')\n", encoding="utf-8")
-    escaped_script = project_dir / "validate_custom_ops_full.py"
-    escaped_script.symlink_to(outside_script)
-
-    result = validate_entry_script(
-        _valid_custom_op_contract(str(escaped_script), str(project_dir))
-    )
+    escaped_dir = project_dir / "escaped"
+    _directory_link(escaped_dir, external_dir)
+    escaped_script = escaped_dir / "validate_custom_ops_full.py"
+    try:
+        result = validate_entry_script(
+            _valid_custom_op_contract(str(escaped_script), str(project_dir))
+        )
+    finally:
+        _remove_directory_link(escaped_dir)
 
     assert result["passed"] is False
     assert any("existing file for custom-op contracts" in error for error in result["errors"])
@@ -791,14 +818,17 @@ def test_custom_op_final_gate_rejects_symlink_escape_native_artifact(tmp_path: P
     outside_dir.mkdir()
     outside_artifact = outside_dir / "libscalar_fwd_2d.so"
     _ = outside_artifact.write_bytes(b"\x7fELF\x02\x01\x01\x00libascendcl aclrt native-op")
-    artifact_link = tmp_path / "opp" / "ScalarFwd2D" / "libscalar_fwd_2d.so"
-    artifact_link.parent.mkdir(parents=True)
-    artifact_link.symlink_to(outside_artifact)
+    artifact_dir_link = tmp_path / "opp" / "ScalarFwd2D"
+    artifact_dir_link.parent.mkdir(parents=True)
+    _directory_link(artifact_dir_link, outside_dir)
     build_log = tmp_path / "migration_reports" / "build.log"
     build_log.parent.mkdir(parents=True, exist_ok=True)
     _ = build_log.write_text("g++ op_kernel.o -lascendcl -o libscalar_fwd_2d.so\n", encoding="utf-8")
 
-    result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    try:
+        result = validate_custom_op_final_gate(payload, project_root=tmp_path)
+    finally:
+        _remove_directory_link(artifact_dir_link)
 
     assert result["passed"] is False
     assert any("native artifact path must exist" in error for error in result["errors"])

@@ -1,0 +1,324 @@
+name: npu_ascend_general
+version: "2.0"
+description: >
+  CUDA to Ascend NPU migration workflow recommended for most situations, or when the project type is unclear.
+target_platform:
+  preset: npu_ascend
+
+rule_migration:
+  strategy_file: rule_strategies/report_only.yaml
+
+execution_backend:
+  mode: auto
+  source: image
+  runtime: docker
+  container_name_prefix: "seam-npu-ascend-general"
+  devices:
+    - /dev/davinci_manager
+    - /dev/devmm_svm
+    - /dev/hisi_hdc
+    - /dev/davinci0
+  container_workdir: "/workspace"
+  env_vars:
+    PYTHONUNBUFFERED: "1"
+    ASCEND_VISIBLE_DEVICES: "0"
+  network_mode: host
+  cleanup: true
+
+globals:
+  max_repair_iterations: 5
+  stagnation_threshold: 3
+  review_gate_enabled: false
+  max_review_iterations: 3
+  max_entry_script_revisions: 2
+  custom_op_route_enabled: false
+
+experience:
+  enabled: false
+  phase7_enabled: false
+
+agents:
+  main_engineer:
+    role: "main_engineer"
+    lifecycle: "persistent"
+  error_analyzer:
+    role: "error_analyzer"
+    lifecycle: "persistent"
+  dependency_fixer:
+    role: "dependency_fixer"
+    lifecycle: "persistent"
+  code_adapter:
+    role: "code_adapter"
+    lifecycle: "persistent"
+  operator_fixer:
+    role: "operator_fixer"
+    lifecycle: "persistent"
+
+hooks:
+  workflow_start:
+    - type: builtin
+      operation: "snapshot_project"
+      save_as: "before_snapshot"
+  workflow_end:
+    - type: builtin
+      operation: "snapshot_project"
+      save_as: "after_snapshot"
+    - type: builtin
+      operation: "copy_artifacts"
+    - type: builtin
+      operation: "write_summary"
+    - type: builtin
+      operation: "save_telemetry"
+
+terminals:
+  complete: "Migration complete"
+  complete_partial: "Partially complete"
+  failed: "Migration failed"
+
+phases:
+  - id: phase_0_env_detect
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_0_env_detect"
+    validator: env_detect
+    transitions:
+      on_success: phase_1_project_analysis
+
+  - id: phase_1_project_analysis
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_1_project_analysis"
+    validator: project_analysis
+    input_mapping:
+      project_dir: "${context.PROJECT_DIR}"
+    retrieve_experience: true
+    experience_query:
+      source: "project_context"
+      signals:
+        - dependencies
+        - cuda_patterns
+        - entry_script
+    transitions:
+      on_success: phase_1_5_constraint_summary
+
+  - id: phase_1_5_constraint_summary
+    type: llm
+    agent: main_engineer
+    condition: "${context.USER_CONSTRAINTS} != ''"
+    prompt_template: "phase_1_5_constraint_summary"
+    validator: null
+    input_mapping:
+      project_dir: "${context.PROJECT_DIR}"
+      user_constraints: "${context.USER_CONSTRAINTS}"
+    transitions:
+      on_success: phase_2_venv_create
+      on_skip: phase_2_venv_create
+
+  - id: phase_2_venv_create
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_2_venv_create_npu_container_baseaware"
+    validator: venv
+    transitions:
+      on_success: phase_3_entry_script
+
+  - id: phase_3_entry_script
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_3_entry_script_npu_container_baseaware_entryfix_normal"
+    validator: entry_script
+    transitions:
+      on_success: phase_35_static_validate
+
+  - id: phase_35_static_validate
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_35_static_validate_npu_baseaware"
+    validator: entry_static
+    transitions:
+      on_success: phase_4_rule_migration
+      on_failure: phase_3_entry_script
+
+  - id: phase_4_rule_migration
+    type: builtin
+    operation: "rule_based_migration"
+    validator: rule_migration
+    params:
+      pattern: "*.py"
+    transitions:
+      on_success: phase_5_validation
+
+  - id: phase_5_validation
+    type: loop
+    sub_workflow: repair_loop
+    input_mapping:
+      entry_script: "${state.phase_3_entry_script.run_command}"
+      project_dir: "${context.PROJECT_DIR}"
+    transitions:
+      on_success: phase_6_report
+      on_failure: complete
+
+  - id: phase_6_report
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_6_report"
+    validator: null
+    transitions:
+      on_success: phase_7a_evaluate
+      on_failure: complete
+
+  - id: phase_7a_evaluate
+    name: experience_evaluation
+    type: orchestration
+    handler: "experience_evaluator.ExperienceEvaluator.evaluate"
+    output_schema: {}
+    validator: null
+    retrieve_experience: false
+    transitions:
+      on_success: phase_7b_refine
+      on_failure: complete
+
+  - id: phase_7b_refine
+    name: experience_refinement
+    type: orchestration
+    handler: "experience_dispatcher.ExperienceDispatcher.dispatch_and_refine"
+    transitions:
+      on_success: complete
+      on_failure: complete
+
+sub_workflows:
+  repair_loop:
+    id: repair_loop
+    type: loop
+    max_iterations: 5
+    stagnation_threshold: 3
+    review_gate_enabled: false
+    max_review_iterations: 3
+    stop_conditions:
+      - condition: "$.script_exit_code == 0 and $.review_gate_enabled == false"
+        status: "success"
+      - condition: "$.script_exit_code == 0 and $.review_verdict_status == 'accept'"
+        status: "success"
+      - condition: "$.stagnation_count >= 3"
+        status: "stagnation"
+    phases:
+      - id: run_entry_script
+        type: shell
+        timeout: 1800
+        command: "${loop_vars.entry_script}"
+        cwd: "${loop_vars.project_dir}"
+        capture:
+          exit_code: "script_exit_code"
+          stdout: "script_stdout"
+          stderr: "script_stderr"
+          duration: "script_duration"
+        on_failure: "continue"
+
+      - id: custom_op_final_gate
+        type: builtin
+        condition: "$.script_exit_code == 0"
+        params:
+          operation: "custom_op_final_gate"
+
+      - id: analyze_error
+        type: llm
+        agent: error_analyzer
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        prompt_template: "phase_error_recovery_container"
+        validator: repair_classification
+        output_as: "error_analysis"
+        retrieve_experience: true
+        experience_query:
+          source: "error_analysis"
+          signals:
+            - error_category
+            - error_stderr
+            - classification
+
+      - id: repair_dispatch
+        type: dispatch
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        route_field: "${error_analysis.repair_role}"
+        routes:
+          dependency_fixer: fix_dependency
+          code_adapter: fix_code
+          operator_fixer: fix_operator
+
+      - id: fix_dependency
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: dependency_fixer
+        prompt_template: "repair_dependency_fixer_container"
+
+      - id: fix_code
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: code_adapter
+        prompt_template: "repair_code_adapter_container"
+
+      - id: fix_operator
+        condition: "$.script_exit_code != 0 and $.stagnation_count < 3"
+        type: llm
+        agent: operator_fixer
+        prompt_template: "repair_operator_fixer_container"
+        runtime_skills:
+          include:
+            - cuda-custom-op-to-npu-custom-op
+          inject_full: false
+          missing: error
+
+      - id: review_gate
+        type: review
+        condition: "$.script_exit_code == 0 and $.review_gate_enabled == true"
+        agent: main_engineer
+        prompt_template: "phase_5_review_container"
+        retry_json_parse: 2
+        verdicts:
+          accept:
+            action: "break"
+            set_status: "success"
+          reject:
+            action: "continue"
+            increment: "review_reject_count"
+            snapshot: true
+            then: "improvement_block"
+
+    blocks:
+      improvement_block:
+        phases:
+          - id: improvement_plan
+            type: llm
+            agent: error_analyzer
+            prompt_template: "phase_review_improvement_container"
+            output_as: "improvement_plan"
+
+          - id: improvement_dispatch
+            type: dispatch
+            route_field: "${improvement_plan.repair_role}"
+            routes:
+              dependency_fixer: imp_fix_dependency
+              code_adapter: imp_fix_code
+              operator_fixer: imp_fix_operator
+
+          - id: imp_fix_dependency
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: dependency_fixer
+            prompt_template: "repair_dependency_fixer_container"
+
+          - id: imp_fix_code
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: code_adapter
+            prompt_template: "repair_code_adapter_container"
+
+          - id: imp_fix_operator
+            condition: "$.review_verdict_status is defined or true"
+            type: llm
+            agent: operator_fixer
+            prompt_template: "repair_operator_fixer_container"
+            runtime_skills:
+              include:
+                - cuda-custom-op-to-npu-custom-op
+              inject_full: false
+              missing: error

@@ -30,6 +30,16 @@ If Phase 3 includes `entry_script_kind: custom_op_full_validation`, validate the
 
 For passing custom-op outputs, include `custom_op_static_required: true` plus these booleans set to `true`: `custom_op_requirements_checked`, `script_source_driven_inventory`, `script_emits_fine_grained_units`, `script_maps_public_api_to_units`, `script_discovers_full_inventory`, `script_records_native_operator_symbols`, `script_runs_project_api_custom_ops`, `script_rejects_report_only_success`, `script_requires_project_local_artifacts`, `script_requires_numeric_performance`, and `script_checks_no_fallback`.
 
+## Serving-Backed Entry Gate
+- Treat self-hosted/local inference services, vLLM, SGLang, Ollama, OpenAI-compatible local APIs, localhost endpoints, `/v1/chat/completions`, and equivalent service/client modes as serving-backed validation surfaces.
+- Reject a selected command that is only a client call and depends on an unmanaged, manually pre-started service.
+- Accept a selected entry script or documented launcher when it owns server lifecycle, readiness polling, client validation, log capture, and cleanup inside the framework-managed runtime.
+- Check long-lived server child processes do not use undrained `subprocess.PIPE`; require `communicate()`, reader threads/tasks, or redirected log files so server and client stdout/stderr are captured without pipe deadlocks.
+- Require readiness polling with a finite timeout and useful failure/log evidence.
+- Require busy ports to be handled by preflight checks or dynamic free-port fallback, with the final port/base URL propagated to the client.
+- Require cleanup of the launcher's own child processes/process groups, not blind killing of unrelated processes.
+- Preserve the user constraint boundary: user constraints may express simple intent; this phase audits whether the selected Phase 3 execution contract is complete and runnable.
+
 ## Important Notes
 
 - Training loops with epoch limits (e.g., `for epoch in range(epochs):`) are **acceptable** — they will eventually exit.

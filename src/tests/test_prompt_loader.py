@@ -145,18 +145,17 @@ def test_empty_user_constraints_strip_phase_sections():
         "phase_1_5_constraint_summary",
         context={
             "project_dir": "/tmp/project",
-            "phase_1_context": "analysis",
             "user_constraints": "Zero CPU fallback",
         },
     )
     assert "User-Provided Migration Constraints" in phase_1_5_populated
     assert "Zero CPU fallback" in phase_1_5_populated
+    assert "{phase_1_context}" not in phase_1_5_populated
 
     phase_1_5_empty = loader.load_prompt(
         "phase_1_5_constraint_summary",
         context={
             "project_dir": "/tmp/project",
-            "phase_1_context": "analysis",
             "user_constraints": "",
         },
     )
@@ -164,6 +163,35 @@ def test_empty_user_constraints_strip_phase_sections():
     assert "The user has explicitly provided the following constraints" not in phase_1_5_empty
     assert "Zero CPU fallback" not in phase_1_5_empty
     assert "{user_constraints}" not in phase_1_5_empty
+
+
+def test_workflow_select_user_constraints_section_is_optional():
+    loader = PromptLoader()
+
+    populated = loader.load_prompt(
+        "workflow_select",
+        context={
+            "project_context": "Project: /tmp/project",
+            "candidate_workflows": "1. workflow.yaml",
+            "user_constraints": "Prefer the smallest compatible workflow.",
+        },
+    )
+    assert "User-Provided Constraints (for awareness)" in populated
+    assert "Prefer the smallest compatible workflow." in populated
+    assert "same currently detected platform/environment" in populated
+
+    empty = loader.load_prompt(
+        "workflow_select",
+        context={
+            "project_context": "Project: /tmp/project",
+            "candidate_workflows": "1. workflow.yaml",
+            "user_constraints": "",
+        },
+    )
+    assert "User-Provided Constraints (for awareness)" not in empty
+    assert "Prefer the smallest compatible workflow." not in empty
+    assert "{user_constraints}" not in empty
+    assert "## Candidate Workflows" in empty
 
 
 def test_default_prompts_dir():

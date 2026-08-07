@@ -46,6 +46,11 @@ The Phase 3 entry script is: `{entry_script}`
 When validating manually, use the `actual_execution_command` / container execution instructions shown above.
 Do NOT execute `{entry_script}` directly on the host — it expects the container environment.
 
+## Repair Loop
+- Inspect `latest_complete_stdout_artifact_path`, `latest_complete_stderr_artifact_path`, and `latest_complete_meta_artifact_path` when populated; prefer complete stdout/stderr over truncated summaries.
+- After each in-scope Python-level source or launch-logic fix, run `actual_execution_command` with a timeout. If the next complete artifacts show another code-adapter failure, fix and rerun.
+- If the next complete artifacts show only an out-of-scope dependency, environment, native, compiler, shared-object, or final-gate evidence failure, stop and write the handoff role and reason in `agent_diagnostics`.
+
 ## Goal
 Modify project source code to fix execution failures caused by CUDA-NPU incompatibilities.
 
@@ -75,7 +80,7 @@ The general approach should:
   available primitives.
 
 6. Apply the fix directly — do not ask questions or request confirmation.
-7. After applying the fix, you MUST try running the project entry script yourself. Use the project's `.venv/bin/python` interpreter and the entry command provided below, wrapped via the actual container execution command.
+7. After applying the fix, you MUST try running the project entry script yourself. Use `actual_execution_command` or the current Phase 3 `run_command`, wrapped by the framework container execution context. Do not assume a project `.venv` exists.
 8. When running the entry script, you MUST wrap the execution with a timeout so the process does not hang indefinitely.
 9. If the script runs successfully (exit code 0), report the success and the output.
 10. If the script fails with an error outside your scope (dependency missing, environment misconfiguration, confirmed C kernel limitation), stop and report the new error.
@@ -84,7 +89,7 @@ The general approach should:
 
 ## Entry Script Information
 - Project directory: `{project_dir}`
-- Virtual environment: `{project_dir}/.venv/bin/python`
+- Active interpreter: determined by Phase 2 and the current execution command; do not hard-code `{project_dir}/.venv/bin/python`.
 - Entry command: `{entry_script}`
 - Actual container execution command: `{actual_execution_command}`
 

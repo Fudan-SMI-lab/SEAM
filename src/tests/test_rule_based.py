@@ -1,11 +1,13 @@
 import os
 import sys
-import pytest
 from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# pylint: disable=wrong-import-position
 from migrator.rule_based import RuleBasedMigrator
 
 
@@ -87,7 +89,11 @@ class TestMigrate:
         assert report["total_replacements"] == 4
 
     def test_inject_after_imports(self, migrator):
-        code = "import os\nimport torch\nfrom pathlib import Path\n\nx = torch.cuda.current_device()"
+        code = """import os
+        import torch
+        from pathlib import Path
+
+        x = torch.cuda.current_device()"""
         result, _ = migrator.migrate(code)
         lines = result.split("\n")
         assert "import torch_npu" in lines[3]

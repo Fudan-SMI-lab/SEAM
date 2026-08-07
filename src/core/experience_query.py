@@ -1,4 +1,14 @@
-# pyright: reportMissingTypeArgument=false, reportMissingParameterType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportAny=false, reportExplicitAny=false, reportUnnecessaryIsInstance=false
+# pyright: reportMissingTypeArgument=false
+# pyright: reportMissingParameterType=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnannotatedClassAttribute=false
+# pyright: reportUninitializedInstanceVariable=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportUnnecessaryIsInstance=false
 import glob
 import json
 import logging
@@ -10,35 +20,43 @@ from core.experience_store import ExperienceStore
 
 logger = logging.getLogger(__name__)
 
-_PROMPT_FILE = os.path.join(os.path.dirname(__file__), "..", "prompts", "experience_query.md")
-_INACTIVE_EXPERIENCE_STATUSES = frozenset({"consumed", "rejected", "quarantined", "archived"})
-_ATEN_ONLY_CUSTOM_OP_TERMS = frozenset({
-    "aten",
-    "cpp_extension",
-    "cppextension",
-    "npu_routed_cpp_extension",
-    "privateuse1",
-    "torch_utils_cpp_extension",
-})
-_CONCRETE_NATIVE_CUSTOM_OP_TERMS = frozenset({
-    "aclrt",
-    "aclnn",
-    "acl_op",
-    "ascendc",
-    "cann",
-    "lascendcl",
-    "libascendcl",
-    "libacl",
-    "op_host",
-    "op_kernel",
-    "op_proto",
-    "msopgen",
-    "opp",
-    "aicore",
-    "aicpu",
-    "tikcpp",
-    "kernel_operator_h",
-})
+_PROMPT_FILE = os.path.join(
+    os.path.dirname(__file__), "..", "prompts", "experience_query.md"
+)
+_INACTIVE_EXPERIENCE_STATUSES = frozenset(
+    {"consumed", "rejected", "quarantined", "archived"}
+)
+_ATEN_ONLY_CUSTOM_OP_TERMS = frozenset(
+    {
+        "aten",
+        "cpp_extension",
+        "cppextension",
+        "npu_routed_cpp_extension",
+        "privateuse1",
+        "torch_utils_cpp_extension",
+    }
+)
+_CONCRETE_NATIVE_CUSTOM_OP_TERMS = frozenset(
+    {
+        "aclrt",
+        "aclnn",
+        "acl_op",
+        "ascendc",
+        "cann",
+        "lascendcl",
+        "libascendcl",
+        "libacl",
+        "op_host",
+        "op_kernel",
+        "op_proto",
+        "msopgen",
+        "opp",
+        "aicore",
+        "aicpu",
+        "tikcpp",
+        "kernel_operator_h",
+    }
+)
 
 
 class ExperienceQuerier:
@@ -58,7 +76,9 @@ class ExperienceQuerier:
         if not prefiltered_index:
             return {
                 "selected_experiences": [],
-                "summary": "No experiences matched the deterministic role/phase/type/tag filters.",
+                "summary": (
+                    "No experiences matched the deterministic role/phase/type/tag filters."
+                ),
                 "warning": "",
             }
 
@@ -69,11 +89,17 @@ class ExperienceQuerier:
         try:
             session_id = self._get_query_session()
             raw_response = self.session_mgr.send_command(
-                session_id, prompt, timeout=1800,
+                session_id,
+                prompt,
+                timeout=1800,
             )
         except Exception as exc:
             logger.warning("Experience query LLM call failed: %s", exc)
-            return {"selected_experiences": [], "summary": "", "warning": f"LLM query failed: {exc}"}
+            return {
+                "selected_experiences": [],
+                "summary": "",
+                "warning": f"LLM query failed: {exc}",
+            }
 
         parsed = self._extract_json(raw_response)
 
@@ -105,30 +131,32 @@ class ExperienceQuerier:
                     )
                     enriched.append(full_exp)
             else:
-                file_path = self._derive_experience_file_path(entry_id, entry_type, merged_item)
-                enriched.append({
-                    "id": entry_id,
-                    "type": entry_type,
-                    "title": merged_item.get("title", ""),
-                    "category": merged_item.get("category", ""),
-                    "subtype": merged_item.get("subtype", ""),
-                    "tags": merged_item.get("tags", []),
-                    "target_roles": merged_item.get("target_roles", []),
-                    "target_phases": merged_item.get("target_phases", []),
-                    "reasoning": item.get("reasoning", ""),
-                    "relevance_score": item.get("relevance_score", 0.0),
-                    "symptom": merged_item.get("symptom", ""),
-                    "file_path": file_path,
-                    "asset_paths": merged_item.get("asset_paths", []),
-                    "confidence": merged_item.get("confidence", 0),
-                    "load_full": bool(item.get("load_full", False)),
-                })
+                file_path = self._derive_experience_file_path(
+                    entry_id, entry_type, merged_item
+                )
+                enriched.append(
+                    {
+                        "id": entry_id,
+                        "type": entry_type,
+                        "title": merged_item.get("title", ""),
+                        "category": merged_item.get("category", ""),
+                        "subtype": merged_item.get("subtype", ""),
+                        "tags": merged_item.get("tags", []),
+                        "target_roles": merged_item.get("target_roles", []),
+                        "target_phases": merged_item.get("target_phases", []),
+                        "reasoning": item.get("reasoning", ""),
+                        "relevance_score": item.get("relevance_score", 0.0),
+                        "symptom": merged_item.get("symptom", ""),
+                        "file_path": file_path,
+                        "asset_paths": merged_item.get("asset_paths", []),
+                        "confidence": merged_item.get("confidence", 0),
+                        "load_full": bool(item.get("load_full", False)),
+                    }
+                )
 
         if self._native_custom_op_gate_required(context):
             enriched = [
-                experience
-                for experience in enriched
-                if not self._is_aten_only_custom_op_entry(experience)
+                exp for exp in enriched if not self._is_aten_only_custom_op_entry(exp)
             ]
 
         result = {
@@ -139,22 +167,45 @@ class ExperienceQuerier:
         self._last_query_result = result
         return result
 
-
     def _prefilter_index(self, index: list[dict], context: dict) -> list[dict]:
-        roles = self._context_values(context, "role", "roles", "target_role", "target_roles", "repair_role")
-        phases = self._context_values(context, "phase", "phases", "parent_phase", "target_phase", "target_phases")
-        types = self._context_values(context, "type", "types", "experience_type", "experience_types", "allowed_types")
+        roles = self._context_values(
+            context,
+            "role",
+            "roles",
+            "target_role",
+            "target_roles",
+            "repair_role",
+        )
+        phases = self._context_values(
+            context,
+            "phase",
+            "phases",
+            "parent_phase",
+            "target_phase",
+            "target_phases",
+        )
+        types = self._context_values(
+            context,
+            "type",
+            "types",
+            "experience_type",
+            "experience_types",
+            "allowed_types",
+        )
         tags = self._context_values(context, "tags", "query_tags", "experience_tags")
-        native_custom_op_gate_required = self._native_custom_op_gate_required(context)
+        native_gate = self._native_custom_op_gate_required(context)
 
         filtered: list[dict[str, Any]] = []
         for entry in index:
-            if str(entry.get("status") or "").strip().lower() in _INACTIVE_EXPERIENCE_STATUSES:
+            status = str(entry.get("status") or "").strip().lower()
+            if status in _INACTIVE_EXPERIENCE_STATUSES:
                 continue
-            if native_custom_op_gate_required and self._is_aten_only_custom_op_entry(entry):
+            if native_gate and self._is_aten_only_custom_op_entry(entry):
                 continue
             if not self._derive_experience_file_path(
-                str(entry.get("id", "")), str(entry.get("type", "skill")), entry
+                str(entry.get("id", "")),
+                str(entry.get("type", "skill")),
+                entry,
             ):
                 continue
             if not self._metadata_matches(entry.get("target_roles", []), roles):
@@ -187,7 +238,9 @@ class ExperienceQuerier:
         )
         if values.intersection({"true", "1", "yes"}):
             return True
-        return "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only" in values
+        return (
+            "require_real_ascend_cann_acl_opp_native_artifacts_no_aten_only" in values
+        )
 
     def _is_aten_only_custom_op_entry(self, entry: dict) -> bool:
         text = self._entry_filter_text(entry)
@@ -248,7 +301,11 @@ class ExperienceQuerier:
             candidates = list(raw)
         else:
             candidates = [raw]
-        return {token for token in (self._normalize_token(value) for value in candidates) if token}
+        return {
+            token
+            for token in (self._normalize_token(value) for value in candidates)
+            if token
+        }
 
     @staticmethod
     def _normalize_token(value: Any) -> str:
@@ -281,22 +338,32 @@ class ExperienceQuerier:
             target_roles = ", ".join(entry.get("target_roles", []))
             target_phases = ", ".join(entry.get("target_phases", []))
             lines.append(f"- id: {eid}")
-            lines.append(f"  type: {etype}  category: {cat}/{sub}  status: {status}  title: {title}")
+            lines.append(
+                f"  type: {etype}  category: {cat}/{sub}  status: {status}  title: {title}"
+            )
             lines.append(f"  tags: {tags}  confidence: {conf}")
-            lines.append(f"  target_roles: {target_roles}  target_phases: {target_phases}")
+            lines.append(
+                f"  target_roles: {target_roles}  target_phases: {target_phases}"
+            )
             if symptom:
                 lines.append(f"  symptom: {symptom[:200]}")
             lines.append(f"  file_path: {file_path}")
             lines.append("")
         return "\n".join(lines)
 
-    def _derive_experience_file_path(self, entry_id: str, entry_type: str, entry: dict) -> str:
+    def _derive_experience_file_path(
+        self, entry_id: str, entry_type: str, entry: dict
+    ) -> str:
         """Return absolute path to the experience file the LLM can read."""
         store = self.store
         asset_paths = entry.get("asset_paths", [])
         if asset_paths:
             for asset_path in asset_paths:
-                absolute = asset_path if os.path.isabs(asset_path) else os.path.join(store.repo_root, asset_path)
+                absolute = (
+                    asset_path
+                    if os.path.isabs(asset_path)
+                    else os.path.join(store.repo_root, asset_path)
+                )
                 if os.path.exists(absolute):
                     return absolute
         if entry_type == "skill":
@@ -314,13 +381,15 @@ class ExperienceQuerier:
                 run_id = parts[0]
                 refined_dir = os.path.join(store.staging_dir, run_id, "refined")
                 if os.path.isdir(refined_dir):
-                    matches = sorted(glob.glob(os.path.join(refined_dir, f"{run_id}-exp-*.json")))
+                    pattern = os.path.join(refined_dir, f"{run_id}-exp-*.json")
+                    matches = sorted(glob.glob(pattern))
                     if matches:
                         return matches[-1]
         for root in [store.promotions_dir, store.cases_dir]:
             pattern = os.path.join(root, "**", "experience.json")
             for fp in glob.glob(pattern, recursive=True):
-                if entry_id.endswith(os.path.basename(os.path.dirname(fp))) or entry_id == f"promoted-{os.path.basename(os.path.dirname(fp))}":
+                base = os.path.basename(os.path.dirname(fp))
+                if entry_id.endswith(base) or entry_id == f"promoted-{base}":
                     return fp
         # Generic: try staging candidates
         parts = entry_id.split("-exp-", 1)
@@ -335,11 +404,11 @@ class ExperienceQuerier:
 
     def _build_query_prompt(self, context: dict, index_summary: str) -> str:
         phase = context.get("phase", "unknown")
-        
+
         # Check if we should use a specific prompt for Phase 1
         if "project_analysis" in phase:
-            prompt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                                       "prompts", "experience_query_phase1.md")
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            prompt_path = os.path.join(base, "prompts", "experience_query_phase1.md")
         else:
             prompt_path = _PROMPT_FILE
 
@@ -353,26 +422,53 @@ class ExperienceQuerier:
         error_category = context.get("error_category", "unknown")
         error_stderr = context.get("error_stderr", "")
         project_type = context.get("project_type", "unknown")
-        target_roles = ", ".join(sorted(self._context_values(context, "role", "roles", "target_roles", "repair_role"))) or "any"
-        target_phases = ", ".join(sorted(self._context_values(context, "phase", "phases", "parent_phase", "target_phases"))) or "any"
+        target_roles = (
+            ", ".join(
+                sorted(
+                    self._context_values(
+                        context, "role", "roles", "target_roles", "repair_role"
+                    )
+                )
+            )
+            or "any"
+        )
+        target_phases = (
+            ", ".join(
+                sorted(
+                    self._context_values(
+                        context, "phase", "phases", "parent_phase", "target_phases"
+                    )
+                )
+            )
+            or "any"
+        )
         deps_raw = context.get("dependencies", [])
-        dependencies = ", ".join(deps_raw) if isinstance(deps_raw, list) else str(deps_raw)
-        previous_repair_attempts = context.get("previous_repair_attempts", "None recorded")
+        dependencies = (
+            ", ".join(deps_raw) if isinstance(deps_raw, list) else str(deps_raw)
+        )
+        previous_repair_attempts = context.get(
+            "previous_repair_attempts", "None recorded"
+        )
         root_cause = context.get("root_cause", "") or "(Not yet analyzed)"
         suggested_fix = context.get("suggested_fix", "") or "(Not yet suggested)"
 
-        return (template
-                .replace("{{phase}}", phase)
-                .replace("{{error_category}}", error_category)
-                .replace("{{error_stderr}}", error_stderr)
-                .replace("{{project_type}}", project_type)
-                .replace("{{target_roles}}", target_roles)
-                .replace("{{target_phases}}", target_phases)
-                .replace("{{dependencies}}", dependencies)
-                .replace("{{previous_repair_attempts}}", str(previous_repair_attempts))
-                .replace("{{root_cause}}", root_cause)
-                .replace("{{suggested_fix}}", suggested_fix)
-                .replace("{{index_summary}}", index_summary))
+        replacements = {
+            "{{phase}}": phase,
+            "{{error_category}}": error_category,
+            "{{error_stderr}}": error_stderr,
+            "{{project_type}}": project_type,
+            "{{target_roles}}": target_roles,
+            "{{target_phases}}": target_phases,
+            "{{dependencies}}": dependencies,
+            "{{previous_repair_attempts}}": str(previous_repair_attempts),
+            "{{root_cause}}": root_cause,
+            "{{suggested_fix}}": suggested_fix,
+            "{{index_summary}}": index_summary,
+        }
+        result = template
+        for key, value in replacements.items():
+            result = result.replace(key, value)
+        return result
 
     def _load_experience(self, entry_id: str, entry_type: str) -> dict:
         try:
@@ -409,11 +505,19 @@ class ExperienceQuerier:
         if staging and staging.get("title"):
             return staging
 
-        return {"id": entry_id, "type": "skill", "_warning": f"Skill not found: {entry_id}"}
+        return {
+            "id": entry_id,
+            "type": "skill",
+            "_warning": f"Skill not found: {entry_id}",
+        }
 
     def _load_skill_from_asset_paths(self, entry: dict, entry_id: str) -> dict:
         for asset_path in entry.get("asset_paths", []):
-            absolute = asset_path if os.path.isabs(asset_path) else os.path.join(self.store.repo_root, asset_path)
+            absolute = (
+                asset_path
+                if os.path.isabs(asset_path)
+                else os.path.join(self.store.repo_root, asset_path)
+            )
             if not os.path.isfile(absolute):
                 continue
             if absolute.endswith(".json"):
@@ -455,7 +559,11 @@ class ExperienceQuerier:
         for entry in self.store.read_index():
             if entry.get("id") == entry_id:
                 for asset_path in entry.get("asset_paths", []):
-                    absolute = asset_path if os.path.isabs(asset_path) else os.path.join(self.store.repo_root, asset_path)
+                    absolute = (
+                        asset_path
+                        if os.path.isabs(asset_path)
+                        else os.path.join(self.store.repo_root, asset_path)
+                    )
                     if os.path.isfile(absolute) and absolute.endswith(".json"):
                         with open(absolute, "r", encoding="utf-8") as fh:
                             data = json.load(fh)
@@ -478,7 +586,11 @@ class ExperienceQuerier:
             data["type"] = data.get("type", "document")
             return data
 
-        return {"id": entry_id, "type": "document", "_warning": f"Case not found: {entry_id}"}
+        return {
+            "id": entry_id,
+            "type": "document",
+            "_warning": f"Case not found: {entry_id}",
+        }
 
     @staticmethod
     def _derive_skill_name(entry_id: str) -> str:
@@ -486,7 +598,7 @@ class ExperienceQuerier:
         if len(parts) >= 2:
             return parts[-1]
         if entry_id.startswith("promoted-"):
-            return entry_id[len("promoted-"):]
+            return entry_id[len("promoted-") :]
         return entry_id
 
     def _load_staging_experience(self, entry_id: str) -> dict:
@@ -497,7 +609,8 @@ class ExperienceQuerier:
         refined_dir = os.path.join(self.store.staging_dir, run_id, "refined")
         if not os.path.isdir(refined_dir):
             return {}
-        matches = sorted(glob.glob(os.path.join(refined_dir, f"{run_id}-exp-*.json")))
+        pattern = os.path.join(refined_dir, f"{run_id}-exp-*.json")
+        matches = sorted(glob.glob(pattern))
         if not matches:
             return {}
         refined_path = matches[-1]
@@ -533,7 +646,7 @@ class ExperienceQuerier:
         if first_brace == -1 or last_brace == -1 or last_brace <= first_brace:
             return {}
 
-        json_str = cleaned[first_brace: last_brace + 1]
+        json_str = cleaned[first_brace : last_brace + 1]
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as exc:

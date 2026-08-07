@@ -1,4 +1,12 @@
-# pyright: reportMissingTypeArgument=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportAny=false, reportExplicitAny=false, reportUnusedParameter=false, reportImplicitStringConcatenation=false
+# pyright: reportMissingTypeArgument=false
+# pyright: reportUnknownParameterType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportUnusedParameter=false
+# pyright: reportImplicitStringConcatenation=false
 """Format retrieved experiences as compact action cards for prompt injection."""
 
 from typing import Any
@@ -37,10 +45,14 @@ class ExperienceInjector:
 
     def action_cards(self, query_result: dict) -> list[str]:
         selected = [
-            exp for exp in query_result.get("selected_experiences", [])
+            exp
+            for exp in query_result.get("selected_experiences", [])
             if isinstance(exp, dict) and exp.get("title")
         ]
-        return [self._format_action_card(exp, index) for index, exp in enumerate(selected, 1)]
+        return [
+            self._format_action_card(exp, index)
+            for index, exp in enumerate(selected, 1)
+        ]
 
     def _format_action_card(self, exp: dict, index: int) -> str:
         exp_id = exp.get("id", "")

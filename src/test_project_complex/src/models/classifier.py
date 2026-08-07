@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitOverride=false, reportUnknownMemberType=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportImplicitOverride=false
+# pyright: reportUnknownMemberType=false
 
 from typing import Any
 
@@ -13,7 +16,9 @@ from .backbone import build_backbone
 class ImageClassifier(nn.Module):
     """Backbone + classification head wrapper."""
 
-    def __init__(self, backbone: nn.Module, feature_dim: int, hidden_dim: int, num_classes: int) -> None:
+    def __init__(
+        self, backbone: nn.Module, feature_dim: int, hidden_dim: int, num_classes: int
+    ) -> None:
         super().__init__()
         self.backbone: nn.Module = backbone
         self.head: nn.Sequential = nn.Sequential(

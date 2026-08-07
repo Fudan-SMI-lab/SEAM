@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -9,18 +8,13 @@ from typing import Any
 import pytest
 
 import harness.session.manager as manager_module
+from core.sqlite_provider import available as _sqlite_available
+from core.sqlite_provider import connect as _sqlite_connect
 from harness.session.manager import MigrationSessionManager
 
-# Import after manager_module to ensure conftest has already configured _sqlite3 stub if needed.
-try:
-    import _sqlite3  # noqa: F401
-except NameError:
-    _sqlite3 = None  # type: ignore[misc, assignment]
-
-# Use conftest flag to detect whether real sqlite3 C extension is available.
-from tests.conftest import NO_REAL_SQLITE3 as _NO_REAL_SQLITE
-
-_SKIP_SQLITE = pytest.mark.skipif(_NO_REAL_SQLITE, reason="no sqlite3 C extension on this system")
+_SKIP_SQLITE = pytest.mark.skipif(
+    not _sqlite_available, reason="no SQLite backend resolved on this system"
+)
 
 
 Response = dict[str, Any]
@@ -114,17 +108,21 @@ def test_send_command_rejects_non_finite_timeout_without_posting() -> None:
     assert post_calls == []
 
 
-def test_active_agent_defaults_to_atlas() -> None:
+def test_active_agent_defaults_to_sisyphus() -> None:
     manager = FakeSessionManager({})
 
-    assert manager.active_agent == "Atlas"
+    assert manager.active_agent == "sisyphus"
 
 
-def test_detect_agent_prefers_exact_atlas_then_contains_atlas() -> None:
+def test_detect_agent_prefers_exact_sisyphus_then_contains_sisyphus() -> None:
     exact = FakeSessionManager({
         ("GET", "/agent"): {
             "ok": True,
-            "data": [{"name": "OtherAgent"}, {"name": "Atlas"}, {"name": "atlas-helper"}],
+            "data": [
+                {"name": "OtherAgent"},
+                {"name": "sisyphus"},
+                {"name": "sisyphus-helper"},
+            ],
         }
     })
     exact._detect_agent()
@@ -132,13 +130,13 @@ def test_detect_agent_prefers_exact_atlas_then_contains_atlas() -> None:
     containing = FakeSessionManager({
         ("GET", "/agent"): {
             "ok": True,
-            "data": [{"name": "OtherAgent"}, {"name": "custom-atlas-agent"}],
+            "data": [{"name": "OtherAgent"}, {"name": "custom-sisyphus-agent"}],
         }
     })
     containing._detect_agent()
 
-    assert exact.active_agent == "Atlas"
-    assert containing.active_agent == "custom-atlas-agent"
+    assert exact.active_agent == "sisyphus"
+    assert containing.active_agent == "custom-sisyphus-agent"
 
 
 def test_send_command_rejects_compaction_response_as_incomplete() -> None:
@@ -243,22 +241,28 @@ def test_send_command_times_out_for_incomplete_todos_without_reposting(monkeypat
             {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "rerun validator"}]}]},
         ],
     )
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
+    manager._todo_nudge_enabled = False
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
     result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=2))
 
     post_calls = [call for call in manager.calls if call["method"] == "POST"]
     assert result["ok"] is False
-    assert "Session still running" in result["error"]
+    assert "incomplete todos" in result["error"] or "Session still running" in result["error"]
     assert len(post_calls) == 1
 
 
 @_SKIP_SQLITE
 def test_sqlite_fallback_ignores_unrelated_incomplete_todos(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO todos ("sessionID", status, content) VALUES (?, ?, ?)', ("other-session", "pending", "other work"))
         conn.execute('INSERT INTO todos ("sessionID", status, content) VALUES (?, ?, ?)', ("ses-1", "completed", "own work"))
@@ -271,7 +275,7 @@ def test_sqlite_fallback_ignores_unrelated_incomplete_todos(tmp_path: Path) -> N
 @_SKIP_SQLITE
 def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE tasks ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO tasks ("sessionID", status, content) VALUES (?, ?, ?)', ("ses-1", "pending", "rerun validator"))
         conn.execute('INSERT INTO tasks ("sessionID", status, content) VALUES (?, ?, ?)', ("other-session", "completed", "other work"))
@@ -290,7 +294,7 @@ def test_sqlite_fallback_blocks_camelcase_session_pending_todo(tmp_path: Path, m
 @_SKIP_SQLITE
 def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, status TEXT)')
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO session (id, status) VALUES (?, ?)', ("ses-1", "idle"))
@@ -310,7 +314,7 @@ def test_sqlite_idle_session_with_pending_todo_is_incomplete(tmp_path: Path, mon
 @_SKIP_SQLITE
 def test_sqlite_idle_session_with_completed_todos_is_complete(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, status TEXT)')
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
         conn.execute('INSERT INTO session (id, status) VALUES (?, ?)', ("ses-1", "idle"))
@@ -331,7 +335,7 @@ def test_send_command_timeout_none_uses_sqlite_assistant_completion_without_todo
         "time": {"completed": 1710000000},
         "parts": [{"type": "text", "text": '{"platform":"npu","npu_detected":true}'}],
     }
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, title TEXT, time_compacting INTEGER)')
         conn.execute('CREATE TABLE message ("sessionID" TEXT, role TEXT, data TEXT, timeCreated INTEGER)')
         conn.execute('INSERT INTO session (id, title, time_compacting) VALUES (?, ?, ?)', ("ses-1", "migration-main_engineer", None))
@@ -354,7 +358,7 @@ def test_sqlite_assistant_completion_still_blocks_same_session_pending_todo(tmp_
         "time": {"completed": 1710000000},
         "parts": [{"type": "text", "text": '{"platform":"npu","npu_detected":true}'}],
     }
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, title TEXT, time_compacting INTEGER)')
         conn.execute('CREATE TABLE message ("sessionID" TEXT, role TEXT, data TEXT, timeCreated INTEGER)')
         conn.execute('CREATE TABLE todos ("sessionID" TEXT, status TEXT, content TEXT)')
@@ -385,7 +389,7 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
         "time": {"completed": 1710000000},
         "parts": [{"type": "text", "text": '{"platform":"npu","npu_detected":true}'}],
     }
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE session (id TEXT, title TEXT, time_compacting INTEGER)')
         conn.execute('CREATE TABLE message ("sessionID" TEXT, role TEXT, data TEXT, timeCreated INTEGER)')
         conn.execute('INSERT INTO session (id, title, time_compacting) VALUES (?, ?, ?)', ("ses-1", "migration-main_engineer", 1))
@@ -395,8 +399,14 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
         )
 
     manager = _sqlite_backed_manager(db_path, status_data={})
-    times = iter([0.0, 0.0, 2.0])
-    monkeypatch.setattr(manager_module.time, "time", lambda: next(times, 2.0))
+    manager._todo_nudge_enabled = False
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
     monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
 
     result = json.loads(manager.send_command("ses-1", "do work", timeout=1, retries=0))
@@ -408,7 +418,7 @@ def test_sqlite_assistant_completion_still_blocks_active_compaction(tmp_path: Pa
 @_SKIP_SQLITE
 def test_sqlite_fallback_skips_todo_tables_without_session_column(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(str(db_path)) as conn:
         conn.execute('CREATE TABLE todos (status TEXT, content TEXT)')
         conn.execute('INSERT INTO todos (status, content) VALUES (?, ?)', ("pending", "unscoped work"))
 
@@ -418,9 +428,12 @@ def test_sqlite_fallback_skips_todo_tables_without_session_column(tmp_path: Path
 
 
 def test_pending_word_in_normal_text_does_not_mark_todos_incomplete() -> None:
+    # History latest mirrors the POST text (real idle behavior): the refetch
+    # returns the same final answer, and the "pending" prose must not be
+    # misread as an incomplete TODO.
     manager = _manager_with_message(
         {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "The pending import issue was resolved."}]},
-        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "No structured todos. Pending issue resolved."}]}]},
+        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "The pending import issue was resolved."}]}]},
     )
 
     assert manager.send_command("ses-1", "do work", retries=0) == "The pending import issue was resolved."
@@ -678,3 +691,229 @@ class TestAvailableAgentsProperty:
         # Second access uses cache
         _ = manager.available_agents
         assert len(manager.calls) == 1
+
+
+# --- Target 1: idle refetch ---------------------------------------------------
+
+def test_refetch_returns_post_text_when_history_matches() -> None:
+    manager = _manager_with_message(
+        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "final answer"}]},
+        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "final answer"}]}]},
+    )
+    assert manager.send_command("ses-1", "do work", retries=0) == "final answer"
+
+
+def test_refetch_replaces_with_newer_history_text() -> None:
+    state = {"posted": False}
+
+    def message_route(call: dict[str, Any]) -> dict[str, Any]:
+        if not state["posted"]:
+            return {"ok": True, "data": [{"parts": [{"type": "text", "text": "old turn"}]}]}
+        return {"ok": True, "data": [{"parts": [{"type": "text", "text": "completed final answer"}]}]}
+
+    def post_route(_call: dict[str, Any]) -> dict[str, Any]:
+        state["posted"] = True
+        return {"ok": True, "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "intermediate"}]}}
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): post_route,
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+    assert manager.send_command("ses-1", "do work", retries=0) == "completed final answer"
+
+
+
+def test_refetch_falls_back_when_history_empty() -> None:
+    manager = _manager_with_message(
+        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "post answer"}]},
+        history={"ok": False, "status": 404},
+    )
+    assert manager.send_command("ses-1", "do work", retries=0) == "post answer"
+
+
+def test_refetch_falls_back_when_history_equals_command() -> None:
+    manager = _manager_with_message(
+        {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "post answer"}]},
+        history={"ok": True, "data": [{"parts": [{"type": "text", "text": "do work"}]}]},
+    )
+    assert manager.send_command("ses-1", "do work", retries=0) == "post answer"
+
+
+# --- Target 2: TODO nudge -----------------------------------------------------
+
+def _nudge_manager(
+    monkeypatch: pytest.MonkeyPatch,
+    todo_pending_message_calls: int,
+    final_text: str = "final answer",
+    max_nudges: int = 2,
+) -> FakeSessionManager:
+    """Build a manager whose GET /message reports an incomplete TODO for the
+    first ``todo_pending_message_calls`` TODO-probe requests (limit=20), then a
+    completed TODO. limit=1 requests always return ``final_text``."""
+    state = {"todo_calls": 0, "posts": 0}
+
+    def message_route(call: dict[str, Any]) -> dict[str, Any]:
+        query = call.get("query") or {}
+        if query.get("limit") == 20:
+            state["todo_calls"] += 1
+            if state["todo_calls"] <= todo_pending_message_calls:
+                return {"ok": True, "data": [{"todos": [{"status": "in_progress", "content": "x"}]}]}
+            return {"ok": True, "data": [{"todos": [{"status": "completed"}]}]}
+        # limit=1 refetch / previous_text probe. Latest text advances per POST:
+        #   0 posts → pre-request old turn
+        #   1 post  → intermediate (original answer, before any nudge)
+        #   2+ posts → final_text (after nudge)
+        if state["posts"] == 0:
+            text = "old turn"
+        elif state["posts"] == 1:
+            text = "intermediate"
+        else:
+            text = final_text
+        return {"ok": True, "data": [{"parts": [{"type": "text", "text": text}]}]}
+
+    def post_route(_call: dict[str, Any]) -> dict[str, Any]:
+        state["posts"] += 1
+        return {"ok": True, "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "intermediate"}]}}
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): post_route,
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): message_route,
+    })
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+    manager._todo_stabilize_wait_s = 0.0
+    manager._max_todo_nudges = max_nudges
+    monkeypatch.setattr(manager_module.time, "sleep", lambda _interval: None)
+    return manager
+
+
+def test_nudge_self_heals_without_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    # First wait sees TODO_PENDING; recheck already idle (todo complete) → no nudge.
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=1)
+    result = manager.send_command("ses-1", "do work", retries=0)
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result == "intermediate"  # original answer, refetched; no nudge sent
+    assert len(post_calls) == 1  # only the original POST, no nudge
+
+
+def test_nudge_sent_then_converges(monkeypatch: pytest.MonkeyPatch) -> None:
+    # TODO_PENDING on first wait AND recheck → send nudge; after nudge, idle.
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=2)
+    result = manager.send_command("ses-1", "do work", retries=0)
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result == "final answer"
+    assert len(post_calls) == 2  # original POST + 1 nudge
+    nudge_body = post_calls[1]["body"]
+    nudge_text = nudge_body["parts"][0]["text"]
+    assert "TODO list" in nudge_text
+    assert "original prompt" in nudge_text.lower()
+
+
+def test_nudge_limit_raises_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Always TODO_PENDING; with max 1 nudge it should give up via TimeoutError.
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=999, max_nudges=1)
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
+    result = json.loads(manager.send_command("ses-1", "do work", timeout=50, retries=0))
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result["ok"] is False
+    assert "incomplete todos" in result["error"]
+    assert len(post_calls) == 2  # original + exactly 1 nudge
+
+
+def test_nudge_disabled_does_not_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = _nudge_manager(monkeypatch, todo_pending_message_calls=999)
+    manager._todo_nudge_enabled = False
+    clock = {"t": 0.0}
+
+    def fake_time() -> float:
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(manager_module.time, "time", fake_time)
+    result = json.loads(manager.send_command("ses-1", "do work", timeout=10, retries=0))
+    post_calls = [c for c in manager.calls if c["method"] == "POST"]
+    assert result["ok"] is False
+    assert len(post_calls) == 1  # no nudge ever sent
+
+
+# --- Nested todowrite snapshots (real OpenCode parts[].state.input.todos) -----
+
+def _msg_with_todowrite(todos: list[dict[str, Any]], tool_status: str = "completed") -> dict[str, Any]:
+    return {
+        "info": {"role": "assistant"},
+        "parts": [{
+            "type": "tool",
+            "tool": "todowrite",
+            "state": {"status": tool_status, "input": {"todos": todos}},
+        }],
+    }
+
+
+def test_nested_all_completed_todos_is_complete() -> None:
+    mgr = FakeSessionManager({})
+    data = [_msg_with_todowrite([
+        {"content": "print 1", "status": "completed"},
+        {"content": "print 2", "status": "completed"},
+        {"content": "print 3", "status": "completed"},
+    ])]
+    # All items completed but list NOT cleared -> complete (False).
+    assert mgr._latest_todo_state_from_messages(data) is False
+
+
+def test_nested_mixed_todos_is_incomplete() -> None:
+    mgr = FakeSessionManager({})
+    data = [_msg_with_todowrite([
+        {"content": "a", "status": "completed"},
+        {"content": "b", "status": "pending"},
+    ])]
+    assert mgr._latest_todo_state_from_messages(data) is True
+
+
+def test_nested_cleared_todos_is_complete() -> None:
+    mgr = FakeSessionManager({})
+    data = [_msg_with_todowrite([])]
+    assert mgr._latest_todo_state_from_messages(data) is False
+
+
+def test_nested_latest_snapshot_overrides_older_pending() -> None:
+    mgr = FakeSessionManager({})
+    # Older snapshot still pending, newest snapshot all completed.
+    data = [
+        _msg_with_todowrite([
+            {"content": "a", "status": "in_progress"},
+            {"content": "b", "status": "pending"},
+        ]),
+        _msg_with_todowrite([
+            {"content": "a", "status": "completed"},
+            {"content": "b", "status": "completed"},
+        ]),
+    ]
+    assert mgr._latest_todo_state_from_messages(data) is False
+
+
+def test_send_command_completes_with_nested_all_completed_todos() -> None:
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): {
+            "ok": True,
+            "data": {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "all done"}]},
+        },
+        ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": "idle"}}},
+        ("GET", "/session/ses-1/message"): {
+            "ok": True,
+            "data": [_msg_with_todowrite([
+                {"content": "x", "status": "completed"},
+                {"content": "y", "status": "completed"},
+            ])],
+        },
+    })
+    manager._candidate_sqlite_paths = lambda: []  # type: ignore[method-assign]
+    # Should return the answer, not spin/nudge on the un-cleared completed list.
+    assert manager.send_command("ses-1", "do work", retries=0) == "all done"

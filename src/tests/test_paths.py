@@ -28,7 +28,7 @@ def test_migration_utils_root_is_deprecated_alias() -> None:
 
 
 def test_execution_root_is_seam_root() -> None:
-    assert execution_root().name == "SEAM-merge-main-fusion-baseline"
+    assert execution_root() == src_root().parent
     assert workspace_root() == execution_root()
 
 
@@ -39,11 +39,15 @@ def test_default_outputs_are_outside_execution_root() -> None:
     assert result.parent == legacy_workspace_root()
 
 
-def test_default_outputs_env_override() -> None:
+def test_default_outputs_env_override(tmp_path: Path) -> None:
     """MIGRATION_OUTPUT_PROJECTS_ROOT env var overrides the default."""
-    with mock.patch.dict(os.environ, {"MIGRATION_OUTPUT_PROJECTS_ROOT": "/custom/output/path"}):
+    custom_output = tmp_path / "custom" / "output"
+    with mock.patch.dict(
+        os.environ,
+        {"MIGRATION_OUTPUT_PROJECTS_ROOT": str(custom_output)},
+    ):
         result = default_output_projects_root()
-    assert result == Path("/custom/output/path")
+    assert result == custom_output.resolve()
 
 
 def test_default_outputs_env_override_resolves_home() -> None:

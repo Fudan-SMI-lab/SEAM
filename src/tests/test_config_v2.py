@@ -82,9 +82,22 @@ def test_canonical_v2_yaml_has_no_phase_timeouts():
 
 def test_sm_adapt_workflow_yamls_have_no_phase_or_session_timeouts():
     timeout_tokens = ("timeout", "timeout_per_phase", "entry_script_timeout")
+    allowed_phase_timeout_workflows = {
+        "musa_muxi_migration_v2_container_baseaware_entryfix_normal.yaml",
+        "musa_muxi_vllm.yaml",
+        "musa_muxi_general.yaml",
+        "npu_ascend_general.yaml",
+        "npu_ascend_vllm.yaml",
+        "ppu_custom_op.yaml",
+        "ppu_general.yaml",
+        "ppu_sglang.yaml",
+        "ppu_vllm.yaml",
+    }
     for workflow_path in (PACKAGE_ROOT / "workflows").glob("*.yaml"):
         text = workflow_path.read_text(encoding="utf-8")
         for token in timeout_tokens:
+            if token == "timeout" and workflow_path.name in allowed_phase_timeout_workflows:
+                continue
             assert token not in text, f"{workflow_path.name} still contains {token}"
         assert "session_timeout" not in text, f"{workflow_path.name} still contains session_timeout"
 
@@ -165,6 +178,21 @@ def test_phase_on_skip_transition():
     wf = load_workflow(str(PACKAGE_ROOT / "workflows" / "npu_migration_v2.yaml"))
     phases_15 = [p for p in wf.phases if p.id == "phase_1_5_constraint_summary"]
     assert "on_skip" in phases_15[0].transitions
+
+
+def test_all_constraint_summary_phases_skip_without_user_constraints():
+    """All executable workflows skip Phase 1.5 when no user constraints exist."""
+    selector_files = {"seam_auto_default.yaml", "workflow_selector_smoke.yaml"}
+    for workflow_path in sorted((PACKAGE_ROOT / "workflows").glob("*.yaml")):
+        if workflow_path.name in selector_files:
+            continue
+        wf = load_workflow(str(workflow_path))
+        phases_15 = [p for p in wf.phases if p.id == "phase_1_5_constraint_summary"]
+        if not phases_15:
+            continue
+        phase = phases_15[0]
+        assert phase.condition == "${context.USER_CONSTRAINTS} != ''", workflow_path.name
+        assert phase.transitions.get("on_skip") == phase.transitions.get("on_success"), workflow_path.name
 
 
 def test_missing_yaml_file():

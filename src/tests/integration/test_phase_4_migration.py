@@ -3,18 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from core.artifact_store import ArtifactStore
 from core.phase_runner import PhaseRunner
 from core.prompt_loader import PromptLoader
 from core.validator_engine import ValidatorEngine
 from migrator.rule_based import RuleBasedMigrator
 
+pytestmark = pytest.mark.integration
+
 
 class NoopSessionManager:
     def get_or_create(self, role: str, lifecycle: str) -> str:
         return f"{role}-{lifecycle}"
 
-    def send_command(self, session_id: str, command: str, timeout: int = 600) -> str:
+    def send_command(self, session_id: str, command: str, timeout: int | None = 600) -> str:
         raise AssertionError(f"Unexpected send_command for {session_id}: {command} ({timeout})")
 
 

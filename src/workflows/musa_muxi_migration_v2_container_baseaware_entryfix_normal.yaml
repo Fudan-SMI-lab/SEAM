@@ -236,6 +236,7 @@ sub_workflows:
     phases:
       - id: run_entry_script
         type: shell
+        timeout: 1800
         command: "${loop_vars.entry_script}"
         cwd: "${loop_vars.project_dir}"
         capture:

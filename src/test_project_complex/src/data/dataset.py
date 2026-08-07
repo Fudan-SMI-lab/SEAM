@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-# pyright: reportAny=false, reportExplicitAny=false, reportImplicitOverride=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportImplicitOverride=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownMemberType=false
+# pyright: reportUnknownVariableType=false
 
 from pathlib import Path
 from typing import Any, Callable
@@ -34,7 +39,9 @@ class SyntheticClassificationDataset(Dataset[tuple[torch.Tensor, torch.Tensor]])
 
         rng = np.random.default_rng(seed)
         labels = rng.integers(0, num_classes, size=num_samples, dtype=np.int64)
-        images = rng.normal(0.0, 0.65, size=(num_samples, channels, image_size, image_size)).astype(np.float32)
+        images = rng.normal(
+            0.0, 0.65, size=(num_samples, channels, image_size, image_size)
+        ).astype(np.float32)
 
         for index, label in enumerate(labels):
             offset = (float(label) + 1.0) / float(num_classes)

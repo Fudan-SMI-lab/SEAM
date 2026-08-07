@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+
+import logging
+import json
 import os
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
@@ -11,6 +16,7 @@ import pytest
 
 from core.types import ExecutionBackendConfig, WorkflowDefinition, PhaseDefinition
 from core.config import load_workflow
+from core.prompt_loader import PromptLoader
 from core.execution_backend import (
     ContainerBackend,
     ContainerNotFoundError,
@@ -19,9 +25,19 @@ from core.execution_backend import (
     LocalBackend,
     auto_select_backend,
     get_container_prompt_context,
+    inspect_retained_container,
+    probe_retained_environment,
+)
+from core.continuation_environment import (
+    RetainedContainerProbeRequest,
+    RetainedEnvironmentProbeRequest,
 )
 from core.workflow_executor import WorkflowExecutor
-from core.artifact_store import ArtifactStore
+from core.resource_retention import (
+    ContainerDeletionError,
+    _authorized_container_cleanup,
+)
+from tests.resource_retention_test_support import current_run_delete_authority
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS_DIR = ROOT / "workflows"
@@ -107,7 +123,7 @@ class TestExecutionBackendConfigParsing:
             )
 
     def test_all_fields_populated(self):
-        raw = {
+        raw: dict[str, object] = {
             "mode": "container",
             "source": "image",
             "runtime": "podman",
@@ -238,14 +254,19 @@ class TestLocalBackend:
 
     def test_run_with_cwd(self, tmp_path: Path):
         backend = LocalBackend()
-        result = backend.run("pwd", cwd=str(tmp_path))
+        result = backend.run(
+            [sys.executable, "-c", "import os; print(os.getcwd())"],
+            cwd=str(tmp_path),
+        )
         assert result.exit_code == 0
-        assert str(tmp_path) in result.stdout
+        assert Path(result.stdout.strip()).resolve() == tmp_path.resolve()
 
     def test_run_timeout_raises(self):
         backend = LocalBackend()
         with pytest.raises(subprocess.TimeoutExpired):
-            backend.run("sleep 10", timeout=0.1)
+            backend.run(
+                [sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.1
+            )
 
     def test_is_available(self):
         assert LocalBackend().is_available() is True
@@ -261,7 +282,9 @@ class TestLocalBackend:
 class TestContainerBackendImage:
     @patch("subprocess.run")
     def test_create_from_image(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="container-123\n", stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="container-123\n", stderr=""
+        )
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
@@ -304,9 +327,10 @@ class TestContainerBackendImage:
 
     @patch("subprocess.run")
     def test_exec_command_string(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="ok\n", stderr="", stdout_bytes=b""
-        )
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="ok\n", stderr=""),
+        ]
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
@@ -316,7 +340,7 @@ class TestContainerBackendImage:
         result = backend.run("echo hello")
         assert result.exit_code == 0
         assert result.stdout == "ok\n"
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_run.call_args_list[1][0][0]
         assert "docker" == cmd[0]
         assert "exec" == cmd[1]
         assert "-i" in cmd
@@ -326,9 +350,7 @@ class TestContainerBackendImage:
 
     @patch("subprocess.run")
     def test_exec_command_list(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="ok\n", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
@@ -343,11 +365,13 @@ class TestContainerBackendImage:
 
     @patch("subprocess.run")
     def test_exec_cwd_mapping(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="ok\n", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "test:latest", "container_workdir": "/workspace"}
+            {
+                "mode": "container",
+                "image": "test:latest",
+                "container_workdir": "/workspace",
+            }
         )
         backend = ContainerBackend(cfg)
         backend._container_id = "c1"
@@ -409,7 +433,7 @@ class TestContainerBackendExisting:
     @patch("subprocess.run")
     def test_existing_container_running(self, mock_run: MagicMock):
         mock_run.return_value = MagicMock(
-            returncode=0, stdout="running\n", stderr=""
+            returncode=0, stdout="running|immutable-01\n", stderr=""
         )
         cfg = ExecutionBackendConfig.from_dict(
             {
@@ -420,7 +444,7 @@ class TestContainerBackendExisting:
         )
         backend = ContainerBackend(cfg)
         backend._check_existing_container()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
         assert backend._initialized is True
         call_args = mock_run.call_args[0][0]
         assert "inspect" in call_args
@@ -444,9 +468,7 @@ class TestContainerBackendExisting:
 
     @patch("subprocess.run")
     def test_existing_container_not_running(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="exited\n", stderr=""
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="exited\n", stderr="")
         cfg = ExecutionBackendConfig.from_dict(
             {
                 "mode": "container",
@@ -461,7 +483,7 @@ class TestContainerBackendExisting:
     @patch("subprocess.run")
     def test_existing_container_cleanup_noop(self, mock_run: MagicMock):
         mock_run.return_value = MagicMock(
-            returncode=0, stdout="running\n", stderr=""
+            returncode=0, stdout="running|immutable-01\n", stderr=""
         )
         cfg = ExecutionBackendConfig.from_dict(
             {
@@ -480,7 +502,7 @@ class TestContainerBackendExisting:
     @patch("subprocess.run")
     def test_existing_required_env_warning(self, mock_run: MagicMock):
         side_effects = [
-            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="running|immutable-01\n", stderr=""),
             MagicMock(returncode=0, stdout="PATH=/usr/bin\n", stderr=""),
         ]
         mock_run.side_effect = side_effects
@@ -494,12 +516,12 @@ class TestContainerBackendExisting:
         )
         backend = ContainerBackend(cfg)
         backend._check_existing_container()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
 
     @patch("subprocess.run")
     def test_existing_required_device_warning(self, mock_run: MagicMock):
         side_effects = [
-            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="running|immutable-01\n", stderr=""),
             MagicMock(returncode=1, stdout="", stderr=""),
         ]
         mock_run.side_effect = side_effects
@@ -513,7 +535,7 @@ class TestContainerBackendExisting:
         )
         backend = ContainerBackend(cfg)
         backend._check_existing_container()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
 
 
 # ── Auto select backend ──────────────────────────────────────────────────
@@ -542,7 +564,9 @@ class TestAutoSelectBackend:
 
 class TestWorkflowExecutorBackwardCompat:
     def test_shell_phase_no_backend(self, tmp_path: Path):
-        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"]
+        )
         executor = WorkflowExecutor(
             workflow,
             MagicMock(),
@@ -554,15 +578,21 @@ class TestWorkflowExecutorBackwardCompat:
             exec_backend=None,
         )
         phase = PhaseDefinition(
-            id="shell", name="S", prompt_template="", output_schema={},
-            type="shell", on_failure="continue",
+            id="shell",
+            name="S",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="continue",
         )
         setattr(phase, "command", "echo hello")
 
         assert executor.exec_backend is None
 
     def test_shell_phase_local_backend(self, tmp_path: Path):
-        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"]
+        )
         executor = WorkflowExecutor(
             workflow,
             MagicMock(),
@@ -574,8 +604,12 @@ class TestWorkflowExecutorBackwardCompat:
         )
 
         phase = PhaseDefinition(
-            id="shell", name="S", prompt_template="", output_schema={},
-            type="shell", on_failure="continue",
+            id="shell",
+            name="S",
+            prompt_template="",
+            output_schema={},
+            type="shell",
+            on_failure="continue",
         )
         setattr(phase, "command", "echo hello")
 
@@ -585,7 +619,9 @@ class TestWorkflowExecutorBackwardCompat:
 
     def test_container_backend_routes_in_shell(self, tmp_path: Path):
         """ContainerBackend is invoked by _execute_shell_phase when set."""
-        workflow = WorkflowDefinition(name="test", version="1.0", phases=[], terminals=["complete"])
+        workflow = WorkflowDefinition(
+            name="test", version="1.0", phases=[], terminals=["complete"]
+        )
         mock_backend = MagicMock()
         mock_backend.run.return_value = ExecResult(
             exit_code=0, stdout="container ok\n", stderr="", duration=0.5
@@ -599,9 +635,13 @@ class TestWorkflowExecutorBackwardCompat:
         backend._container_id = "c1"
         backend._initialized = True
 
-        with patch.object(backend, "run", return_value=ExecResult(
-            exit_code=0, stdout="container ok\n", stderr="", duration=0.5
-        )):
+        with patch.object(
+            backend,
+            "run",
+            return_value=ExecResult(
+                exit_code=0, stdout="container ok\n", stderr="", duration=0.5
+            ),
+        ):
             executor = WorkflowExecutor(
                 workflow,
                 MagicMock(),
@@ -613,8 +653,12 @@ class TestWorkflowExecutorBackwardCompat:
                 exec_backend=backend,
             )
             phase = PhaseDefinition(
-                id="shell", name="S", prompt_template="", output_schema={},
-                type="shell", on_failure="continue",
+                id="shell",
+                name="S",
+                prompt_template="",
+                output_schema={},
+                type="shell",
+                on_failure="continue",
             )
             setattr(phase, "command", "echo hello")
 
@@ -632,7 +676,9 @@ class TestWorkflowExecutorBackwardCompat:
         old_val = os.environ.get("PY_SCRIPT")
         os.environ["PY_SCRIPT"] = str(target_script)
         try:
-            workflow = WorkflowDefinition(name="entry-no-shell", version="1.0", phases=[], terminals=["complete"])
+            workflow = WorkflowDefinition(
+                name="entry-no-shell", version="1.0", phases=[], terminals=["complete"]
+            )
             executor = WorkflowExecutor(
                 workflow,
                 MagicMock(),
@@ -643,13 +689,19 @@ class TestWorkflowExecutorBackwardCompat:
                 output_dir=str(tmp_path),
             )
             phase = PhaseDefinition(
-                id="run_entry_script", name="Run Entry", prompt_template="",
-                output_schema={}, type="shell", on_failure="continue",
+                id="run_entry_script",
+                name="Run Entry",
+                prompt_template="",
+                output_schema={},
+                type="shell",
+                on_failure="continue",
             )
             setattr(phase, "command", "${loop_vars.entry_script}")
 
             status, output = executor._execute_shell_phase(
-                phase, state={}, context={},
+                phase,
+                state={},
+                context={},
                 loop_vars={"entry_script": "python $PY_SCRIPT"},
                 loop_state={},
             )
@@ -673,8 +725,12 @@ class TestRepairLoopBackwardCompat:
         from core.repair_loop import RepairLoopEngine
 
         engine = RepairLoopEngine(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            config={}, exec_backend=MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            config={},
+            exec_backend=MagicMock(),
         )
         assert engine.exec_backend is not None
 
@@ -682,7 +738,10 @@ class TestRepairLoopBackwardCompat:
         from core.repair_loop import RepairLoopEngine
 
         engine = RepairLoopEngine(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
             config={},
         )
         assert engine.exec_backend is None
@@ -693,8 +752,9 @@ class TestRepairLoopBackwardCompat:
 
 class TestContainerBackendValidation:
     def test_rejects_non_config(self):
+        constructor = MagicMock(wraps=ContainerBackend)
         with pytest.raises(TypeError, match="ExecutionBackendConfig"):
-            ContainerBackend({"mode": "container"})
+            _ = constructor({"mode": "container"})
 
     def test_missing_image_for_source_image(self):
         cfg = ExecutionBackendConfig.from_dict({"mode": "container"})
@@ -706,8 +766,11 @@ class TestContainerBackendValidation:
 
 # ── RepairLoopEngine: container path does not use subprocess.CompletedProcess
 
+
 class TestRepairLoopContainerPath:
-    def test_repair_loop_entry_script_safety_with_container_backend(self, tmp_path: Path):
+    def test_repair_loop_entry_script_safety_with_container_backend(
+        self, tmp_path: Path
+    ):
         from core.repair_loop import RepairLoopEngine
         from core.execution_backend import ExecResult
 
@@ -727,16 +790,22 @@ class TestRepairLoopContainerPath:
         cb._container_id = "c1"
         cb._initialized = True
         # Override run with mocked result
-        cb.run = MagicMock(return_value=ExecResult(
-            exit_code=0,
-            stdout="container success\n",
-            stderr="",
-            duration=1.5,
-        ))
+        cb.run = MagicMock(
+            return_value=ExecResult(
+                exit_code=0,
+                stdout="container success\n",
+                stderr="",
+                duration=1.5,
+            )
+        )
 
         engine = RepairLoopEngine(
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            config={}, exec_backend=cb,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            config={},
+            exec_backend=cb,
         )
         # Just verify that the engine accepts the container backend
         # and that the isinstance check would work in the container path.
@@ -749,18 +818,27 @@ class TestRepairLoopContainerPath:
 
 class TestWorkflowExecutorAutoBackend:
     @patch("core.execution_backend.ContainerBackend")
-    def test_auto_creates_container_backend_from_workflow_config(self, MockBackend, tmp_path: Path):
+    def test_auto_creates_container_backend_from_workflow_config(
+        self, MockBackend, tmp_path: Path
+    ):
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         MockBackend.assert_called_once_with(cfg)
         backend_instance = MockBackend.return_value
@@ -771,59 +849,87 @@ class TestWorkflowExecutorAutoBackend:
 
     def test_local_mode_keeps_exec_backend_none(self, tmp_path: Path):
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         assert executor.exec_backend is None
 
     def test_local_explicit_config_keeps_exec_backend_none(self, tmp_path: Path):
         cfg = ExecutionBackendConfig.from_dict({"mode": "local"})
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         assert executor.exec_backend is None
 
     @patch("subprocess.run")
-    def test_auto_mode_containers_when_runtime_available(self, mock_run, tmp_path: Path):
+    def test_auto_mode_containers_when_runtime_available(
+        self, mock_run, tmp_path: Path
+    ):
         mock_run.return_value = MagicMock(returncode=0)
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "auto", "image": "test:latest"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "auto", "image": "test:latest"})
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         assert isinstance(executor.exec_backend, ContainerBackend)
 
     @patch("subprocess.run")
-    def test_auto_mode_falls_back_to_local_when_unavailable(self, mock_run, tmp_path: Path):
+    def test_auto_mode_falls_back_to_local_when_unavailable(
+        self, mock_run, tmp_path: Path
+    ):
         mock_run.side_effect = FileNotFoundError("docker not found")
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "auto", "image": "test:latest"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "auto", "image": "test:latest"})
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         assert executor.exec_backend is None
 
@@ -832,20 +938,95 @@ class TestWorkflowExecutorAutoBackend:
             {"mode": "container", "image": "ignored"}
         )
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         explicit = LocalBackend()
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=explicit,
         )
         assert executor.exec_backend is explicit
 
 
 class TestWorkflowExecutorCleanup:
+    def test_v3_can_defer_backend_preflight_until_cleanup_is_owned(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Given a V3 container workflow whose lifecycle must own preflight resources.
+        workflow = WorkflowDefinition(
+            name="deferred-preflight",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+            execution_backend=ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+        )
+
+        # When the executor is constructed with V3 preflight deferral.
+        with patch.object(ContainerBackend, "preflight") as preflight:
+            executor = WorkflowExecutor(
+                workflow,
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                project_dir=str(tmp_path),
+                output_dir=str(tmp_path),
+                container_delete_authority=current_run_delete_authority(
+                    "run-safe-17"
+                ),
+                defer_execution_backend_preflight=True,
+            )
+
+        # Then construction owns the backend without creating a container yet.
+        assert isinstance(executor.exec_backend, ContainerBackend)
+        preflight.assert_not_called()
+
+    @pytest.mark.parametrize(("deferred", "expected_calls"), [(False, 1), (True, 0)])
+    def test_v3_can_defer_backend_cleanup_without_changing_default(
+        self,
+        tmp_path: Path,
+        deferred: bool,
+        expected_calls: int,
+    ) -> None:
+        # Given an explicit backend and an empty workflow execution.
+        backend = MagicMock()
+        workflow = WorkflowDefinition(
+            name="deferred-cleanup",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
+            exec_backend=backend,
+            defer_execution_backend_cleanup=deferred,
+        )
+
+        # When the executor reaches its normal terminal path.
+        _ = executor.execute({})
+
+        # Then only active V3 deferral suppresses the legacy eager cleanup call.
+        assert backend.cleanup.call_count == expected_calls
+
     @patch("core.execution_backend.ContainerBackend")
     def test_cleanup_called_for_container_backend(self, MockBackend, tmp_path: Path):
         cfg = ExecutionBackendConfig.from_dict(
@@ -853,13 +1034,20 @@ class TestWorkflowExecutorCleanup:
         )
 
         workflow = WorkflowDefinition(
-            name="cleanup_test", version="1.0", phases=[], terminals=["done"],
+            name="cleanup_test",
+            version="1.0",
+            phases=[],
+            terminals=["done"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
 
         backend_instance = MockBackend.return_value
@@ -872,13 +1060,20 @@ class TestWorkflowExecutorCleanup:
 
     def test_cleanup_skipped_for_local_config(self, tmp_path: Path):
         workflow = WorkflowDefinition(
-            name="local_test", version="1.0", phases=[], terminals=["done"],
+            name="local_test",
+            version="1.0",
+            phases=[],
+            terminals=["done"],
             execution_backend=ExecutionBackendConfig.from_dict({"mode": "local"}),
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
         assert executor.exec_backend is None
         executor._cleanup_execution_backend()  # should not raise
@@ -926,23 +1121,143 @@ class TestWorkflowExecutorCleanup:
             backend.cleanup()  # should log warning, not raise
 
     def test_backend_cleanup_logged_warning_on_failure(self, tmp_path: Path, caplog):
-        import logging
         caplog.set_level(logging.ERROR, logger="core.workflow_executor")
 
         mock_backend = MagicMock()
         mock_backend.cleanup.side_effect = RuntimeError("cannot stop container")
 
         workflow = WorkflowDefinition(
-            name="cleanup_fail_test", version="1.0", phases=[], terminals=["done"],
+            name="cleanup_fail_test",
+            version="1.0",
+            phases=[],
+            terminals=["done"],
         )
         executor = WorkflowExecutor(
             workflow,
-            MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
             exec_backend=mock_backend,
         )
         executor._cleanup_execution_backend()
         assert any("cleanup failed" in r.message for r in caplog.records)
+
+    def test_owned_delete_failure_records_stopped_state(self):
+        # Given a backend bound to the exact current-run delete capability.
+        authority = current_run_delete_authority("run-safe-17")
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            authority,
+        )
+        backend._container_id = "immutable-id"
+
+        # When stop succeeds but immutable-ID removal fails.
+        with patch("core.execution_backend.subprocess.run") as run:
+            run.side_effect = [
+                MagicMock(
+                    returncode=0,
+                    stdout=(
+                        'running|immutable-id|{"seam.owner":"run-safe-17",'
+                        f'"seam.owner-token":"{authority.ownership_token}"}}\n'
+                    ),
+                    stderr="",
+                ),
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="remove denied"),
+            ]
+            with _authorized_container_cleanup(authority):
+                with pytest.raises(ContainerDeletionError) as raised:
+                    _ = backend.delete_container(authority)
+
+        # Then both owned commands ran and the partial post-state is truthful.
+        assert raised.value.post_state == "stopped"
+        assert [call.args[0][1] for call in run.call_args_list] == [
+            "inspect",
+            "stop",
+            "rm",
+        ]
+
+    def test_mismatched_delete_capability_has_no_runtime_side_effect(self):
+        # Given a backend and a distinct caller-constructed capability.
+        owned = current_run_delete_authority("run-safe-17")
+        fabricated = current_run_delete_authority("run-safe-17")
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            owned,
+        )
+        backend._container_id = "immutable-id"
+
+        # When deletion is attempted with the equal-looking but wrong identity.
+        with patch("core.execution_backend.subprocess.run") as run:
+            with _authorized_container_cleanup(fabricated):
+                with pytest.raises(ContainerDeletionError, match="does not match"):
+                    _ = backend.delete_container(fabricated)
+
+        # Then stop and remove remain structurally prohibited.
+        run.assert_not_called()
+
+    def test_v3_backend_refuses_destructive_environment_recreation(self) -> None:
+        # Given a V3 image backend bound to retained-resource authority.
+        authority = current_run_delete_authority("run-safe-17")
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            authority,
+        )
+        backend._container_id = "immutable-id"
+
+        # When workflow execution requests a destructive environment reset.
+        with patch("core.execution_backend.subprocess.run") as run:
+            with pytest.raises(RuntimeError, match="retention.*recreation"):
+                _ = backend.recreate_execution_environment("repair requested")
+
+        # Then deletion before finalization is structurally unreachable.
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("returncode", "status", "error_type"),
+        (
+            (1, "", ContainerNotFoundError),
+            (0, "stopped", ContainerNotRunningError),
+        ),
+    )
+    def test_v3_backend_refuses_implicit_container_replacement(
+        self,
+        returncode: int,
+        status: str,
+        error_type: type[RuntimeError],
+    ) -> None:
+        # Given a V3 image backend whose retained identity is unavailable.
+        authority = current_run_delete_authority("run-safe-17")
+        backend = ContainerBackend._for_v3(
+            ExecutionBackendConfig.from_dict(
+                {"mode": "container", "source": "image", "image": "cpu:test"}
+            ),
+            authority,
+        )
+        backend._container_id = "immutable-id"
+
+        # When normal backend reuse revalidates that identity.
+        with patch("core.execution_backend.subprocess.run") as run:
+            run.return_value = MagicMock(
+                returncode=returncode,
+                stdout=status,
+                stderr="missing",
+            )
+            with pytest.raises(error_type):
+                _ = backend._ensure_container()
+
+        # Then one read-only inspect occurs and no replacement is created.
+        assert len(run.call_args_list) == 1
+        assert run.call_args.args[0][1] == "inspect"
 
 
 # ── ContainerBackend: host-to-container path rewriting ─────────────────────
@@ -954,9 +1269,7 @@ class TestContainerBackendHostPathRewriting:
     # -- _rewrite_single_path (list command tokens) ------------------------
 
     def test_rewrite_single_path_inside_project(self):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "x"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
         backend = ContainerBackend(cfg)
         backend.set_project_dir("/tmp/proj")
         backend._container_id = "c1"
@@ -975,18 +1288,14 @@ class TestContainerBackendHostPathRewriting:
         assert rewritten == "/workspace/tests/test_unit.py"
 
     def test_rewrite_single_path_outside_project_unchanged(self):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "x"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
         backend = ContainerBackend(cfg)
         backend.set_project_dir("/tmp/proj")
         rewritten = backend._rewrite_single_path("/usr/bin/python3")
         assert rewritten == "/usr/bin/python3"
 
     def test_rewrite_single_path_no_project_dir(self):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "x"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
         backend = ContainerBackend(cfg)
         # project dir not set
         rewritten = backend._rewrite_single_path("/tmp/proj/smoke_validate.py")
@@ -995,18 +1304,14 @@ class TestContainerBackendHostPathRewriting:
     # -- _rewrite_command_paths (string commands) --------------------------
 
     def test_rewrite_command_paths_string(self):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "x"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
         backend = ContainerBackend(cfg)
         backend.set_project_dir("/tmp/proj")
         rewritten = backend._rewrite_command_paths("python /tmp/proj/smoke_validate.py")
         assert "/workspace/smoke_validate.py" in rewritten
 
     def test_rewrite_command_paths_outside_unchanged(self):
-        cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "x"}
-        )
+        cfg = ExecutionBackendConfig.from_dict({"mode": "container", "image": "x"})
         backend = ContainerBackend(cfg)
         backend.set_project_dir("/tmp/proj")
         rewritten = backend._rewrite_command_paths("python3 /usr/bin/test.py")
@@ -1016,7 +1321,10 @@ class TestContainerBackendHostPathRewriting:
 
     @patch("subprocess.run")
     def test_run_list_command_rewrites_host_paths(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="running\n", stderr=""),
+            MagicMock(returncode=0, stdout="ok\n", stderr=""),
+        ]
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "x", "container_workdir": "/workspace"}
         )
@@ -1026,7 +1334,7 @@ class TestContainerBackendHostPathRewriting:
         backend.set_project_dir("/tmp/proj")
 
         _ = backend.run(["python", "/tmp/proj/smoke_validate.py"])
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_run.call_args_list[1][0][0]
 
         assert "docker" == cmd[0]
         assert "exec" == cmd[1]
@@ -1120,7 +1428,9 @@ class TestContainerBackendHostPathRewriting:
 class TestContainerBackendPreflight:
     @patch("subprocess.run")
     def test_preflight_creates_container_for_image_source(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="preflight-cid\n", stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="preflight-cid\n", stderr=""
+        )
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
@@ -1132,7 +1442,9 @@ class TestContainerBackendPreflight:
 
     @patch("subprocess.run")
     def test_preflight_validates_existing_container(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="running|immutable-01\n", stderr=""
+        )
         cfg = ExecutionBackendConfig.from_dict(
             {
                 "mode": "container",
@@ -1142,12 +1454,15 @@ class TestContainerBackendPreflight:
         )
         backend = ContainerBackend(cfg)
         backend.preflight()
-        assert backend._container_id == "my-dev-01"
+        assert backend._container_id == "immutable-01"
         assert backend._initialized is True
 
     @patch("subprocess.run")
     def test_preflight_is_idempotent(self, mock_run: MagicMock):
-        mock_run.return_value = MagicMock(returncode=0, stdout="cid-idem\n", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="cid-idem\n", stderr=""),
+            MagicMock(returncode=0, stdout="running\n", stderr=""),
+        ]
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "container", "image": "test:latest"}
         )
@@ -1155,10 +1470,9 @@ class TestContainerBackendPreflight:
         backend.set_project_dir("/tmp/proj")
         backend.preflight()
         backend.preflight()
-        # Should only call subprocess.run once (for initial creation)
+        # Should only call subprocess.run once for creation, once for inspect
         create_calls = [
-            c for c in mock_run.call_args_list
-            if "run" in c[0][0] and "-d" in c[0][0]
+            c for c in mock_run.call_args_list if "run" in c[0][0] and "-d" in c[0][0]
         ]
         assert len(create_calls) == 1
 
@@ -1172,11 +1486,11 @@ class TestContainerBackendPreflight:
         backend.set_project_dir("/tmp/proj")
         backend.preflight()
         mock_run.reset_mock()
+        mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
         _ = backend.run("echo test")
         # No second container creation
         create_calls = [
-            c for c in mock_run.call_args_list
-            if "run" in c[0][0] and "-d" in c[0][0]
+            c for c in mock_run.call_args_list if "run" in c[0][0] and "-d" in c[0][0]
         ]
         assert len(create_calls) == 0
 
@@ -1192,6 +1506,233 @@ class TestContainerBackendPreflight:
         backend.set_project_dir("/tmp/proj")
         with pytest.raises(RuntimeError, match="Failed to create container"):
             backend.preflight()
+
+
+# ── ContainerBackend: cached container liveness revalidation ───────────
+
+
+class TestContainerBackendLivenessRevalidation:
+    @patch("subprocess.run")
+    def test_cached_image_container_running_no_recreate(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "c1"
+        backend._initialized = True
+
+        cid = backend._ensure_container()
+        assert cid == "c1"
+        assert backend._container_id == "c1"
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert "inspect" in call_args
+        assert "c1" in call_args
+
+    @patch("subprocess.run")
+    def test_cached_image_container_exited_recreates(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="exited\n", stderr=""),
+            MagicMock(returncode=0, stdout="new-cid\n", stderr=""),
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+        backend._initialized = True
+
+        cid = backend._ensure_container()
+        assert cid == "new-cid"
+        assert mock_run.call_count == 2
+        # First call: inspect exited container
+        inspect_call = mock_run.call_args_list[0][0][0]
+        assert "inspect" in inspect_call
+        assert "old-cid" in inspect_call
+        # Second call: docker run -d to recreate
+        create_call = mock_run.call_args_list[1][0][0]
+        assert "run" in create_call
+        assert "-d" in create_call
+
+    @patch("subprocess.run")
+    def test_cached_image_container_missing_recreates(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout="", stderr="No such container"),
+            MagicMock(returncode=0, stdout="fresh-cid\n", stderr=""),
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "ghost-cid"
+        backend._initialized = True
+
+        cid = backend._ensure_container()
+        assert cid == "fresh-cid"
+        assert mock_run.call_count == 2
+        # After recreate, old state is cleared
+        assert backend._container_id == "fresh-cid"
+        assert backend._initialized is True
+
+    @patch("subprocess.run")
+    def test_cached_existing_not_found_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="No such container"
+        )
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "my-dev-01",
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "my-dev-01"
+        backend._initialized = True
+
+        with pytest.raises(ContainerNotFoundError, match="my-dev-01"):
+            backend._ensure_container()
+
+    @patch("subprocess.run")
+    def test_cached_existing_exited_raises(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="exited\n", stderr="")
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "my-dev-01",
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "my-dev-01"
+        backend._initialized = True
+
+        with pytest.raises(ContainerNotRunningError, match="exited"):
+            backend._ensure_container()
+
+    @patch("subprocess.run")
+    def test_run_revalidates_then_execs(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="running\n", stderr=""),  # inspect
+            MagicMock(returncode=0, stdout="hello\n", stderr=""),  # exec
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "c1"
+        backend._initialized = True
+
+        result = backend.run("echo hello")
+        assert result.exit_code == 0
+        assert result.stdout == "hello\n"
+        assert mock_run.call_count == 2
+        # First call: inspect
+        call1 = mock_run.call_args_list[0][0][0]
+        assert "inspect" in call1
+        assert "c1" in call1
+        # Second call: exec
+        call2 = mock_run.call_args_list[1][0][0]
+        assert "exec" in call2
+        assert "c1" in call2
+
+
+class TestContainerBackendEnvironmentReset:
+    @patch("subprocess.run")
+    def test_image_reset_updates_container_id_and_reuses_config(self, mock_run):
+        inspect_payload = [
+            {
+                "Name": "/seam-migration-123",
+                "Config": {"Image": "test:latest", "WorkingDir": ""},
+                "Mounts": [{"Source": "/tmp/proj", "Destination": "/workspace"}],
+            }
+        ]
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps(inspect_payload), stderr=""),
+            MagicMock(returncode=0, stdout="old stopped\n", stderr=""),
+            MagicMock(returncode=0, stdout="old removed\n", stderr=""),
+            MagicMock(returncode=0, stdout="new-cid\n", stderr=""),
+        ]
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "image",
+                "image": "test:latest",
+                "devices": ["/dev/accel"],
+                "volumes": ["/cache:/cache:rw"],
+                "env_vars": {"FOO": "bar"},
+                "network_mode": "host",
+                "runtime_flags": ["--ipc=host"],
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+        backend._initialized = True
+
+        metadata = backend.recreate_execution_environment(
+            reason="vendor torch polluted"
+        )
+
+        assert backend._container_id == "new-cid"
+        assert metadata["old_container_id"] == "old-cid"
+        assert metadata["new_container_id"] == "new-cid"
+        assert metadata["source"] == "image"
+        assert metadata["image"] == "test:latest"
+        assert "package installs" in " ".join(metadata["lost_notes"])
+        create_call = mock_run.call_args_list[-1][0][0]
+        assert create_call[:3] == ["docker", "run", "-d"]
+        assert "test:latest" in create_call
+        assert f"{Path('/tmp/proj').resolve()}:/workspace:rw" in create_call
+        assert "/dev/accel" in create_call
+        assert "/cache:/cache:rw" in create_call
+        assert "FOO=bar" in create_call
+        assert "host" in create_call
+        assert "--ipc=host" in create_call
+
+    @patch("subprocess.run")
+    def test_existing_container_reset_is_rejected(self, mock_run):
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "container",
+                "source": "existing_container",
+                "container_name": "user-container",
+            }
+        )
+        backend = ContainerBackend(cfg)
+        backend._container_id = "user-container"
+
+        with pytest.raises(RuntimeError, match="source=image"):
+            backend.recreate_execution_environment(
+                reason="should not reset user container"
+            )
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_image_reset_rejects_unowned_container_name(self, mock_run):
+        inspect_payload = [
+            {
+                "Name": "/user-owned",
+                "Config": {"Image": "test:latest"},
+                "Mounts": [{"Source": "/tmp/proj", "Destination": "/workspace"}],
+            }
+        ]
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout=json.dumps(inspect_payload), stderr=""
+        )
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "source": "image", "image": "test:latest"}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+        backend._container_id = "old-cid"
+
+        with pytest.raises(RuntimeError, match="does not match framework prefix"):
+            backend.recreate_execution_environment(reason="bad owner")
+        assert mock_run.call_count == 1
 
 
 # ── ContainerBackend: probe_environment ────────────────────────────────
@@ -1240,7 +1781,9 @@ class TestContainerBackendProbeEnvironment:
         assert "sh" in result["error"]
 
     @patch("subprocess.run")
-    def test_probe_reports_missing_python_from_container_path(self, mock_run: MagicMock):
+    def test_probe_reports_missing_python_from_container_path(
+        self, mock_run: MagicMock
+    ):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='{"status":"probe_failed","error":"No Python interpreter found on container PATH"}\n',
@@ -1304,6 +1847,7 @@ class TestGetContainerPromptContext:
 
     def test_merges_backend_ctx_and_probe_facts(self, monkeypatch):
         import json as _json
+
         mock_backend = MagicMock()
         mock_backend.get_execution_context.return_value = {
             "execution_backend_mode": "container",
@@ -1315,10 +1859,13 @@ class TestGetContainerPromptContext:
         assert result["container_name_or_id"] == "c1"
         assert result["container_python_version"] == "3.10.0"
         assert result["container_torch_version"] == "2.1.0"
-        assert result["container_env_facts"] == _json.dumps(probe, ensure_ascii=False, default=str)
+        assert result["container_env_facts"] == _json.dumps(
+            probe, ensure_ascii=False, default=str
+        )
 
     def test_handles_failed_probe_gracefully(self, monkeypatch):
         import json as _json
+
         mock_backend = MagicMock()
         mock_backend.get_execution_context.return_value = {
             "execution_backend_mode": "container",
@@ -1327,7 +1874,9 @@ class TestGetContainerPromptContext:
         probe = {"status": "probe_failed", "error": "python not found"}
         result = get_container_prompt_context(mock_backend, probe)
         assert result["execution_backend_mode"] == "container"
-        assert result["container_env_facts"] == _json.dumps(probe, ensure_ascii=False, default=str)
+        assert result["container_env_facts"] == _json.dumps(
+            probe, ensure_ascii=False, default=str
+        )
 
     def test_no_probe_facts_when_none(self):
         mock_backend = MagicMock()
@@ -1393,7 +1942,11 @@ class TestImageListConfigParsing:
     def test_images_list_wins_over_single_image(self):
         """When both `image` and `images` are provided, images list wins for candidate resolution."""
         cfg = ExecutionBackendConfig.from_dict(
-            {"mode": "container", "image": "legacy:old", "images": ["chosen:a", "chosen:b"]}
+            {
+                "mode": "container",
+                "image": "legacy:old",
+                "images": ["chosen:a", "chosen:b"],
+            }
         )
         assert cfg.images == ["chosen:a", "chosen:b"]
         # The key contract: _resolve_candidate_images must return the images list, not legacy
@@ -1462,6 +2015,38 @@ class TestCandidateImageResolution:
 
 
 class TestSequentialCreateFallback:
+    @patch("subprocess.run")
+    def test_logs_each_candidate_image_before_create(self, mock_run, caplog):
+        def side_effect(*args, **kwargs):
+            cmd = args[0]
+            if "first:1" in cmd:
+                return MagicMock(returncode=1, stdout="", stderr="pull failed")
+            return MagicMock(returncode=0, stdout="cid-2\n", stderr="")
+
+        caplog.set_level(logging.INFO, logger="core.execution_backend")
+        mock_run.side_effect = side_effect
+        cfg = ExecutionBackendConfig.from_dict(
+            {"mode": "container", "images": ["first:1", "second:2"]}
+        )
+        backend = ContainerBackend(cfg)
+        backend.set_project_dir("/tmp/proj")
+
+        backend._create_container_from_image()
+
+        messages = [record.message for record in caplog.records]
+        assert any(
+            "Container create attempt: runtime=docker" in msg
+            and " name=" in msg
+            and "image=first:1" in msg
+            for msg in messages
+        )
+        assert any(
+            "Container create attempt: runtime=docker" in msg
+            and " name=" in msg
+            and "image=second:2" in msg
+            for msg in messages
+        )
+
     @patch("subprocess.run")
     def test_first_image_succeeds(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
@@ -1633,13 +2218,15 @@ class TestAutoImageSelection:
 
     @patch("subprocess.run")
     def test_auto_select_from_configured_list(
-        self, mock_run, tmp_path,
+        self,
+        mock_run,
+        tmp_path,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
 
         mock_session = MagicMock()
         mock_session.get_or_create.return_value = "sel-sid"
-        mock_session.send_command.return_value = self._mock_response("img-b:2")
+        mock_session.send_command.return_value = self._mock_response("img-c:3")
 
         mock_prompt_loader = MagicMock()
         mock_prompt_loader.load_prompt.return_value = "fake prompt"
@@ -1649,28 +2236,112 @@ class TestAutoImageSelection:
         )
 
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            mock_session,
+            MagicMock(),
+            mock_prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
 
         assert executor.exec_backend is not None
         assert isinstance(executor.exec_backend, ContainerBackend)
-        assert executor.exec_backend.config.image == "img-b:2"
+        assert executor.exec_backend.config.image == "img-c:3"
+        assert executor.exec_backend.config.images == ["img-c:3", "img-a:1", "img-b:2"]
 
         # Verify the prompt loader was called with the candidates
         call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
         assert "img-a:1" in call_ctx["candidate_images"]
         assert "img-b:2" in call_ctx["candidate_images"]
         assert "img-c:3" in call_ctx["candidate_images"]
+        assert "Project and Runtime Context" in call_ctx["project_runtime_context"]
+        assert call_ctx["user_constraints_section"] == ""
+
+    @patch("subprocess.run")
+    def test_auto_select_prompt_includes_constraints_and_runtime_context(
+        self,
+        mock_run,
+        tmp_path,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
+
+        mock_session = MagicMock()
+        mock_session.get_or_create.return_value = "sel-sid"
+        mock_session.send_command.return_value = self._mock_response("candidate-b")
+
+        prompt_loader = PromptLoader(ROOT / "prompts")
+        cfg = ExecutionBackendConfig.from_dict(
+            {
+                "mode": "auto",
+                "images": ["candidate-a", "candidate-b"],
+                "container_workdir": "/workspace/project",
+                "env_vars": {"PROJECT_MODE": "do-not-render-value"},
+                "required_env_vars": ["RUNTIME_SETTING"],
+            }
+        )
+
+        workflow = WorkflowDefinition(
+            name="generic-selection-test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
+            execution_backend=cfg,
+        )
+        executor = WorkflowExecutor(
+            workflow,
+            mock_session,
+            MagicMock(),
+            prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
+            user_constraints="Prefer a candidate with required runtime dependencies already available.",
+        )
+
+        assert executor.exec_backend is not None
+        sent_prompt = mock_session.send_command.call_args[0][1]
+        assert "## Project and Runtime Context" in sent_prompt
+        assert str(tmp_path) in sent_prompt
+        assert "generic-selection-test" in sent_prompt
+        assert "Container runtime" in sent_prompt
+        assert "PROJECT_MODE" in sent_prompt
+        assert "do-not-render-value" not in sent_prompt
+        assert "RUNTIME_SETTING" in sent_prompt
+        assert "## User-Provided Constraints" in sent_prompt
+        assert (
+            "Prefer a candidate with required runtime dependencies already available."
+            in sent_prompt
+        )
+        assert (
+            "Before choosing, read and account for any project/runtime context"
+            in sent_prompt
+        )
+        assert "user-provided constraints" in sent_prompt
+        assert "active refinement and ranking" in sent_prompt
+        assert "listed images only" in sent_prompt
+        assert (
+            "favor listed candidates that already provide those capabilities"
+            in sent_prompt
+        )
+        assert "unverified installation in later phases" in sent_prompt
+        assert (
+            "User-provided constraints NEVER authorize selecting an image that is not listed."
+            in sent_prompt
+        )
 
     @patch("subprocess.run")
     def test_auto_select_invalid_out_of_list_falls_back(
-        self, mock_run, tmp_path,
+        self,
+        mock_run,
+        tmp_path,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
 
@@ -1686,20 +2357,29 @@ class TestAutoImageSelection:
         )
 
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            mock_session,
+            MagicMock(),
+            mock_prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
 
         assert executor.exec_backend is None
 
     @patch("subprocess.run")
     def test_auto_select_from_discovered_local_images(
-        self, mock_run, tmp_path,
+        self,
+        mock_run,
+        tmp_path,
     ):
         def _discover_side_effect(*args, **kwargs):
             cmd = args[0]
@@ -1725,22 +2405,32 @@ class TestAutoImageSelection:
         cfg = ExecutionBackendConfig.from_dict({"mode": "auto"})
 
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            mock_session,
+            MagicMock(),
+            mock_prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
 
         assert executor.exec_backend is not None
         assert isinstance(executor.exec_backend, ContainerBackend)
         assert executor.exec_backend.config.image == "local-hub:v2"
+        assert executor.exec_backend.config.images == ["local-hub:v2", "local-hub:v1"]
 
     @patch("subprocess.run")
     def test_auto_no_images_no_discovered_falls_back_to_local(
-        self, mock_run, tmp_path,
+        self,
+        mock_run,
+        tmp_path,
     ):
         def _no_discovery_side_effect(*args, **kwargs):
             cmd = args[0]
@@ -1758,20 +2448,29 @@ class TestAutoImageSelection:
         cfg = ExecutionBackendConfig.from_dict({"mode": "auto"})
 
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            mock_session,
+            MagicMock(),
+            mock_prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
 
         assert executor.exec_backend is None
 
     @patch("subprocess.run")
     def test_auto_select_ignores_compatibility_image_with_multiple_candidates(
-        self, mock_run, tmp_path,
+        self,
+        mock_run,
+        tmp_path,
     ):
         """mode: auto + images list + config.image set to first → still does agent selection."""
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
@@ -1788,17 +2487,25 @@ class TestAutoImageSelection:
         )
 
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            mock_session,
+            MagicMock(),
+            mock_prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
 
         assert executor.exec_backend is not None
         assert executor.exec_backend.config.image == "img-b:2"
+        assert executor.exec_backend.config.images == ["img-b:2", "img-a:1"]
 
         call_ctx = mock_prompt_loader.load_prompt.call_args[0][1]
         assert "img-a:1" in call_ctx["candidate_images"]
@@ -1806,7 +2513,9 @@ class TestAutoImageSelection:
 
     @patch("subprocess.run")
     def test_auto_selection_filters_none_values_in_images(
-        self, mock_run, tmp_path,
+        self,
+        mock_run,
+        tmp_path,
     ):
         """mode: auto + images with None → filters them out before selection."""
         mock_run.return_value = MagicMock(returncode=0, stdout="cid-ok\n", stderr="")
@@ -1821,16 +2530,23 @@ class TestAutoImageSelection:
         cfg = ExecutionBackendConfig.from_dict(
             {"mode": "auto", "images": ["good:1", "also-good:2"]}
         )
-        cfg.images = ["good:1", None, "None", "also-good:2"]
+        setattr(cfg, "images", ["good:1", None, "None", "also-good:2"])
 
         workflow = WorkflowDefinition(
-            name="test", version="1.0", phases=[], terminals=["complete"],
+            name="test",
+            version="1.0",
+            phases=[],
+            terminals=["complete"],
             execution_backend=cfg,
         )
         executor = WorkflowExecutor(
             workflow,
-            mock_session, MagicMock(), mock_prompt_loader, MagicMock(),
-            project_dir=str(tmp_path), output_dir=str(tmp_path),
+            mock_session,
+            MagicMock(),
+            mock_prompt_loader,
+            MagicMock(),
+            project_dir=str(tmp_path),
+            output_dir=str(tmp_path),
         )
 
         assert executor.exec_backend is not None
@@ -1838,3 +2554,105 @@ class TestAutoImageSelection:
         assert "None" not in call_ctx["candidate_images"]
         assert "good:1" in call_ctx["candidate_images"]
         assert "also-good:2" in call_ctx["candidate_images"]
+
+
+class TestContinuationEnvironmentReadOnlyProbes:
+    @patch("subprocess.run")
+    def test_inspect_retained_container_captures_exact_immutable_context(
+        self, mock_run: MagicMock, tmp_path: Path
+    ) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stderr="",
+            stdout=json.dumps(
+                [
+                    {
+                        "Id": "immutable-id",
+                        "Name": "/seam-parent",
+                        "Image": "sha256:image-id",
+                        "State": {"Status": "running"},
+                        "Config": {
+                            "Image": "cpu:test",
+                            "WorkingDir": "/workspace",
+                            "Labels": {
+                                "seam.owner": "parent-run",
+                                "seam.owner-token": "owner-token",
+                            },
+                        },
+                        "HostConfig": {"Devices": [{"PathOnHost": "/dev/null"}]},
+                        "Mounts": [
+                            {
+                                "Type": "bind",
+                                "Source": str(project),
+                                "Destination": "/workspace",
+                            }
+                        ],
+                    }
+                ]
+            ),
+        )
+
+        result = inspect_retained_container(
+            RetainedContainerProbeRequest(
+                runtime="docker",
+                container_id="immutable-id",
+                expected_ownership_token_sha256=hashlib.sha256(
+                    b"owner-token"
+                ).hexdigest(),
+                expected_ownership_label="seam.owner=parent-run",
+            )
+        )
+
+        assert result.container_id == "immutable-id"
+        assert result.name == "seam-parent"
+        assert result.image_identity == "sha256:image-id"
+        assert result.bind_mounts[0].source == project.resolve()
+        assert result.ownership_token == "owner-token"
+        assert result.ownership_label == "seam.owner=parent-run"
+        command = mock_run.call_args.args[0]
+        assert command == ["docker", "inspect", "immutable-id"]
+        assert not {"run", "stop", "rm"}.intersection(command)
+
+    @patch("subprocess.run")
+    def test_container_fingerprint_probe_executes_only_in_recorded_namespace(
+        self, mock_run: MagicMock
+    ) -> None:
+        payload = {
+            "interpreter_realpath": "/project/.venv/bin/python",
+            "sys_executable": "/project/.venv/bin/python",
+            "sys_prefix": "/project/.venv",
+            "sys_base_prefix": "/usr",
+            "python_implementation": "CPython",
+            "python_version": "3.11.9",
+            "platform_system": "Linux",
+            "platform_architecture": "x86_64",
+            "package_inventory_hash": "a" * 64,
+        }
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout=json.dumps(payload), stderr=""),
+        ]
+
+        result = probe_retained_environment(
+            RetainedEnvironmentProbeRequest(
+                interpreter_path="/project/.venv/bin/python",
+                runtime="podman",
+                container_id="immutable-id",
+            )
+        )
+
+        assert result.namespace == "container:immutable-id"
+        assert result.container_id == "immutable-id"
+        assert result.environment_type.value == "project_venv"
+        commands = tuple(call.args[0] for call in mock_run.call_args_list)
+        assert all(
+            command[:3] == ["podman", "exec", "immutable-id"] for command in commands
+        )
+        assert all(
+            not {"run", "stop", "rm"}.intersection(command) for command in commands
+        )
+        assert not any(
+            command[0] == "/project/.venv/bin/python" for command in commands
+        )

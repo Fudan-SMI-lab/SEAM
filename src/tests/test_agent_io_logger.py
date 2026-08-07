@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from core import agent_io_logger as redaction
 from core.agent_io_logger import AgentIOLogger
 from tests.e2e.e2e_observer import TelemetryObserver
 
@@ -35,7 +36,6 @@ class FakeSessionManager:
 
     def cleanup_all(self) -> int:
         return 1
-
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -78,8 +78,12 @@ def test_agent_io_logger_writes_index_and_payloads(tmp_path: Path) -> None:
     records = _read_jsonl(jsonl_path)
     assert records[0]["run_id"] == "run-1"
     assert records[0]["command_path"] == "agent_io/payloads/000001_prompt.txt"
-    assert (tmp_path / records[0]["command_path"]).read_text(encoding="utf-8") == "full prompt"
-    assert (tmp_path / records[0]["response_path"]).read_text(encoding="utf-8") == "full response"
+    assert (tmp_path / records[0]["command_path"]).read_text(
+        encoding="utf-8"
+    ) == "full prompt"
+    assert (tmp_path / records[0]["response_path"]).read_text(
+        encoding="utf-8"
+    ) == "full response"
 
 
 def test_agent_io_logger_redacts_and_truncates(tmp_path: Path) -> None:
@@ -140,7 +144,58 @@ def test_agent_io_logger_redacts_quoted_json_secrets(tmp_path: Path) -> None:
     assert '"password": "<REDACTED>"' in command_text
 
 
-def test_telemetry_observer_keeps_positional_lifecycle_compatibility(tmp_path: Path) -> None:
+def test_redaction_api_handles_assignment_and_separated_cli_values() -> None:
+    arguments = (
+        "runner",
+        '--Api-Key="Assignment Sentinel"',
+        "--ToKeN",
+        "'Separated Mixed-Case Sentinel'",
+    )
+
+    sanitized = redaction.redact_cli_arguments(arguments)
+
+    assert sanitized == (
+        "runner",
+        '--Api-Key="<REDACTED>"',
+        "--ToKeN",
+        "'<REDACTED>'",
+    )
+
+
+def test_agent_io_logger_redacts_contextual_cli_values_from_all_ordinary_sinks(
+    tmp_path: Path,
+) -> None:
+    logger = AgentIOLogger(tmp_path, "run-context", enabled=True, redact=True)
+    sentinels = ("Command Sentinel", "Response Sentinel", "Error Sentinel")
+
+    _ = logger.record(
+        sequence=9,
+        phase_id="phase_5_validation",
+        session_id="session",
+        role="main_engineer",
+        agent=None,
+        lifecycle="persistent",
+        started_at="start",
+        ended_at="end",
+        duration_seconds=0.1,
+        timeout_seconds=5,
+        status="failed",
+        command=f'runner --Api-Key="{sentinels[0]}"',
+        response=f"runner --ToKeN '{sentinels[1]}'",
+        error=f'RuntimeError: runner --PaSsWoRd "{sentinels[2]}"',
+    )
+
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "agent_io").rglob("*")
+        if path.is_file()
+    )
+    assert all(sentinel not in persisted for sentinel in sentinels)
+
+
+def test_telemetry_observer_keeps_positional_lifecycle_compatibility(
+    tmp_path: Path,
+) -> None:
     fake = FakeSessionManager()
     observer = TelemetryObserver(fake, tmp_path)
 
@@ -157,16 +212,26 @@ def test_telemetry_observer_records_full_agent_io(tmp_path: Path) -> None:
     session_id = observer.get_or_create(role="main_engineer", lifecycle="persistent")
 
     with observer.timing_phase("phase_0"):
-        response = observer.send_command(session_id, "complete prompt", agent="main", timeout=123, retries=4)
+        response = observer.send_command(
+            session_id, "complete prompt", agent="main", timeout=123, retries=4
+        )
 
     telemetry_paths = observer.save_metrics()
 
     assert response == "full response body"
-    telemetry = json.loads(Path(telemetry_paths["telemetry_json"]).read_text(encoding="utf-8"))
-    assert telemetry["metadata"]["agent_io_paths"]["jsonl"] == str(tmp_path / "agent_io" / "agent_io.jsonl")
+    telemetry = json.loads(
+        Path(telemetry_paths["telemetry_json"]).read_text(encoding="utf-8")
+    )
+    assert telemetry["metadata"]["agent_io_paths"]["jsonl"] == str(
+        tmp_path / "agent_io" / "agent_io.jsonl"
+    )
     records = _read_jsonl(tmp_path / "agent_io" / "agent_io.jsonl")
     assert records[0]["phase_id"] == "phase_0"
     assert records[0]["role"] == "main_engineer"
     assert records[0]["agent"] == "main"
-    assert (tmp_path / records[0]["command_path"]).read_text(encoding="utf-8") == "complete prompt"
-    assert (tmp_path / records[0]["response_path"]).read_text(encoding="utf-8") == "full response body"
+    assert (tmp_path / records[0]["command_path"]).read_text(
+        encoding="utf-8"
+    ) == "complete prompt"
+    assert (tmp_path / records[0]["response_path"]).read_text(
+        encoding="utf-8"
+    ) == "full response body"

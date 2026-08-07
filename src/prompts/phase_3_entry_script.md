@@ -33,6 +33,8 @@ The entry command is executed automatically in the target runtime:
 - If the existing launcher is interactive, prefer documented non-interactive flags/env vars. Otherwise create a wrapper that calls the real entry point with safe defaults.
 - Do not invent unsupported CLI flags.
 - If you create or select a generated/wrapper script, physically write it under `{project_dir}` before returning JSON. Never return an `entry_script_path` for a file that does not exist; custom-op Phase 3 validation fails before Phase 3.5 when the selected script is missing.
+- If a generated/wrapper script launches child processes, it must drain and capture child stdout/stderr before exiting; do not let pipes block or drop output.
+- On failure, generated/wrapper scripts must print a concise diagnostic summary to stderr that includes the child command, exit code, and the most relevant stderr or stdout tail. Long logs may be written to artifacts, but the failure summary must be visible on stderr.
 - **Verification requirement**: Before returning the final JSON, confirm the selected/created script file exists by reading its contents or listing it. Do NOT execute the full migration workload during Phase 3; you are selecting and verifying the entry script path, not running validation.
 
 You may reason freely about the choice, but return exactly one JSON object.
@@ -43,7 +45,7 @@ Return exactly one JSON object. Legacy projects may return only the two existing
 ```json
 {
   "entry_script_path": "/path/to/project/generate.py",
-  "run_command": "/path/to/project/.venv/bin/python /path/to/project/generate.py --config /path/to/project/config.yml",
+  "run_command": "<phase2_python_path> /path/to/project/generate.py --config /path/to/project/config.yml",
   "phase5_entry_script_revision_allowed": true
 }
 ```
@@ -53,7 +55,7 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 ```json
 {
   "entry_script_path": "/path/to/project/validate_custom_ops_full.py",
-  "run_command": "/path/to/project/.venv/bin/python /path/to/project/validate_custom_ops_full.py",
+  "run_command": "<phase2_python_path> /path/to/project/validate_custom_ops_full.py",
   "entry_script_kind": "custom_op_full_validation",
   "reports_dir": "/path/to/project/migration_reports",
   "operator_discovery_sources": ["source", "bindings", "wrappers", "autograd", "aliases", "launch", "setup", "tests"],
@@ -86,6 +88,7 @@ For CUDA/C++ custom-op projects, keep those fields and add this backward-compati
 ```
 
 ## Field Semantics
+- In the examples above, `<phase2_python_path>` is a placeholder. Replace it with Phase 2's concrete `python_path` or a verified equivalent executable in the target runtime; never output the placeholder literally or hard-code a project `.venv` unless Phase 2 selected that exact environment.
 - `entry_script_path`: host-visible absolute path to the selected or created script. This path is readable by file tools (such as `read`), by Phase 3.5 (static validator), and by the target execution backend after any container path mapping.
 - `run_command`: exact non-interactive command the target runtime will execute. In container workflows, the framework executes this command inside its created container; use container-visible paths or host paths that the backend can map. Do NOT include `docker exec`, `podman exec`, container names/IDs, or host-level container lifecycle invocations.
 - `entry_script_kind`: use `custom_op_full_validation` for custom-op projects; omit for normal projects.

@@ -26,7 +26,7 @@ COMMON_CONTEXT = {
     "runtime_error_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtime_error_test_project.md",
     "runtime_card_artifact_path": "/tmp/test_project/.sm-artifacts/testrun/runtime/runtimeCard_test_project.md",
     "workspace_root": "/workspace",
-    "operator_custom_op_guidance": "4. This is a generic operator-incompatibility repair.\n5. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证, 只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics。",
+    "operator_custom_op_guidance": "4. This is a generic operator-incompatibility repair.\n5. 修改后使用框架提供的 actual_execution_command 或当前 Phase 3 run_command（python train.py）进行验证, 只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics。",
 }
 
 
@@ -99,7 +99,7 @@ def test_operator_fixer_prompt_can_receive_custom_op_guidance() -> None:
             "this context is the only inventory / manifest / final-gate closure source.\n"
             "5. Treat the custom-op contract as hard scope: freeze manifest rows, keep every in-scope operator, public entry, framework alias, and forward/backward/grad/training-only path in scope, and never downgrade rows or accept report-only, MVP-only, fallback, builtin, or zero-call success. If a row is unresolved, split it into smaller slices and continue the remaining rows instead of stopping.\n"
             "6. Every in-scope row must have real Ascend OPP artifacts, adapter/import/link success, direct/reference parity, same-run runtime coverage > 0, and baseline/custom performance evidence. Final success requires inventory_count == manifest_entries == closed_pass_entries, remaining_entries == 0, full_migration_status == FULL_PASS, and passing final evidence validation.\n"
-            "7. 修改后用 /tmp/test_project/.venv/bin/python 和 python train.py 进行验证。只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
+            "7. 修改后使用框架提供的 actual_execution_command 或当前 Phase 3 run_command（python train.py）进行验证。只在最终回答里输出一个 JSON 代码块, 至少包含 modified_files, summary, agent_diagnostics；modified_files 必须列出实际修改文件，除非 summary 明确写 FAILED/INCOMPLETE 和外部阻塞原因。"
         ),
     }
     prompt = loader.load_prompt("repair_operator_fixer", context)

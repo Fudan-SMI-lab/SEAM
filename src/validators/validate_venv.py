@@ -1,5 +1,7 @@
 """Validation for Phase 2 virtual environment output."""
 
+from __future__ import annotations
+
 from typing import cast
 
 from core.validator_engine import ValidationDict

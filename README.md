@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="README.en.md">English</a> |
-  <a href="README.zh.md">简体中文</a> 
+  <a href="README.md">简体中文</a>
 </p>
 
 
@@ -35,22 +35,53 @@ SEAM是一个自动化迁移AI工具，能把原来只能在NVIDIA显卡上运�
 
 ### 快速开始
 在您要用的中国产GPU服务器、容器环境里，下载和使用SEAM：
+
+本版本的生产运行目标仅为 Linux，要求 Python 3.10+。强制 CI 使用无硬件 Linux runner；真实 NPU/GPU 集成验证保持可选且不作为发布门禁。
+
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM
 bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
-  --server_type opencode \
-  --server_url http://127.0.0.1:5000
+  --server_type opencode
 ```
 
+请先确认本机 OpenCode Server 已启动，默认地址为 `http://127.0.0.1:4098`；如果端口不同，可以加 `--server_url` 显式指定。
+
+不传 `--workflow` 时，启动器会使用 `src/workflows/seam_auto_default.yaml` 自动选择流程，通常无需手动指定 workflow。
+
+项目根目录下的 `ADAPTATION_REQUIREMENTS.md` 会自动加载；非标准约束可以通过 `--extra '--user-constraints PATH'` 传入。
+
+#### 已验证的 V3 公共契约
+
+`run_seam.sh` 是日常入口，默认选择 `src/workflows/seam_auto_default.yaml`。高级自动化可直接调用 Python 入口；它必须且只能提供 `--project-dir` 或 `--continue-from` 之一。下面的示例由 `src/tests/test_documented_cli_contracts.py` 使用真实解析器执行验证。
+
+<!-- cli-contract:readme-zh-direct -->
+```bash
+PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
+  --project-dir /absolute/path/to/cuda-project \
+  --workflow-path src/workflows/seam_auto_default.yaml \
+  --server-url http://127.0.0.1:4098 \
+  --review-gate \
+  --container-retention retain
+```
+
+- Review Gate 默认关闭；启用后，有效验证加显式 `accept` 才是普通 PASS。严格模式是最终有效默认值，只有 `reject_exhausted` 可由 `--no-review-fail-closed` 放宽为 `passed_with_reviews`；unknown、session error、improvement error 和验证失败仍然 FAIL。
+- `--continue-from` 只接受显式的终态父运行 `summary.json`。它会创建全新子会话和独立子证据，父报告保持不可变；不是崩溃恢复，也不恢复进行中的 Agent 或 Phase 状态。直接运行只有在显式传入 `--seal-manifest` 且封存成功时才具备 continuation 资格；该可选封存结果会投影到 `summary.json` 并写出 `manifest-sealing.v1.json` sidecar（状态 `not_requested|succeeded|failed`、`continuation_eligible`），但它是 outcome-neutral 的——封存失败不改变迁移 PASS/FAIL、`RunOutcome` 或原始退出码。环境绑定 authority 要求精确的 `environment_id` 加上匹配的 `namespace`；namespace 单独不是 authority，不接受 list-order、fact-count 或 silent fallback，缺失或歧义时 fail closed。
+- 容器默认保留。`delete` 只对 SEAM 明确拥有且现场复核通过的 image 容器生效；外部或用户容器永不删除。已通过的运行若请求清理但清理失败，迁移结果仍是 PASS，但最终进程退出码为 2。
+- `--save-agent-trace` 是默认关闭的可选旁路。它递归导出 OpenCode 可访问的原始数据，不脱敏、不截断已接受的数据，但受容量和图边界限制；不可访问、分页、未知或不支持的数据会明确标为 partial。它不能导出提供方隐藏的 reasoning，也不改变 continuation authority 或冻结的 `RunOutcome`。普通可选 trace 失败不改变退出码，但 continuation 的 required evidence publication 失败会使 finalization 退出 1。
+- Replay 只显示同一进程中已接受的真实 Phase 5 receipt 所对应的命令。SEAM 不自动执行 replay，也不保证确定性复现。
+- 可选实时仪表盘：dashboard extra 默认不安装，使用前运行 `python -m pip install -e "./src[dashboard]"`。`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）：`auto`（默认）仅在非 CI 的交互式 TTY 上启用，否则与无仪表盘运行完全一致；`on` 强制启用，未安装渲染器时（textual 优先，rich 回退）在任何副作用之前报错并给出上述安装命令；`off` 完全关闭。仪表盘激活时按 `q` 仅退出仪表盘视图，迁移与日志继续。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 不创建该文件。
+
+完整 CLI、continuation 矩阵、产物树、超时语义和可选集成检查见 [`src/docs/E2E_TESTING.md`](src/docs/E2E_TESTING.md)；原始 trace 完整性和 schema-v2 关联边界见 [`src/docs/full_agent_io_logging_design.md`](src/docs/full_agent_io_logging_design.md)。
+
 运行后：
-*   是否跑通：终端最后会直接显示 `E2E TEST PASSED` / `E2E PASS` 或失败信息；也可以通过 `./e2e-reports/migration_utils/<时间戳>/summary.json`获取更具体的信息
+*   是否跑通：终端最后会显示 `E2E TEST PASSED`、`E2E PASS`、`E2E FINALIZATION FAILED` 或失败信息；权威详情位于 `./e2e-reports/src/e2e-v3-<run-id>/summary.json`。迁移 FAIL 退出 1；仅在迁移已 PASS 且请求的授权清理失败时退出 2。
     
-*   迁移的代码库：会默认写入 `./output_projects/<项目名>_<时间戳>/`，或是执行时输入的参数 `--output-dir`。
+*   迁移的代码库：默认写入 SEAM 仓库同级目录 `../output_projects/<项目名>_<时间戳>/`；也可以用环境变量 `MIGRATION_OUTPUT_PROJECTS_ROOT` 改默认根目录，或用 `--output-dir` 显式指定本次输出项目根目录。
     
-*   迁移报告：会在迁移后的代码库下创建`.migration_reports/`文件夹, 用于查看迁移后项目本身的验收结果、性能、custom-op迁移情况、构建日志等。
+*   迁移报告：会在迁移后的代码库下创建`migration_reports/`文件夹, 用于查看迁移后项目本身的验收结果、性能、custom-op迁移情况、构建日志等。
     
-*   详细运行时log：在迁移后项目的 `.sm-artifacts/` 下；如果运行失败，可以把运行报告和 `.sm-artifacts/` 一起反馈给我们排查。
+*   详细运行时 log：工作证据位于迁移项目的 `.sm-artifacts/`，最终报告目录还包含 telemetry、resource manifest、可选 raw trace 和 finalization diagnostics。请一并提供对应的 `summary.json`；不要把 `.sm-artifacts` 当作 continuation checkpoint。
     
 *   .memory .skill 等文件夹会更新，是SEAM的自进化学习的经验记忆和技能素材，非必要勿删。
     
