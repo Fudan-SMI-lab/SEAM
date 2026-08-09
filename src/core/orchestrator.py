@@ -22,7 +22,11 @@ from core.phase_runner import (
     PhaseRunner,
     SessionManagerLike as RunnerSessionManagerLike,
 )
-from core.platform_policy import PlatformPolicy, resolve_policy
+from core.platform_policy import (
+    PlatformPolicy,
+    resolve_policy,
+    satisfies_platform_requirements,
+)
 from core.prompt_loader import PromptLoader
 from core.repair_loop import (
     RepairLoopEngine,
@@ -38,6 +42,17 @@ from rule_strategies import create_migrator_resolved
 # The resolver uses importlib to instantiate migrators by strategy config.
 from migrator.rule_based import RuleBasedMigrator  # noqa: F401
 from migrator.rule_based_ppu import PPURuleBasedMigrator  # noqa: F401
+
+# #17 boolean success contract terms (T12).  Success is the 5-term AND of
+# exactly these.  The orchestrator falls back to the legacy success/status
+# shortcut only when no contract term is recorded in the phase-5 output.
+_PHASE5_CONTRACT_TERMS = (
+    "entry_exit_ok",
+    "required_artifacts_valid",
+    "platform_policy_satisfied",
+    "required_gates_passed",
+    "review_policy_satisfied",
+)
 
 JsonDict = dict[str, object]
 
@@ -477,6 +492,12 @@ class Orchestrator:
 
     @staticmethod
     def _phase_5_succeeded(phase_5_output: dict[str, object]) -> bool:
+        if any(term in phase_5_output for term in _PHASE5_CONTRACT_TERMS):
+            return all(
+                phase_5_output.get(term) is True
+                for term in _PHASE5_CONTRACT_TERMS
+                if term in phase_5_output
+            )
         if phase_5_output.get("success") is not True:
             return False
         status = str(phase_5_output.get("status", "")).strip().lower()

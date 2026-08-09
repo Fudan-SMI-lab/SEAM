@@ -39,7 +39,17 @@ def test_accepted_attempt_requires_exact_executable_environment_binding(
     # Given one host environment whose absolute executable differs from receipt argv.
     store = runtime_store(tmp_path)
     add_base_environment(store)
-    _receipt, source = replay_source(tmp_path)
+    receipt, _source = replay_source(tmp_path)
+    receipt = receipt.model_copy(
+        update={
+            "invocation": receipt.invocation.model_copy(
+                update={"argv": ("/different/python", "validation.py")}
+            )
+        }
+    )
+    receipt_path = tmp_path / "absolute-mismatch.receipt.json"
+    _ = receipt_path.write_text(receipt.model_dump_json(indent=2), encoding="utf-8")
+    source = AcceptedReplaySource(receipt_path, issued_authority(receipt_path, receipt))
 
     # When integration tries to bind the accepted attempt.
     _bind_environment(store, source)

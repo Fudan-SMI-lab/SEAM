@@ -26,13 +26,24 @@ from core.execution_backend import (
 from core.paths import migration_utils_root, workspace_root
 from core.prompt_loader import PromptLoader
 from core.runtime_artifacts import (
+    bounded_runtime_filename,
+    guard_artifact_path,
     sanitize_project_name,
     write_operator_repair_context_artifact,
     write_repair_runtime_artifacts,
 )
 from core.types import RepairContext
 from core.validator_engine import ValidatorEngine
-from core.platform_policy import PlatformPolicy
+from core.platform_policy import PlatformPolicy, satisfies_platform_requirements
+from core.config_loader import ContextManagementConfig, load_context_management_config
+from core.context_management import (
+    CONTEXT_SNAPSHOT_FILENAME,
+    ContextBudgetEstimator,
+    ContextBudgetState,
+    ContextSnapshot,
+    write_snapshot_atomic,
+)
+from core.session_registry import ContextExhaustedError
 from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_validation_final import (
     validate as validate_validation_final,
@@ -237,10 +248,12 @@ def _write_final_gate_validator_runner(
     The script is executable (chmod 0o700) and self-contained: it changes
     directory to ``migration_utils_root()`` and runs the validator heredoc.
     """
-    runtime_dir = Path(artifact_dir) / "runtime"
+    runtime_dir = guard_artifact_path(Path(artifact_dir) / "runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     project_name = sanitize_project_name(project_dir)
-    script_path = runtime_dir / f"finalGateValidator_{project_name}.sh"
+    script_path = runtime_dir / bounded_runtime_filename(
+        "finalGateValidator_", project_name, ".sh"
+    )
 
     mu_root = str(migration_utils_root())
     python_script = _build_final_gate_validator_python_script(
@@ -890,6 +903,8 @@ class SessionManagerLike(Protocol):
         self, session_id: str, command: str, timeout: Any = None
     ) -> str: ...
 
+    def get_session_token_usage(self, session_id: str) -> dict | None: ...
+
 
 class RepairLoopEngine:
     """Run Phase 5 execution, analysis, and targeted repair retries."""
@@ -909,6 +924,7 @@ class RepairLoopEngine:
         config: ConfigDict | None = None,
         exec_backend: object = None,
         platform_policy: PlatformPolicy | None = None,
+        workflow: object | None = None,
     ) -> None:
         self.session_mgr = session_mgr
         self.artifact_store = artifact_store
@@ -917,9 +933,100 @@ class RepairLoopEngine:
         self.config = config
         self.exec_backend = exec_backend
         self.platform_policy = platform_policy
+        self.workflow = workflow
+        self._dispatch_route_map = self._extract_dispatch_route_map(workflow)
         self.validator.register_validator("validation_final", validate_validation_final)
         self.validator.register_validator(
-            "repair_classification", self._validate_classification
+            "repair_classification", self._validate_repair_classification
+        )
+
+    def _context_budget_active(self) -> bool:
+        """True when ``context_management`` is explicitly configured (bug #16)."""
+        return (
+            isinstance(self.config, dict)
+            and "context_management" in self.config
+            and self._context_config().enabled
+        )
+
+    def _context_config(self) -> ContextManagementConfig:
+        """Load and validate the ``context_management`` section (never None)."""
+        raw: object = {}
+        if isinstance(self.config, dict):
+            raw = self.config.get("context_management")
+        if isinstance(raw, ContextManagementConfig):
+            return raw
+        return load_context_management_config(raw if isinstance(raw, dict) else {})
+
+    def _context_budget_state(self, session_id: str) -> ContextBudgetState:
+        """Current budget verdict for *session_id*; never raises.
+
+        Token usage is sourced from the live session via the session manager
+        (``info.tokens`` of the latest message), so the estimator feeds real
+        usage into threshold decisions instead of the conservative estimation
+        path. Provider outages degrade internally to estimation.
+        """
+        estimator = ContextBudgetEstimator(
+            self._context_config(),
+            token_provider=self._session_token_provider(session_id),
+        )
+        return estimator.estimate().state
+
+    def _session_token_provider(self, session_id: str) -> Callable[[], object]:
+        """Build a ``TokenProvider`` polling *session_id* latest usage."""
+
+        def _poll() -> object:
+            get_usage = getattr(self.session_mgr, "get_session_token_usage", None)
+            if not callable(get_usage):
+                return None
+            return get_usage(session_id)
+
+        return _poll
+
+    def _bounded_history(self, history: list[object]) -> list[object]:
+        """History window fed to prompt formatters (feature-gated bounding)."""
+        if not self._context_budget_active():
+            return history
+        keep = self._context_config().keep_recent_turns
+        if keep == 0:
+            return []
+        if len(history) > keep:
+            return history[-keep:]
+        return history
+
+    def _write_context_snapshot(
+        self,
+        *,
+        agent_role: str,
+        iteration: int,
+        current_error_signature: str,
+        current_repair_role: str,
+    ) -> str:
+        """Persist a context snapshot under the artifact dir; returns its path."""
+        snapshot = ContextSnapshot(
+            run_id=str(getattr(self.artifact_store, "run_id", "")),
+            phase=_PHASE_ID,
+            agent_role=agent_role,
+            iteration=iteration,
+            current_error_signature=current_error_signature or "",
+            current_repair_role=current_repair_role or "",
+        )
+        snapshot_path = Path(self.artifact_store.artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
+        write_snapshot_atomic(snapshot, snapshot_path)
+        return str(snapshot_path)
+
+    def _rotate_base_session(
+        self,
+        base_role: str,
+        current_session_id: str,
+        counters: dict[str, int],
+    ) -> str:
+        """Rotate to ``<base_role>_rotated_<n>`` persistent session (§5.6/§5.7)."""
+        counter = counters.get(base_role, 0) + 1
+        counters[base_role] = counter
+        rotated_role = f"{base_role}_rotated_{counter}"
+        return self.session_mgr.get_or_create(
+            role=rotated_role,
+            lifecycle="persistent",
         )
 
     @staticmethod
@@ -1146,6 +1253,8 @@ class RepairLoopEngine:
         max_entry_script_revisions = self._max_entry_script_revisions()
         entry_script_revision_requests: list[dict[str, object]] = []
         active_phase3_contract = dict(phase3_contract or {})
+        rotation_counters: dict[str, int] = {}
+        context_exhausted_result: dict[str, object] | None = None
 
         entry_script_timeout = _get_timeout(self.config, "entry_script_timeout")
         script_cwd, env_vars, cmd_argv, use_shell = self._prepare_entry_command(
@@ -1159,6 +1268,33 @@ class RepairLoopEngine:
             for iteration in range(1, max_iterations + 1):
                 review_result: dict[str, object] | None = None
                 error_text = ""
+
+                if self._context_budget_active():
+                    budget_state = self._context_budget_state(analyzer_session_id)
+                    if budget_state in (
+                        ContextBudgetState.COMPACT,
+                        ContextBudgetState.ROTATE,
+                    ):
+                        self._write_context_snapshot(
+                            agent_role=_ANALYZER_ROLE,
+                            iteration=iteration,
+                            current_error_signature=last_error_signature
+                            or context.last_error
+                            or "",
+                            current_repair_role=context.repair_role,
+                        )
+                    if budget_state == ContextBudgetState.ROTATE:
+                        analyzer_session_id = self._rotate_base_session(
+                            _ANALYZER_ROLE,
+                            analyzer_session_id,
+                            rotation_counters,
+                        )
+                        self._log(
+                            f"[Iter {iteration}] Context budget ROTATE -> "
+                            f"analyzer rotated to {analyzer_session_id}",
+                            logger,
+                        )
+
                 self._log(
                     f"[Iter {iteration}/{max_iterations}] Running entry script...",
                     logger,
@@ -1508,7 +1644,7 @@ class RepairLoopEngine:
                     project_dir=project_dir,
                     iteration=iteration,
                     error_text=error_text,
-                    history=context.history,
+                    history=self._bounded_history(context.history),
                     constraint_summary=constraint_summary,
                     last_review=last_review,
                     env_context=env_context or {},
@@ -1593,6 +1729,33 @@ class RepairLoopEngine:
                             logger,
                         )
                     else:
+                        if self._context_budget_active():
+                            budget_state = self._context_budget_state(repair_session_id)
+                            if budget_state in (
+                                ContextBudgetState.COMPACT,
+                                ContextBudgetState.ROTATE,
+                            ):
+                                self._write_context_snapshot(
+                                    agent_role=repair_role,
+                                    iteration=iteration,
+                                    current_error_signature=last_error_signature
+                                    or context.last_error
+                                    or "",
+                                    current_repair_role=repair_role,
+                                )
+                            if budget_state == ContextBudgetState.ROTATE:
+                                repair_session_id = self._rotate_base_session(
+                                    repair_role,
+                                    repair_session_id,
+                                    rotation_counters,
+                                )
+                                repair_session_ids[repair_role] = repair_session_id
+                                self._log(
+                                    f"[Iter {iteration}] Context budget ROTATE -> "
+                                    f"repair session rotated to {repair_session_id} "
+                                    f"(role: {repair_role})",
+                                    logger,
+                                )
                         self._log(
                             f"[Iter {iteration}] Reusing repair session {repair_session_id} "
                             f"(role: {repair_role})",
@@ -1605,7 +1768,7 @@ class RepairLoopEngine:
                         iteration=iteration,
                         error_text=error_text,
                         classification=classification,
-                        history=context.history,
+                        history=self._bounded_history(context.history),
                         constraint_summary=constraint_summary,
                         last_review=last_review,
                         env_context=env_context or {},
@@ -1622,6 +1785,9 @@ class RepairLoopEngine:
                     fix_metadata: FixMetadataDict = {}
                     max_retries = 2
                     retry_delays = [5, 15]
+                    rotated_for_recovery = False
+                    abort_run = False
+                    original_repair_session_id = repair_session_id
 
                     for attempt in range(max_retries + 1):
                         try:
@@ -1663,6 +1829,51 @@ class RepairLoopEngine:
                                 time.sleep(retry_delays[attempt])
                                 continue
                             repair_failed = True
+                        except ContextExhaustedError as exc:
+                            if rotated_for_recovery:
+                                status = "context_exhausted"
+                                context_exhausted_result = {
+                                    "recovered": False,
+                                    "reason": str(
+                                        getattr(exc, "reason", "") or "context_exhausted"
+                                    ),
+                                    "old_session_id": original_repair_session_id,
+                                    "new_session_id": repair_session_id,
+                                }
+                                self._log(
+                                    f"[Iter {iteration}] Repair LLM context exhausted "
+                                    f"again after rotation -> terminating",
+                                    logger,
+                                )
+                                repair_failed = True
+                                repair_error = str(exc)
+                                abort_run = True
+                                break
+                            rotated_for_recovery = True
+                            original_repair_session_id = repair_session_id
+                            self._write_context_snapshot(
+                                agent_role=repair_role,
+                                iteration=iteration,
+                                current_error_signature=last_error_signature
+                                or context.last_error
+                                or "",
+                                current_repair_role=repair_role,
+                            )
+                            repair_session_id = self._rotate_base_session(
+                                repair_role,
+                                repair_session_id,
+                                rotation_counters,
+                            )
+                            repair_session_ids[repair_role] = repair_session_id
+                            self._log(
+                                f"[Iter {iteration}] Repair LLM context exhausted -> "
+                                f"rotated to {repair_session_id}; single resend",
+                                logger,
+                            )
+                            continue
+
+                    if abort_run:
+                        break
 
                     if repair_failed:
                         fix_metadata = {
@@ -1755,6 +1966,7 @@ class RepairLoopEngine:
             final_exit_code=final_exit_code,
             gate_state=gate_state,
         )
+        result["context_exhausted"] = context_exhausted_result or None
         self._save_final_result(result)
         return result
 
@@ -2205,6 +2417,11 @@ class RepairLoopEngine:
         }
         context.history.append(summary_entry)
 
+        if self._context_budget_active():
+            keep = getattr(self._context_config(), "keep_recent_turns", 2) or 2
+            if keep > 0 and len(context.history) > keep:
+                context.history = context.history[-keep:]
+
         raw_path = self.artifact_store.save_phase_output(
             _PHASE_ID,
             cast(dict[str, object], cast(object, record)),
@@ -2243,6 +2460,16 @@ class RepairLoopEngine:
     ) -> dict[str, object]:
         success = status in {"success", "passed_with_reviews"}
         errors = [] if success else ([context.last_error] if context.last_error else [])
+        entry_exit_ok = final_exit_code == 0
+        contract_terms = {
+            "entry_exit_ok": entry_exit_ok,
+            "required_artifacts_valid": entry_exit_ok,
+            "required_gates_passed": entry_exit_ok,
+            "review_policy_satisfied": success,
+            "platform_policy_satisfied": satisfies_platform_requirements(
+                self.platform_policy, {}
+            ),
+        }
         result: dict[str, object] = {
             "success": success,
             "status": status,
@@ -2254,6 +2481,7 @@ class RepairLoopEngine:
             "final_stdout": final_stdout,
             "final_stderr": final_stderr,
             "final_exit_code": final_exit_code,
+            **contract_terms,
         }
         if (
             status == "passed_with_reviews"
@@ -2692,7 +2920,10 @@ class RepairLoopEngine:
         return self.prompt_loader.load_prompt(prompt_id, context)
 
     @staticmethod
-    def _validate_classification(data: dict[str, object]) -> dict[str, object]:
+    def _validate_classification(
+        data: dict[str, object],
+        route_map: dict[str, str] | None = None,
+    ) -> dict[str, object]:
         errors: list[str] = []
         for field_name in ("category", "root_cause", "suggested_fix", "repair_role"):
             value = data.get(field_name)
@@ -2700,10 +2931,50 @@ class RepairLoopEngine:
                 errors.append(f"{field_name} must be a non-empty string")
 
         repair_role = data.get("repair_role")
-        if isinstance(repair_role, str) and repair_role not in _REPAIR_ROLES:
-            errors.append(f"repair_role must be one of {sorted(_REPAIR_ROLES)}")
+        if isinstance(repair_role, str):
+            if repair_role not in _REPAIR_ROLES:
+                errors.append(f"repair_role must be one of {sorted(_REPAIR_ROLES)}")
+            if route_map is not None and repair_role not in route_map:
+                errors.append(
+                    f"repair_role must be declared in the workflow dispatch route "
+                    f"map ({sorted(route_map)})"
+                )
 
         return {"passed": not errors, "errors": errors, "warnings": []}
+
+    def _validate_repair_classification(
+        self, data: dict[str, object]
+    ) -> dict[str, object]:
+        return self._validate_classification(data, route_map=self._dispatch_route_map)
+
+    @staticmethod
+    def _extract_dispatch_route_map(workflow: object) -> dict[str, str] | None:
+        """Prefer the repair_dispatch phase's routes; fall back to first dispatch map."""
+        if workflow is None:
+            return None
+        containers: list[object] = []
+        containers.append(getattr(workflow, "phases", None) or [])
+        for sw in (getattr(workflow, "sub_workflows", None) or {}).values():
+            containers.append(getattr(sw, "phases", None) or [])
+            for block in (getattr(sw, "blocks", None) or {}).values():
+                if isinstance(block, dict):
+                    containers.append(block.get("phases") or [])
+        candidates: list[tuple[str, dict[str, str]]] = []
+        for phases in containers:
+            for phase in phases or []:
+                if not isinstance(phase, dict):
+                    continue
+                if str(phase.get("type", "")).lower() != "dispatch":
+                    continue
+                routes = phase.get("routes")
+                if isinstance(routes, dict) and routes:
+                    candidates.append((str(phase.get("id", "")), dict(routes)))
+        if not candidates:
+            return None
+        for phase_id, routes in candidates:
+            if phase_id == "repair_dispatch":
+                return routes
+        return candidates[0][1]
 
     def _snapshot_project_files(
         self, project_dir: str, label: str

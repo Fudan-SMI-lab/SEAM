@@ -1,5 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0",
   "title": "Phase 6: Reports Output",
   "type": "object",
   "properties": {
@@ -20,6 +21,40 @@
         }
       },
       "required": ["files_migrated", "files_skipped"]
+    },
+    "run_timeline": {
+      "type": "object",
+      "properties": {
+        "run_started_at": {
+          "type": "string"
+        },
+        "run_ended_at": {
+          "type": "string"
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "phase_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "ended_at": {
+                "type": "string"
+              },
+              "duration_seconds": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "required": ["report_paths", "migration_summary"]

@@ -38,6 +38,8 @@ EXPECTED_DEV_EXTRAS = (
     "pytest>=7.4,<9",
     "PyYAML>=6.0,<7",
     "pydantic>=2.8,<3",
+    "rich>=13.0",
+    "textual>=0.50",
     "tomli>=2.0,<3; python_version < '3.11'",
 )
 EXPECTED_PACKAGES = (
@@ -48,6 +50,11 @@ EXPECTED_PACKAGES = (
     "scripts*",
     "validators*",
     "workflows*",
+    "prompts*",
+    "config*",
+    "schemas*",
+    "test_project_template*",
+    "tests*",
 )
 EXPECTED_MARKERS = {
     "integration": (

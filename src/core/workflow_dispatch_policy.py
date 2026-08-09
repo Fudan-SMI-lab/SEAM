@@ -25,4 +25,11 @@ def select_dispatch_route(
     else:
         route_key = str(resolved_route)
     routes = parameter_routes or transition_routes
-    return DispatchDecision(route_key, routes.get(route_key), tuple(routes))
+    target = routes.get(route_key)
+    if target is None and route_key and route_key not in routes:
+        # Bug #15: fail closed — silent None (deadlock) vs explicit raise.
+        raise ValueError(
+            f"Dispatch route {route_key!r} is not declared in the route map "
+            f"{tuple(routes)}"
+        )
+    return DispatchDecision(route_key, target, tuple(routes))

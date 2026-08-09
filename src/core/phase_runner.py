@@ -7,6 +7,7 @@ import re
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Dict, Protocol, cast, runtime_checkable
 
@@ -127,6 +128,8 @@ class SessionManagerLike(Protocol):
         retries: int = 2,
     ) -> str: ...
 
+    def get_session_token_usage(self, session_id: str) -> dict | None: ...
+
 
 @runtime_checkable
 class InlineSessionLike(Protocol):
@@ -227,6 +230,8 @@ class PhaseRunner:
         self._register_default_validators()
         self._container_context: dict[str, str] = {}
         self._exec_env_context: str = ""
+        self._run_started_at: str | None = None
+        self._run_ended_at: str | None = None
 
     def set_container_context(self, ctx: dict[str, str]) -> None:
         self._container_context = dict(ctx)
@@ -694,11 +699,18 @@ class PhaseRunner:
         report_dir = os.path.join(artifact_store.artifact_dir, "reports")
         os.makedirs(report_dir, exist_ok=True)
 
+        phase_6_started_at = datetime.now(timezone.utc).isoformat()
+        if self._run_started_at is None:
+            self._run_started_at = phase_6_started_at
+
         prompt_context = {
             "phase_name": "phase_6_report",
             "project_dir": str(project_dir),
             "previous_outputs": self._serialize_context(prior_artifacts),
             "report_dir": report_dir,
+            "run_timeline": self._build_phase6_run_timeline(
+                prior_artifacts, phase_6_started_at
+            ),
         }
         for k, v in self._container_context.items():
             prompt_context.setdefault(k, v)
@@ -747,6 +759,8 @@ class PhaseRunner:
                     "project_dir": str(project_dir),
                 }
 
+        self._run_ended_at = datetime.now(timezone.utc).isoformat()
+
         raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=1)
         canonical_path = artifact_store.mark_validated("phase_6_report", report)
         _ = artifact_store.write_journal(
@@ -763,6 +777,53 @@ class PhaseRunner:
         )
 
         return report
+
+    def _build_phase6_run_timeline(
+        self,
+        prior_artifacts: dict[str, object],
+        phase_6_started_at: str,
+    ) -> dict[str, object]:
+        """Build a real run timeline for the Phase-6 prompt context.
+
+        Mirrors ``WorkflowExecutor._build_run_timeline``
+        (workflow_executor.py L627-645): one entry per recorded prior phase
+        plus the in-flight Phase-6 report phase, carrying
+        run_started_at/run_ended_at facts so a report built through the
+        phase_runner path is consistent with the workflow_executor path
+        (bug #18 divergence 4).
+        """
+        phases: list[dict[str, object]] = []
+        for phase_id, entry in prior_artifacts.items():
+            if not isinstance(entry, dict):
+                continue
+            raw_status = entry.get("status") or entry.get("overall_status")
+            phases.append(
+                {
+                    "phase_id": phase_id,
+                    "status": (
+                        raw_status
+                        if isinstance(raw_status, str) and raw_status.strip()
+                        else "completed"
+                    ),
+                    "started_at": entry.get("started_at"),
+                    "ended_at": entry.get("ended_at"),
+                    "duration_seconds": entry.get("duration_seconds"),
+                }
+            )
+        phases.append(
+            {
+                "phase_id": "phase_6_report",
+                "status": "running",
+                "started_at": phase_6_started_at,
+                "ended_at": None,
+                "duration_seconds": None,
+            }
+        )
+        return {
+            "run_started_at": self._run_started_at,
+            "run_ended_at": self._run_ended_at,
+            "phases": phases,
+        }
 
     def _phase_6_timeout(self) -> int:
         runtime_phase = self._runtime_phase_index.get("phase_6_report")

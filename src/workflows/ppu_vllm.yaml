@@ -227,6 +227,11 @@ sub_workflows:
       - condition: "$.stagnation_count >= 3"
         status: "stagnation"
     phases:
+      - id: dependency_reinstall
+        type: builtin
+        params:
+          operation: "dependency_reinstall"
+
       - id: run_entry_script
         type: shell
         timeout: 1800

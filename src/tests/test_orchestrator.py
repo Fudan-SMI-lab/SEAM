@@ -28,6 +28,9 @@ class MockSessionManager:
         self.calls.append(("send_command", {"session_id": session_id, "command": command, "timeout": timeout}))
         return "Failure Summary\nObserved Evidence\nMost Likely Root Cause\nRecommended Fix\nRetry Decision\nstop"
 
+    def get_session_token_usage(self, session_id: str) -> dict | None:
+        return None
+
     def cleanup_all(self) -> int:
         self.calls.append(("cleanup_all", None))
         return 1
