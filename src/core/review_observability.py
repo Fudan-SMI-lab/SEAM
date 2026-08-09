@@ -69,12 +69,15 @@ def publish_review_transition(
     observer: ReviewCompletionObserver | None,
     transition: ReviewTransition,
 ) -> bool:
-    if not isinstance(observer, ReviewCompletionObserver):
-        return False
-    if len(transition.gate.rounds) != transition.previous_round_count + 1:
-        logger.warning("Review observability dropped stale or repeated transition")
-        return False
     try:
+        # A runtime-checkable protocol may access descriptors while checking
+        # structural conformance. Keep that observer-owned code inside the
+        # same outcome-neutral boundary as the later property/method calls.
+        if not isinstance(observer, ReviewCompletionObserver):
+            return False
+        if len(transition.gate.rounds) != transition.previous_round_count + 1:
+            logger.warning("Review observability dropped stale or repeated transition")
+            return False
         run_id = observer.run_id
         if run_id is None or not run_id.strip():
             logger.warning("Review observability skipped: missing run correlation")

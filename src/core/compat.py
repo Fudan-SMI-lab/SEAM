@@ -80,16 +80,33 @@ else:  # pragma: no cover -- exercised on 3.8/3.9 only
 if sys.version_info >= (3, 11):
     from typing import LiteralString, Never, Self, assert_never, assert_type
 else:
-    from typing_extensions import (
-        LiteralString,
-        Never,
-        Self,
-        assert_never,
-        assert_type,
-    )
+    try:
+        from typing_extensions import (
+            LiteralString,
+            Never,
+            Self,
+            assert_never,
+            assert_type,
+        )
+    except ModuleNotFoundError:  # ``python -S`` isolated runtime probes
+        from typing import NoReturn, TypeVar
+
+        LiteralString = str
+        Never = NoReturn
+        Self = TypeVar("Self")
+
+        def assert_never(value: Never) -> Never:
+            raise AssertionError(f"Expected code to be unreachable, got: {value!r}")
+
+        def assert_type(value, _typ):
+            return value
 
 # --- Python 3.12+ ----------------------------------------------------------
 if sys.version_info >= (3, 12):
     from typing import override
 else:
-    from typing_extensions import override
+    try:
+        from typing_extensions import override
+    except ModuleNotFoundError:  # ``python -S`` isolated runtime probes
+        def override(method):
+            return method
