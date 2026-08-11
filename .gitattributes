@@ -1,1 +1,2 @@
 *.sh text eol=lf
+src/seam_init/data/omo.schema.json text eol=lf
