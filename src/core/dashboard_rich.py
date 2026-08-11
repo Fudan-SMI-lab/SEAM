@@ -128,3 +128,12 @@ def run_dashboard(events_path: str | Path, stop_event: threading.Event) -> None:
                 keyboard_termios.TCSADRAIN,
                 keyboard_settings,
             )
+
+    print(
+        "\nDashboard closed (q). Migration continues in background.\n"
+        f"Report dir: {path.parent}\n"
+        f"Events log: {path}\n"
+        "Waiting for migration to finish...",
+        file=sys.stderr,
+        flush=True,
+    )

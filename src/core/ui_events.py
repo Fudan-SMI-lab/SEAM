@@ -31,6 +31,14 @@ class PhaseDisplay:
 
 
 PHASE_DISPLAY: dict[str, PhaseDisplay] = {
+    "init_server_check": PhaseDisplay(
+        "服务器检查",
+        "检查 OpenCode server 是否就绪、模型配置是否可用。",
+    ),
+    "init_project_copy": PhaseDisplay(
+        "项目准备",
+        "将待迁移项目复制到工作目录。",
+    ),
     "phase_0_env_detect": PhaseDisplay(
         "环境检测",
         "检测目标机器、GPU/驱动、Python、容器和平台 SDK 是否可用于迁移。",
