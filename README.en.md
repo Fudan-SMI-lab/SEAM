@@ -38,11 +38,34 @@ Production support for this release is Linux only and requires Python 3.10+. Man
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM
-bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
-  --server_type opencode
+bash src/scripts/init_seam.sh
 ```
 
-Make sure the local OpenCode Server is running first. The default address is `http://127.0.0.1:4098`; if your server uses another port, pass `--server_url` explicitly.
+The interactive initializer guides you through Python environment selection, SEAM dependency installation, OpenCode and OMO setup, and final validation. Three environment choices:
+
+- **Base interpreter**: use the current Python 3.10+ and install into it.
+- **Existing venv**: reuse a virtual environment you already have.
+- **New venv**: create a fresh `.venv` for SEAM.
+
+Terminal statuses and exit codes:
+
+| Status | Exit code | Meaning |
+|---|---|---|
+| READY | 0 | Setup complete; you can run migrations |
+| PENDING_AUTH | 60 | Structural checks passed; authentication/billable validation deferred |
+| FAILED | 61-69 | A stage failed; follow the terminal guidance and rerun |
+
+PENDING_AUTH is **not runnable-ready**: provide an API key, consent to one billable validation call, then rerun `bash src/scripts/init_seam.sh` until you reach READY (exit 0).
+
+On READY the terminal prints the migration command:
+
+```bash
+bash src/scripts/run_seam.sh /path/to/project --server_url http://127.0.0.1:4098
+```
+
+Replace `/path/to/project` with your CUDA project directory. Optional flags: `--dashboard` (force the live dashboard on), `--review` (enable the Review Gate), `--seal-manifest` (seal a root run-manifest after a direct run).
+
+Security note: the API key may be skipped and supplied on a later rerun; if supplied, it may be stored in plaintext in the local configuration.
 
 When `--workflow` is not passed, the launcher uses `src/workflows/seam_auto_default.yaml` as the default workflow.
 
