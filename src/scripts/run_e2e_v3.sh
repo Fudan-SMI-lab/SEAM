@@ -38,6 +38,7 @@ SEAM_PYTHON="${PYTHON:-}"
 OPENCODE_READINESS="message"
 OPENCODE_MESSAGE_TIMEOUT=120
 OPENCODE_DIAGNOSE_ONLY=false
+DASHBOARD_REQUESTED=""
 PYTHON_OPENCODE_READINESS="message"
 CONTAINER_RETENTION=""
 SAVE_AGENT_TRACE=""
@@ -208,8 +209,8 @@ while [[ $# -gt 0 ]]; do
         --opencode-readiness)    OPENCODE_READINESS="$2"; shift 2 ;;
         --opencode-message-timeout) OPENCODE_MESSAGE_TIMEOUT="$2"; shift 2 ;;
         --opencode-diagnose-only) OPENCODE_DIAGNOSE_ONLY=true; shift ;;
-        --dashboard)           EXTRA_ARGS+=("--dashboard"); shift ;;
-        --no-dashboard)        EXTRA_ARGS+=("--no-dashboard"); shift ;;
+        --dashboard)           EXTRA_ARGS+=("--dashboard"); DASHBOARD_REQUESTED=true; shift ;;
+        --no-dashboard)        EXTRA_ARGS+=("--no-dashboard"); DASHBOARD_REQUESTED=false; shift ;;
         --dashboard-mode)
             if [[ $# -lt 2 || ( "$2" != "auto" && "$2" != "on" && "$2" != "off" ) ]]; then
                 echo -e "${RED}Error: --dashboard-mode requires one of: auto, on, off.${NC}" >&2
@@ -433,53 +434,46 @@ if [[ "$OPENCODE_READINESS" != "off" && "$OPENCODE_READINESS" != "basic" && "$OP
     exit 1
 fi
 
-echo ""
-"$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env
-ENV_PATCH=$("$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env --emit-env)
+ENV_PATCH=$("$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env --emit-env 2>/dev/null)
 if [[ -n "$ENV_PATCH" ]]; then
     eval "$ENV_PATCH"
-    echo -e "${GREEN}✓${NC} Applied OpenCode preflight environment fixes"
 fi
 
 if [[ -n "$CONTINUE_FROM" ]]; then
-    echo ""
-    echo -e "${CYAN}OpenCode readiness will run after continuation ownership and environment validation.${NC}"
     PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
 elif [[ "$DRY_RUN" == true && "$OPENCODE_DIAGNOSE_ONLY" != true ]]; then
-    echo ""
-    echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
-else
-    echo ""
-    echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
-    set +e
+    PYTHON_OPENCODE_READINESS="off"
+elif [[ "$OPENCODE_DIAGNOSE_ONLY" == true ]]; then
     "$SEAM_PYTHON" "$DIAG_SCRIPT" \
         --server-url "$SERVER_URL" \
         --mode "$OPENCODE_READINESS" \
         --message-timeout "$OPENCODE_MESSAGE_TIMEOUT"
+    exit $?
+elif [[ "$DASHBOARD_REQUESTED" == "true" ]]; then
+    PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
+else
+    echo ""
+    echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
+    set +e
+    DIAG_OUTPUT=$("$SEAM_PYTHON" "$DIAG_SCRIPT" \
+        --server-url "$SERVER_URL" \
+        --mode "$OPENCODE_READINESS" \
+        --message-timeout "$OPENCODE_MESSAGE_TIMEOUT" 2>&1)
     DIAG_EXIT=$?
     set -e
-
-    if [[ "$OPENCODE_DIAGNOSE_ONLY" == true ]]; then
-        if [[ $DIAG_EXIT -eq 0 || $DIAG_EXIT -eq 20 ]]; then
-            exit 0
-        fi
-        exit "$DIAG_EXIT"
-    fi
-
     if [[ $DIAG_EXIT -eq 0 || $DIAG_EXIT -eq 20 ]]; then
-        echo -e "${GREEN}✓${NC} OpenCode diagnostic passed"
+        echo -e "${GREEN}✓${NC} OpenCode server ready at $SERVER_URL"
         PYTHON_OPENCODE_READINESS="off"
     elif [[ $DIAG_EXIT -eq 40 && "$SERVER_NO_AUTO_START" != true ]]; then
-        echo -e "${YELLOW}⚠  OpenCode server is not reachable; auto-start is enabled, Python will attempt to start it.${NC}"
+        echo -e "${YELLOW}⚠  OpenCode server is not reachable; auto-start is enabled.${NC}"
+        [[ -n "${DIAG_OUTPUT:-}" ]] && echo "$DIAG_OUTPUT"
         PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
     else
         echo -e "${RED}✗ OpenCode diagnostic failed with exit code $DIAG_EXIT${NC}"
+        [[ -n "${DIAG_OUTPUT:-}" ]] && echo "$DIAG_OUTPUT"
         exit "$DIAG_EXIT"
     fi
 fi
-
-echo ""
-echo -e "${GREEN}════ All checks passed ═════${NC}"
 
 NO_AUTO_ARGS=()
 if [[ "$SERVER_NO_AUTO_START" == true ]]; then
@@ -560,7 +554,7 @@ fi
 
 # ── Launch E2E test ──
 echo ""
-echo -e "${CYAN}── Launching E2E test (YAML-driven workflow V3) ──${NC}"
+echo -e "${CYAN}── Launching E2E ──${NC}"
 REVIEW_ARGS=()
 if [[ "$REVIEW_GATE" == true ]]; then
     REVIEW_ARGS+=("--review-gate")
