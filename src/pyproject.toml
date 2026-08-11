@@ -33,9 +33,13 @@ include = [
     "migrator*",
     "rule_strategies*",
     "scripts*",
+    "seam_init*",
     "validators*",
     "workflows*",
 ]
+
+[tool.setuptools.package-data]
+"seam_init" = ["data/*.json"]
 
 [tool.basedpyright]
 extraPaths = ["_stubs"]
