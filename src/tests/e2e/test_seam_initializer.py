@@ -72,7 +72,18 @@ _SKIP_KEY_ANSWERS: Final[dict[str, object]] = {
 
 
 _FAKE_OPENCODE = '''#!/usr/bin/env python3
-"""Fake OpenCode CLI for the SEAM initializer E2E: --version/debug config/serve."""
+"""Fake OpenCode CLI for the SEAM initializer E2E: --version/debug config/serve.
+
+``debug config`` behaves like a real merged-runtime projection: it loads the
+global ($XDG_CONFIG_HOME/opencode/opencode.json), custom ($OPENCODE_CONFIG),
+and project (cwd .opencode/opencode.jsonc / opencode.json) layers that ACTUALLY
+EXIST, merges them in precedence order, applies $OPENCODE_CONFIG_CONTENT last,
+and reports only the loaded files in ``config_files``. A fresh install with no
+config files therefore projects an empty merged config and an empty file list;
+it never claims the sandbox project target exists before it is created. Secret
+values (apiKey/token/...) are emitted only as a presence placeholder, never as
+the real bytes.
+"""
 import http.server
 import json
 import os
@@ -80,6 +91,7 @@ import sys
 
 _LEDGER = os.environ.get("SEAM_E2E_LEDGER", "")
 _PROVIDERS = {"providers": [{"id": "openai", "models": {"gpt-4o": {"name": "gpt-4o"}}}]}
+_SECRET_KEYS = ("apikey", "authorization", "key", "password", "secret", "token")
 
 
 def _record(event):
@@ -92,16 +104,74 @@ def _record(event):
         pass
 
 
+def _redact(key, value):
+    if isinstance(value, dict):
+        return {name: _redact(name, item) for name, item in value.items()}
+    if isinstance(value, list):
+        return [_redact(key, item) for item in value]
+    if isinstance(value, str) and value.strip() and key.lower() in _SECRET_KEYS:
+        return "<redacted>"
+    return value
+
+
+def _merge(base, override):
+    result = dict(base)
+    for key, value in override.items():
+        current = result.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            result[key] = _merge(current, value)
+        else:
+            result[key] = value
+    return result
+
+
+def _load_json_file(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _debug_config():
-    joined = os.path.join(os.getcwd(), ".opencode", "opencode.jsonc")
-    observed = os.environ.get("SEAM_E2E_OBSERVED_CONFIG", "")
-    payload = {
-        "config_files": [observed] if observed else [],
-        "configPath": os.path.realpath(joined),
-        "configPathRaw": os.path.abspath(joined),
-        "provider": {"openai": {}},
-        "model": "openai/gpt-4o",
-    }
+    xdg = os.environ.get("XDG_CONFIG_HOME", "") or os.path.join(os.path.expanduser("~"), ".config")
+    project_path = os.path.join(os.getcwd(), ".opencode", "opencode.jsonc")
+    candidates = [
+        os.path.join(xdg, "opencode", "opencode.json"),
+        os.environ.get("OPENCODE_CONFIG", ""),
+        project_path,
+        os.path.join(os.getcwd(), "opencode.json"),
+    ]
+    layers = []
+    project_loaded = False
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        data = _load_json_file(candidate)
+        if data is None:
+            sys.stderr.write(f"fake opencode: cannot parse config {candidate}\\n")
+            return 1
+        layers.append((candidate, data))
+        if os.path.realpath(candidate) == os.path.realpath(project_path):
+            project_loaded = True
+    content = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
+    if content.strip():
+        try:
+            data = json.loads(content)
+        except ValueError:
+            sys.stderr.write("fake opencode: cannot parse OPENCODE_CONFIG_CONTENT\\n")
+            return 1
+        if isinstance(data, dict):
+            layers.append(("", data))
+    merged = {}
+    for _path, data in layers:
+        merged = _merge(merged, data)
+    payload = _redact("", merged)
+    payload["config_files"] = [os.path.realpath(path) for path, _data in layers if path]
+    if project_loaded:
+        payload["configPath"] = os.path.realpath(project_path)
+        payload["configPathRaw"] = os.path.abspath(project_path)
     print(json.dumps(payload))
     return 0
 
@@ -453,7 +523,6 @@ def _build_driver(wsl: dict[str, str], *, export_key: bool) -> bytes:
         f"export SEAM_E2E_LEDGER={shlex.quote(wsl['ledger'])}",
         f"export SEAM_E2E_SOURCE_POSIX={shlex.quote(wsl['src'])}",
         f"export SEAM_E2E_DOCTOR_CONFIG={shlex.quote(wsl['doctor'])}",
-        f"export SEAM_E2E_OBSERVED_CONFIG={shlex.quote(wsl['observed'])}",
         "export SEAM_PYTHON=python3",
     ]
     if export_key:
@@ -479,9 +548,8 @@ def _prepare(
     bin_dir = tmp_path / "bin"
     project = tmp_path / "project"
     venv_dir = tmp_path / "venv"
-    for directory in (home, xdg, bin_dir, project / ".opencode", venv_dir):
+    for directory in (home, xdg, bin_dir, project, venv_dir):
         directory.mkdir(parents=True, exist_ok=True)
-    _write_fake(project / ".opencode" / "opencode.jsonc", "{}\n")
     if with_opencode:
         _write_fake(bin_dir / "opencode", _FAKE_OPENCODE)
     _write_fake(bin_dir / "bun", _FAKE_BUN)
@@ -493,11 +561,10 @@ def _prepare(
     ledger = tmp_path / "ledger.jsonl"
     answers_path = tmp_path / "answers.json"
     names = ("home", "xdg", "bin", "project", "shim", "ledger",
-             "launcher", "src", "doctor", "answers", "observed")
+             "launcher", "src", "doctor", "answers")
     win_paths = [
         home, xdg, bin_dir, project, shim, ledger, _LAUNCHER, _SRC_DIR,
         project / ".opencode" / "oh-my-openagent.jsonc", answers_path,
-        project / ".opencode" / "opencode.jsonc",
     ]
     wsl: dict[str, str] = dict(zip(names, _wsl_paths(win_paths), strict=True))
     full_answers = {**answers, "environment": "existing", "venv_path": wsl["shim"]}
@@ -526,6 +593,14 @@ def _run_initializer(driver: bytes, *, timeout: float = _RUN_TIMEOUT) -> tuple[i
 
 
 # --- observation helpers ------------------------------------------------------
+
+
+def _assert_absent_configs(project: Path) -> None:
+    """Assert the fresh sandbox starts with NO OpenCode/OMO project config."""
+    oc = project / ".opencode" / "opencode.jsonc"
+    omo = project / ".omo" / "omo.jsonc"
+    assert not oc.exists(), f"fresh sandbox must not seed the OpenCode config: {oc}"
+    assert not omo.exists(), f"fresh sandbox must not seed the OMO config: {omo}"
 
 
 def _read_report(project: Path) -> dict[str, object]:
@@ -604,6 +679,8 @@ class TestPublicBashInitializer:
             tmp_path, with_opencode=True, fail_curl=False,
             answers=_READY_ANSWERS, export_key=True,
         )
+        # And: the sandbox starts with NO project configs at all (true fresh clone).
+        _assert_absent_configs(prepared.project)
         # When: the real public Bash initializer runs non-interactively.
         rc, stdout, stderr = _run_initializer(prepared.driver)
         # Then: READY/0 with the parser-valid run_seam.sh handoff command.
@@ -620,8 +697,16 @@ class TestPublicBashInitializer:
         assert report.get("exit_code") == 0
         assert report.get("auth_state") == "provided"
         assert report.get("billable_consent") == "given"
+        # And: the OpenCode config was created transactionally at the exact path.
+        oc_path = prepared.project / ".opencode" / "opencode.jsonc"
+        assert oc_path.is_file(), f"fresh run did not create the OpenCode config: {oc_path}"
+        report_facts = report.get("facts")
+        assert isinstance(report_facts, dict)
+        assert str(report_facts.get("opencode_transaction_id", "")).strip(), (
+            "report lacks the OpenCode commit transaction id"
+        )
         # And: both configs committed with the selected provider/model semantics.
-        oc_config = _parse_semantic(prepared.project / ".opencode" / "opencode.jsonc")
+        oc_config = _parse_semantic(oc_path)
         assert isinstance(oc_config, dict)
         assert oc_config.get("model") == _PROVIDER_MODEL
         provider = oc_config.get("provider")
@@ -653,6 +738,8 @@ class TestPublicBashInitializer:
             tmp_path, with_opencode=True, fail_curl=False,
             answers=_SKIP_KEY_ANSWERS, export_key=False,
         )
+        # And: the sandbox starts with NO project configs at all (true fresh clone).
+        _assert_absent_configs(prepared.project)
         # When: the real public Bash initializer runs non-interactively.
         rc, stdout, stderr = _run_initializer(prepared.driver)
         # Then: PENDING_AUTH/60 with neutral wording (never a READY claim).
@@ -664,8 +751,16 @@ class TestPublicBashInitializer:
         assert report.get("exit_code") == 60
         assert report.get("auth_state") == "skipped"
         assert report.get("billable_consent") == "declined"
+        # And: the fresh OpenCode config was still created transactionally.
+        oc_path = prepared.project / ".opencode" / "opencode.jsonc"
+        assert oc_path.is_file(), f"skip-key run did not create the OpenCode config: {oc_path}"
+        report_facts = report.get("facts")
+        assert isinstance(report_facts, dict)
+        assert str(report_facts.get("opencode_transaction_id", "")).strip(), (
+            "report lacks the OpenCode commit transaction id"
+        )
         # And: structural stages committed, but no api key was written anywhere.
-        oc_config = _parse_semantic(prepared.project / ".opencode" / "opencode.jsonc")
+        oc_config = _parse_semantic(oc_path)
         assert "apiKey" not in json.dumps(oc_config)
         # And: the ledger proves zero paid calls while the structural doctor ran.
         entries = _ledger_entries(prepared.ledger)
@@ -681,6 +776,8 @@ class TestPublicBashInitializer:
             tmp_path, with_opencode=False, fail_curl=True,
             answers=_READY_ANSWERS, export_key=True,
         )
+        # And: the sandbox starts with NO project configs at all (true fresh clone).
+        _assert_absent_configs(prepared.project)
         # When: the real public Bash initializer runs non-interactively.
         rc, stdout, stderr = _run_initializer(prepared.driver)
         # Then: the categorized OPENCODE_INSTALL failure (63), never a false READY.
@@ -691,6 +788,8 @@ class TestPublicBashInitializer:
         assert report.get("status") == "failed"
         assert report.get("exit_code") == 63
         assert report.get("failure_kind") == "OPENCODE_INSTALL"
+        # And: the categorized failure wrote NO project configs (exact failure).
+        _assert_absent_configs(prepared.project)
         # And: the installer boundary was exercised through the fake (no real network).
         entries = _ledger_entries(prepared.ledger)
         assert any(entry.get("who") == "curl" for entry in entries), entries
@@ -704,6 +803,8 @@ class TestPublicBashInitializer:
             tmp_path, with_opencode=True, fail_curl=False,
             answers=_READY_ANSWERS, export_key=True,
         )
+        # And: the first run starts with NO project configs at all (true fresh clone).
+        _assert_absent_configs(prepared.project)
         rc1, stdout1, stderr1 = _run_initializer(prepared.driver)
         assert rc1 == 0, f"first run stdout:\n{stdout1}\nstderr:\n{stderr1}"
         assert "SEAM setup is READY." in stdout1
