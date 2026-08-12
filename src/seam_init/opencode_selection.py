@@ -4,24 +4,28 @@ Provides the override builder for custom OpenAI-compatible providers
 (exact camelCase ``baseURL``/``apiKey``), structural merge application
 (:func:`core.jsonc.merge_config`), interactive provider/model selection
 through :class:`PromptPort`, the API-key flow with explicit
-plaintext-storage-risk confirmation before calling ``secret()``, and the
+plaintext-storage-risk confirmation before calling ``secret()``, the
 secret-free :class:`ConfigProjection` of what a merged candidate writes
-(used by the post-write runtime proof in ``opencode_discovery``).
+(used by the post-write runtime proof in ``opencode_discovery``), and a
+built-in provider preset catalog loaded from ``data/provider_presets.json``.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Protocol, final, runtime_checkable
 
 from core.jsonc import JsonValue, merge_config
 from seam_init.models import AuthState, ModelId, ProviderId, ProviderSelection
 
 __all__ = [
-    "ConfigProjection", "CustomProviderSpec", "PromptPort", "ProviderProjection",
+    "ConfigProjection", "CustomProviderSpec", "ModelPreset", "PromptPort",
+    "ProviderPreset", "ProviderProjection",
     "apply_selection", "build_config_projection", "build_custom_provider_override",
-    "collect_api_key", "define_custom_provider", "provider_has_api_key",
-    "select_provider_model",
+    "collect_api_key", "define_custom_provider", "load_provider_presets",
+    "provider_has_api_key", "select_provider_model",
 ]
 
 _OPENAI_COMPATIBLE_NPM: Final[str] = "@ai-sdk/openai-compatible"
@@ -62,6 +66,53 @@ class CustomProviderSpec:
     base_url: str
     model_id: str
     model_name: str
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ModelPreset:
+    """One model option in a provider preset."""
+
+    id: str
+    name: str
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ProviderPreset:
+    """A built-in provider option with known configuration."""
+
+    id: str
+    name: str
+    type: str  # "native" or "openai-compatible"
+    base_url: str | None
+    needs_api_key: bool
+    models: tuple[ModelPreset, ...]
+
+
+_PRESET_TYPE_NATIVE: Final[str] = "native"
+_PRESET_TYPE_COMPAT: Final[str] = "openai-compatible"
+
+
+def load_provider_presets() -> tuple[ProviderPreset, ...]:
+    """Load the provider preset catalog from the bundled JSON data file."""
+    preset_path = Path(__file__).parent / "data" / "provider_presets.json"
+    raw = json.loads(preset_path.read_text(encoding="utf-8"))
+    presets: list[ProviderPreset] = []
+    for item in raw.get("presets", []):
+        models = tuple(
+            ModelPreset(id=str(m["id"]), name=str(m["name"]))
+            for m in item.get("models", [])
+        )
+        presets.append(ProviderPreset(
+            id=str(item["id"]),
+            name=str(item["name"]),
+            type=str(item.get("type", _PRESET_TYPE_COMPAT)),
+            base_url=item.get("base_url"),
+            needs_api_key=bool(item.get("needs_api_key", True)),
+            models=models,
+        ))
+    return tuple(presets)
 
 
 @final
@@ -216,22 +267,31 @@ def select_provider_model(
     discovered_value: Mapping[str, JsonValue],
     available_models: tuple[str, ...],
 ) -> tuple[ProviderSelection, CustomProviderSpec | None] | None:
-    """Interactively select a provider/model or define a custom provider.
+    """Interactively select a provider/model from presets, existing config, or custom.
 
-    Shows discovered providers and available models as hints. Returns
+    Shows a numbered preset menu (loaded from ``data/provider_presets.json``),
+    a custom-entry option, and discovered providers as hints. Returns
     ``(selection, custom_or_None)`` or ``None`` if the user cancels.
     """
-    providers_raw = discovered_value.get("provider")
-    known: list[str] = (
-        [str(k) for k in providers_raw] if isinstance(providers_raw, dict) else []
-    )
-    hint = ", ".join(known) if known else "(none discovered)"
-    models_hint = str(len(available_models)) if available_models else "0"
-    full_prompt = f"{_SelectProviderPrompt} Discovered: {hint}; models: {models_hint}"
-    choice = prompt.ask(full_prompt).strip().lower()
+    presets = load_provider_presets()
+    _ = available_models
+
+    lines: list[str] = ["Available providers:"]
+    for i, p in enumerate(presets, 1):
+        model_hint = ", ".join(m.id for m in p.models) if p.models else "(specify manually)"
+        lines.append(f"  [{i}] {p.name} — {model_hint}")
+    custom_num = len(presets) + 1
+    lines.append(f"  [{custom_num}] Custom (enter manually)")
+    menu = "\n".join(lines)
+
+    choice = prompt.ask(f"{menu}\nSelect provider [1-{custom_num}]").strip()
     if not choice:
         return None
-    if choice == "custom":
+    try:
+        idx = int(choice) - 1
+    except ValueError:
+        return None
+    if idx == len(presets):
         custom = define_custom_provider(prompt)
         if custom is None:
             return None
@@ -242,14 +302,61 @@ def select_provider_model(
             auth_state=AuthState.SKIPPED,
         )
         return selection, custom
-    provider_id = choice
-    model_id = prompt.ask(
-        _SelectModelPrompt.format(provider=provider_id),
-    ).strip()
-    if not provider_id or not model_id:
+    if idx < 0 or idx >= len(presets):
         return None
-    selection = ProviderSelection(
-        provider_id=ProviderId(provider_id),
-        model_id=ModelId(model_id),
+    return _select_from_preset(prompt, presets[idx])
+
+
+def _select_from_preset(
+    prompt: PromptPort, preset: ProviderPreset,
+) -> tuple[ProviderSelection, CustomProviderSpec | None] | None:
+    """Select a model from a preset; build the right selection/custom pair."""
+    lines = [f"Available models for {preset.name}:"]
+    for i, m in enumerate(preset.models, 1):
+        lines.append(f"  [{i}] {m.id} ({m.name})")
+    manual_num = len(preset.models) + 1
+    lines.append(f"  [{manual_num}] Enter model id manually")
+    menu = "\n".join(lines)
+
+    choice = prompt.ask(f"{menu}\nSelect model [1-{manual_num}]").strip()
+    if not choice:
+        return None
+    try:
+        midx = int(choice) - 1
+    except ValueError:
+        return None
+    if 0 <= midx < len(preset.models):
+        model_id = preset.models[midx].id
+        model_name = preset.models[midx].name
+    elif midx == len(preset.models):
+        model_id = prompt.ask("Enter model id:").strip()
+        if not model_id:
+            return None
+        model_name = model_id
+    else:
+        return None
+
+    if preset.type == _PRESET_TYPE_NATIVE:
+        selection = ProviderSelection(
+            provider_id=ProviderId(preset.id),
+            model_id=ModelId(model_id),
+        )
+        return selection, None
+
+    default_url = preset.base_url or ""
+    raw = prompt.ask(
+        f"Provider base URL [{default_url}]:", default=default_url).strip()
+    base_url = raw if raw else default_url
+    custom = CustomProviderSpec(
+        provider_id=preset.id,
+        base_url=base_url,
+        model_id=model_id,
+        model_name=model_name,
     )
-    return selection, None
+    selection = ProviderSelection(
+        provider_id=ProviderId(preset.id),
+        model_id=ModelId(model_id),
+        base_url=base_url,
+        auth_state=AuthState.SKIPPED,
+    )
+    return selection, custom

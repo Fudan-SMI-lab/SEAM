@@ -114,7 +114,8 @@ class SeamInstallRequest:
 
     environment: EnvironmentChoice
     source_path: Path
-    extras: str = "dev"
+    extras: str = "dev,dashboard"
+    optional_extras: str = ""
     package_name: str = _PACKAGE_NAME
     python_floor: tuple[int, int] = _PYTHON_FLOOR
     diagnose_path: Path | None = None
@@ -238,6 +239,24 @@ def _confirm_install(request: SeamInstallRequest, prompt: PromptPort) -> bool:
     return prompt.confirm(msg, default=False)
 
 
+def _try_optional_extras(
+    request: SeamInstallRequest, runner: PipRunner,
+) -> tuple[SafeDetail, ...]:
+    """Try installing optional extras; failures produce warnings, not errors."""
+    if not request.optional_extras.strip():
+        return ()
+    target = f"{request.source_path.as_posix()}[{request.optional_extras}]"
+    argv = [
+        request.environment.python_executable, "-m", "pip", "install", "-e", target,
+    ]
+    result = runner.run(argv)
+    if result.returncode != 0:
+        detail = str(result.stderr)[:200] or str(result.stdout)[:200]
+        return (SafeDetail(
+            f"optional extras '{request.optional_extras}' failed (non-blocking): {detail}"),)
+    return (SafeDetail(f"optional extras '{request.optional_extras}' installed successfully"),)
+
+
 def install_seam(
     request: SeamInstallRequest,
     *,
@@ -284,6 +303,7 @@ def install_seam(
             failure_kind=FailureKind.SEAM_INSTALL,
             failure_detail=SafeDetail("post-install verification failed"),
         )
+    diagnostics.extend(_try_optional_extras(request, runner))
     return SeamInstallOutcome(
         status=InstallStatus.REPAIRED if request.force_reinstall else InstallStatus.INSTALLED,
         request=request, diagnostics=tuple(diagnostics),
