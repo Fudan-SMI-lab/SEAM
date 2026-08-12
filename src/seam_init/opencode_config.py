@@ -4,15 +4,20 @@ Facade re-exporting discovery and selection types plus the orchestrator that
 drives: discover → summarize → authorize → prove observed → interactive
 selection → API-key flow → schema validation → model-list validation →
 ConfigTransaction commit. Never writes before live-path proof, schema
-validation, and model-list validation all pass.
+validation, and model-list validation all pass. When no project config
+exists, the typed fresh target skips the impossible pre-write path proof and
+instead proves the provider/model projection post-write inside the commit
+validation seam; failure rolls back and removes the new file.
 """
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, final, runtime_checkable
 
+from core.compat import assert_never
 from seam_init.config_transaction import ConfigTransaction, TransactionResult
 from seam_init.models import ProviderSelection, SafeDetail
 from seam_init.opencode_adapters import (
@@ -21,21 +26,26 @@ from seam_init.opencode_adapters import (
     SubprocessRuntimePort,
 )
 from seam_init.opencode_discovery import (
+    ConfigTarget,
     ConfigTargetPolicy,
     DiscoveredConfig,
+    ExistingConfigTarget,
+    FreshConfigTarget,
     JsonDict,
     RuntimePort,
     discover_config_candidates,
     discover_project_config,
     is_path_observed,
     prove_path_observed,
-    select_target_candidate,
+    prove_projection_loaded,
+    select_config_target,
     summarize_structure,
 )
 from seam_init.opencode_selection import (
     CustomProviderSpec,
     PromptPort,
     apply_selection,
+    build_config_projection,
     build_custom_provider_override,
     collect_api_key,
     provider_has_api_key,
@@ -44,14 +54,16 @@ from seam_init.opencode_selection import (
 from core.secret_redaction import redact_sensitive_text
 
 __all__ = [
-    "ConfigFact", "ConfigTargetPolicy", "CustomProviderSpec", "DebugConfigPort",
-    "DiscoveredConfig", "JsonDict", "OpencodeConfigError",
+    "ConfigFact", "ConfigTarget", "ConfigTargetPolicy", "CustomProviderSpec",
+    "DebugConfigPort", "DiscoveredConfig", "ExistingConfigTarget",
+    "FreshConfigTarget", "JsonDict", "OpencodeConfigError",
     "OpencodeCommand", "OpencodeConfigRequest", "OpencodeConfigResult",
     "OpencodeSchemaValidator", "PromptPort",
     "RuntimePort", "SchemaValidator", "apply_selection",
-    "build_custom_provider_override", "collect_api_key",
+    "build_config_projection", "build_custom_provider_override", "collect_api_key",
     "configure_opencode", "discover_config_candidates",
     "discover_project_config", "prove_project_path_observed",
+    "prove_projection_loaded", "select_config_target",
     "select_provider_model", "SubprocessRuntimePort", "summarize_structure",
 ]
 
@@ -155,16 +167,31 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
     root = request.project_root
     facts: list[ConfigFact] = []
 
-    # 1. Discover candidates.
+    # 1. Discover candidates and resolve the typed writable target.
     candidates = discover_config_candidates(root)
-    discovered = select_target_candidate(candidates, root, request.target_policy)
-    if discovered is None:
-        kind = "NO_PROJECT_CONFIG" if not candidates else "TARGET_NOT_FOUND"
-        facts.append(ConfigFact(kind, _safe("selected project config not found")))
+    target = select_config_target(candidates, root, request.target_policy)
+    if target is None:
+        facts.append(ConfigFact("TARGET_NOT_FOUND", _safe("selected project config not found")))
         return _abort(facts, "selected project config not found")
+    base: JsonDict
+    write_path: Path
+    fresh: bool
+    match target:
+        case ExistingConfigTarget(discovered=existing):
+            base = existing.value
+            write_path = existing.path
+            fresh = False
+        case FreshConfigTarget(path=fresh_path):
+            base = {}
+            write_path = fresh_path
+            fresh = True
+            facts.append(ConfigFact(
+                "FRESH_TARGET", _safe("no project config; fresh target synthesized")))
+        case unreachable:
+            assert_never(unreachable)
 
     # 2. Zero-secret summary.
-    summary = summarize_structure(discovered.value)
+    summary = summarize_structure(base)
     print(f"OpenCode config summary: {summary}", flush=True)
 
     # 3. Merge authorization.
@@ -178,7 +205,7 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
     custom = request.custom
     if selection is None:
         models = request.runtime.debug_models() or ()
-        pair = select_provider_model(request.prompt, discovered.value, models)
+        pair = select_provider_model(request.prompt, base, models)
         if pair is None:
             facts.append(ConfigFact("SELECTION_CANCELLED", _safe("selection cancelled")))
             return _abort(facts, "provider/model selection cancelled")
@@ -186,12 +213,12 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
 
     # 5. API-key flow when neither request nor selected provider has auth.
     api_key = request.api_key
-    existing_auth = provider_has_api_key(discovered.value, selection.provider_id)
+    existing_auth = provider_has_api_key(base, selection.provider_id)
     if api_key is None and not existing_auth:
         api_key = collect_api_key(request.prompt)
 
     # 6. Build merged config.
-    merged = apply_selection(discovered.value, selection, api_key, custom)
+    merged = apply_selection(base, selection, api_key, custom)
     pending_auth = not (bool(api_key) or existing_auth)
     if pending_auth:
         facts.append(ConfigFact("AUTH_SKIPPED", _safe("api key skipped; pending auth")))
@@ -199,12 +226,13 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
         facts.append(ConfigFact("AUTH_PROVIDED", _safe("api key supplied to provider options")))
     merged_bytes = json.dumps(merged, indent=2, ensure_ascii=False).encode("utf-8")
 
-    # 7. Prove path observed BEFORE any transaction.
-    debug_cfg = request.runtime.debug_config()
-    if not is_path_observed(debug_cfg, discovered.path):
-        facts.append(ConfigFact("PATH_UNOBSERVED", _safe("project path not observed")))
-        return _abort(facts, "project config not observed; write aborted")
-    facts.append(ConfigFact("PATH_OBSERVED", _safe("project config path observed")))
+    # 7. Existing targets prove exact-path observation BEFORE any transaction.
+    if not fresh:
+        debug_cfg = request.runtime.debug_config()
+        if not is_path_observed(debug_cfg, write_path):
+            facts.append(ConfigFact("PATH_UNOBSERVED", _safe("project path not observed")))
+            return _abort(facts, "project config not observed; write aborted")
+        facts.append(ConfigFact("PATH_OBSERVED", _safe("project config path observed")))
 
     # 8. Schema validation BEFORE any transaction.
     if not request.schema_validator.validate(merged_bytes):
@@ -223,10 +251,24 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
         return _abort(facts, f"model {model_ref} not found in OpenCode provider catalog")
     facts.append(ConfigFact("MODEL_VALIDATED", _safe(f"model {model_ref} validated")))
 
-    # 10. ConfigTransaction commit.
+    # 10. ConfigTransaction commit; fresh targets prove projection post-write.
+    projection = build_config_projection(merged, selection.provider_id)
+
+    def _prove_fresh_projection(_updates: Mapping[Path, bytes]) -> bool:
+        try:
+            loaded = prove_projection_loaded(request.runtime.debug_config(), projection)
+        except OSError:
+            loaded = False
+        kind = "PROJECTION_PROVEN" if loaded else "PROJECTION_UNPROVEN"
+        facts.append(ConfigFact(kind, _safe("fresh target projection proof recorded")))
+        return loaded
+
     tx = ConfigTransaction(root)
-    tx_id = tx.begin((discovered.path,))
-    result = tx.commit(tx_id, {discovered.path: merged_bytes})
+    tx_id = tx.begin((write_path,))
+    if fresh:
+        result = tx.commit(tx_id, {write_path: merged_bytes}, validate=_prove_fresh_projection)
+    else:
+        result = tx.commit(tx_id, {write_path: merged_bytes})
     if result.committed:
         facts.append(ConfigFact("COMMITTED", _safe(f"committed; tx={result.transaction_id}")))
         return OpencodeConfigResult(

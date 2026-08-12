@@ -33,7 +33,9 @@ from seam_init.opencode_config import (
     JsonDict,
     OpencodeCommand,
     OpencodeConfigRequest,
+    OpencodeConfigResult,
     OpencodeSchemaValidator,
+    RuntimePort,
     SubprocessRuntimePort,
     apply_selection,
     build_custom_provider_override,
@@ -120,6 +122,21 @@ class _FakeSchemaValidator:
     def validate(self, config_bytes: bytes) -> bool:
         self.calls.append(config_bytes)
         return self._valid
+
+
+@final
+class _RaisingRuntime:
+    """RuntimePort double whose debug_config raises a process-boundary error."""
+
+    def __init__(self, models: tuple[str, ...] | None = ("myco/my-model",)) -> None:
+        self._models = models
+
+    def debug_config(self) -> JsonDict | None:
+        raise OSError("opencode debug config failed")
+
+    def debug_models(self, config_bytes: bytes | None = None) -> tuple[str, ...] | None:
+        _ = config_bytes
+        return self._models
 
 
 def _write_project_config(project_root: Path, content: str) -> Path:
@@ -220,6 +237,37 @@ def _runtime_with_path(
     return _FakeRuntime(config=cfg, models=models)
 
 
+def _custom_provider_entry() -> JsonDict:
+    """Realistic secret-free custom provider projection as loaded at runtime."""
+    return {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "My Model",
+        "options": {"baseURL": "https://api.myco.com/v1", "apiKey": "<loaded-key>"},
+        "models": {"my-model": {"name": "My Model"}},
+    }
+
+
+def _fresh_custom_runtime() -> _FakeRuntime:
+    cfg: JsonDict = {
+        "model": "myco/my-model", "provider": {"myco": _custom_provider_entry()},
+    }
+    return _FakeRuntime(config=cfg, models=("myco/my-model",))
+
+
+def _runtime_with_entry(entry: JsonDict) -> _FakeRuntime:
+    cfg: JsonDict = {"model": "myco/my-model", "provider": {"myco": entry}}
+    return _FakeRuntime(config=cfg, models=("myco/my-model",))
+
+
+def _assert_fresh_rolled_back(result: OpencodeConfigResult, tmp_path: Path) -> None:
+    assert result.committed is False
+    assert "PROJECTION_UNPROVEN" in {f.kind for f in result.facts}
+    assert not (tmp_path / ".opencode" / "opencode.jsonc").exists()
+    assert result.transaction is not None
+    assert result.transaction.committed is False
+    assert ".opencode/opencode.jsonc" in result.transaction.restored
+
+
 def _read_merged(project_root: Path) -> JsonDict:
     text = (project_root / ".opencode" / "opencode.jsonc").read_text("utf-8")
     parsed = parse_config_object(text)
@@ -263,7 +311,7 @@ def _request(
     project_root: Path,
     *,
     prompt: _FakePrompt,
-    runtime: _FakeRuntime,
+    runtime: RuntimePort,
     schema_validator: _FakeSchemaValidator | None = None,
     selection: ProviderSelection | None = None,
     api_key: str | None = None,
@@ -647,18 +695,6 @@ class TestConfigureOpencodeFailures:
         assert cfg.read_bytes() == original
         assert "PATH_UNOBSERVED" in {f.kind for f in result.facts}
 
-    def test_no_project_config_returns_failure_without_prompt(self, tmp_path: Path) -> None:
-        prompt = _FakePrompt()
-        runtime = _runtime_observed(tmp_path)
-        request = _request(
-            tmp_path, prompt=prompt, runtime=runtime,
-            selection=_selection(), api_key=_CANARY, custom=_custom(),
-        )
-        result = configure_opencode(request)
-        assert result.committed is False
-        assert "NO_PROJECT_CONFIG" in {f.kind for f in result.facts}
-        assert prompt.confirm_calls == []
-
     def test_schema_validation_failure_leaves_original_intact(self, tmp_path: Path) -> None:
         # Given: schema validator returns False.
         cfg = _write_project_config(tmp_path, _MINIMAL_CONFIG)
@@ -698,7 +734,7 @@ class TestConfigureOpencodeFailures:
 
 class TestCandidateTargetSelection:
     def test_only_global_candidate_is_read_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Given: only the global alternative exists.
+        # Given: only the global alternative exists; the project target is fresh.
         home = tmp_path / "home"
         global_cfg = home / ".config" / "opencode" / "opencode.json"
         global_cfg.parent.mkdir(parents=True)
@@ -709,16 +745,59 @@ class TestCandidateTargetSelection:
             return home
 
         monkeypatch.setattr(Path, "home", fake_home)
+        runtime = _fresh_custom_runtime()
+        request = _request(
+            tmp_path, prompt=_FakePrompt(confirms=[True]), runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: global bytes are untouched and the fresh project file is created.
+        assert result.committed is True
+        assert global_cfg.read_bytes() == original
+        assert (tmp_path / ".opencode" / "opencode.jsonc").exists()
+
+    def test_global_model_match_cannot_mask_missing_project_provider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Given: a global config whose model coincidentally equals the selection's.
+        home = tmp_path / "home"
+        global_cfg = home / ".config" / "opencode" / "opencode.json"
+        global_cfg.parent.mkdir(parents=True)
+        original = b'{"model":"myco/my-model"}\n'
+        global_cfg.write_bytes(original)
+
+        def fake_home() -> Path:
+            return home
+
+        monkeypatch.setattr(Path, "home", fake_home)
+        # And: the runtime merged view shows that model but no provider projection.
+        runtime = _FakeRuntime(
+            config={"model": "myco/my-model"}, models=("myco/my-model",),
+        )
+        request = _request(
+            tmp_path, prompt=_FakePrompt(confirms=[True]), runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: the coincidental global model cannot prove the fresh projection.
+        _assert_fresh_rolled_back(result, tmp_path)
+        assert global_cfg.read_bytes() == original
+
+    def test_project_root_config_blocks_competing_dot_config_creation(self, tmp_path: Path) -> None:
+        # Given: only project-root opencode.json exists while policy targets .opencode/.
+        root_cfg = tmp_path / "opencode.json"
+        root_cfg.write_text('{"provider":{"myco":{}}}\n', "utf-8")
         request = _request(
             tmp_path, prompt=_FakePrompt(), runtime=_FakeRuntime(),
             selection=_selection(), api_key=_CANARY, custom=_custom(),
         )
         # When
         result = configure_opencode(request)
-        # Then: global remains read-only and no default project file appears.
+        # Then: exact-path policy aborts; no competing file is created.
         assert result.committed is False
         assert "TARGET_NOT_FOUND" in {f.kind for f in result.facts}
-        assert global_cfg.read_bytes() == original
         assert not (tmp_path / ".opencode" / "opencode.jsonc").exists()
         assert not (tmp_path / ".seam-init").exists()
 
@@ -774,6 +853,214 @@ class TestCandidateTargetSelection:
         assert "PATH_UNOBSERVED" in {f.kind for f in result.facts}
         assert dot_cfg.read_bytes() == original
         assert not (tmp_path / ".seam-init").exists()
+
+
+# --- fresh project target (no existing config) ----------------------------
+
+
+class TestFreshProjectTarget:
+    def test_fresh_project_creates_config_via_transaction(self, tmp_path: Path) -> None:
+        # Given: no config files anywhere; post-write runtime carries the full
+        # secret-free merged projection the fresh candidate writes.
+        prompt = _FakePrompt(confirms=[True])
+        runtime = _fresh_custom_runtime()
+        request = _request(
+            tmp_path, prompt=prompt, runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: committed; the fresh file was created by the transaction.
+        assert result.committed is True
+        kinds = {f.kind for f in result.facts}
+        assert "FRESH_TARGET" in kinds
+        assert "SCHEMA_VALID" in kinds
+        assert "MODEL_VALIDATED" in kinds
+        assert "PROJECTION_PROVEN" in kinds
+        assert "COMMITTED" in kinds
+        assert "PATH_OBSERVED" not in kinds
+        merged = _read_merged(tmp_path)
+        assert merged["model"] == "myco/my-model"
+        assert json.dumps(merged).count(_CANARY) == 1
+        assert result.transaction is not None
+        assert result.transaction.committed is True
+
+    def test_fresh_model_only_runtime_does_not_prove_custom_projection(
+        self, tmp_path: Path,
+    ) -> None:
+        # Given: a fresh custom-provider commit; the runtime afterwards shows the
+        # same top-level model but never loaded the project provider projection.
+        prompt = _FakePrompt(confirms=[True])
+        runtime = _FakeRuntime(
+            config={"model": "myco/my-model"}, models=("myco/my-model",),
+        )
+        request = _request(
+            tmp_path, prompt=prompt, runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: a bare model string is not proof; the fresh file rolls back.
+        _assert_fresh_rolled_back(result, tmp_path)
+
+    def test_fresh_wrong_npm_fails_proof_and_rolls_back(self, tmp_path: Path) -> None:
+        # Given: runtime provider entry carries an incompatible npm adapter.
+        entry = {**_custom_provider_entry(), "npm": "wrong-npm"}
+        runtime = _runtime_with_entry(entry)
+        request = _request(
+            tmp_path, prompt=_FakePrompt(confirms=[True]), runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then
+        _assert_fresh_rolled_back(result, tmp_path)
+
+    def test_fresh_wrong_base_url_fails_proof_and_rolls_back(self, tmp_path: Path) -> None:
+        # Given: runtime provider entry points at a different endpoint.
+        entry: JsonDict = {
+            **_custom_provider_entry(),
+            "options": {"baseURL": "https://evil.example/v1", "apiKey": "<loaded-key>"},
+        }
+        runtime = _runtime_with_entry(entry)
+        request = _request(
+            tmp_path, prompt=_FakePrompt(confirms=[True]), runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then
+        _assert_fresh_rolled_back(result, tmp_path)
+
+    def test_fresh_missing_model_entry_fails_proof_and_rolls_back(self, tmp_path: Path) -> None:
+        # Given: runtime provider entry lacks the selected model entry.
+        entry = {**_custom_provider_entry(), "models": {}}
+        runtime = _runtime_with_entry(entry)
+        request = _request(
+            tmp_path, prompt=_FakePrompt(confirms=[True]), runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then
+        _assert_fresh_rolled_back(result, tmp_path)
+
+    def test_fresh_missing_api_key_fails_proof_and_rolls_back(self, tmp_path: Path) -> None:
+        # Given: candidate wrote an apiKey but the runtime projection has none.
+        entry: JsonDict = {
+            **_custom_provider_entry(),
+            "options": {"baseURL": "https://api.myco.com/v1"},
+        }
+        runtime = _runtime_with_entry(entry)
+        request = _request(
+            tmp_path, prompt=_FakePrompt(confirms=[True]), runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then
+        _assert_fresh_rolled_back(result, tmp_path)
+
+    def test_fresh_native_with_key_proves_options_projection(self, tmp_path: Path) -> None:
+        # Given: fresh project with a native selection and key; the runtime
+        # projects provider.openai.options with some key value loaded.
+        prompt = _FakePrompt(confirms=[True])
+        config: JsonDict = {
+            "model": "openai/gpt-4",
+            "provider": {"openai": {"options": {"apiKey": "<loaded-key>"}}},
+        }
+        runtime = _FakeRuntime(config=config, models=("openai/gpt-4",))
+        selection = ProviderSelection(
+            provider_id=ProviderId("openai"), model_id=ModelId("gpt-4"),
+        )
+        request = _request(
+            tmp_path, prompt=prompt, runtime=runtime,
+            selection=selection, api_key=_CANARY,
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: key presence (never its value) plus the model prove the write.
+        assert result.committed is True
+        assert "PROJECTION_PROVEN" in {f.kind for f in result.facts}
+        merged = _read_merged(tmp_path)
+        assert merged["model"] == "openai/gpt-4"
+        assert json.dumps(merged).count(_CANARY) == 1
+        assert _provider_options(merged, "openai")["apiKey"] == _CANARY
+        report = "".join(str(f.detail) for f in result.facts) + str(result.safe_detail)
+        assert _CANARY not in report
+
+    def test_fresh_native_without_key_proves_model_only_projection(self, tmp_path: Path) -> None:
+        # Given: fresh project, native selection, plaintext risk declined; the
+        # candidate legitimately carries only the top-level model.
+        prompt = _FakePrompt(confirms=[True, False])
+        runtime = _FakeRuntime(
+            config={"model": "openai/gpt-4"}, models=("openai/gpt-4",),
+        )
+        selection = ProviderSelection(
+            provider_id=ProviderId("openai"), model_id=ModelId("gpt-4"),
+        )
+        request = _request(tmp_path, prompt=prompt, runtime=runtime, selection=selection)
+        # When
+        result = configure_opencode(request)
+        # Then: the model-only projection is the whole candidate; commit succeeds.
+        assert result.committed is True
+        assert result.pending_auth is True
+        assert "PROJECTION_PROVEN" in {f.kind for f in result.facts}
+        merged = _read_merged(tmp_path)
+        assert merged["model"] == "openai/gpt-4"
+        assert "apiKey" not in json.dumps(merged)
+
+    def test_fresh_projection_unproven_rolls_back_and_removes_file(
+        self, tmp_path: Path,
+    ) -> None:
+        # Given: post-write debug config never projects the selected model.
+        prompt = _FakePrompt(confirms=[True])
+        runtime = _FakeRuntime(
+            config={"model": "other/x"}, models=("myco/my-model",),
+        )
+        request = _request(
+            tmp_path, prompt=prompt, runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: rolled back; the newly created file is absent again.
+        _assert_fresh_rolled_back(result, tmp_path)
+
+    def test_fresh_projection_proof_error_rolls_back_and_removes_file(
+        self, tmp_path: Path,
+    ) -> None:
+        # Given: debug_config raises a process-boundary error during proof.
+        prompt = _FakePrompt(confirms=[True])
+        runtime = _RaisingRuntime()
+        request = _request(
+            tmp_path, prompt=prompt, runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: the proof error rolls back; the new file is absent.
+        _assert_fresh_rolled_back(result, tmp_path)
+
+    def test_existing_target_keeps_pre_write_path_proof(self, tmp_path: Path) -> None:
+        # Given: an existing config; runtime observes the exact path but its
+        # debug config would fail the fresh post-write projection proof.
+        _ = _write_project_config(tmp_path, _MINIMAL_CONFIG)
+        prompt = _FakePrompt(confirms=[True])
+        runtime = _runtime_observed(tmp_path, models=("myco/my-model",))
+        request = _request(
+            tmp_path, prompt=prompt, runtime=runtime,
+            selection=_selection(), api_key=_CANARY, custom=_custom(),
+        )
+        # When
+        result = configure_opencode(request)
+        # Then: pre-write exact-path proof governs; no projection facts.
+        assert result.committed is True
+        kinds = {f.kind for f in result.facts}
+        assert "PATH_OBSERVED" in kinds
+        assert "FRESH_TARGET" not in kinds
+        assert "PROJECTION_PROVEN" not in kinds
+        assert "PROJECTION_UNPROVEN" not in kinds
 
 
 # --- skipped key produces pending-auth facts ------------------------------

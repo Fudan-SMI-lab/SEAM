@@ -3,8 +3,10 @@
 Provides the override builder for custom OpenAI-compatible providers
 (exact camelCase ``baseURL``/``apiKey``), structural merge application
 (:func:`core.jsonc.merge_config`), interactive provider/model selection
-through :class:`PromptPort`, and the API-key flow with explicit
-plaintext-storage-risk confirmation before calling ``secret()``.
+through :class:`PromptPort`, the API-key flow with explicit
+plaintext-storage-risk confirmation before calling ``secret()``, and the
+secret-free :class:`ConfigProjection` of what a merged candidate writes
+(used by the post-write runtime proof in ``opencode_discovery``).
 """
 from __future__ import annotations
 
@@ -16,9 +18,10 @@ from core.jsonc import JsonValue, merge_config
 from seam_init.models import AuthState, ModelId, ProviderId, ProviderSelection
 
 __all__ = [
-    "CustomProviderSpec", "PromptPort", "apply_selection",
-    "build_custom_provider_override", "collect_api_key",
-    "define_custom_provider", "provider_has_api_key", "select_provider_model",
+    "ConfigProjection", "CustomProviderSpec", "PromptPort", "ProviderProjection",
+    "apply_selection", "build_config_projection", "build_custom_provider_override",
+    "collect_api_key", "define_custom_provider", "provider_has_api_key",
+    "select_provider_model",
 ]
 
 _OPENAI_COMPATIBLE_NPM: Final[str] = "@ai-sdk/openai-compatible"
@@ -59,6 +62,57 @@ class CustomProviderSpec:
     base_url: str
     model_id: str
     model_name: str
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ProviderProjection:
+    """Secret-free structural projection of the selected provider entry."""
+
+    provider_id: str
+    npm: str | None
+    base_url: str | None
+    model_ids: tuple[str, ...]
+    has_api_key: bool
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class ConfigProjection:
+    """Secret-free semantic projection of the merged fresh candidate."""
+
+    model_ref: str
+    provider: ProviderProjection | None
+
+
+def build_config_projection(
+    merged: Mapping[str, JsonValue], provider_id: str,
+) -> ConfigProjection:
+    """Project the secret-free structure a fresh candidate writes.
+
+    Only non-secret structure is captured: npm adapter, baseURL endpoint,
+    model keys. An apiKey is reduced to a presence flag; its value is never
+    read into the projection, facts, output, or failure details.
+    """
+    model = merged.get("model")
+    providers = merged.get("provider")
+    entry = providers.get(provider_id) if isinstance(providers, dict) else None
+    if not isinstance(entry, dict):
+        return ConfigProjection(
+            model_ref=model if isinstance(model, str) else "", provider=None)
+    npm = entry.get("npm")
+    raw_models = entry.get("models")
+    raw_options = entry.get("options")
+    options = raw_options if isinstance(raw_options, dict) else {}
+    url = options.get("baseURL")
+    key = options.get("apiKey")
+    return ConfigProjection(
+        model_ref=model if isinstance(model, str) else "",
+        provider=ProviderProjection(
+            provider_id, npm if isinstance(npm, str) else None,
+            url if isinstance(url, str) else None,
+            tuple(str(k) for k in raw_models) if isinstance(raw_models, dict) else (),
+            isinstance(key, str) and bool(key.strip())))
 
 
 def build_custom_provider_override(
