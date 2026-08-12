@@ -200,11 +200,16 @@ def configure_omo(request: OmoConfigRequest) -> OmoConfigResult:
             return _abort([existing], str(existing.detail))
         base = existing
         print(f"Current OMO config summary: {summarize_config(base)}", flush=True)
-        if not request.prompt.confirm(_NORMALIZE_CONSENT, default=False):
-            return _abort([_fact("NORMALIZE_DECLINED", "normalize declined")],
-                           "normalization declined by user")
-        facts.append(_fact("NORMALIZE_AUTHORIZED", "normalize authorized"))
-        current = normalize_config(base, cap.schema_url)
+        current_schema = base.get("$schema", "")
+        if isinstance(current_schema, str) and current_schema == cap.schema_url:
+            facts.append(_fact("ALREADY_NORMALIZED", "schema URL already current"))
+            current = base
+        else:
+            if not request.prompt.confirm(_NORMALIZE_CONSENT, default=True):
+                return _abort([_fact("NORMALIZE_DECLINED", "normalize declined")],
+                               "normalization declined by user")
+            facts.append(_fact("NORMALIZE_AUTHORIZED", "normalize authorized"))
+            current = normalize_config(base, cap.schema_url)
     elif (legacy := discover_legacy_sources_all(root, request.home)):
         current = _migrate_path(request, cap, legacy, facts)
         if current is None:
