@@ -252,6 +252,7 @@ while [[ $# -gt 0 ]]; do
         -*)                     echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
         *)
             if [[ -z "$PROJECT_NAME" ]]; then
+                PROJECT_ARG="$1"
                 PROJECT_NAME="$(basename "$1")"; shift
             else
                 echo -e "${RED}Unexpected argument: $1${NC}" >&2; exit 1
@@ -336,7 +337,7 @@ resolve_project_dir() {
 
 PROJECT_DIR=""
 if [[ -n "$PROJECT_NAME" ]]; then
-    PROJECT_DIR="$(resolve_project_dir "$PROJECT_NAME" || true)"
+    PROJECT_DIR="$(resolve_project_dir "${PROJECT_ARG:-$PROJECT_NAME}" || true)"
 fi
 
 # ── Validation ──
@@ -470,9 +471,28 @@ else
         echo -e "${GREEN}✓${NC} OpenCode server ready at $SERVER_URL"
         PYTHON_OPENCODE_READINESS="off"
     elif [[ $DIAG_EXIT -eq 40 && "$SERVER_NO_AUTO_START" != true ]]; then
-        echo -e "${YELLOW}⚠  OpenCode server is not reachable; auto-start is enabled.${NC}"
-        [[ -n "${DIAG_OUTPUT:-}" ]] && echo "$DIAG_OUTPUT"
-        PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
+        echo -e "${YELLOW}⚠  OpenCode server is not reachable; starting one now...${NC}"
+        SERVER_HOST=$(echo "$SERVER_URL" | sed -n 's|.*://\([^:]*\).*|\1|p')
+        SERVER_PORT_NUM=$(echo "$SERVER_URL" | sed -n 's|.*:\([0-9]*\).*|\1|p')
+        SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
+        SERVER_PORT_NUM="${SERVER_PORT_NUM:-4098}"
+        nohup opencode serve --hostname "$SERVER_HOST" --port "$SERVER_PORT_NUM" > /tmp/seam_opencode_server.log 2>&1 &
+        SERVER_PID=$!
+        echo -e "${GREEN}  Started opencode serve (pid=$SERVER_PID) at $SERVER_URL${NC}"
+        echo -e "${YELLOW}  Waiting for server to become ready...${NC}"
+        for i in $(seq 1 30); do
+            sleep 2
+            if curl -s -o /dev/null -w '%{http_code}' "http://$SERVER_HOST:$SERVER_PORT_NUM/global/health" 2>/dev/null | grep -q 200; then
+                echo -e "${GREEN}✓ OpenCode server ready at $SERVER_URL${NC}"
+                PYTHON_OPENCODE_READINESS="off"
+                break
+            fi
+            if [[ $i -eq 30 ]]; then
+                echo -e "${RED}✗ Server failed to become ready after 60s${NC}"
+                echo "  Log: /tmp/seam_opencode_server.log"
+                exit 40
+            fi
+        done
     else
         echo -e "${RED}✗ OpenCode diagnostic failed with exit code $DIAG_EXIT${NC}"
         [[ -n "${DIAG_OUTPUT:-}" ]] && echo "$DIAG_OUTPUT"

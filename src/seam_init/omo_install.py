@@ -376,7 +376,6 @@ def ensure_omo_install(
         if detect_omo_functional(opencode_argv, project_root):
             print("OMO detected as functional (agents found in opencode config)", flush=True)
             legacy_warning = registrar.register_plugin(CURRENT_PLUGIN)
-            registrar.register_plugin(LEGACY_PLUGIN)
             existing_bun = detect_bun()
             bun_meta: BunRuntime | None = existing_bun if existing_bun is not None else BunRuntime(
                 path=Path("/dev/null"), version_text="not-required", version=None)
@@ -393,7 +392,6 @@ def ensure_omo_install(
         print("No bun/npx runtime found; OMO config will be generated from "
               "bundled schema in the OMO_CONFIG step", flush=True)
         legacy_warning = registrar.register_plugin(CURRENT_PLUGIN)
-        registrar.register_plugin(LEGACY_PLUGIN)
         existing_bun = detect_bun()
         return OmoInstallMetadata(
             bun=existing_bun,
@@ -444,6 +442,5 @@ def ensure_omo_install(
         _ = omo_installer.install_omo(omo_argv)
         omo_action = InstallAction.INSTALLED.value
     legacy_warning = registrar.register_plugin(CURRENT_PLUGIN)
-    registrar.register_plugin(LEGACY_PLUGIN)
     return OmoInstallMetadata(
         bun_meta, bun_action_str, omo_action, omo_argv, legacy_warning)

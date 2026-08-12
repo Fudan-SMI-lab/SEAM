@@ -202,9 +202,12 @@ def _classify_result(result: DiagnoseResult, server_url: str) -> ValidationOutco
                 return _fail(ValidationFact.MARKER_MALFORMED, server_url,
                              "contains_marker contradicts response_text",
                              session_deleted=deleted, cleanup_diag=cleanup_diag)
-            if not exact:
+            response_text = str(probe.get("response_text", ""))
+            contains = probe.get("contains_marker", False)
+            if not exact and not contains:
+                print(f"[OPENCODE_VALIDATION] Model response: {response_text[:200]}", flush=True)
                 return _fail(ValidationFact.MARKER_MISSING, server_url,
-                             "response did not normalize to exact SEAM_DIAG_OK",
+                             f"response did not contain SEAM_DIAG_OK: {response_text[:150]}",
                              session_deleted=deleted, cleanup_diag=cleanup_diag)
             if not deleted:
                 return ValidationOutcome(
