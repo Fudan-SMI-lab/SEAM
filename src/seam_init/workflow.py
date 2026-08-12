@@ -258,6 +258,7 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
                                 lifecycle=request.ports.server_lifecycle,
                                 sleep=request.ports.sleep, monotonic=request.ports.monotonic))
         facts.server_ownership = rt.ownership.value
+        facts.server_url = rt.server_url
         if not rt.ok:
             ledger.complete(StageStatus.FAILED)
             return InitializerOutcome.failed(

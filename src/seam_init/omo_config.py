@@ -211,7 +211,7 @@ def configure_omo(request: OmoConfigRequest) -> OmoConfigResult:
             return _abort(facts, "migration aborted")
         migrated = True
     else:
-        if not request.prompt.confirm(_FRESH_CONSENT, default=False):
+        if not request.prompt.confirm(_FRESH_CONSENT, default=True):
             return _abort([_fact("FRESH_DECLINED", "fresh config declined")],
                            "fresh config declined by user")
         facts.append(_fact("FRESH_AUTHORIZED", "fresh config authorized"))

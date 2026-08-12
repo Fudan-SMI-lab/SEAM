@@ -104,12 +104,13 @@ class _Renderer:
             self.add(f"  WARNING: {_br(str(w), _MAX_WARNING)}")
         self.sep()
 
-    def ready(self) -> None:
+    def ready(self, facts: WorkflowFacts) -> None:
         self.add("")
         self.add("SEAM setup is READY.")
         self.add("")
         self.add("Run your migration:")
-        self.add(f"  {READY_COMMAND}")
+        server_url = facts.server_url or "http://127.0.0.1:4098"
+        self.add(f"  bash src/scripts/run_seam.sh /path/to/project --server_url {server_url}")
         self.add("")
         self.add("Replace /path/to/project with your CUDA project directory.")
         self.add("Optional flags:")
@@ -155,7 +156,7 @@ def render_terminal(outcome: InitializerOutcome, facts: WorkflowFacts) -> str:
     r.table(outcome, facts)
     match outcome.status:
         case InitializerStatus.READY:
-            r.ready()
+            r.ready(facts)
         case InitializerStatus.PENDING_AUTH:
             r.pending()
         case InitializerStatus.FAILED:

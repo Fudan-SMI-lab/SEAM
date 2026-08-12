@@ -236,7 +236,7 @@ def collect_api_key(prompt: PromptPort) -> str | None:
     key, returns None (caller records AUTH_SKIPPED). Never places the key in
     argv, stdout, or any non-secret channel.
     """
-    if not prompt.confirm(_PlainTextRiskPrompt, default=False):
+    if not prompt.confirm(_PlainTextRiskPrompt, default=True):
         return None
     key = prompt.secret("API key")
     return key if key.strip() else None

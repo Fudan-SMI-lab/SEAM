@@ -236,7 +236,7 @@ def _confirm_install(request: SeamInstallRequest, prompt: PromptPort) -> bool:
     python = request.environment.python_executable
     version = request.environment.python_version
     msg = f"Install SEAM into {python} (Python {version}) via `pip install -e {target}`?"
-    return prompt.confirm(msg, default=False)
+    return prompt.confirm(msg, default=True)
 
 
 def _try_optional_extras(
