@@ -252,7 +252,8 @@ while [[ $# -gt 0 ]]; do
         -*)                     echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
         *)
             if [[ -z "$PROJECT_NAME" ]]; then
-                PROJECT_NAME="$1"; shift
+                PROJECT_ARG="$1"
+                PROJECT_NAME="$(basename "$1")"; shift
             else
                 echo -e "${RED}Unexpected argument: $1${NC}" >&2; exit 1
             fi
@@ -336,7 +337,7 @@ resolve_project_dir() {
 
 PROJECT_DIR=""
 if [[ -n "$PROJECT_NAME" ]]; then
-    PROJECT_DIR="$(resolve_project_dir "$PROJECT_NAME" || true)"
+    PROJECT_DIR="$(resolve_project_dir "${PROJECT_ARG:-$PROJECT_NAME}" || true)"
 fi
 
 # ── Validation ──
@@ -392,7 +393,9 @@ if [[ -z "$CONTINUE_FROM" && -f "$PROJECT_DIR/ADAPTATION_REQUIREMENTS.md" ]]; th
     echo -e "${GREEN}✓${NC} ADAPTATION_REQUIREMENTS.md exists"
     HAS_CONSTRAINTS=true
 elif [[ -z "$CONTINUE_FROM" ]]; then
-    echo -e "${YELLOW}⚠  ADAPTATION_REQUIREMENTS.md not found (no constraints will be applied)${NC}"
+    echo -e "${YELLOW}⚠  ADAPTATION_REQUIREMENTS.md not found${NC}"
+    echo -e "${YELLOW}    (optional: project-specific migration constraints, e.g. 'zero CPU fallback')${NC}"
+    echo -e "${YELLOW}    Place at: <PROJECT_DIR>/ADAPTATION_REQUIREMENTS.md  —  see --help for format${NC}"
 fi
 
 # Check test entry script hints. Some cuda_projects are flat source trees and let Phase 3 discover the entry.
@@ -403,7 +406,9 @@ fi
 if [[ -n "$CONTINUE_FROM" ]]; then
     :
 elif [[ -z "$ENTRY_SCRIPTS" ]]; then
-    echo -e "${YELLOW}⚠  No test_data_and_scripts/*.py found (Phase 3 will discover an entry script)${NC}"
+    echo -e "${YELLOW}⚠  No test_data_and_scripts/*.py found${NC}"
+    echo -e "${YELLOW}    (optional: non-interactive E2E test entry script; Phase 3 will auto-discover one)${NC}"
+    echo -e "${YELLOW}    Place at: <PROJECT_DIR>/test_data_and_scripts/<entry>.py${NC}"
 else
     echo -e "${GREEN}✓${NC} Entry scripts found:"
     while IFS= read -r script; do
@@ -418,7 +423,8 @@ elif [[ -d "$PROJECT_DIR/original_src" ]]; then
     FILE_COUNT=$(find "$PROJECT_DIR/original_src" -type f 2>/dev/null | wc -l)
     echo -e "${GREEN}✓${NC} original_src/ exists ($FILE_COUNT files)"
 else
-    echo -e "${YELLOW}⚠  original_src/ not found (will use project root directly)${NC}"
+    echo -e "${YELLOW}⚠  original_src/ not found${NC}"
+    echo -e "${YELLOW}    (optional: clean upstream source copy; will use project root directly)${NC}"
 fi
 
 # Check OpenCode server using the standalone diagnostic script.
