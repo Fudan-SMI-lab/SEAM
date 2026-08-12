@@ -19,7 +19,7 @@ from typing import Final, Protocol, final, runtime_checkable
 
 from core.compat import assert_never
 from seam_init.config_transaction import ConfigTransaction, TransactionResult
-from seam_init.models import ProviderSelection, SafeDetail
+from seam_init.models import ModelId, ProviderId, ProviderSelection, SafeDetail
 from seam_init.opencode_adapters import (
     OpencodeCommand,
     OpencodeSchemaValidator,
@@ -210,9 +210,23 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
     print(f"OpenCode config summary: {summary}", flush=True)
 
     # 3. Merge authorization.
-    if not request.prompt.confirm(_NORMALIZATION_CONSENT, default=False):
+    if not request.prompt.confirm(_NORMALIZATION_CONSENT, default=True):
+        existing_model = base.get("model")
+        existing_providers_raw = base.get("provider")
+        if (isinstance(existing_providers_raw, dict) and existing_providers_raw
+                and isinstance(existing_model, str) and "/" in existing_model):
+            pid, mid = existing_model.split("/", 1)
+            reuse_selection = ProviderSelection(ProviderId(pid), ModelId(mid))
+            facts.append(ConfigFact("EXISTING_REUSED", _safe(
+                f"existing config reused as-is: {existing_model}")))
+            return OpencodeConfigResult(
+                committed=True, pending_auth=False, facts=tuple(facts),
+                transaction=None,
+                safe_detail=_safe("existing config reused without modification"),
+                selection=reuse_selection,
+            )
         facts.append(ConfigFact("MERGE_DECLINED", summary))
-        return _abort(facts, "merge declined by user")
+        return _abort(facts, "merge declined and no usable existing provider/model found")
     facts.append(ConfigFact("MERGE_AUTHORIZED", summary))
 
     # 4. Interactive selection (if not pre-built).

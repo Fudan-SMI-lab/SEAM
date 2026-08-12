@@ -246,7 +246,9 @@ def _try_base(base_info: InterpreterInfo, prompt: PromptPort) -> EnvironmentChoi
 def _try_existing(
     prompt: PromptPort, probe: InterpreterProbe,
 ) -> EnvironmentChoice | None:
-    raw = prompt.ask("Path to existing venv python executable").strip()
+    raw = prompt.ask(
+        "Path to existing venv python executable "
+        "(e.g. /path/to/.venv/bin/python)").strip()
     if not raw:
         return None
     try:
