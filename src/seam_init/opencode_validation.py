@@ -174,8 +174,12 @@ def validate_opencode_messages(
         return ValidationOutcome(
             fact=ValidationFact.AUTH_DEFERRED, server_url=request.server_url)
     argv = _message_argv(request)
+    print(f"[OPENCODE_VALIDATION] Sending test message to provider "
+          f"(timeout: {request.message_timeout}s)...", flush=True)
     result = ports.diagnose_runner.run(argv, env=dict(request.base_env))
-    return _classify_result(result, request.server_url)
+    outcome = _classify_result(result, request.server_url)
+    print(f"[OPENCODE_VALIDATION] Result: {outcome.fact.value}", flush=True)
+    return outcome
 
 
 def _message_argv(request: ValidationRequest) -> list[str]:

@@ -166,6 +166,8 @@ def _poll_until_ready(
 
 def ensure_server(request: RuntimeRequest, *, ports: RuntimePorts) -> RuntimeOutcome:
     """Resolve the OpenCode server: reuse ready foreign or own on 4098."""
+    print(f"[OPENCODE_RUNTIME] Probing for existing OpenCode server at "
+          f"{request.server_url}...", flush=True)
     env_result = ports.diagnose_runner.run(
         _diag_argv(request, "env", emit_env=True), env=dict(request.base_env),
     )
@@ -182,6 +184,7 @@ def ensure_server(request: RuntimeRequest, *, ports: RuntimePorts) -> RuntimeOut
         ports.diagnose_runner.run(_diag_argv(request, request.readiness_mode.value), env=child_env).returncode,
     )
     if fact in READY_FACTS:
+        print(f"[OPENCODE_RUNTIME] Server ready (reused foreign server)", flush=True)
         return RuntimeOutcome(
             readiness_fact=fact, ownership=ServerOwnership.REUSED_FOREIGN,
             server_url=request.server_url, env_patch=env_patch,
@@ -214,6 +217,8 @@ def ensure_server(request: RuntimeRequest, *, ports: RuntimePorts) -> RuntimeOut
             ),
         )
     try:
+        print(f"[OPENCODE_RUNTIME] Starting OpenCode server at "
+              f"{request.server_url}...", flush=True)
         ref = ports.lifecycle.start(_serve_argv(request), env=child_env, cwd=request.work_dir)
     except (OSError, subprocess.SubprocessError) as exc:
         return RuntimeOutcome(
@@ -225,6 +230,7 @@ def ensure_server(request: RuntimeRequest, *, ports: RuntimePorts) -> RuntimeOut
     try:
         wait_fact = _poll_until_ready(request, ports, child_env, ref)
         if wait_fact in READY_FACTS:
+            print(f"[OPENCODE_RUNTIME] Server ready", flush=True)
             return RuntimeOutcome(
                 readiness_fact=wait_fact, ownership=ServerOwnership.OWNED,
                 server_url=request.server_url, env_patch=env_patch,
@@ -239,6 +245,7 @@ def ensure_server(request: RuntimeRequest, *, ports: RuntimePorts) -> RuntimeOut
             pass
         raise
     _, stop_detail = safe_stop(ports.lifecycle, ref)
+    print(f"[OPENCODE_RUNTIME] Server failed to become ready: {wait_fact.value}", flush=True)
     return RuntimeOutcome(
         readiness_fact=wait_fact, ownership=ServerOwnership.OWNED,
         server_url=request.server_url, env_patch=env_patch,

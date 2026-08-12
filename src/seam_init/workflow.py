@@ -1,6 +1,7 @@
 """Typed ordered workflow: one current stage, one frozen terminal outcome."""
 from __future__ import annotations
 
+import os
 from typing import Final
 
 from core.secret_redaction import redact_sensitive_text
@@ -11,9 +12,12 @@ from seam_init.models import (
     InitializerFailure, InitializerOutcome, InitializerStatus, SafeDetail, StageKind, StageStatus,
 )
 from seam_init.omo_config import OmoConfigRequest, configure_omo
-from seam_init.omo_install import OmoInstallRequest, ensure_omo_install
+from seam_init.omo_install import (
+    OmoInstallRequest, detect_omo_runtime, ensure_omo_install,
+)
 from seam_init.omo_validation import (
-    OmoValidationPorts, OmoValidationRequest, validate_omo_runtime,
+    OmoValidationFact, OmoValidationOutcome, OmoValidationPorts,
+    OmoValidationRequest, validate_omo_runtime,
 )
 from seam_init.opencode_config import OpencodeConfigRequest, configure_opencode
 from seam_init.opencode_install import InstallAction
@@ -117,8 +121,22 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
         facts.environment = env
         ledger.complete(StageStatus.SUCCEEDED)
         ledger.begin(StageKind.SEAM_INSTALL)
+        env_extras = request.base_env.get("SEAM_INSTALL_EXTRAS", "").strip()
+        if env_extras:
+            extras_str = env_extras
+            optional_str = ""
+        else:
+            extras_str = "dev,dashboard"
+            if request.interactive and request.prompt.confirm(
+                    "Also install sqlite extras (optional, for SQLite-based storage)?",
+                    default=False):
+                optional_str = "sqlite"
+            else:
+                optional_str = ""
         si = install_seam(
-            SeamInstallRequest(environment=env, source_path=request.seam_source_path),
+            SeamInstallRequest(
+                environment=env, source_path=request.seam_source_path,
+                extras=extras_str, optional_extras=optional_str),
             prompt=request.stage_prompt(), runner=request.ports.pip_runner)
         facts.seam_status = si.status.value
         if si.status is InstallStatus.DECLINED:
@@ -132,6 +150,13 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
                 failure_kind=si.failure_kind or FailureKind.SEAM_INSTALL,
                 stages=ledger.snapshot(), safe_detail=si.failure_detail)
         ledger.complete(StageStatus.SUCCEEDED)
+        if request.interactive and not request.prompt.confirm(
+                "Configure OpenCode provider and OMO agents? (Enables AI-assisted migration)",
+                default=True):
+            facts.warnings = (*facts.warnings, "OC/OMO configuration skipped by user")
+            return InitializerOutcome.pending_auth(
+                stages=ledger.snapshot(),
+                safe_detail=SafeDetail("OC/OMO configuration skipped by user"))
         ledger.begin(StageKind.OPENCODE_INSTALL)
         oi = request.ports.opencode_installer.install()
         if oi.binary:
@@ -175,8 +200,13 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
         ominst = ensure_omo_install(
             OmoInstallRequest(subscription=sub),
             bun_installer=request.ports.bun_installer, omo_installer=request.ports.omo_installer,
-            registrar=request.ports.plugin_registrar)
-        facts.bun_path, facts.bun_version = str(ominst.bun.path), ominst.bun.version_text
+            registrar=request.ports.plugin_registrar,
+            opencode_argv=(binary,) if binary else (),
+            project_root=request.project_root)
+        if ominst.bun is not None:
+            facts.bun_path, facts.bun_version = str(ominst.bun.path), ominst.bun.version_text
+        else:
+            facts.bun_path, facts.bun_version = "", ""
         facts.omo_action = ominst.omo_action
         if ominst.legacy_warning:
             facts.warnings = (*facts.warnings, ominst.legacy_warning)
@@ -225,16 +255,25 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
             ports=ValidationPorts(version_probe=request.ports.version_probe,
                                    runtime=request.ports.opencode_runtime,
                                    diagnose_runner=request.ports.diagnose_runner))
-        omo = validate_omo_runtime(
-            OmoValidationRequest(
-                auth_state=facts.auth_state, billable_consent=facts.billable_consent,
-                doctor_argv_prefix=_OMO_PREFIX,
-                run_argv_prefix=_OMO_PREFIX,
-                doctor_timeout_seconds=request.doctor_timeout,
-                run_timeout_seconds=request.run_timeout, base_env=request.base_env),
-            ports=OmoValidationPorts(command=request.ports.omo_command))
+        omo_runtime = detect_omo_runtime()
+        if omo_runtime is None:
+            print("Warning: No bun/npx runtime found; skipping OMO validation", flush=True)
+            omo = OmoValidationOutcome(fact=OmoValidationFact.AUTH_DEFERRED)
+            omo_skipped = True
+        else:
+            omo = validate_omo_runtime(
+                OmoValidationRequest(
+                    auth_state=facts.auth_state, billable_consent=facts.billable_consent,
+                    doctor_argv_prefix=_OMO_PREFIX,
+                    run_argv_prefix=_OMO_PREFIX,
+                    doctor_timeout_seconds=request.doctor_timeout,
+                    run_timeout_seconds=request.run_timeout, base_env=request.base_env),
+                ports=OmoValidationPorts(command=request.ports.omo_command))
+            omo_skipped = False
         facts.omo_runtime_command = " ".join(_OMO_PREFIX)
         outcome = resolve_validation(request, val, omo, ledger, facts, binary, model)
+        if omo_skipped:
+            facts.omo_validation_fact = "skipped (no bun/npx runtime)"
     except (KeyboardInterrupt, EOFError):
         current = ledger.current
         if current is not None:

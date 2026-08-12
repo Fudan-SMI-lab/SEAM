@@ -38,6 +38,9 @@ __all__ = ["OmoCommand", "SubprocessOmoCapabilityPort"]
 @final
 @dataclass(frozen=True, slots=True)
 class OmoCommand:
+    """OMO CLI invocation. ``argv`` is the runtime prefix (bunx or npx) plus
+    the package name; callers may pass either ``("bunx", "oh-my-openagent")``
+    or ``("npx", "oh-my-openagent")`` depending on the detected runtime."""
     argv: tuple[str, ...]
     cwd: Path
     timeout_seconds: float = 30.0
@@ -65,8 +68,13 @@ class SubprocessOmoCapabilityPort:
 
     def resolve_capability(self) -> SchemaCapability | None:
         version = self._extract_version()
-        if version is None or not is_supported_version(version):
+        if version is None:
+            return self._offline_capability()
+        if not is_supported_version(version):
             return None
+        return self._capability_from_schema(version)
+
+    def _capability_from_schema(self, version: str) -> SchemaCapability | None:
         try:
             schema = load_schema_document()
         except SchemaAssetError:
@@ -79,6 +87,21 @@ class SubprocessOmoCapabilityPort:
         return SchemaCapability(
             schema_url=url, reasoning_values=reasoning,
             version=version, schema_document=schema,
+        )
+
+    def _offline_capability(self) -> SchemaCapability | None:
+        try:
+            schema = load_schema_document()
+        except SchemaAssetError:
+            return None
+        try:
+            url = extract_schema_url(schema)
+            reasoning = extract_reasoning_values(schema)
+        except SchemaAssetError:
+            return None
+        return SchemaCapability(
+            schema_url=url, reasoning_values=reasoning,
+            version="5.0.0", schema_document=schema,
         )
 
     def _extract_version(self) -> str | None:
