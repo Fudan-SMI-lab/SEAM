@@ -181,7 +181,7 @@ class SubprocessVenvCreator:
 _PROBE_SCRIPT = (
     "import json, os, sys, sysconfig; stdlib = sysconfig.get_path('stdlib') or ''; "
     "util = __import__('importlib.util', fromlist=['find_spec']); "
-    "print(json.dumps({'executable': os.path.realpath(sys.executable), "
+    "print(json.dumps({'executable': sys.executable, "
     "'version': list(sys.version_info[:3]), 'in_venv': sys.prefix != sys.base_prefix, "
     "'prefix': sys.prefix, 'base_prefix': sys.base_prefix, "
     "'writable': os.access(sys.prefix, os.W_OK), "
