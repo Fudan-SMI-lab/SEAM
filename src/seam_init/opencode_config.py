@@ -139,6 +139,7 @@ class OpencodeConfigResult:
     transaction: TransactionResult | None
     safe_detail: SafeDetail
     selection: ProviderSelection | None = None
+    validated_models: tuple[str, ...] = ()
 
 
 def prove_project_path_observed(
@@ -160,6 +161,20 @@ def _abort(
         transaction=None,
         safe_detail=_safe(detail),
     )
+
+
+def _config_semantically_observed(
+    existing: JsonDict, runtime: JsonDict,
+) -> bool:
+    existing_providers_raw = existing.get("provider")
+    if not isinstance(existing_providers_raw, dict) or not existing_providers_raw:
+        return True
+    existing_ids = set(str(k) for k in existing_providers_raw)
+    runtime_providers_raw = runtime.get("provider")
+    if not isinstance(runtime_providers_raw, dict):
+        return False
+    runtime_ids = set(str(k) for k in runtime_providers_raw)
+    return bool(existing_ids & runtime_ids)
 
 
 def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
@@ -226,13 +241,19 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
         facts.append(ConfigFact("AUTH_PROVIDED", _safe("api key supplied to provider options")))
     merged_bytes = json.dumps(merged, indent=2, ensure_ascii=False).encode("utf-8")
 
-    # 7. Existing targets prove exact-path observation BEFORE any transaction.
+    # 7. Existing targets prove observation BEFORE any transaction.
     if not fresh:
         debug_cfg = request.runtime.debug_config()
-        if not is_path_observed(debug_cfg, write_path):
-            facts.append(ConfigFact("PATH_UNOBSERVED", _safe("project path not observed")))
+        if debug_cfg is None:
+            facts.append(ConfigFact("PATH_UNOBSERVED", _safe("opencode debug config unavailable")))
             return _abort(facts, "project config not observed; write aborted")
-        facts.append(ConfigFact("PATH_OBSERVED", _safe("project config path observed")))
+        if is_path_observed(debug_cfg, write_path):
+            facts.append(ConfigFact("PATH_OBSERVED", _safe("project config path observed")))
+        elif _config_semantically_observed(base, debug_cfg):
+            facts.append(ConfigFact("PATH_OBSERVED", _safe("project config providers observed in runtime")))
+        else:
+            facts.append(ConfigFact("PATH_UNOBSERVED", _safe("project config not observed")))
+            return _abort(facts, "project config not observed; write aborted")
 
     # 8. Schema validation BEFORE any transaction.
     if not request.schema_validator.validate(merged_bytes):
@@ -274,7 +295,7 @@ def configure_opencode(request: OpencodeConfigRequest) -> OpencodeConfigResult:
         return OpencodeConfigResult(
             committed=True, pending_auth=pending_auth, facts=tuple(facts),
             transaction=result, safe_detail=_safe("provider/model merge committed"),
-            selection=selection,
+            selection=selection, validated_models=debug_models,
         )
     return OpencodeConfigResult(
         committed=False, pending_auth=pending_auth, facts=tuple(facts),

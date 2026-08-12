@@ -243,7 +243,7 @@ def classify_repair(validation: RepairValidation) -> RepairCategory:
     omo = validation.omo.fact
     if oc in _OPENCODE_TERMINAL or omo in _OMO_TERMINAL:
         return RepairCategory.TERMINAL
-    if oc is ValidationFact.MESSAGE_READY and omo is OmoValidationFact.VALIDATED:
+    if oc is ValidationFact.MESSAGE_READY and omo in (OmoValidationFact.VALIDATED, OmoValidationFact.AUTH_DEFERRED):
         return RepairCategory.SUCCESS
     if oc in _OPENCODE_REPAIRABLE or omo in _OMO_REPAIRABLE:
         return RepairCategory.REPAIRABLE

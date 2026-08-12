@@ -50,7 +50,7 @@ def _consent(req: WorkflowRequest, auth: AuthState) -> BillableCallConsent:
     if req.answers is not None:
         return BillableCallConsent.GIVEN if req.answers.billable_consent else BillableCallConsent.DECLINED
     return (BillableCallConsent.GIVEN
-            if req.prompt.confirm("Attempt a real (billable) provider validation call?", default=False)
+            if req.prompt.confirm("Attempt a real (billable) provider validation call?", default=True)
             else BillableCallConsent.DECLINED)
 
 
@@ -215,7 +215,8 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
         omc = configure_omo(OmoConfigRequest(
             project_root=request.project_root, prompt=request.stage_prompt(),
             capability_port=request.ports.omo_capability, runtime=request.ports.opencode_runtime,
-            selected_model=model, selected_reasoning=request.effective_reasoning))
+            selected_model=model, selected_reasoning=request.effective_reasoning,
+            precomputed_models=occ.validated_models or None))
         facts.omo_config_committed = omc.committed
         if not omc.committed:
             ledger.complete(StageStatus.FAILED)
@@ -227,12 +228,30 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
             facts.omo_transaction_id = omc.transaction.transaction_id
         refresh_config_facts(facts, request.project_root)
         ledger.complete(StageStatus.SUCCEEDED)
+        server_port = request.server_port
+        server_url = request.server_url
+        import socket as _socket
+        def _port_in_use(port: int) -> bool:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                return s.connect_ex(("127.0.0.1", port)) == 0
+        if _port_in_use(server_port):
+            if request.interactive:
+                raw = request.prompt.ask(
+                    f"Port {server_port} is already in use by another OpenCode server. "
+                    f"Use a different port?", default="4096")
+                server_port = int(raw) if raw.strip().isdigit() else 4096
+            else:
+                server_port = 4096
+            server_url = f"http://{request.server_hostname}:{server_port}"
+            print(f"Using server port {server_port} (default port {request.server_port} occupied)",
+                  flush=True)
         ledger.begin(StageKind.OPENCODE_RUNTIME)
         rt = ensure_server(
             RuntimeRequest(
                 diagnose_argv_prefix=_dp(env, request), opencode_executable=binary,
-                server_url=request.server_url, server_hostname=request.server_hostname,
-                server_port=request.server_port, readiness_mode=ReadinessMode.BASIC,
+                server_url=server_url, server_hostname=request.server_hostname,
+                server_port=server_port, readiness_mode=ReadinessMode.BASIC,
                 base_env=request.base_env, start_timeout=request.start_timeout,
                 poll_interval=request.poll_interval, work_dir=str(request.project_root)),
             ports=RuntimePorts(diagnose_runner=request.ports.diagnose_runner,
@@ -255,22 +274,34 @@ def run_workflow(request: WorkflowRequest, *, facts_out: WorkflowFacts | None = 
             ports=ValidationPorts(version_probe=request.ports.version_probe,
                                    runtime=request.ports.opencode_runtime,
                                    diagnose_runner=request.ports.diagnose_runner))
+        from seam_init.omo_install import detect_omo_functional
+        omo_functional = detect_omo_functional(
+            (binary,) if binary else (), request.project_root)
         omo_runtime = detect_omo_runtime()
-        if omo_runtime is None:
+        if omo_functional:
+            print("OMO validation skipped (already confirmed functional via opencode runtime)",
+                  flush=True)
+            omo = OmoValidationOutcome(fact=OmoValidationFact.AUTH_DEFERRED)
+            omo_skipped = True
+        elif omo_runtime is None:
             print("Warning: No bun/npx runtime found; skipping OMO validation", flush=True)
             omo = OmoValidationOutcome(fact=OmoValidationFact.AUTH_DEFERRED)
             omo_skipped = True
         else:
+            runtime_prefix = omo_runtime[0]
+            omo_argv_prefix = (runtime_prefix, "oh-my-openagent")
             omo = validate_omo_runtime(
                 OmoValidationRequest(
                     auth_state=facts.auth_state, billable_consent=facts.billable_consent,
-                    doctor_argv_prefix=_OMO_PREFIX,
-                    run_argv_prefix=_OMO_PREFIX,
+                    doctor_argv_prefix=omo_argv_prefix,
+                    run_argv_prefix=omo_argv_prefix,
                     doctor_timeout_seconds=request.doctor_timeout,
                     run_timeout_seconds=request.run_timeout, base_env=request.base_env),
                 ports=OmoValidationPorts(command=request.ports.omo_command))
             omo_skipped = False
-        facts.omo_runtime_command = " ".join(_OMO_PREFIX)
+            facts.omo_runtime_command = " ".join(omo_argv_prefix)
+        if omo_skipped:
+            facts.omo_runtime_command = " ".join(_OMO_PREFIX)
         outcome = resolve_validation(request, val, omo, ledger, facts, binary, model)
         if omo_skipped:
             facts.omo_validation_fact = "skipped (no bun/npx runtime)"

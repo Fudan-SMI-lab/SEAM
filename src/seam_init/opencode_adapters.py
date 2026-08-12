@@ -33,7 +33,7 @@ class OpencodeCommand:
 
     argv: tuple[str, ...]
     cwd: Path
-    timeout_seconds: float = 10.0
+    timeout_seconds: float = 30.0
     model_server_port: int | None = None
 
 
@@ -86,23 +86,28 @@ class SubprocessRuntimePort:
             return self._serve_models(environment)
 
     def _serve_models(self, environment: dict[str, str]) -> tuple[str, ...] | None:
-        port = self.command.model_server_port or _available_port()
-        try:
-            process = subprocess.Popen(
-                [*_command_prefix(self.command.argv), "serve", "--hostname", "127.0.0.1",
-                 "--port", str(port)],
-                cwd=self.command.cwd, env=environment,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=os.name != "nt",
-            )
-        except OSError:
-            return None
-        try:
-            return self._poll_models(process, port)
-        finally:
-            _stop_process(process)
-            _wait_port_closed(port)
+        for attempt in range(3):
+            port = self.command.model_server_port or _available_port()
+            try:
+                process = subprocess.Popen(
+                    [*_command_prefix(self.command.argv), "serve", "--hostname", "127.0.0.1",
+                     "--port", str(port)],
+                    cwd=self.command.cwd, env=environment,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=os.name != "nt",
+                )
+            except OSError:
+                return None
+            try:
+                result = self._poll_models(process, port)
+                if result is not None:
+                    return result
+            finally:
+                _stop_process(process)
+                _wait_port_closed(port)
+            time.sleep(2)
+        return None
 
     def _poll_models(
         self, process: subprocess.Popen[bytes], port: int,

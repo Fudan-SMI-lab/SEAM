@@ -42,6 +42,9 @@ _EXIT_FACT_MAP: Final[dict[int, ReadinessFact]] = {
     50: ReadinessFact.INVALID_ARGUMENT,
 }
 READY_FACTS: Final[frozenset[ReadinessFact]] = frozenset({ReadinessFact.READY, ReadinessFact.BASIC_READY})
+OWNED_ACCEPTABLE_FACTS: Final[frozenset[ReadinessFact]] = frozenset({
+    ReadinessFact.READY, ReadinessFact.BASIC_READY, ReadinessFact.AGENT_UNAVAILABLE,
+})
 
 
 @unique

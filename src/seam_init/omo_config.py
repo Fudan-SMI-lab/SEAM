@@ -131,6 +131,7 @@ class OmoConfigRequest:
     home: HomePathPolicy = field(default_factory=DefaultHome)
     selected_model: str | None = None
     selected_reasoning: str | None = None
+    precomputed_models: tuple[str, ...] | None = None
 
 
 @final
@@ -177,7 +178,10 @@ def configure_omo(request: OmoConfigRequest) -> OmoConfigResult:
     if cap is None:
         return _abort([_fact("CAPABILITY_UNAVAILABLE", "capability unavailable")],
                        "OMO capability unavailable or unsupported")
-    model_list = request.runtime.debug_models()
+    if request.precomputed_models is not None:
+        model_list = request.precomputed_models
+    else:
+        model_list = request.runtime.debug_models()
     if model_list is None:
         return _abort([_fact("MODEL_DATA_UNAVAILABLE", "model list unavailable")],
                        "opencode model list unavailable")

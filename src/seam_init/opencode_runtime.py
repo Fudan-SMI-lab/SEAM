@@ -20,6 +20,7 @@ from seam_init.opencode_runtime_types import (
     DiagnoseResult,
     DiagnoseRunner,
     EnvPatch,
+    OWNED_ACCEPTABLE_FACTS,
     OwnedProcessRef,
     ReadinessFact,
     ReadinessMode,
@@ -53,7 +54,7 @@ class RuntimeOutcome:
     diagnostics: tuple[SafeDetail, ...] = ()
 
     def __post_init__(self) -> None:
-        is_ready = self.readiness_fact in READY_FACTS
+        is_ready = self.readiness_fact in READY_FACTS or self.readiness_fact in OWNED_ACCEPTABLE_FACTS
         if is_ready and self.failure_kind is not None:
             raise ValueError("ready fact must not carry failure_kind")
         if not is_ready and self.failure_kind is None:
@@ -150,7 +151,9 @@ def _serve_argv(request: RuntimeRequest) -> list[str]:
 
 def _poll_until_ready(
     request: RuntimeRequest, ports: RuntimePorts, child_env: Mapping[str, str], ref: OwnedProcessRef,
+    acceptable_facts: frozenset[ReadinessFact] | None = None,
 ) -> ReadinessFact:
+    accept = acceptable_facts if acceptable_facts is not None else READY_FACTS
     deadline = ports.monotonic() + request.start_timeout
     argv = _diag_argv(request, request.readiness_mode.value)
     fact = ReadinessFact.UNKNOWN
@@ -159,8 +162,10 @@ def _poll_until_ready(
         fact = classify_diagnose_exit(result.returncode)
         if fact in READY_FACTS:
             return fact
-        if not ports.lifecycle.is_running(ref) or ports.monotonic() >= deadline:
+        if fact in accept and ports.monotonic() >= deadline:
             return fact
+        if not ports.lifecycle.is_running(ref) or ports.monotonic() >= deadline:
+            return fact if fact in accept else fact
         ports.sleep(request.poll_interval)
 
 
@@ -196,17 +201,6 @@ def ensure_server(request: RuntimeRequest, *, ports: RuntimePorts) -> RuntimeOut
             failure_kind=FailureKind.OPENCODE_RUNTIME,
             failure_detail=SafeDetail(f"port occupied or misconfigured: readiness={fact.value}"),
         )
-    if (request.server_url.rstrip("/") != DEFAULT_URL
-            or request.server_hostname != DEFAULT_HOSTNAME
-            or request.server_port != DEFAULT_PORT):
-        return RuntimeOutcome(
-            readiness_fact=fact, ownership=ServerOwnership.NONE,
-            server_url=request.server_url, env_patch=env_patch,
-            failure_kind=FailureKind.OPENCODE_RUNTIME,
-            failure_detail=_bounded(
-                f"owned startup requires url={DEFAULT_URL} hostname={DEFAULT_HOSTNAME} port={DEFAULT_PORT}",
-            ),
-        )
     if not os.path.isabs(request.opencode_executable):
         return RuntimeOutcome(
             readiness_fact=fact, ownership=ServerOwnership.NONE,
@@ -228,9 +222,13 @@ def ensure_server(request: RuntimeRequest, *, ports: RuntimePorts) -> RuntimeOut
             failure_detail=_bounded(f"failed to start server: {exc}"),
         )
     try:
-        wait_fact = _poll_until_ready(request, ports, child_env, ref)
-        if wait_fact in READY_FACTS:
-            print(f"[OPENCODE_RUNTIME] Server ready", flush=True)
+        wait_fact = _poll_until_ready(request, ports, child_env, ref, OWNED_ACCEPTABLE_FACTS)
+        if wait_fact in OWNED_ACCEPTABLE_FACTS:
+            if wait_fact is ReadinessFact.AGENT_UNAVAILABLE:
+                print(f"[OPENCODE_RUNTIME] Server ready (agents not yet loaded; "
+                      f"OMO plugin may need installation)", flush=True)
+            else:
+                print(f"[OPENCODE_RUNTIME] Server ready", flush=True)
             return RuntimeOutcome(
                 readiness_fact=wait_fact, ownership=ServerOwnership.OWNED,
                 server_url=request.server_url, env_patch=env_patch,

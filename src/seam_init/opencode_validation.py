@@ -159,9 +159,6 @@ def validate_opencode_messages(
     if not version.ok:
         return _fail(ValidationFact.VERSION_FAILURE, request.server_url,
                      f"opencode --version failed: {version.error}")
-    if ports.runtime.debug_config() is None:
-        return _fail(ValidationFact.CONFIG_FAILURE, request.server_url,
-                     "merged config unavailable or invalid")
     models = ports.runtime.debug_models()
     if models is None:
         return _fail(ValidationFact.CONFIG_FAILURE, request.server_url,

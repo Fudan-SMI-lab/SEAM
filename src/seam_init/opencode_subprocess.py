@@ -22,7 +22,7 @@ from seam_init.opencode_validation import VersionResult
 
 __all__ = ["SubprocessDiagnoseRunner", "SubprocessServerLifecycle", "SubprocessVersionProbe"]
 
-_MAX_OUTPUT = 8192
+_MAX_OUTPUT = 262144
 _TRUNCATED = "...[truncated]"
 _TASKKILL_TIMEOUT = 10.0
 _WIN_CMD_SUFFIXES = frozenset({".bat", ".cmd"})
