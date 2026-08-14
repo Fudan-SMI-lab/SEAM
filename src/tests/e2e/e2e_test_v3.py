@@ -59,6 +59,7 @@ from core.terminal_continuation_models import (
     V3ReviewRunOptions,
     V3ServerRunOptions,
 )
+from core.types import WorkflowDefinition
 from core.v3_outcome_mapping import (
     V3OutcomeUnavailableError,
     V3RunFacts,
@@ -324,13 +325,30 @@ def symlink_large_files(project_dir: Path, source_dir: Path) -> int:
             ".egg",
         }:
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(item.resolve()), str(target))
+            shutil.copy2(item, target)
             symlinked += 1
         elif item.stat().st_size > 50 * 1024 * 1024:
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(item.resolve()), str(target))
+            shutil.copy2(item, target)
             symlinked += 1
     return symlinked
+
+
+def _drop_legacy_copy_artifacts_hooks(workflow: WorkflowDefinition) -> None:
+    """Drop legacy ``copy_artifacts`` entries from the ``workflow_end`` hooks.
+
+    V3-only repair: EvidencePersister is the sole artifact writer, so the
+    legacy builtin would double-write ``.sm-artifacts`` and the no-replace V3
+    copy then raises FileExistsError. Only the ``workflow_end`` list is
+    touched, only when a legacy entry is present; survivors keep their
+    relative order and object identity. Missing or empty hook point: no-op.
+    """
+    hooks = workflow.hooks.get("workflow_end")
+    if not hooks:
+        return
+    filtered = [hook for hook in hooks if hook.operation != "copy_artifacts"]
+    if len(filtered) != len(hooks):
+        hooks[:] = filtered
 
 
 def _format_selector_result_log(
@@ -972,6 +990,7 @@ def run_e2e_v3(
                 if continuation is not None
                 else load_workflow(str(effective_workflow_path))
             )
+            _drop_legacy_copy_artifacts_hooks(workflow)
             log(
                 f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
             )
