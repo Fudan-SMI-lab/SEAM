@@ -239,14 +239,6 @@ def _remove_tree_by_descriptor(
     )
     try:
         os.rmdir(path.name, dir_fd=parent_descriptor)
-        if os.fstat(descriptor).st_nlink != 0:
-            try:
-                os.mkdir(path.name, dir_fd=parent_descriptor)
-            except FileExistsError as existing:
-                _ = existing
-            raise OwnedDirectoryChangedError(
-                "path successor was restored after removal race"
-            )
     finally:
         os.close(parent_descriptor)
 
@@ -275,13 +267,5 @@ def _clear_directory(descriptor: int, flags: int) -> None:
                     "child directory changed before removal"
                 )
             os.rmdir(name, dir_fd=descriptor)
-            if os.fstat(child).st_nlink != 0:
-                try:
-                    os.mkdir(name, dir_fd=descriptor)
-                except FileExistsError as existing:
-                    _ = existing
-                raise OwnedDirectoryChangedError(
-                    "child successor was restored after removal race"
-                )
         finally:
             os.close(child)
