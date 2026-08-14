@@ -27,7 +27,9 @@ class SnapshotResult:
 def persist_python_snapshot(project_dir: Path, output_path: Path) -> SnapshotResult:
     snapshot: dict[str, dict[str, str]] = {}
     try:
-        tree = inspect_real_tree(project_dir, project_dir.parent)
+        tree = inspect_real_tree(
+            project_dir, project_dir.parent, budget_suffixes=frozenset({".py"})
+        )
         for identity in tree.files:
             relative_path = identity.path.relative_to(tree.root.path)
             if identity.path.suffix != ".py" or any(
