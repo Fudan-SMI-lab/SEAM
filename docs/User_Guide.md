@@ -32,13 +32,6 @@ SEAM 的生产运行目标为 **Linux**，要求 **Python 3.10 及以上**。强
 在仓库根目录执行以下命令：
 
 ```bash
-<<<<<<< HEAD
-git clone https://github.com/Fudan-SMI-lab/SEAM.git
-cd SEAM
-bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
-  --server_type opencode \
-  --server_url http://127.0.0.1:5000
-=======
 # 克隆仓库（注意正确的 URL）
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM
@@ -51,7 +44,6 @@ python -m pip install -e "./src[dashboard]"
 
 # 可选：SQLite 二进制回退
 python -m pip install -e "./src[sqlite]"
->>>>>>> 07d77fc2cf1194152e61d21c5a67debfb09d3d0c
 ```
 
 各 extras 的作用：
@@ -78,11 +70,6 @@ opencode serve --port 4098 --hostname 127.0.0.1 &
 
 如果环境设置了 `HTTP_PROXY` 或 `HTTPS_PROXY`，必须把本机地址加入 `NO_PROXY` / `no_proxy`，否则 SEAM 调用本地 OpenCode 时会走代理而失败：
 
-<<<<<<< HEAD
-[迁移工具接口指引](migration_utils_platform_adaptation_guide.md)
-
-更多细节更新中。
-=======
 ```bash
 export NO_PROXY="127.0.0.1,localhost,::1"
 export no_proxy="127.0.0.1,localhost,::1"
@@ -542,4 +529,3 @@ jq -c . "$RUN/ui_events.jsonl" | tail
 - [原始 trace 设计](../src/docs/full_agent_io_logging_design.md) — schema-v2 关联边界与完整性规则
 - [使用案例](Use_Cases.md) — 实际迁移场景示例
 - [FAQ](FAQ.md) — 更多常见问题
->>>>>>> 07d77fc2cf1194152e61d21c5a67debfb09d3d0c

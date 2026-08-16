@@ -33,3 +33,4 @@
 - 开发者网站：https://developer.metax-tech.com/doc （文档、镜像等）
 - 更多技术服务：沐曦的产品、镜像和文档也比较全，技术服务上能“人力支持”的不多，所以推荐大家优先在他们的开发者网站查询
 
+更多变更，之后在[SEAM网站](https://alidocs.dingtalk.com/i/nodes/GZLxjv9VGqprNGDms6plnrBG86EDybno)中文档更新。
