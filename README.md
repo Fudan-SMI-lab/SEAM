@@ -41,11 +41,34 @@ SEAM是一个自动化迁移AI工具，能把原来只能在NVIDIA显卡上运�
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM
-bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
-  --server_type opencode
+bash src/scripts/init_seam.sh
 ```
 
-请先确认本机 OpenCode Server 已启动，默认地址为 `http://127.0.0.1:4098`；如果端口不同，可以加 `--server_url` 显式指定。
+交互式初始化器会引导完成 Python 环境选择、SEAM 依赖安装、OpenCode 与 OMO 的安装配置和验证。Python 环境三选一：
+
+- **base 解释器**：直接使用当前 Python 3.10+，装进当前环境；
+- **已有 venv**：复用你指定的现有虚拟环境；
+- **新建 venv**：为 SEAM 创建全新的 `.venv`。
+
+初始化终态与退出码：
+
+| 状态 | 退出码 | 含义 |
+|---|---|---|
+| READY | 0 | 设置完成，可以运行迁移 |
+| PENDING_AUTH | 60 | 结构检查已通过，认证/付费验证被推迟 |
+| FAILED | 61-69 | 某一阶段失败，按终端指引修复后重跑 |
+
+PENDING_AUTH **不可直接运行**：需要提供 API key、同意一次付费验证调用，然后重跑 `bash src/scripts/init_seam.sh`，直到 READY（退出码 0）。
+
+READY 时终端会打印迁移命令：
+
+```bash
+bash src/scripts/run_seam.sh /path/to/project --server_url http://127.0.0.1:4098
+```
+
+将 `/path/to/project` 替换为你的 CUDA 项目目录。可选 flag：`--dashboard`（强制开启实时仪表盘）、`--review`（启用 Review Gate）、`--seal-manifest`（直接运行后封存根 run-manifest）。
+
+安全提示：API key 可以跳过，之后重跑时再补录；如果提供，key 可能以明文存储在本机配置中。
 
 不传 `--workflow` 时，启动器会使用 `src/workflows/seam_auto_default.yaml` 自动选择流程，通常无需手动指定 workflow。
 

@@ -1,0 +1,60 @@
+{
+  "$comment": "Provider preset catalog for the SEAM initializer interactive selection. type=native means opencode has a built-in adapter (no baseURL needed); type=openai-compatible means a custom OpenAI-compatible endpoint requiring baseURL + @ai-sdk/openai-compatible. models is a quick-pick list; the user can always type a custom model id.",
+  "presets": [
+    {
+      "id": "zhipuai",
+      "name": "ZhipuAI (\u667a\u8c31)",
+      "type": "openai-compatible",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "needs_api_key": true,
+      "models": [
+        {"id": "glm-5.2", "name": "GLM-5.2"},
+        {"id": "glm-4.6", "name": "GLM-4.6"}
+      ]
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "type": "openai-compatible",
+      "base_url": "https://api.deepseek.com/v1",
+      "needs_api_key": true,
+      "models": [
+        {"id": "deepseek-chat", "name": "DeepSeek Chat"},
+        {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner (R1)"}
+      ]
+    },
+    {
+      "id": "kimi",
+      "name": "Kimi (Moonshot)",
+      "type": "openai-compatible",
+      "base_url": "https://api.moonshot.cn/v1",
+      "needs_api_key": true,
+      "models": [
+        {"id": "moonshot-v1-128k", "name": "Moonshot V1 128K"},
+        {"id": "moonshot-v1-32k", "name": "Moonshot V1 32K"}
+      ]
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "type": "native",
+      "base_url": null,
+      "needs_api_key": true,
+      "models": [
+        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4"},
+        {"id": "claude-opus-4-20250514", "name": "Claude Opus 4"}
+      ]
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "type": "native",
+      "base_url": null,
+      "needs_api_key": true,
+      "models": [
+        {"id": "gpt-4o", "name": "GPT-4o"},
+        {"id": "gpt-4o-mini", "name": "GPT-4o Mini"}
+      ]
+    }
+  ]
+}

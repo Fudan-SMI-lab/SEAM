@@ -156,7 +156,7 @@ def test_owned_file_release_restores_quarantined_directory_successor(
     assert path.is_dir()
 
 
-def test_directory_release_restores_empty_successor_removed_at_final_rmdir(
+def test_directory_release_treats_successful_final_rmdir_as_authoritative(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,11 +184,27 @@ def test_directory_release_restores_empty_successor_removed_at_final_rmdir(
 
     monkeypatch.setattr(os, "rmdir", swap_before_rmdir)
 
+    owned_directory_lock.release_owned_directory(path, identity)
+
+    assert swapped
+    assert not any(tmp_path.glob(".owned.*.release"))
+
+
+def test_directory_release_rejects_directory_replaced_before_release(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "owned"
+    path.mkdir()
+    identity = owned_directory_lock.directory_lock_identity(path)
+    shutil.rmtree(path)
+    path.mkdir()
+    sentinel = path / "successor.txt"
+    _ = sentinel.write_text("successor", encoding="utf-8")
+
     with pytest.raises(owned_directory_lock.OwnedDirectoryChangedError):
         owned_directory_lock.release_owned_directory(path, identity)
 
-    assert swapped
-    assert any(tmp_path.glob(".owned.*.release"))
+    assert sentinel.read_text(encoding="utf-8") == "successor"
 
 
 @pytest.mark.parametrize("copier", [copy.copy, copy.deepcopy])

@@ -38,6 +38,7 @@ SEAM_PYTHON="${PYTHON:-}"
 OPENCODE_READINESS="message"
 OPENCODE_MESSAGE_TIMEOUT=120
 OPENCODE_DIAGNOSE_ONLY=false
+DASHBOARD_REQUESTED=""
 PYTHON_OPENCODE_READINESS="message"
 CONTAINER_RETENTION=""
 SAVE_AGENT_TRACE=""
@@ -208,8 +209,8 @@ while [[ $# -gt 0 ]]; do
         --opencode-readiness)    OPENCODE_READINESS="$2"; shift 2 ;;
         --opencode-message-timeout) OPENCODE_MESSAGE_TIMEOUT="$2"; shift 2 ;;
         --opencode-diagnose-only) OPENCODE_DIAGNOSE_ONLY=true; shift ;;
-        --dashboard)           EXTRA_ARGS+=("--dashboard"); shift ;;
-        --no-dashboard)        EXTRA_ARGS+=("--no-dashboard"); shift ;;
+        --dashboard)           EXTRA_ARGS+=("--dashboard"); DASHBOARD_REQUESTED=true; shift ;;
+        --no-dashboard)        EXTRA_ARGS+=("--no-dashboard"); DASHBOARD_REQUESTED=false; shift ;;
         --dashboard-mode)
             if [[ $# -lt 2 || ( "$2" != "auto" && "$2" != "on" && "$2" != "off" ) ]]; then
                 echo -e "${RED}Error: --dashboard-mode requires one of: auto, on, off.${NC}" >&2
@@ -251,7 +252,8 @@ while [[ $# -gt 0 ]]; do
         -*)                     echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
         *)
             if [[ -z "$PROJECT_NAME" ]]; then
-                PROJECT_NAME="$1"; shift
+                PROJECT_ARG="$1"
+                PROJECT_NAME="$(basename "$1")"; shift
             else
                 echo -e "${RED}Unexpected argument: $1${NC}" >&2; exit 1
             fi
@@ -335,7 +337,7 @@ resolve_project_dir() {
 
 PROJECT_DIR=""
 if [[ -n "$PROJECT_NAME" ]]; then
-    PROJECT_DIR="$(resolve_project_dir "$PROJECT_NAME" || true)"
+    PROJECT_DIR="$(resolve_project_dir "${PROJECT_ARG:-$PROJECT_NAME}" || true)"
 fi
 
 # ── Validation ──
@@ -391,7 +393,9 @@ if [[ -z "$CONTINUE_FROM" && -f "$PROJECT_DIR/ADAPTATION_REQUIREMENTS.md" ]]; th
     echo -e "${GREEN}✓${NC} ADAPTATION_REQUIREMENTS.md exists"
     HAS_CONSTRAINTS=true
 elif [[ -z "$CONTINUE_FROM" ]]; then
-    echo -e "${YELLOW}⚠  ADAPTATION_REQUIREMENTS.md not found (no constraints will be applied)${NC}"
+    echo -e "${YELLOW}⚠  ADAPTATION_REQUIREMENTS.md not found${NC}"
+    echo -e "${YELLOW}    (optional: project-specific migration constraints, e.g. 'zero CPU fallback')${NC}"
+    echo -e "${YELLOW}    Place at: <PROJECT_DIR>/ADAPTATION_REQUIREMENTS.md  —  see --help for format${NC}"
 fi
 
 # Check test entry script hints. Some cuda_projects are flat source trees and let Phase 3 discover the entry.
@@ -402,7 +406,9 @@ fi
 if [[ -n "$CONTINUE_FROM" ]]; then
     :
 elif [[ -z "$ENTRY_SCRIPTS" ]]; then
-    echo -e "${YELLOW}⚠  No test_data_and_scripts/*.py found (Phase 3 will discover an entry script)${NC}"
+    echo -e "${YELLOW}⚠  No test_data_and_scripts/*.py found${NC}"
+    echo -e "${YELLOW}    (optional: non-interactive E2E test entry script; Phase 3 will auto-discover one)${NC}"
+    echo -e "${YELLOW}    Place at: <PROJECT_DIR>/test_data_and_scripts/<entry>.py${NC}"
 else
     echo -e "${GREEN}✓${NC} Entry scripts found:"
     while IFS= read -r script; do
@@ -417,7 +423,8 @@ elif [[ -d "$PROJECT_DIR/original_src" ]]; then
     FILE_COUNT=$(find "$PROJECT_DIR/original_src" -type f 2>/dev/null | wc -l)
     echo -e "${GREEN}✓${NC} original_src/ exists ($FILE_COUNT files)"
 else
-    echo -e "${YELLOW}⚠  original_src/ not found (will use project root directly)${NC}"
+    echo -e "${YELLOW}⚠  original_src/ not found${NC}"
+    echo -e "${YELLOW}    (optional: clean upstream source copy; will use project root directly)${NC}"
 fi
 
 # Check OpenCode server using the standalone diagnostic script.
@@ -433,53 +440,65 @@ if [[ "$OPENCODE_READINESS" != "off" && "$OPENCODE_READINESS" != "basic" && "$OP
     exit 1
 fi
 
-echo ""
-"$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env
-ENV_PATCH=$("$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env --emit-env)
+ENV_PATCH=$("$SEAM_PYTHON" "$DIAG_SCRIPT" --server-url "$SERVER_URL" --mode env --emit-env 2>/dev/null)
 if [[ -n "$ENV_PATCH" ]]; then
     eval "$ENV_PATCH"
-    echo -e "${GREEN}✓${NC} Applied OpenCode preflight environment fixes"
 fi
 
 if [[ -n "$CONTINUE_FROM" ]]; then
-    echo ""
-    echo -e "${CYAN}OpenCode readiness will run after continuation ownership and environment validation.${NC}"
     PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
 elif [[ "$DRY_RUN" == true && "$OPENCODE_DIAGNOSE_ONLY" != true ]]; then
-    echo ""
-    echo -e "${YELLOW}⚠  Dry-run mode: skipping OpenCode server reachability check${NC}"
-else
-    echo ""
-    echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
-    set +e
+    PYTHON_OPENCODE_READINESS="off"
+elif [[ "$OPENCODE_DIAGNOSE_ONLY" == true ]]; then
     "$SEAM_PYTHON" "$DIAG_SCRIPT" \
         --server-url "$SERVER_URL" \
         --mode "$OPENCODE_READINESS" \
         --message-timeout "$OPENCODE_MESSAGE_TIMEOUT"
+    exit $?
+elif [[ "$DASHBOARD_REQUESTED" == "true" ]]; then
+    PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
+else
+    echo ""
+    echo -e "${CYAN}Checking OpenCode server at $SERVER_URL ...${NC}"
+    set +e
+    DIAG_OUTPUT=$("$SEAM_PYTHON" "$DIAG_SCRIPT" \
+        --server-url "$SERVER_URL" \
+        --mode "$OPENCODE_READINESS" \
+        --message-timeout "$OPENCODE_MESSAGE_TIMEOUT" 2>&1)
     DIAG_EXIT=$?
     set -e
-
-    if [[ "$OPENCODE_DIAGNOSE_ONLY" == true ]]; then
-        if [[ $DIAG_EXIT -eq 0 || $DIAG_EXIT -eq 20 ]]; then
-            exit 0
-        fi
-        exit "$DIAG_EXIT"
-    fi
-
     if [[ $DIAG_EXIT -eq 0 || $DIAG_EXIT -eq 20 ]]; then
-        echo -e "${GREEN}✓${NC} OpenCode diagnostic passed"
+        echo -e "${GREEN}✓${NC} OpenCode server ready at $SERVER_URL"
         PYTHON_OPENCODE_READINESS="off"
     elif [[ $DIAG_EXIT -eq 40 && "$SERVER_NO_AUTO_START" != true ]]; then
-        echo -e "${YELLOW}⚠  OpenCode server is not reachable; auto-start is enabled, Python will attempt to start it.${NC}"
-        PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
+        echo -e "${YELLOW}⚠  OpenCode server is not reachable; starting one now...${NC}"
+        SERVER_HOST=$(echo "$SERVER_URL" | sed -n 's|.*://\([^:]*\).*|\1|p')
+        SERVER_PORT_NUM=$(echo "$SERVER_URL" | sed -n 's|.*:\([0-9]*\).*|\1|p')
+        SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
+        SERVER_PORT_NUM="${SERVER_PORT_NUM:-4098}"
+        nohup opencode serve --hostname "$SERVER_HOST" --port "$SERVER_PORT_NUM" > /tmp/seam_opencode_server.log 2>&1 &
+        SERVER_PID=$!
+        echo -e "${GREEN}  Started opencode serve (pid=$SERVER_PID) at $SERVER_URL${NC}"
+        echo -e "${YELLOW}  Waiting for server to become ready...${NC}"
+        for i in $(seq 1 30); do
+            sleep 2
+            if curl -s -o /dev/null -w '%{http_code}' "http://$SERVER_HOST:$SERVER_PORT_NUM/global/health" 2>/dev/null | grep -q 200; then
+                echo -e "${GREEN}✓ OpenCode server ready at $SERVER_URL${NC}"
+                PYTHON_OPENCODE_READINESS="off"
+                break
+            fi
+            if [[ $i -eq 30 ]]; then
+                echo -e "${RED}✗ Server failed to become ready after 60s${NC}"
+                echo "  Log: /tmp/seam_opencode_server.log"
+                exit 40
+            fi
+        done
     else
         echo -e "${RED}✗ OpenCode diagnostic failed with exit code $DIAG_EXIT${NC}"
+        [[ -n "${DIAG_OUTPUT:-}" ]] && echo "$DIAG_OUTPUT"
         exit "$DIAG_EXIT"
     fi
 fi
-
-echo ""
-echo -e "${GREEN}════ All checks passed ═════${NC}"
 
 NO_AUTO_ARGS=()
 if [[ "$SERVER_NO_AUTO_START" == true ]]; then
@@ -560,7 +579,7 @@ fi
 
 # ── Launch E2E test ──
 echo ""
-echo -e "${CYAN}── Launching E2E test (YAML-driven workflow V3) ──${NC}"
+echo -e "${CYAN}── Launching E2E ──${NC}"
 REVIEW_ARGS=()
 if [[ "$REVIEW_GATE" == true ]]; then
     REVIEW_ARGS+=("--review-gate")

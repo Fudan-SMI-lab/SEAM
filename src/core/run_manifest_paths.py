@@ -85,7 +85,12 @@ def _require_identity(identity: PathIdentity) -> None:
         raise _containment_error(f"tree entry changed during access: {identity.path}")
 
 
-def inspect_real_tree(root: Path, container: Path) -> RealTree:
+def inspect_real_tree(
+    root: Path,
+    container: Path,
+    *,
+    budget_suffixes: frozenset[str] | None = None,
+) -> RealTree:
     canonical_root = require_real_directory(root, container)
     root_identity = _path_identity(canonical_root)
     pending = [root_identity]
@@ -112,7 +117,10 @@ def inspect_real_tree(root: Path, container: Path) -> RealTree:
             resolved_identity = identity._replace(path=resolved)
             budget.charge(
                 resolved.relative_to(canonical_root),
-                identity.size if stat.S_ISREG(identity.mode) else 0,
+                identity.size
+                if stat.S_ISREG(identity.mode)
+                and (budget_suffixes is None or resolved.suffix in budget_suffixes)
+                else 0,
             )
             if stat.S_ISDIR(identity.mode):
                 directories.append(resolved_identity)

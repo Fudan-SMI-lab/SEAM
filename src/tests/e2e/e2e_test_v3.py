@@ -59,6 +59,7 @@ from core.terminal_continuation_models import (
     V3ReviewRunOptions,
     V3ServerRunOptions,
 )
+from core.types import WorkflowDefinition
 from core.v3_outcome_mapping import (
     V3OutcomeUnavailableError,
     V3RunFacts,
@@ -175,6 +176,7 @@ def check_server_running(
     *,
     readiness_mode: str = "message",
     message_timeout: int = 120,
+    verbose: bool = False,
 ) -> None:
     if readiness_mode == "off":
         log("OpenCode readiness check skipped (--opencode-readiness off)")
@@ -197,16 +199,19 @@ def check_server_running(
     completed = subprocess.run(
         cmd, capture_output=True, text=True, timeout=message_timeout + 30, check=False
     )
-    if completed.stdout.strip():
-        for line in completed.stdout.strip().splitlines():
-            log(f"OpenCode diagnostic: {line}")
     if completed.returncode not in {0, 20}:
+        if completed.stdout.strip():
+            for line in completed.stdout.strip().splitlines():
+                log(f"OpenCode diagnostic: {line}")
         detail = (
             completed.stderr.strip()
             or completed.stdout.strip()
             or f"exit code {completed.returncode}"
         )
         raise RuntimeError(f"OpenCode readiness diagnostic failed: {detail}")
+    if verbose:
+        for line in completed.stdout.strip().splitlines():
+            log(f"OpenCode diagnostic: {line}")
 
 
 def log_server_diagnostics(
@@ -320,13 +325,30 @@ def symlink_large_files(project_dir: Path, source_dir: Path) -> int:
             ".egg",
         }:
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(item.resolve()), str(target))
+            shutil.copy2(item, target)
             symlinked += 1
         elif item.stat().st_size > 50 * 1024 * 1024:
             target.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(item.resolve()), str(target))
+            shutil.copy2(item, target)
             symlinked += 1
     return symlinked
+
+
+def _drop_legacy_copy_artifacts_hooks(workflow: WorkflowDefinition) -> None:
+    """Drop legacy ``copy_artifacts`` entries from the ``workflow_end`` hooks.
+
+    V3-only repair: EvidencePersister is the sole artifact writer, so the
+    legacy builtin would double-write ``.sm-artifacts`` and the no-replace V3
+    copy then raises FileExistsError. Only the ``workflow_end`` list is
+    touched, only when a legacy entry is present; survivors keep their
+    relative order and object identity. Missing or empty hook point: no-op.
+    """
+    hooks = workflow.hooks.get("workflow_end")
+    if not hooks:
+        return
+    filtered = [hook for hook in hooks if hook.operation != "copy_artifacts"]
+    if len(filtered) != len(hooks):
+        hooks[:] = filtered
 
 
 def _format_selector_result_log(
@@ -676,6 +698,7 @@ def run_e2e_v3(
     dashboard_mode: str = "auto",
     dashboard_backend: str = "auto",
     seal_manifest: bool = False,
+    verbose: bool = False,
 ) -> int:
     from core.agent_io_logger import AgentIOLogger
     from core.artifact_store import ArtifactStore
@@ -790,13 +813,28 @@ def run_e2e_v3(
             )
             if server_proc is not None:
                 log(f"Auto-started OpenCode server at {base_url}")
+            if ui_event_sink is not None:
+                ui_event_sink.emit(
+                    "phase_started",
+                    phase_id="init_server_check",
+                    message="Checking OpenCode server readiness...",
+                )
             check_server_running(
                 base_url,
                 readiness_mode=opencode_readiness,
                 message_timeout=opencode_message_timeout,
+                verbose=verbose,
             )
             log(f"OpenCode server ready at {base_url}")
-            log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
+            if ui_event_sink is not None:
+                ui_event_sink.emit(
+                    "phase_finished",
+                    phase_id="init_server_check",
+                    status="passed",
+                    message=f"OpenCode server ready at {base_url}",
+                )
+            if verbose:
+                log_server_diagnostics(base_url, server_proc, str(REPO_ROOT))
             if continuation is not None:
                 temp_dir = continuation.parent.output_project
                 keep_temp_dir = True
@@ -811,6 +849,12 @@ def run_e2e_v3(
                 )
                 output_project_base.mkdir(parents=True, exist_ok=True)
                 dest = output_project_base / f"{project_name}_{timestamp}"
+                if ui_event_sink is not None:
+                    ui_event_sink.emit(
+                        "phase_started",
+                        phase_id="init_project_copy",
+                        message=f"Copying project {project_dir} to {dest}...",
+                    )
                 log(f"Copying project {project_dir} to {dest}...")
                 copied_count = copy_project_light(project_dir, dest)
                 symlinked_count = symlink_large_files(dest, project_dir)
@@ -818,6 +862,13 @@ def run_e2e_v3(
                 log(
                     f"Copied {copied_count} files, symlinked {symlinked_count} large files to {temp_dir}"
                 )
+                if ui_event_sink is not None:
+                    ui_event_sink.emit(
+                        "phase_finished",
+                        phase_id="init_project_copy",
+                        status="passed",
+                        message=f"Copied {copied_count} files, symlinked {symlinked_count} large files",
+                    )
                 keep_temp_dir = True
             else:
                 temp_dir = Path(tempfile.mkdtemp(prefix="migration-utils-e2e-v3-"))
@@ -939,6 +990,7 @@ def run_e2e_v3(
                 if continuation is not None
                 else load_workflow(str(effective_workflow_path))
             )
+            _drop_legacy_copy_artifacts_hooks(workflow)
             log(
                 f"Workflow loaded: {workflow.name} v{workflow.version} from {effective_workflow_path}"
             )
@@ -1630,6 +1682,7 @@ def main() -> int:
         dashboard_mode=dashboard_mode,
         dashboard_backend=args.dashboard_backend,
         seal_manifest=args.seal_manifest,
+        verbose=args.verbose,
     )
 
 

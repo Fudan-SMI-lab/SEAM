@@ -70,18 +70,18 @@ def _release(wiring: DashboardWiring) -> None:
 # --- Backend probe contract ---
 
 
-def test_resolve_dashboard_backend_prefers_textual(
+def test_resolve_dashboard_backend_prefers_rich(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_find_spec(monkeypatch, textual=object(), rich=object())
-    assert resolve_dashboard_backend() is DashboardBackend.TEXTUAL
+    assert resolve_dashboard_backend() is DashboardBackend.RICH
 
 
-def test_resolve_dashboard_backend_falls_back_to_rich(
+def test_resolve_dashboard_backend_falls_back_to_textual(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _patch_find_spec(monkeypatch, textual=None, rich=object())
-    assert resolve_dashboard_backend() is DashboardBackend.RICH
+    _patch_find_spec(monkeypatch, textual=object(), rich=None)
+    assert resolve_dashboard_backend() is DashboardBackend.TEXTUAL
 
 
 def test_resolve_dashboard_backend_returns_none_when_neither(

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import re
 import sys
+from pathlib import Path
 
 import pytest
+
+from seam_init.models import ExitCode, FailureKind
+from seam_init.reporting import READY_COMMAND
 
 from core.review_policy import (
     ReviewDefaults,
@@ -333,3 +338,104 @@ def test_readmes_keep_linux_python_3_10_floor() -> None:
         assert "Linux" in text
         assert "3.8" not in text
         assert "3.9" not in text
+
+
+_INITIALIZER_DOCS = (
+    ROOT / "README.md",
+    ROOT / "README.en.md",
+    ROOT / "README.zh.md",
+    ROOT / "docs" / "User_Guide.md",
+)
+_FENCED_BASH = re.compile(r"```bash\s*(?P<body>.*?)```", re.DOTALL)
+_NOT_RUNNABLE_PHRASES = ("not runnable-ready", "NOT runnable-ready", "不可直接运行")
+_OPTIONAL_READY_FLAGS = ("--dashboard", "--review", "--seal-manifest")
+
+
+def _documented_script_commands(path: Path) -> list[str]:
+    commands: list[str] = []
+    for block in _FENCED_BASH.finditer(path.read_text(encoding="utf-8")):
+        for raw_line in block.group("body").splitlines():
+            line = raw_line.strip().rstrip("\\").strip()
+            if line and not line.startswith("#") and "src/scripts/" in line:
+                commands.append(line)
+    return commands
+
+
+def _assert_status_row(text: str, path: Path, status: str, exit_text: str) -> None:
+    assert any(status in line and exit_text in line for line in text.splitlines()), (
+        f"{path.name} must document {status} with exit {exit_text}"
+    )
+
+
+def test_every_quickstart_leads_with_init_seam() -> None:
+    # Given every public doc that carries a quickstart.
+    # When its fenced bash blocks are parsed in order.
+    # Then the first src/scripts command is the interactive initializer.
+    for path in _INITIALIZER_DOCS:
+        commands = _documented_script_commands(path)
+        assert commands, f"{path.name} documents no src/scripts command"
+        assert commands[0] == "bash src/scripts/init_seam.sh", (
+            f"{path.name} quickstart must lead with "
+            f"'bash src/scripts/init_seam.sh', got {commands[0]!r}"
+        )
+
+
+def test_initializer_status_table_matches_production_exit_codes() -> None:
+    # Given the production status/exit-code authority in seam_init.models.
+    failed_range = f"{int(min(FailureKind))}-{int(max(FailureKind))}"
+    # When each public doc is inspected.
+    # Then READY/PENDING_AUTH/FAILED are documented against the same codes.
+    for path in _INITIALIZER_DOCS:
+        text = path.read_text(encoding="utf-8")
+        _assert_status_row(text, path, "READY", str(int(ExitCode.READY)))
+        _assert_status_row(text, path, "PENDING_AUTH", str(int(ExitCode.PENDING_AUTH)))
+        _assert_status_row(text, path, "FAILED", failed_range)
+
+
+def test_ready_handoff_matches_production_command() -> None:
+    # Given the production READY handoff constant.
+    # When each public doc is inspected.
+    # Then the exact command is shown, /path/to/project is explained, and the
+    # optional flags documented there are accepted by the real run script.
+    script = (ROOT / "src" / "scripts" / "run_seam.sh").read_text(encoding="utf-8")
+    for flag in _OPTIONAL_READY_FLAGS:
+        assert flag in script, f"run_seam.sh no longer accepts {flag}"
+    for path in _INITIALIZER_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert READY_COMMAND in text, (
+            f"{path.name} must show the exact READY handoff command"
+        )
+        assert text.count("/path/to/project") >= 2, (
+            f"{path.name} must explain replacing /path/to/project"
+        )
+        handoff = text.index(READY_COMMAND)
+        for flag in _OPTIONAL_READY_FLAGS:
+            assert flag in text[handoff:], (
+                f"{path.name} must document {flag} alongside the READY handoff"
+            )
+
+
+def test_pending_auth_is_documented_as_not_runnable_ready() -> None:
+    # Given PENDING_AUTH defers authentication/consent in production.
+    # When each public doc is inspected.
+    # Then no doc presents PENDING_AUTH as runnable-ready and each requires
+    # authenticating, consenting, and rerunning the initializer.
+    for path in _INITIALIZER_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert any(phrase in text for phrase in _NOT_RUNNABLE_PHRASES), (
+            f"{path.name} must state PENDING_AUTH is not runnable-ready"
+        )
+        assert text.count("bash src/scripts/init_seam.sh") >= 2, (
+            f"{path.name} must document rerunning the initializer after PENDING_AUTH"
+        )
+
+
+def test_initializer_docs_avoid_forbidden_platform_claims() -> None:
+    # Given the MVP contract: Linux-only, no mandatory Node, no global config mode.
+    for path in _INITIALIZER_DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "Windows" not in text, f"{path.name} must not claim Windows support"
+        assert "Node" not in text, f"{path.name} must not claim mandatory Node"
+        assert "global config" not in text, (
+            f"{path.name} must not claim a global config mode"
+        )

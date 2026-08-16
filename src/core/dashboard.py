@@ -91,16 +91,18 @@ class DashboardBackendUnavailableError(RuntimeError):
 def resolve_dashboard_backend() -> DashboardBackend:
     """Probe renderer availability via ``importlib.util.find_spec``.
 
-    Discovers whether ``textual`` or ``rich`` is installed without importing
+    Discovers whether ``rich`` or ``textual`` is installed without importing
     them, so a backend that is installed but fails at runtime is still
     selected: its renderer exceptions are then allowed to propagate rather
-    than being mislabeled as a missing dependency. Textual is preferred;
-    Rich is the fallback; otherwise ``NONE``.
+    than being mislabeled as a missing dependency. Rich is preferred for
+    ``auto`` because it is thread-safe and does not require signal handlers;
+    Textual is selected only when the user explicitly requests it;
+    otherwise ``NONE``.
     """
-    if importlib.util.find_spec("textual") is not None:
-        return DashboardBackend.TEXTUAL
     if importlib.util.find_spec("rich") is not None:
         return DashboardBackend.RICH
+    if importlib.util.find_spec("textual") is not None:
+        return DashboardBackend.TEXTUAL
     return DashboardBackend.NONE
 
 
