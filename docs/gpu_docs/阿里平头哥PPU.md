@@ -34,3 +34,4 @@ PPU（Parallel Processing Unit）是阿里巴巴平头哥半导体推出的训�
 - 其他文档：阿里GPU是产品和技术服务做得不错，但是没有太多开源+有些开发过程材料没有公开，所以需要主动去要材料，比如阿里云客户就可以通过阿里云的账号、钉钉账号去拿到内部还没有审核公开的开发文档。
 
 
+更多变更，之后在[SEAM网站](https://alidocs.dingtalk.com/i/nodes/nYMoO1rWxaXYRmP3uje32aGmV47Z3je9)中文档更新。

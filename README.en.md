@@ -1,12 +1,14 @@
 # <p align="center">SEAM</p>
-<p align="center">Make CUDA code migration to Chinese GPUs simple.</p>
+<p align="center">🐧❤️ Make CUDA code migration to Chinese GPUs simple.  ❤️🐧</p>
 <p align="center">SEAM: Self-Evolving Agentic Migration for Chinese GPUs.</p>
 
 
 <p align="center">
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
     <a href="https://opencode.ai"><img alt="OpenCode Server" src="https://img.shields.io/badge/runtime-OpenCode%20Server-111827" ></a>
+    <a href="https://alidocs.dingtalk.com/i/nodes/P0MALyR8klYkMnpXHYRNKrzwW3bzYmDO"><img alt="SEAM Website" src="https://img.shields.io/badge/website-SEAM-111827" ></a>
 </p>
+
 
 <p align="center">
   <a href="README.en.md">English</a> |
@@ -16,101 +18,25 @@
 
 SEAM is an automated AI migration tool. It seamlessly migrates and optimizes AI projects originally designed for NVIDIA GPUs to run directly on Chinese GPUs.
 
-### Application Scenarios
-
-New to domestic GPUs? You may face these common hurdles:
-* **Deployment failures**: Code adaptation, environment setup and missing operator redevelopment require extensive expertise across fragmented tech stacks.
-* **Lack of references**: Doubts like "Has anyone successfully run the code?" or "Is the issue on my side or with the GPU vendor?" are major concerns when evaluating Chinese GPU solutions.
-* **Unstable migration results**: Modified code often suffers accuracy loss, operator fallback or obscure runtime errors, with limited timely support for troubleshooting.
-
-
-<p align="center">
-🐧❤️ SEAM eases your Chinese GPU usage.❤️🐧
-</p>
 
 ---
 
 ### Quick Start
 Run the commands below on your domestic GPU server or container environment to try SEAM:
 
-Production support for this release is Linux only and requires Python 3.10+. Mandatory CI uses hardware-free Linux runners; real NPU/GPU integration checks remain optional and non-gating.
-
 ```bash
 git clone https://github.com/Fudan-SMI-lab/SEAM.git
 cd SEAM
 bash src/scripts/init_seam.sh
-```
-
-The interactive initializer guides you through Python environment selection, SEAM dependency installation, OpenCode and OMO setup, and final validation. Three environment choices:
-
-- **Base interpreter**: use the current Python 3.10+ and install into it.
-- **Existing venv**: reuse a virtual environment you already have.
-- **New venv**: create a fresh `.venv` for SEAM.
-
-Terminal statuses and exit codes:
-
-| Status | Exit code | Meaning |
-|---|---|---|
-| READY | 0 | Setup complete; you can run migrations |
-| PENDING_AUTH | 60 | Structural checks passed; authentication/billable validation deferred |
-| FAILED | 61-69 | A stage failed; follow the terminal guidance and rerun |
-
-PENDING_AUTH is **not runnable-ready**: provide an API key, consent to one billable validation call, then rerun `bash src/scripts/init_seam.sh` until you reach READY (exit 0).
-
-On READY the terminal prints the migration command:
-
-```bash
 bash src/scripts/run_seam.sh /path/to/project --server_url http://127.0.0.1:4098
 ```
 
-Replace `/path/to/project` with your CUDA project directory. Optional flags: `--dashboard` (force the live dashboard on), `--review` (enable the Review Gate), `--seal-manifest` (seal a root run-manifest after a direct run).
-
-Security note: the API key may be skipped and supplied on a later rerun; if supplied, it may be stored in plaintext in the local configuration.
-
-When `--workflow` is not passed, the launcher uses `src/workflows/seam_auto_default.yaml` as the default workflow.
-
-The project-root `ADAPTATION_REQUIREMENTS.md` file is loaded automatically. For custom constraints in another file, pass `--extra '--user-constraints PATH'`.
-
-#### Verified V3 public contract
-
-Use `run_seam.sh` for normal runs; it defaults to `src/workflows/seam_auto_default.yaml`. Advanced automation may call the Python entrypoint directly, which requires exactly one of `--project-dir` and `--continue-from`. The real parser executes the following example in `src/tests/test_documented_cli_contracts.py`.
-
-<!-- cli-contract:readme-en-direct -->
-```bash
-PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
-  --project-dir /absolute/path/to/cuda-project \
-  --workflow-path src/workflows/seam_auto_default.yaml \
-  --server-url http://127.0.0.1:4098 \
-  --review-gate \
-  --container-retention retain
-```
-
-- Review Gate is disabled by default. When enabled, valid execution plus an explicit `accept` is a normal PASS. Strict mode is the final effective default. Only `reject_exhausted` can become `passed_with_reviews` under `--no-review-fail-closed`; unknown, session error, improvement error, and validation failure remain FAIL.
-- `--continue-from` accepts only an explicit terminal parent `summary.json`. It creates fresh child sessions and separate child evidence while keeping the parent report immutable. It is not crash recovery and never restores an in-flight Agent or phase. A direct run is continuation-eligible only when `--seal-manifest` is supplied and sealing succeeds; the opt-in sealing result is projected into `summary.json` and a `manifest-sealing.v1.json` sidecar (`not_requested|succeeded|failed`, `continuation_eligible`) but is outcome-neutral — a sealing failure does not change migration PASS/FAIL, `RunOutcome`, or the original exit code. Environment binding authority requires an exact `environment_id` plus a matching `namespace`; namespace alone is never authority — list order, fact count, and silent fallback are rejected, and missing or ambiguous references fail closed.
-- Containers are retained by default. `delete` applies only to a positively owned SEAM image container after live revalidation; external and user containers are never deleted. If an otherwise passing run requests authorized cleanup and cleanup fails, the migration remains PASS but final process exit is 2.
-- `--save-agent-trace` is an opt-in, default-off side channel. It recursively exports raw OpenCode data that SEAM can access, without redaction or truncation of accepted data, within explicit graph and byte bounds. Inaccessible, paginated, unknown, or unsupported data is marked partial. Provider-hidden reasoning is unavailable, and trace never changes continuation authority or the frozen `RunOutcome`. Ordinary optional trace failure does not change process exit, but failed required evidence publication in continuation finalization exits 1.
-- Replay is display-only guidance from the accepted actual Phase 5 receipt in the same process. SEAM never auto-executes it and does not promise deterministic reproduction.
-- Optional live dashboard: the dashboard extra is not installed by default; run `python -m pip install -e "./src[dashboard]"` first. `--dashboard-mode auto|on|off` (or `--dashboard` / `--no-dashboard`): `auto` (default) enables the dashboard only on an interactive TTY outside CI, otherwise the run is identical to a no-dashboard run; `on` forces it on and, with no renderer installed (textual preferred, rich fallback), fails before any side effect and prints the install command above; `off` fully disables it. While the dashboard is active, pressing `q` only exits the dashboard view; migration and logging continue. Event telemetry is written to `ui_events.jsonl` in the report directory only while the dashboard is active; `off` or inactive `auto` runs create no such file.
-
-See [`src/docs/E2E_TESTING.md`](src/docs/E2E_TESTING.md) for the complete CLI, continuation matrix, artifact tree, timeout semantics, and optional integration checks. See [`src/docs/full_agent_io_logging_design.md`](src/docs/full_agent_io_logging_design.md) for raw-trace completeness and schema-v2 correlation boundaries.
-
-Execution Results:
-*   **Run status**: The terminal displays `E2E TEST PASSED`, `E2E PASS`, `E2E FINALIZATION FAILED`, or a failure. Authoritative details are in `./e2e-reports/src/e2e-v3-<run-id>/summary.json`. Migration failure exits 1; exit 2 is reserved for requested authorized-cleanup failure after a migration PASS.
-
-*   **Migrated project**: Outputs are saved by default under the sibling directory `../output_projects/<project_name>_<timestamp>/`. You can override the default root with `MIGRATION_OUTPUT_PROJECTS_ROOT`, or pass `--output-dir` for this run.
-
-*   **Migration report**: A folder named `migration_reports/` will be generated inside the migrated project, containing acceptance results, performance data, custom operator migration logs and build records.
-
-*   **Runtime logs**: Working evidence is stored under `.sm-artifacts/` in the migrated project. The final report also contains telemetry, the resource manifest, optional raw trace, and finalization diagnostics. Share the matching `summary.json` when troubleshooting; `.sm-artifacts` is not a continuation checkpoint.
-
-*   **Self-evolution directories**: Folders such as `.memory` and `.skill` store accumulated experience and reusable assets for SEAM's self-evolution mechanism. **Do not delete them unnecessarily**.
-
 
 ---
-### Core Capabilities & Technical Overview
+### Core Capabilities & Features of SEAM
 
 
-#### 1. Multi-hardware & Multi-framework Support
+#### 1. **SEAM Supports**
 
 | Hardware \ Framework | Torch | vLLM | SGLang |Other Framework |
 | --- | --- | --- | --- | --- |
@@ -119,42 +45,22 @@ Execution Results:
 | **[MetaX](docs/gpu_docs/沐曦MetaX.md)** | ✅ Done | ✅ Done | ✅ Done |🔜 Request welcome |
 | **Other GPUs** | 🔜 Request welcome | 🔜 Request welcome | 🔜 Request welcome | 🔜 Request welcome |
 
-#### 2. End-to-End Automated Migration
-
-SEAM adopts a YAML state machine driven multi-stage migration pipeline, collaborated by five persistent intelligent agents, with decisions made based on real runtime feedback from target GPUs.
-
-The full pipeline consists of 8 key phases:
-```text
-GPU Environment Detection -> Project Analysis -> Dependency Preparation -> Rule-based Migration -> Iterative Validation & Fix -> Custom Operator Resolution -> Report Generation -> Experience Evaluation & Refinement
-```
-
-#### 3. Self-Evolution: Getting Smarter with Usage
-
-SEAM supports zero-prior execution and cross-case knowledge reuse with near-zero marginal cost for repeated tasks.
-
-After each migration, successful and failed cases are reviewed. Valid adaptation solutions are extracted as reusable skills and saved to `.memory/skills/` and `.memory/memory/` to guide subsequent migrations.
-
-#### 4. Hallucination Control: Guarantee Reliable Migration Results
-
-Multiple strategies are applied to ensure valid and dependable outputs, including behavior verification, error classification & precise routing, three-strike rule, fail-closed gating and full validation chains for custom operators.
-
-
-<p align="center">
-
-Self-evolution and hallucination control serve as dual core strengths, forming a mutually reinforcing positive iteration loop.
-
-See [SEAM Technical Introduction](docs/SEAM_Tech_Intro.zh.md) for detailed technical details.
-
-</p>
+#### 2. **SEAM Advantages** 
+- **End-to-End Automated Migration**: Completed within 30 minutes, with a token cost of ¥3–10 per task.
+- **Hallucination Control with Real Hardware Evidence Chain**: Multi-strategy evidence chain ensures migration results are authentic and valid.
+- **Self-Evolving, Smarter Over Time**: Zero-prior startup, cross-case experience transfer, and shared migration insights across hundreds of models.
 
 ---
 
 ### Documentation
 
-- [User Guide](docs/User_Guide.md), usage, configuration and feature docs
-- [FAQ](docs/FAQ.md), common issues and solutions
-- [Contributing](docs/CONTRIBUTING.md), how to join development
-- [Changelog](docs/CHANGELOG.md), version updates and release notes
+- [User Guide](docs/User_Guide.md), Detailed feature descriptions and API documentation
+
+- [SEAM Website](https://alidocs.dingtalk.com/i/nodes/P0MALyR8klYkMnpXHYRNKrzwW3bzYmDO): Over 120 model adaptation experiences and 340+ adaptation reports have been published. The website also features partner-contributed free GPU resources — you can apply for access following the on-site instructions.
+
+- [SEAM documentation library](https://alidocs.dingtalk.com/i/nodes/QBnd5ExVEvrpMaQZUgEvvBXZJyeZqMmz)
+
+
 
 ### Contact
 
