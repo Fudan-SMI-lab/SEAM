@@ -10,6 +10,8 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
@@ -19,6 +21,8 @@ jobs:
         python -m pip install --upgrade pip
         pip install pylint
     - name: Analysing the code with pylint
+      env:
+        PYLINT_BASE_SHA: ${{ github.event.before }}
+        PYLINT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |
         bash scripts/check.sh
-
