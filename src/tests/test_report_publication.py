@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 from core.run_outcome import TerminalOutcome
+from harness.run.artifact_paths import snapshot_report
+from harness.run.artifact_receipts import validate_artifact_update
+from harness.run.models import FinalizationStage
 from harness.run.report_publication import (
     ReportPublicationError,
     ReportPublisher,
@@ -53,8 +56,30 @@ def test_publishes_reports_and_manifest(tmp_path: Path) -> None:
         "SUMMARY_REPORT.md",
         "TOOLS.md",
     ]
-    assert dict(update.directory_paths)["migration_reports_dir"] == str(report_dir)
+    assert update.directory_paths == ()
     assert all(len(item["sha256"]) == 64 for item in manifest["reports"])
+
+
+def test_publication_is_not_misclassified_as_run_report_artifact(
+    tmp_path: Path,
+) -> None:
+    store = _store_with_reports(tmp_path)
+    project = tmp_path / "migrated"
+    project.mkdir()
+    run_report_dir = tmp_path / "e2e-reports" / "run-1"
+    run_report_dir.mkdir(parents=True)
+    before = snapshot_report(run_report_dir)
+
+    update = ReportPublisher(store, project)(TerminalOutcome.PASSED)
+    validation = validate_artifact_update(
+        run_report_dir,
+        update,
+        before,
+        FinalizationStage.EVIDENCE_REPLAY,
+    )
+
+    assert validation.errors == ()
+    assert (project / "migration_reports" / "SUMMARY_REPORT.md").is_file()
 
 
 def test_rejects_report_path_outside_canonical_root(tmp_path: Path) -> None:
