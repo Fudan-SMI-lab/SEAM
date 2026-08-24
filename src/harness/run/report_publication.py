@@ -46,10 +46,12 @@ class ReportPublisher:
             TerminalOutcome.PASSED_WITH_REVIEWS,
         }:
             return EMPTY_ARTIFACT_UPDATE
-        destination = self.publish()
-        return RunArtifactUpdate(
-            directory_paths=(("migration_reports_dir", str(destination)),)
-        )
+        self.publish()
+        # Finalizer artifact receipts are deliberately confined to the SEAM run
+        # report directory. migration_reports is a user-facing publication in
+        # the migrated project, so returning it as a receipt would make a
+        # successful publication fail path-boundary validation.
+        return EMPTY_ARTIFACT_UPDATE
 
     def publish(self) -> Path:
         phase_output = self.artifact_store.load_phase_output("phase_6_report")
