@@ -15,6 +15,10 @@ from pathlib import Path
 import pytest
 
 from core.dashboard import DASHBOARD_INSTALL_COMMAND
+from core.execution_env_context import (
+    Phase2EnvironmentReport,
+    Phase2EnvironmentRequest,
+)
 from tests.e2e.e2e_test_v3 import write_usage_guide
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,8 +52,80 @@ def test_usage_guide_baseline_preserves_existing_fields(tmp_path: Path) -> None:
     assert "E2E TEST PASSED" in content
     assert f"cd {tmp_path}" in content
     assert "python test_data_and_scripts/run_e2e.py" in content
-    assert ".sm-artifacts/" in content
+    assert "SEAM run evidence:" in content
     assert "migration_reports/USAGE.md" in content
+    assert "migration_reports/SUMMARY_REPORT.md" not in content
+
+
+def test_usage_guide_lists_only_published_reports(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "migration_reports"
+    reports_dir.mkdir()
+    (reports_dir / "SUMMARY_REPORT.md").write_text("summary", encoding="utf-8")
+
+    usage_path = write_usage_guide(
+        tmp_path,
+        entry_script="python run.py",
+        overall_status="PASS",
+        output_dir=tmp_path / "run-reports",
+    )
+
+    content = Path(usage_path).read_text(encoding="utf-8")
+    assert "migration_reports/SUMMARY_REPORT.md" in content
+
+
+def test_usage_guide_activates_only_a_confirmed_project_venv(tmp_path: Path) -> None:
+    environment = Phase2EnvironmentRequest(
+        environment_id="phase2-project-venv",
+        namespace="host",
+        report=Phase2EnvironmentReport(
+            env_type="venv",
+            venv_path=str(tmp_path / ".venv"),
+            python_path=str(tmp_path / ".venv" / "bin" / "python"),
+            installed_packages=("torch==2.8.0", "transformers==4.55.0"),
+        ),
+    )
+
+    usage_path = write_usage_guide(
+        tmp_path,
+        entry_script="python run.py",
+        overall_status="PASS",
+        output_dir=tmp_path / "run-reports",
+        phase2_environment=environment,
+    )
+
+    content = Path(usage_path).read_text(encoding="utf-8")
+    assert "Environment ID: `phase2-project-venv`" in content
+    assert "Environment namespace: `host`" in content
+    assert "torch==2.8.0" in content
+    assert "transformers==4.55.0" in content
+    assert "source .venv/bin/activate" in content
+
+
+def test_usage_guide_does_not_invent_venv_for_base_environment(
+    tmp_path: Path,
+) -> None:
+    environment = Phase2EnvironmentRequest(
+        environment_id="phase2-base",
+        namespace="host",
+        report=Phase2EnvironmentReport(
+            env_type="base_env",
+            venv_path="/opt/conda",
+            python_path="/opt/conda/bin/python",
+            installed_packages=(),
+        ),
+    )
+
+    usage_path = write_usage_guide(
+        tmp_path,
+        entry_script="python run.py",
+        overall_status="PASS",
+        output_dir=tmp_path / "run-reports",
+        phase2_environment=environment,
+    )
+
+    content = Path(usage_path).read_text(encoding="utf-8")
+    assert "No virtual-environment activation is required." in content
+    assert "source .venv" not in content
 
 
 def test_usage_guide_without_ui_events_path_omits_ui_telemetry(

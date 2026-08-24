@@ -88,7 +88,7 @@ Options:
   --agent NAME           Override auto-detected agent name
   --output-dir DIR       Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --workflow PATH        Path to workflow YAML file (overrides default auto selector)
-  --server-no-auto-start Disable auto-start of OpenCode server
+  --server-no-auto-start Require an already-running OpenCode server
   --opencode-readiness MODE
                           OpenCode readiness mode: off, basic, or message (default: message)
   --opencode-message-timeout N
@@ -114,6 +114,10 @@ Examples:
   ./run_e2e_v3.sh SEAM_PPU_SMOKE --workflow src/workflows/ppu_migration_v2_container_vllm018_smoke.yaml
   ./run_e2e_v3.sh 05_InsectID --dry-run
   ./run_e2e_v3.sh 08_SpeechGPT-2.0-preview --review --verbose
+
+OpenCode lifecycle:
+  By default the Python runner starts OpenCode when needed and stops only the
+  process it started. An already-running server is reused and left untouched.
 EOF
     exit 0
 }
@@ -385,6 +389,10 @@ if [[ -z "$CONTINUE_FROM" && ( -z "$PROJECT_DIR" || ! -d "$PROJECT_DIR" ) ]]; th
 fi
 if [[ -z "$CONTINUE_FROM" ]]; then
     echo -e "${GREEN}✓${NC} Project directory exists"
+    if ! PYTHONPATH="$SRC_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        "$SEAM_PYTHON" -m harness.project_preflight "$PROJECT_DIR"; then
+        exit 1
+    fi
 fi
 
 # Check ADAPTATION_REQUIREMENTS.md
@@ -471,28 +479,9 @@ else
         echo -e "${GREEN}✓${NC} OpenCode server ready at $SERVER_URL"
         PYTHON_OPENCODE_READINESS="off"
     elif [[ $DIAG_EXIT -eq 40 && "$SERVER_NO_AUTO_START" != true ]]; then
-        echo -e "${YELLOW}⚠  OpenCode server is not reachable; starting one now...${NC}"
-        SERVER_HOST=$(echo "$SERVER_URL" | sed -n 's|.*://\([^:]*\).*|\1|p')
-        SERVER_PORT_NUM=$(echo "$SERVER_URL" | sed -n 's|.*:\([0-9]*\).*|\1|p')
-        SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
-        SERVER_PORT_NUM="${SERVER_PORT_NUM:-4098}"
-        nohup opencode serve --hostname "$SERVER_HOST" --port "$SERVER_PORT_NUM" > /tmp/seam_opencode_server.log 2>&1 &
-        SERVER_PID=$!
-        echo -e "${GREEN}  Started opencode serve (pid=$SERVER_PID) at $SERVER_URL${NC}"
-        echo -e "${YELLOW}  Waiting for server to become ready...${NC}"
-        for i in $(seq 1 30); do
-            sleep 2
-            if curl -s -o /dev/null -w '%{http_code}' "http://$SERVER_HOST:$SERVER_PORT_NUM/global/health" 2>/dev/null | grep -q 200; then
-                echo -e "${GREEN}✓ OpenCode server ready at $SERVER_URL${NC}"
-                PYTHON_OPENCODE_READINESS="off"
-                break
-            fi
-            if [[ $i -eq 30 ]]; then
-                echo -e "${RED}✗ Server failed to become ready after 60s${NC}"
-                echo "  Log: /tmp/seam_opencode_server.log"
-                exit 40
-            fi
-        done
+        echo -e "${YELLOW}⚠  OpenCode server is not reachable; SEAM will start and own it.${NC}"
+        echo -e "${YELLOW}   The auto-started process will be stopped during SEAM cleanup.${NC}"
+        PYTHON_OPENCODE_READINESS="$OPENCODE_READINESS"
     else
         echo -e "${RED}✗ OpenCode diagnostic failed with exit code $DIAG_EXIT${NC}"
         [[ -n "${DIAG_OUTPUT:-}" ]] && echo "$DIAG_OUTPUT"
@@ -573,7 +562,9 @@ if [[ "$DRY_RUN" == true ]]; then
     if [[ ${#NO_AUTO_ARGS[@]} -gt 0 ]]; then
         echo "    --server-no-auto-start \\"
     fi
-    echo "    ${EXTRA_ARGS[*]}"
+    if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+        echo "    ${EXTRA_ARGS[*]}"
+    fi
     exit 0
 fi
 
@@ -602,6 +593,10 @@ fi
 
 cd "$REPO_ROOT"
 
+# Bash 3.2 treats an empty array expansion as an unbound variable under
+# `set -u`. Disable nounset only while expanding optional argument arrays.
+set +u
+set +e
 "$SEAM_PYTHON" -m tests.e2e.e2e_test_v3 \
     --server-url "$SERVER_URL" \
     "${MODE_ARGS[@]}" \
@@ -619,6 +614,8 @@ cd "$REPO_ROOT"
     "${EXTRA_ARGS[@]}"
 
 EXIT_CODE=$?
+set -e
+set -u
 
 echo ""
 if [[ $EXIT_CODE -eq 0 ]]; then
@@ -630,11 +627,4 @@ else
     echo -e "${RED}  E2E TEST FAILED${NC}"
     echo -e "${RED}══════════════════════════════════════════════════════════${NC}"
 fi
-echo ""
-echo -e "${CYAN}Reports:${NC}  $REPO_ROOT/e2e-reports/src/$(date +%Y%m%d)_*/"
-if [[ -z "$CONTINUE_FROM" ]]; then
-    echo -e "${CYAN}Output:${NC}   $OUTPUT_PROJECTS_DIR/${PROJECT_NAME}_$(date +%Y%m%d)_*/"
-fi
-echo ""
-
 exit $EXIT_CODE

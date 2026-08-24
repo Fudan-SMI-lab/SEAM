@@ -10,6 +10,8 @@
 
 日常入口是 `src/scripts/run_seam.sh`。它把参数交给 `run_e2e_v3.sh`，默认服务器为 `http://127.0.0.1:4098`，默认 workflow 为 `src/workflows/seam_auto_default.yaml`，Phase 5 上限为 8，Review Gate 关闭，输出项目保留，容器保留，raw trace 关闭。
 
+直接运行时，项目预检在分配报告目录、启动 OpenCode 或创建 session 前执行。不存在、非目录、不可读、为空或仅含生成状态/系统元数据的输入会快速失败。OpenCode 进程只有一个 ownership authority：Python runner。它只停止本次自动启动的子进程；预先存在的服务会复用并保持运行。`--server-no-auto-start` 要求服务必须已经可用。
+
 `run_e2e_v3.sh` 也可直接使用。它的 shell 参数名称包括 `--workflow`、`--max-iter`、`--max-review-iter`、`--review`、`--no-review`、`--no-keep-temp` 和 `--dry-run`，并将有效值转换到 Python 参数。两个 shell 启动器都要求项目路径或 `--continue-from` 二选一，并拒绝 continuation 加 workflow override。
 
 高级自动化可直接调用 Python 入口。以下示例由真实 `build_parser()` 执行。
@@ -217,7 +219,10 @@ e2e-reports/src/e2e-v3-<run-id>/
 output_projects/<project>_<timestamp>/
 ├── <migrated project>
 ├── .venv/                         # workflow-dependent
-├── migration_reports/             # custom-op gate and project reports when produced
+├── migration_reports/             # successful terminal outcomes only
+│   ├── USAGE.md                    # environment ID, packages, and run command
+│   ├── SUMMARY_REPORT.md           # required published Phase 6 report
+│   └── report_manifest.json        # source/destination/size/SHA-256
 └── .sm-artifacts/e2e-v3-<run-id>/ # mutable working evidence namespace
 
 e2e-reports/src/parent-run-001/     # immutable terminal parent namespace
@@ -227,6 +232,8 @@ e2e-reports/src/child-run-001/      # separate fresh continuation namespace
 ```
 
 Writer-backed canonical paths are `artifacts/pre-continuation/migration-reports/`, `artifacts/pre-continuation/migration-reports.manifest.json`, `trace/sessions/`, and `trace/overflows/`.
+
+Phase 6 报告的 canonical source 位于本次 `.sm-artifacts/<run-id>/reports/`。成功终态的 required finalization 会校验路径边界和必需的 `SUMMARY_REPORT.md`，再以原子文件替换发布到项目内 `migration_reports/`；失败终态不发布用户报告。终端分别输出 `Migrated project dir`、`Migration reports dir`（仅成功发布时）和 `SEAM run report dir`，shell 不再用日期通配符猜测路径。
 
 Finalizer 只接受位于 report root 内、由当前 hook 新建或实质修改、经过 fingerprint 冻结的文件或目录。Stale destination、symlink escape 和 unchanged pre-existing claim 都拒绝。Raw trace directory 使用 private staging 并在 manifest 完成后整体发布。
 

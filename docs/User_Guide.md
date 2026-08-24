@@ -56,15 +56,9 @@ python -m pip install -e "./src[sqlite]"
 
 CI 永远只安装 base + `[dev]`，不把 `[sqlite]` 设为必需。
 
-### 1.3 启动 OpenCode Server
+### 1.3 OpenCode Server 生命周期
 
-SEAM 依赖一个运行中的 OpenCode Server 后端。启动方式：
-
-```bash
-opencode serve --port 4098 --hostname 127.0.0.1 &
-```
-
-默认服务地址为 `http://127.0.0.1:4098`。如果端口不同，需要在启动 SEAM 时用 `--server_url` 显式指定。
+SEAM 依赖 OpenCode Server 后端。默认地址为 `http://127.0.0.1:4098`；若该地址没有服务，Python runner 会自动启动 OpenCode，并在本次运行结束时只停止自己启动的进程。若服务原本已经存在，SEAM 会复用它且不会停止它。使用 `--server-no-auto-start` 可要求服务必须预先存在；端口不同时用 `--server_url` 显式指定。
 
 ### 1.4 代理变量注意
 
@@ -433,14 +427,17 @@ output_projects/<项目名>_<时间戳>/
 │   ├── execution_journal.jsonl  #   执行日志
 │   └── state.json               #   检查点（仅观测用，不是续做 authority）
 └── migration_reports/           # 项目验收报告
-    ├── USAGE.md                 #   如何运行迁移后项目
+    ├── USAGE.md                 #   实际环境、依赖快照和复现命令
     ├── SUMMARY_REPORT.md        #   验收总结
+    ├── report_manifest.json     #   已发布报告及 SHA-256 清单
     ├── operator_inventory.json  #   算子清单
     ├── migration_manifest.json  #   闭包清单
     └── custom_op_final_gate.json#   自定义算子关卡
 ```
 
 > ⚠️ **重要修正**：早期 User_Guide 写的 `.migration_reports/` 已过时。正确目录名为 `migration_reports/`，**没有前导点**。
+
+只有成功终态才会发布 `migration_reports/`；其中每个报告以原子替换写入，并由 `report_manifest.json` 记录校验值。SEAM 自身的运行证据始终保存在终端打印的 `SEAM run report dir`；失败运行不会向迁移项目写入容易误判为成功结果的半成品报告。
 
 ### 6.3 退出码
 
