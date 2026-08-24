@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import shutil
 import subprocess
@@ -22,6 +21,7 @@ from pydantic import ValidationError
 
 from e2e_v3_bootstrap import PACKAGE_ROOT
 from core.paths import execution_root
+from core.time_utils import configure_utc_logging, utc_now_iso
 from core.owned_directory_lock import DirectoryLockIdentity, directory_lock_identity
 from core.review_policy import ReviewCliOverrides
 from core.execution_backend import ContainerBackend
@@ -89,6 +89,11 @@ from harness.run import (
     finalize_run,
     persist_python_snapshot,
 )
+from harness.project_preflight import (
+    ProjectPreflightError,
+    validate_project_input,
+)
+from harness.run.report_publication import ReportPublisher
 from harness.run.finalizer import build_run_summary
 from harness.run.workflow_result_projection import project_workflow_result
 from harness.run.v3_retention import (
@@ -123,7 +128,7 @@ class Ansi:
 
 
 def log(msg: str, *, flush: bool = True) -> None:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    ts = utc_now_iso()
     print(f"[{ts}] {msg}", flush=flush)
 
 
@@ -369,11 +374,12 @@ def print_summary(
     *,
     finalization_failed: bool = False,
     runtime_report: V3RuntimeReport | None = None,
+    migration_reports_dir: Path | None = None,
 ) -> None:
     if finalization_failed:
         print()
         print(colorize("E2E FINALIZATION FAILED", Ansi.RED))
-        print(f"- Output dir: {summary.output_dir}")
+        print(f"- SEAM run report dir: {summary.output_dir}")
         return
     headline = colorize(
         f"E2E {summary.overall_status.value}",
@@ -381,8 +387,10 @@ def print_summary(
     )
     print()
     print(headline)
-    print(f"- Output dir: {summary.output_dir}")
-    print(f"- Temp dir: {summary.temp_dir}{' (kept)' if summary.keep_temp_dir else ''}")
+    print(f"- Migrated project dir: {summary.temp_dir}")
+    if migration_reports_dir is not None:
+        print(f"- Migration reports dir: {migration_reports_dir}")
+    print(f"- SEAM run report dir: {summary.output_dir}")
     print(f"- Workflow: {summary.workflow_path}")
     print(f"- Sessions: {summary.session_count}")
     print(f"- Commands: {summary.command_count}")
@@ -424,23 +432,31 @@ def write_usage_guide(
     overall_status: str,
     output_dir: Path,
     ui_events_path: str | None = None,
+    phase2_environment: Phase2EnvironmentRequest | None = None,
 ) -> str:
     reports_dir = project_dir / "migration_reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     usage_path = reports_dir / "USAGE.md"
-    command = entry_script or "<entry command unavailable; inspect summary.json>"
     status_text = (
         "E2E TEST PASSED"
         if overall_status == "PASS"
         else "Migration did not fully pass validation"
     )
-    reports_entries = [
-        "- `migration_reports/USAGE.md`",
-        "- `migration_reports/SUMMARY_REPORT.md`",
-        "- `.sm-artifacts/`",
-    ]
+    reports_entries = ["- `migration_reports/USAGE.md`"]
+    reports_entries.extend(
+        f"- `migration_reports/{path.name}`"
+        for path in sorted(reports_dir.iterdir(), key=lambda item: item.name)
+        if path.is_file() and path.name != "USAGE.md"
+    )
+    reports_entries.append(f"- SEAM run evidence: `{output_dir}`")
     if ui_events_path is not None:
         reports_entries.append(f"- `{ui_events_path}`")
+
+    reproduction_lines = _reproduction_lines(
+        project_dir,
+        entry_script=entry_script,
+        phase2_environment=phase2_environment,
+    )
     content = "\n".join(
         [
             "# Migrated Project Usage",
@@ -454,11 +470,7 @@ def write_usage_guide(
             "",
             "## Run",
             "",
-            "```bash",
-            f"cd {project_dir}",
-            "source .venv/bin/activate  # if .venv exists",
-            command,
-            "```",
+            *reproduction_lines,
             "",
             "## Reports",
             "",
@@ -472,6 +484,67 @@ def write_usage_guide(
     )
     usage_path.write_text(content, encoding="utf-8")
     return str(usage_path)
+
+
+def _reproduction_lines(
+    project_dir: Path,
+    *,
+    entry_script: str | None,
+    phase2_environment: Phase2EnvironmentRequest | None,
+) -> list[str]:
+    command = entry_script or "<entry command unavailable; inspect summary.json>"
+    lines = [f"- Working directory: `{project_dir}`"]
+    activation: str | None = None
+    if phase2_environment is None:
+        lines.append(
+            "- Environment: unavailable; inspect the Phase 2 artifact before reproducing."
+        )
+    else:
+        report = phase2_environment.report
+        lines.extend(
+            [
+                f"- Environment ID: `{phase2_environment.environment_id}`",
+                f"- Environment namespace: `{phase2_environment.namespace}`",
+                f"- Environment type: `{report.env_type or 'unknown'}`",
+                f"- Python: `{report.python_path}`",
+            ]
+        )
+        if phase2_environment.container_id is not None:
+            lines.append(f"- Container ID: `{phase2_environment.container_id}`")
+        if report.installed_packages:
+            lines.extend(
+                [
+                    "- Installed package snapshot:",
+                    "",
+                    "```text",
+                    *report.installed_packages,
+                    "```",
+                ]
+            )
+        else:
+            lines.append(
+                "- Installed package snapshot: unavailable in Phase 2 evidence."
+            )
+        if phase2_environment.namespace.startswith("container:"):
+            lines.append(
+                "- Run the command inside the retained/reattached container namespace."
+            )
+        elif report.env_type == "venv":
+            venv_path = Path(report.venv_path)
+            try:
+                relative_venv = venv_path.resolve().relative_to(project_dir.resolve())
+            except ValueError:
+                lines.append(f"- Reuse the existing virtual environment: `{venv_path}`")
+            else:
+                activation = f"source {relative_venv}/bin/activate"
+        elif report.env_type == "base_env":
+            lines.append("- No virtual-environment activation is required.")
+
+    lines.extend(["", "```bash", f"cd {project_dir}"])
+    if activation is not None:
+        lines.append(activation)
+    lines.extend([command, "```"])
+    return lines
 
 
 def build_v3_summary(
@@ -743,6 +816,14 @@ def run_e2e_v3(
         validate as validate_constraint_summary,
     )
 
+    if continuation is None and project_dir is not None:
+        try:
+            preflight = validate_project_input(project_dir)
+        except ProjectPreflightError as exc:
+            print(colorize(f"E2E FAILED: {exc}", Ansi.RED), file=sys.stderr)
+            return 1
+        project_dir = preflight.project_dir
+
     started_at = datetime.now(timezone.utc)
     if continuation is None:
         run_id = RunId(f"e2e-v3-{uuid4().hex[:12]}")
@@ -812,7 +893,15 @@ def run_e2e_v3(
                 server_port=server_port,
             )
             if server_proc is not None:
-                log(f"Auto-started OpenCode server at {base_url}")
+                log(
+                    "OpenCode server auto-started by this run "
+                    f"at {base_url} (pid={server_proc.pid}); cleanup will stop it"
+                )
+            else:
+                log(
+                    f"Using pre-existing OpenCode server at {base_url}; "
+                    "cleanup will leave it running"
+                )
             if ui_event_sink is not None:
                 ui_event_sink.emit(
                     "phase_started",
@@ -1215,6 +1304,7 @@ def run_e2e_v3(
         )
         counts = lifecycle.counts()
         finalization_hooks = lifecycle.hooks()
+        report_publisher: ReportPublisher | None = None
 
         if ui_event_sink is not None:
             ui_events_jsonl_path = str(ui_event_sink.path)
@@ -1231,6 +1321,8 @@ def run_e2e_v3(
                     record_ui_events_sidecar,
                 ),
             )
+        if artifact_store is not None and temp_dir is not None:
+            report_publisher = ReportPublisher(artifact_store, temp_dir)
         trace_destination = (
             continuation.evidence.namespace.trace_dir
             if continuation is not None
@@ -1290,6 +1382,44 @@ def run_e2e_v3(
                         ),
                         report=phase2_report,
                     )
+        usage_path_written: str | None = None
+        if report_publisher is not None:
+            publisher = report_publisher
+
+            def publish_user_reports(outcome: TerminalOutcome) -> RunArtifactUpdate:
+                nonlocal usage_path_written
+                update = publisher(outcome)
+                if outcome not in {
+                    TerminalOutcome.PASSED,
+                    TerminalOutcome.PASSED_WITH_REVIEWS,
+                }:
+                    return update
+                usage_path_written = write_usage_guide(
+                    publisher.project_dir,
+                    entry_script=entry_script,
+                    overall_status="PASS",
+                    output_dir=output_dir,
+                    ui_events_path=(
+                        str(ui_event_sink.path) if ui_event_sink is not None else None
+                    ),
+                    phase2_environment=phase2_environment,
+                )
+                if ui_event_sink is not None:
+                    ui_event_sink.emit(
+                        "usage_guide_written",
+                        status="passed",
+                        message="Usage guide written",
+                        artifact_path=usage_path_written,
+                    )
+                return update
+
+            finalization_hooks = replace(
+                finalization_hooks,
+                evidence_replay=compose_trace_hooks(
+                    finalization_hooks.evidence_replay,
+                    publish_user_reports,
+                ),
+            )
         runtime_report_request = prepare_runtime_report_request(
             RuntimeReportingInputs(
                 manifest_store=resource_store,
@@ -1398,6 +1528,11 @@ def run_e2e_v3(
                         or retention_manifest_error is not None
                         else set()
                     )
+                    | (
+                        {FinalizationStage.EVIDENCE_REPLAY}
+                        if report_publisher is not None
+                        else set()
+                    )
                 ),
                 summary_required=continuation is not None,
                 runtime_report_source=(
@@ -1408,24 +1543,16 @@ def run_e2e_v3(
                 trace_status_source=trace_lifecycle.read,
             )
         )
-        if temp_dir is not None and ui_event_sink is not None:
-            usage_path = write_usage_guide(
-                temp_dir,
-                entry_script=entry_script,
-                overall_status=finalization.summary.overall_status.value,
-                output_dir=output_dir,
-                ui_events_path=str(ui_event_sink.path),
-            )
-            ui_event_sink.emit(
-                "usage_guide_written",
-                status="passed",
-                message="Usage guide written",
-                artifact_path=usage_path,
-            )
+        migration_reports_dir = (
+            Path(usage_path_written).parent
+            if usage_path_written is not None and not finalization.finalization_failed
+            else None
+        )
         print_summary(
             finalization.summary,
             finalization_failed=finalization.finalization_failed,
             runtime_report=finalization.runtime_report,
+            migration_reports_dir=migration_reports_dir,
         )
         if ui_event_sink is not None:
             ui_event_sink.emit(
@@ -1613,14 +1740,7 @@ def main() -> int:
     if args.user_constraints:
         user_constraints_text = _resolve_user_constraints(str(args.user_constraints))
 
-    if args.verbose:
-        logging.basicConfig(
-            level=logging.DEBUG, format="%(asctime)s %(name)s %(levelname)s %(message)s"
-        )
-    else:
-        logging.basicConfig(
-            level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
-        )
+    configure_utc_logging(verbose=args.verbose)
 
     server_auto_start = not args.server_no_auto_start
     dashboard_mode = args.dashboard_mode

@@ -94,6 +94,8 @@ def _run_launcher(
     project_dir: Path,
     *arguments: str,
 ) -> subprocess.CompletedProcess[str]:
+    if not any(project_dir.iterdir()):
+        (project_dir / "main.py").write_text("print('fixture')\n", encoding="utf-8")
     shell_root = project_dir.parent / "shell-runtime"
     shell_scripts = shell_root / "src" / "scripts"
     shell_scripts.mkdir(parents=True, exist_ok=True)
@@ -110,6 +112,12 @@ def _run_launcher(
         REPO_ROOT / "scripts" / "diagnose_seam_opencode.py",
         diagnostics_dir / "diagnose_seam_opencode.py",
     )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value
+        for value in (str(SRC_ROOT), environment.get("PYTHONPATH", ""))
+        if value
+    )
     return subprocess.run(
         [
             "bash",
@@ -119,6 +127,7 @@ def _run_launcher(
             "--dry-run",
         ],
         cwd=REPO_ROOT,
+        env=environment,
         capture_output=True,
         text=True,
         encoding="utf-8",

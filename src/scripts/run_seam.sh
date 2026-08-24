@@ -58,7 +58,7 @@ Options:
   --no-save-agent-trace       Explicitly disable raw OpenCode agent trace
   --agent NAME                Override auto-detected agent name
   --output-dir DIR            Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
-  --server-no-auto-start       Disable auto-start of OpenCode server
+  --server-no-auto-start       Require an already-running OpenCode server
   --opencode-readiness MODE   OpenCode readiness mode: off, basic, or message (default: message)
   --opencode-message-timeout N
                               Timeout for model-backed OpenCode message probe
@@ -97,12 +97,15 @@ Multi-Platform Support:
   PPU, Ascend NPU, MUSA, ROCm, MLU — select via --workflow
 
 Quickstart:
-  # Clone, install, and start OpenCode server
+  # Clone and install; SEAM starts OpenCode when needed
   python -m pip install -e "./src[dev]"
-  opencode serve --port 4098 --hostname 127.0.0.1 &
 
   # Run a migration
   bash src/scripts/run_seam.sh my_cuda_project --server_url http://127.0.0.1:4098
+
+OpenCode lifecycle:
+  The Python runner stops only a server process it started. A server that was
+  already listening at --server_url is reused and left running.
 
 For advanced usage (container backends, custom-op flows, platform policy), see README.md.
 EOF
