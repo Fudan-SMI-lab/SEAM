@@ -31,6 +31,17 @@ bash src/scripts/init_seam.sh
 bash src/scripts/run_seam.sh /path/to/project --server_url http://127.0.0.1:4098
 ```
 
+The optional live dashboard uses Textual (preferred) or Rich (fallback). Install
+its dependencies first:
+
+```bash
+python -m pip install -e "./src[dashboard]"
+```
+
+Select `--dashboard-mode auto|on|off` and
+`--dashboard-backend auto|textual|rich`. Pressing `q` closes only the dashboard;
+the migration continues in the background. While active, dashboard events are
+written to `ui_events.jsonl` in the run report directory.
 
 ---
 ### Core Capabilities & Features of SEAM

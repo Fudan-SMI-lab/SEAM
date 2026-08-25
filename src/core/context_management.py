@@ -13,13 +13,16 @@ deps) so the ContextBudgetEstimator appended by Task 5 and the Wave 2 consumers
 from __future__ import annotations
 
 import dataclasses
+import enum
 import json
 import logging
+import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Final
+from typing import Callable, Final
 
 from core.atomic_file import atomic_write_bytes
+from core.config_loader import ContextManagementConfig
 from core.secret_redaction import redact_json_value
 
 logger = logging.getLogger(__name__)
@@ -137,12 +140,6 @@ def write_snapshot_atomic(snapshot: ContextSnapshot, path: str | Path) -> None:
 # this module too. config_loader does not import context_management, so this
 # introduces no import cycle.
 # ---------------------------------------------------------------------------
-
-import enum
-import math
-from typing import Callable
-
-from core.config_loader import ContextManagementConfig
 
 #: Conservative context window when ``context_tokens == "auto"`` — no provider
 #: metadata is reachable from this module; callers can pass an explicit
