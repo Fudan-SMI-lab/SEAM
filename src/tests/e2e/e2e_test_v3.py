@@ -1581,6 +1581,17 @@ def run_e2e_v3(
         )
         return frozen_exit_code
     finally:
+        if server_proc is not None:
+            try:
+                from harness.server.lifecycle import stop_server
+
+                stop_server(server_proc)
+                log(
+                    "OpenCode server auto-started by this run "
+                    f"(pid={server_proc.pid}) stopped during cleanup"
+                )
+            except Exception as exc:
+                log(f"OpenCode server cleanup failed: {exc}")
         dashboard_wiring.close()
 
 
