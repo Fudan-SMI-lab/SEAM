@@ -13,6 +13,7 @@ from .run_manifest_models import (
     RunManifestError,
     Sha256Digest,
 )
+from .run_manifest_path_models import LinkIdentity as LinkIdentity
 from .run_manifest_path_models import PathIdentity as PathIdentity
 from .run_manifest_path_models import RealTree as RealTree
 from .evidence_limits import EvidenceBudget
@@ -85,6 +86,15 @@ def _require_identity(identity: PathIdentity) -> None:
         raise _containment_error(f"tree entry changed during access: {identity.path}")
 
 
+def _require_link(tree: RealTree, link: LinkIdentity) -> None:
+    _require_ancestors(tree, link.path)
+    current = _path_identity(link.path)
+    if not _matches_path_identity(link, current):
+        raise _containment_error(f"tree link changed during access: {link.path}")
+    if os.readlink(link.path) != link.link_target:
+        raise _containment_error(f"tree link target changed during access: {link.path}")
+
+
 def inspect_real_tree(
     root: Path,
     container: Path,
@@ -96,6 +106,7 @@ def inspect_real_tree(
     pending = [root_identity]
     directories: list[PathIdentity] = []
     files: list[PathIdentity] = []
+    links: list[LinkIdentity] = []
     budget = EvidenceBudget()
     while pending:
         directory = pending.pop()
@@ -103,7 +114,34 @@ def inspect_real_tree(
         for entry in directory.path.iterdir():
             identity = _path_identity(entry)
             if _is_reparse(identity):
-                raise _containment_error(f"link or junction is forbidden: {entry}")
+                link_target = os.readlink(entry)
+                if os.path.isabs(link_target):
+                    raise _containment_error(f"link or junction is forbidden: {entry}")
+                lexical_target = Path(
+                    os.path.normpath(os.path.join(entry.parent, link_target))
+                )
+                if canonical_root not in lexical_target.parents:
+                    raise _containment_error(
+                        f"tree entry escapes evidence root: {entry}"
+                    )
+                budget.charge(
+                    identity.path.relative_to(canonical_root),
+                    0,
+                )
+                links.append(
+                    LinkIdentity(
+                        path=identity.path,
+                        device=identity.device,
+                        inode=identity.inode,
+                        mode=identity.mode,
+                        attributes=identity.attributes,
+                        size=identity.size,
+                        modified_ns=identity.modified_ns,
+                        changed_ns=identity.changed_ns,
+                        link_target=link_target,
+                    )
+                )
+                continue
             try:
                 resolved = entry.resolve(strict=True)
             except OSError as exc:
@@ -134,6 +172,7 @@ def inspect_real_tree(
         root=root_identity,
         directories=tuple(sorted(directories, key=lambda item: str(item.path))),
         files=tuple(sorted(files, key=lambda item: str(item.path))),
+        links=tuple(sorted(links, key=lambda item: str(item.path))),
     )
 
 
@@ -224,6 +263,8 @@ def _require_tree(tree: RealTree) -> None:
         _require_entry(tree, identity)
     for identity in tree.files:
         _require_entry(tree, identity)
+    for link in tree.links:
+        _require_link(tree, link)
 
 
 def _populate_real_tree(tree: RealTree, destination: Path) -> None:
@@ -231,14 +272,18 @@ def _populate_real_tree(tree: RealTree, destination: Path) -> None:
         directory.path.relative_to(tree.root.path) for directory in tree.directories
     )
     files: list[tuple[Path, bytes]] = []
+    links: list[tuple[Path, str]] = []
     for directory in tree.directories:
         _require_entry(tree, directory)
         _require_entry(tree, directory)
     for source_file in tree.files:
         content = _read_verified(tree, source_file)
         files.append((source_file.path.relative_to(tree.root.path), content))
+    for link in tree.links:
+        _require_link(tree, link)
+        links.append((link.path.relative_to(tree.root.path), link.link_target))
     _require_tree(tree)
-    write_real_tree(destination, directories, tuple(files))
+    write_real_tree(destination, directories, tuple(files), tuple(links))
 
 
 def copy_real_tree(source: Path, container: Path, destination: Path) -> None:
@@ -284,6 +329,15 @@ def digest_inventory(root: Path, container: Path) -> tuple[EvidenceDigest, ...]:
                 relative_path=identity.path.relative_to(tree.root.path).as_posix(),
                 digest=Sha256Digest(hashlib.sha256(content).hexdigest()),
                 size_bytes=len(content),
+            )
+        )
+    for link in tree.links:
+        target_bytes = link.link_target.encode()
+        inventory.append(
+            EvidenceDigest(
+                relative_path=link.path.relative_to(tree.root.path).as_posix(),
+                digest=Sha256Digest(hashlib.sha256(target_bytes).hexdigest()),
+                size_bytes=len(target_bytes),
             )
         )
     require_real_tree(tree)

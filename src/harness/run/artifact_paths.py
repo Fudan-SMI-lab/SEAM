@@ -120,9 +120,11 @@ def _fingerprint(
         else:
             tree = inspect_real_tree(path, boundary)
             entries = sorted(
-                (*tree.directories, *tree.files), key=lambda item: str(item.path)
+                (*tree.directories, *tree.files, *tree.links),
+                key=lambda item: str(item.path),
             )
             file_paths = {identity.path for identity in tree.files}
+            link_paths = {identity.path for identity in tree.links}
             for identity in entries:
                 digest.update(
                     identity.path.relative_to(tree.root.path).as_posix().encode()
@@ -131,6 +133,9 @@ def _fingerprint(
                     digest.update(b"F")
                     content = read_real_tree_file(tree, identity)
                     digest.update(sha256(content).digest())
+                elif identity.path in link_paths:
+                    digest.update(b"L")
+                    digest.update(identity.link_target.encode())
                 else:
                     digest.update(b"D")
             device, inode = tree.root.device, tree.root.inode
