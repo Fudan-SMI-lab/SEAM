@@ -54,10 +54,20 @@ def _write_file(root: int, relative: PurePath, content: bytes) -> None:
         os.close(parent)
 
 
+def _write_link(root: int, relative: PurePath, target: str) -> None:
+    parent = _open_directory(root, relative.parent)
+    try:
+        os.symlink(target, relative.name, dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        os.close(parent)
+
+
 def _write_posix(
     destination: Path,
     directories: tuple[PurePath, ...],
     files: tuple[tuple[PurePath, bytes], ...],
+    links: tuple[tuple[PurePath, str], ...],
 ) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     root = os.open(destination, flags)
@@ -70,6 +80,8 @@ def _write_posix(
                 os.close(descriptor)
         for relative, content in files:
             _write_file(root, relative, content)
+        for relative, target in links:
+            _write_link(root, relative, target)
         os.fsync(root)
     finally:
         os.close(root)
@@ -79,9 +91,10 @@ def write_real_tree(
     destination: Path,
     directories: tuple[PurePath, ...],
     files: tuple[tuple[PurePath, bytes], ...],
+    links: tuple[tuple[PurePath, str], ...] = (),
 ) -> None:
     if os.name != "nt":
-        _write_posix(destination, directories, files)
+        _write_posix(destination, directories, files, links)
         return
     for relative in directories:
         (destination / relative).mkdir(parents=True, mode=0o700)
@@ -89,4 +102,8 @@ def write_real_tree(
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         write_durable_bytes(target, content)
+    for relative, target in links:
+        link_path = destination / relative
+        link_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.symlink(target, link_path)
     fsync_tree(destination)
