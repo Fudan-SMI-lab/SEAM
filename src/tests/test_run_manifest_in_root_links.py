@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from core.run_manifest import ManifestErrorKind, RunManifestError
+from core.run_manifest import EvidenceDigest, ManifestErrorKind, RunManifestError
 from core.run_manifest_inventory import digest_inventory
 from core.run_manifest_path_models import LinkIdentity
 from core.run_manifest_paths import copy_real_tree, inspect_real_tree
@@ -121,3 +121,85 @@ def test_digest_inventory_includes_in_root_link(tmp_path: Path) -> None:
     assert by_path["link.txt"].digest == expected_target_digest
     assert by_path["link.txt"].size_bytes == len(b"target.txt")
     assert by_path["target.txt"].digest == hashlib.sha256(target.read_bytes()).hexdigest()
+
+
+def test_digest_inventory_tags_link_entries_with_link_kind(tmp_path: Path) -> None:
+    # Given a project containing a relative in-root symlink.
+    project = tmp_path / "project"
+    target, _ = _make_tree(project)
+
+    # When the inventory is digested.
+    inventory = digest_inventory(project, tmp_path)
+
+    # Then link entries are tagged "link" while regular files are "file".
+    by_path = {entry.relative_path: entry for entry in inventory}
+    assert by_path["link.txt"].kind == "link"
+    assert by_path["target.txt"].kind == "file"
+    assert target.read_bytes() == b"payload"
+
+
+def test_link_swapped_for_identical_content_file_changes_inventory(tmp_path: Path) -> None:
+    # Given a project whose link.txt points at target.txt.
+    project = tmp_path / "project"
+    target, link = _make_tree(project)
+    original = digest_inventory(project, tmp_path)
+    original_by_path = {entry.relative_path: entry for entry in original}
+    original_digest = original_by_path["link.txt"].digest
+    original_size = original_by_path["link.txt"].size_bytes
+
+    # When the symlink is replaced by a regular file whose content equals the
+    # former link target string (identical digest and size under the old
+    # hashing scheme).
+    link.unlink()
+    link.write_text("target.txt", encoding="utf-8")
+    replaced = digest_inventory(project, tmp_path)
+
+    # Then the inventory changes even though digest and size are unchanged.
+    replaced_by_path = {entry.relative_path: entry for entry in replaced}
+    assert replaced_by_path["link.txt"].digest == original_digest
+    assert replaced_by_path["link.txt"].size_bytes == original_size
+    assert replaced_by_path["link.txt"].kind != original_by_path["link.txt"].kind
+    assert replaced != original
+
+
+def test_file_swapped_for_identical_target_link_changes_inventory(tmp_path: Path) -> None:
+    # Given a project whose link.txt is a regular file whose content equals a
+    # plausible link target string.
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "target.txt"
+    target.write_text("payload", encoding="utf-8")
+    link = project / "link.txt"
+    link.write_text("target.txt", encoding="utf-8")
+    original = digest_inventory(project, tmp_path)
+    original_by_path = {entry.relative_path: entry for entry in original}
+    original_digest = original_by_path["link.txt"].digest
+    original_size = original_by_path["link.txt"].size_bytes
+
+    # When the regular file is replaced by a symlink to target.txt (identical
+    # digest and size under the old hashing scheme).
+    link.unlink()
+    link.symlink_to("target.txt")
+    replaced = digest_inventory(project, tmp_path)
+
+    # Then the inventory changes even though digest and size are unchanged.
+    replaced_by_path = {entry.relative_path: entry for entry in replaced}
+    assert replaced_by_path["link.txt"].digest == original_digest
+    assert replaced_by_path["link.txt"].size_bytes == original_size
+    assert replaced_by_path["link.txt"].kind != original_by_path["link.txt"].kind
+    assert replaced != original
+
+
+def test_evidence_digest_parses_legacy_record_without_kind() -> None:
+    # Given a legacy sealed evidence record persisted before the kind field.
+    legacy = {
+        "relative_path": "artifact/summary.json",
+        "digest": "a" * 64,
+        "size_bytes": 12,
+    }
+
+    # When the record is parsed as an EvidenceDigest.
+    parsed = EvidenceDigest.model_validate(legacy)
+
+    # Then it defaults to a regular file so old manifests still load.
+    assert parsed.kind == "file"

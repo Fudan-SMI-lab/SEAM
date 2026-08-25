@@ -118,6 +118,7 @@ def _digest_entry(
         relative_path=relative_path,
         digest=Sha256Digest(hashlib.sha256(content).hexdigest()),
         size_bytes=len(content),
+        kind="file",
     )
 
 
@@ -151,6 +152,7 @@ def snapshot_project_baseline(workspace: Path) -> ProjectSnapshot:
                         relative_path=relative_path,
                         digest=Sha256Digest(hashlib.sha256(target).hexdigest()),
                         size_bytes=len(target),
+                        kind="link",
                     )
                 )
             elif stat.S_ISDIR(metadata.st_mode):
@@ -198,6 +200,7 @@ def write_exclusive_record(
         relative_path=path.name,
         digest=Sha256Digest(hashlib.sha256(content).hexdigest()),
         size_bytes=len(content),
+        kind="file",
     )
 
 
@@ -210,4 +213,5 @@ def verify_record(path: Path, receipt: EvidenceDigest) -> bool:
         path.name == receipt.relative_path
         and len(content) == receipt.size_bytes
         and hashlib.sha256(content).hexdigest() == receipt.digest
+        and receipt.kind == "file"
     )
