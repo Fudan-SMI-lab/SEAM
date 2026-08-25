@@ -21,6 +21,7 @@ from .event_lifecycle import (
     TransportLifecycle,
 )
 from .events import (
+    ActiveTransportAttempt,
     PreparedTransportAttempt,
     TransportInvocation,
     TransportInvocationId,

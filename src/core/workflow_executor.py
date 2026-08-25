@@ -48,7 +48,6 @@ from core.context_management import (
     ContextBudgetState,
     ContextSnapshot,
     CONTEXT_SNAPSHOT_FILENAME,
-    CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     LOOP_HISTORY_FILENAME,
     write_snapshot_atomic,
 )

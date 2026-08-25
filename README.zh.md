@@ -29,6 +29,17 @@ bash src/scripts/init_seam.sh
 bash src/scripts/run_seam.sh /path/to/project --server_url http://127.0.0.1:4098
 ```
 
+可选实时仪表盘使用 Textual（优先）或 Rich（回退）渲染，先安装依赖：
+
+```bash
+python -m pip install -e "./src[dashboard]"
+```
+
+使用 `--dashboard-mode auto|on|off` 选择自动、强制开启或关闭，使用
+`--dashboard-backend auto|textual|rich` 选择渲染后端。仪表盘中按 `q`
+只关闭视图，迁移继续在后台运行；启用时事件写入运行报告目录的
+`ui_events.jsonl`。
+
 ---
 ### SEAM能力和优势
 
@@ -76,4 +87,3 @@ Copyright (c) 2026 Fudan-SMI-lab
 
 
 本项目由复旦大学人工智能创新与产业研究院-统计机器智能实验室(SMI-lab)、上海创智学院、复旦大学CFFF智能计算平台共同构建。
-
