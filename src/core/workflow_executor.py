@@ -22,10 +22,6 @@ from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
 
 from core.compat import assert_never
-
-if TYPE_CHECKING:
-    from core.types import ExecutionBackendConfig
-
 from core.types import (
     PhaseDefinition,
     WorkflowDefinition,
@@ -141,6 +137,9 @@ from validators.validate_entry_script import (
 )
 from validators.validate_validation_final import validate_custom_op_final_gate
 from rule_strategies import create_migrator_resolved, resolve_rule_migration_strategy
+
+if TYPE_CHECKING:
+    from core.types import ExecutionBackendConfig
 
 logger = logging.getLogger(__name__)
 _CUSTOM_OP_GATE_REPORT_MAX_BYTES = 5 * 1024 * 1024
@@ -4605,7 +4604,7 @@ class WorkflowExecutor:
     ) -> ContextSnapshot:
         snapshot = self._build_loop_context_snapshot(phase, iteration, loop_state)
         artifact_dir = getattr(self.artifact_store, "artifact_dir", None)
-        # rationale: strict str/PurePath check rejects MagicMock (os.PathLike protocol is faked by mocks)
+        # A strict str/PurePath check rejects MagicMock; mocks fake os.PathLike.
         if isinstance(artifact_dir, (str, PurePath)):
             snapshot_path = Path(artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
             snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4660,7 +4659,7 @@ class WorkflowExecutor:
     ) -> tuple[str, str]:
         snapshot = self._build_exhausted_rotation_snapshot(agent_id, loop_state)
         artifact_dir = getattr(self.artifact_store, "artifact_dir", None)
-        # rationale: strict str/PurePath check rejects MagicMock (os.PathLike protocol is faked by mocks)
+        # A strict str/PurePath check rejects MagicMock; mocks fake os.PathLike.
         if isinstance(artifact_dir, (str, PurePath)):
             snapshot_path = Path(artifact_dir) / CONTEXT_SNAPSHOT_FILENAME
             snapshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4714,7 +4713,7 @@ class WorkflowExecutor:
 
     def _persist_loop_history(self, loop_history: list) -> None:
         artifact_dir = getattr(self.artifact_store, "artifact_dir", None)
-        # rationale: strict str/PurePath check rejects MagicMock (os.PathLike protocol is faked by mocks)
+        # A strict str/PurePath check rejects MagicMock; mocks fake os.PathLike.
         if not isinstance(artifact_dir, (str, PurePath)):
             return
         path = Path(artifact_dir) / LOOP_HISTORY_FILENAME

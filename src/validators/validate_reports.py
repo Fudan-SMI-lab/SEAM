@@ -37,7 +37,8 @@ def validate(data: dict[str, object]) -> ValidationDict:
                     value = phase_entry.get(field)
                     if not isinstance(value, str) or not value or value == "\u2014":
                         errors.append(
-                            f"run_timeline.phases[{idx}].{field} must be a real ISO-8601 UTC timestamp"
+                            f"run_timeline.phases[{idx}].{field} must be a real "
+                            "ISO-8601 UTC timestamp"
                         )
 
     return {"passed": not errors, "errors": errors, "warnings": []}

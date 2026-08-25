@@ -120,7 +120,7 @@ def load_context_management_config(raw: dict) -> ContextManagementConfig:
     rotate_threshold_ratio = _ratio_field(
         raw, "rotate_threshold_ratio", 0.88
     )
-    if not (compact_threshold_ratio < rotate_threshold_ratio):
+    if not compact_threshold_ratio < rotate_threshold_ratio:
         raise ValueError(
             "context_management: compact_threshold_ratio must be < "
             "rotate_threshold_ratio, got "
