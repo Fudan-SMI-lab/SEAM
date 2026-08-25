@@ -55,7 +55,7 @@ def _parent_trace_reference(
     matches = tuple(
         item
         for item in continuation.evidence.parent_report_inventory
-        if item.relative_path == expected
+        if item.relative_path == expected and item.kind == "file"
     )
     if len(matches) != 1:
         return None

@@ -34,6 +34,7 @@ def _matches_sealed_artifact(
             evidence.relative_path == relative_path
             and str(evidence.digest) == artifact_digest
             and evidence.size_bytes == artifact_size
+            and evidence.kind == "file"
             for evidence in inventory
         )
         == 1

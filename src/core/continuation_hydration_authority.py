@@ -162,6 +162,11 @@ def load_verified_bytes(
             ContinuationHydrationErrorKind.MALFORMED_CANONICAL_OUTPUT,
             f"sealed evidence exceeds the hydration byte limit: {evidence.relative_path}",
         )
+    if evidence.kind != "file":
+        raise _error(
+            ContinuationHydrationErrorKind.MALFORMED_CANONICAL_OUTPUT,
+            f"sealed evidence is not a canonical file: {evidence.relative_path}",
+        )
     path = sealed_root / Path(evidence.relative_path)
     try:
         canonical_root = sealed_root.resolve(strict=True)

@@ -329,6 +329,7 @@ def digest_inventory(root: Path, container: Path) -> tuple[EvidenceDigest, ...]:
                 relative_path=identity.path.relative_to(tree.root.path).as_posix(),
                 digest=Sha256Digest(hashlib.sha256(content).hexdigest()),
                 size_bytes=len(content),
+                kind="file",
             )
         )
     for link in tree.links:
@@ -338,6 +339,7 @@ def digest_inventory(root: Path, container: Path) -> tuple[EvidenceDigest, ...]:
                 relative_path=link.path.relative_to(tree.root.path).as_posix(),
                 digest=Sha256Digest(hashlib.sha256(target_bytes).hexdigest()),
                 size_bytes=len(target_bytes),
+                kind="link",
             )
         )
     require_real_tree(tree)

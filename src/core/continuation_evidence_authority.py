@@ -89,6 +89,7 @@ def verify_external_evidence_root(
     receipt_matches = (
         len(content) == evidence.size_bytes
         and hashlib.sha256(content).hexdigest() == evidence.digest
+        and evidence.kind == "file"
     )
     root_matches = (
         root.child_run_id == str(manifest.run_id)

@@ -163,6 +163,11 @@ class EvidenceDigest(_FrozenModel):
     relative_path: str
     digest: _DigestField
     size_bytes: Annotated[int, Field(ge=0)]
+    # Backward compatible file type field: records sealed before this field
+    # existed are ordinary files (symlink entries are only written once the
+    # recording path distinguishes them), so the default preserves loading of
+    # old run-manifests while new records participate in tuple equality.
+    kind: Literal["file", "link"] = "file"
 
     @field_validator("relative_path")
     @classmethod
