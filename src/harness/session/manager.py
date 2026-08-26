@@ -388,8 +388,18 @@ class MigrationSessionManager:
         working_dir: str = "",
         initial_prompt: str = "",
     ) -> str:
+        effective_working_dir = str(
+            Path(working_dir).expanduser().resolve()
+            if working_dir
+            else self._work_dir
+        )
         payload = {"title": title or f"migration-{role}"}
-        resp = self._http("POST", "/session", body=payload)
+        resp = self._http(
+            "POST",
+            "/session",
+            query={"directory": effective_working_dir},
+            body=payload,
+        )
         if not resp.get("ok") or not isinstance(resp.get("data"), dict):
             raise RuntimeError(
                 f"Failed to create session: {resp.get('error') or resp.get('details')}"
@@ -401,7 +411,7 @@ class MigrationSessionManager:
             role=role,
             agent=agent or self.active_agent,
             lifecycle=lifecycle,
-            working_dir=working_dir or str(self._work_dir),
+            working_dir=effective_working_dir,
         )
         self._sessions[session_id] = record
         _ = self._trace_seed_registry.record(
@@ -416,6 +426,18 @@ class MigrationSessionManager:
                 session_id, initial_prompt, agent=record.agent, timeout=120
             )
         return session_id
+
+    def _session_query(
+        self,
+        session_id: str,
+        query: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Scope an OpenCode request to the session's recorded project root."""
+        scoped = dict(query or {})
+        record = self._sessions.get(session_id)
+        if record is not None and record.working_dir:
+            scoped["directory"] = record.working_dir
+        return scoped or None
 
     def register_session(self, record: SessionRecord) -> str:
         """Register a :class:`SessionRecord` in the manager session layer.
@@ -603,7 +625,11 @@ class MigrationSessionManager:
         return {"ok": False, "error": "malformed_json", "raw": text}
 
     def get_last_response(self, session_id: str) -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 1})
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 1}),
+        )
         if not resp.get("ok"):
             return ""
         return self._extract_message_text(resp.get("data"))
@@ -1187,7 +1213,11 @@ class MigrationSessionManager:
         return None
 
     def _session_has_incomplete_todos(self, session_id: str) -> bool | None:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 20}),
+        )
         if not resp.get("ok"):
             status = resp.get("status")
             if status in {401, 403}:
@@ -1413,7 +1443,11 @@ class MigrationSessionManager:
             time.sleep(interval_s)
 
     def _last_message_text_tolerant(self, session_id: str) -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 1})
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 1}),
+        )
         if not resp.get("ok"):
             return ""
         return self._extract_message_text(resp.get("data"))
@@ -1468,7 +1502,13 @@ class MigrationSessionManager:
             return self._session_completion_from_sqlite(session_id)
 
     def abort_session(self, session_id: str) -> bool:
-        return bool(self._http("POST", f"/session/{session_id}/abort").get("ok"))
+        return bool(
+            self._http(
+                "POST",
+                f"/session/{session_id}/abort",
+                query=self._session_query(session_id),
+            ).get("ok")
+        )
 
     def cleanup_session(self, session_id: str) -> bool:
         record = self._sessions.get(session_id)
@@ -1476,7 +1516,11 @@ class MigrationSessionManager:
             return False
         if record.lifecycle == "ephemeral":
             self.abort_session(session_id)
-            self._http("DELETE", f"/session/{session_id}")
+            self._http(
+                "DELETE",
+                f"/session/{session_id}",
+                query=self._session_query(session_id),
+            )
         self._sessions.pop(session_id, None)
         return True
 
@@ -1540,6 +1584,7 @@ class MigrationSessionManager:
             resp = self._http(
                 "POST",
                 f"/session/{session_id}/message",
+                query=self._session_query(session_id),
                 body=payload,
                 timeout=http_timeout,
             )
@@ -1727,6 +1772,7 @@ class MigrationSessionManager:
             resp = self._http(
                 "POST",
                 f"/session/{session_id}/message",
+                query=self._session_query(session_id),
                 body=payload,
                 timeout=http_timeout,
             )
