@@ -115,6 +115,79 @@ def test_active_agent_defaults_to_sisyphus() -> None:
     assert manager.active_agent == "sisyphus"
 
 
+def test_create_session_scopes_opencode_requests_to_working_directory(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "output_projects" / "project-copy"
+    project_dir.mkdir(parents=True)
+    manager = FakeSessionManager(
+        {
+            ("POST", "/session"): {
+                "ok": True,
+                "data": {"id": "ses-scoped"},
+            },
+        }
+    )
+
+    session_id = manager.create_session("worker", working_dir=str(project_dir))
+
+    assert session_id == "ses-scoped"
+    assert manager.calls == [
+        {
+            "method": "POST",
+            "path": "/session",
+            "query": {"directory": str(project_dir.resolve())},
+            "body": {"title": "migration-worker"},
+            "timeout": None,
+        }
+    ]
+    assert manager.list_sessions()[0].working_dir == str(project_dir.resolve())
+
+
+def test_session_message_request_reuses_created_session_directory(
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "outside-repository" / "project-copy"
+    project_dir.mkdir(parents=True)
+    manager = FakeSessionManager(
+        {
+            ("POST", "/session"): {
+                "ok": True,
+                "data": {"id": "ses-scoped"},
+            },
+            ("GET", "/session/ses-scoped/message"): {
+                "ok": True,
+                "data": [],
+            },
+            ("POST", "/session/ses-scoped/message"): {
+                "ok": True,
+                "data": {
+                    "info": {"finish": "stop"},
+                    "parts": [{"type": "text", "text": "done"}],
+                },
+            },
+            ("GET", "/session/status"): {
+                "ok": True,
+                "data": {"ses-scoped": {"type": "idle"}},
+            },
+        }
+    )
+    session_id = manager.create_session("worker", working_dir=str(project_dir))
+
+    result = manager.send_command(session_id, "inspect project", retries=0)
+
+    expected_query = {"directory": str(project_dir.resolve())}
+    session_calls = [
+        call for call in manager.calls if call["path"].startswith("/session/ses-scoped")
+    ]
+    assert result == "done"
+    assert session_calls
+    assert all(
+        call["query"]["directory"] == expected_query["directory"]
+        for call in session_calls
+    )
+
+
 def test_detect_agent_prefers_exact_sisyphus_then_contains_sisyphus() -> None:
     exact = FakeSessionManager({
         ("GET", "/agent"): {
