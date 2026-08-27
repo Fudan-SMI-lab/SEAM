@@ -33,7 +33,7 @@ def test_characterization_request_timeout_is_session_transport_error(
         manager._send_message_raw("ses-1", "do work", timeout=5)
 
 
-def test_characterization_retries_two_means_three_post_attempts(
+def test_request_timeout_never_reposts_to_the_same_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given every physical request times out and retry backoff is deterministic.
@@ -55,40 +55,28 @@ def test_characterization_retries_two_means_three_post_attempts(
         transport_observer=events.append,
     )
 
-    # When the public command surface uses its configured retries=2 behavior.
+    # When the public command surface allows retries but the POST times out.
     result = json.loads(manager.send_command("ses-1", "do work", timeout=5, retries=2))
 
-    # Then exactly the original POST plus two reposts occur.
+    # Then the accepted state is ambiguous, so no same-session repost occurs.
     posts = [request for request in requests if request[0] == "POST"]
     assert result == {
         "ok": False,
         "error": "POST /session/ses-1/message failed: timed out",
     }
-    assert posts == [("POST", "/session/ses-1/message")] * 3
+    assert posts == [("POST", "/session/ses-1/message")]
     assert [event.phase for event in events] == [
-        "started",
-        "timeout",
-        "started",
-        "timeout",
         "started",
         "timeout",
         "exhausted",
     ]
-    assert [event.attempt for event in events] == [1, 1, 2, 2, 3, 3, 3]
+    assert [event.attempt for event in events] == [1, 1, 1]
     assert [event.retry_decision for event in events] == [
         "pending",
-        "retry_same_session",
-        "pending",
-        "retry_same_session",
-        "pending",
-        "stop",
-        "stop",
+        "no_repost",
+        "no_repost",
     ]
     assert [event.exhausted for event in events] == [
-        False,
-        False,
-        False,
-        False,
         False,
         True,
         True,

@@ -73,7 +73,7 @@ def test_request_timeout_attempts_agree_across_console_telemetry_and_artifact(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # Given the active observer boundary and a real request that times out three times.
+    # Given the active observer boundary and a request whose accepted state is unknown.
     posts: list[tuple[str, str]] = []
 
     def respond(
@@ -101,7 +101,7 @@ def test_request_timeout_attempts_agree_across_console_telemetry_and_artifact(
     runtime.observer.set_active_phase("review_result")
     session_id = runtime.observer.get_or_create("reviewer")
 
-    # When the public SessionManager boundary exhausts retries=2.
+    # When the public SessionManager boundary receives a transport timeout.
     response = runtime.observer.send_command(
         session_id,
         "secret prompt",
@@ -110,26 +110,26 @@ def test_request_timeout_attempts_agree_across_console_telemetry_and_artifact(
     )
     paths = runtime.observer.save_metrics()
 
-    # Then three physical POSTs and every concise channel agree on exhaustion.
-    assert posts == [("POST", "/session/reviewer-session/message")] * 3
+    # Then no same-session repost occurs and every channel agrees on exhaustion.
+    assert posts == [("POST", "/session/reviewer-session/message")]
     assert "timed out" in response
     assert runtime.transport_observer.is_bound is True
     telemetry = Path(paths["telemetry_json"]).read_text(encoding="utf-8")
     artifact = Path(paths["phase_observability_json"]).read_text(encoding="utf-8")
     for output in (telemetry, artifact):
-        assert '"timeout_count": 3' in output
+        assert '"timeout_count": 1' in output
         assert '"exhaustion_count": 1' in output
-        assert '"attempt": 3' in output
+        assert '"attempt": 1' in output
         assert '"configured_timeout_seconds": 987654.0' in output
-        assert '"retry_decision": "stop"' in output
-        assert '"reason": "retries_exhausted"' in output
+        assert '"retry_decision": "no_repost"' in output
+        assert '"reason": "request_timeout"' in output
         assert '"run_id": "run-9"' in output
         assert '"phase_execution_id": "run-9:phase:review_result"' in output
         assert '"framework_invocation_id": "framework-000001"' in output
         assert '"transport_invocation_id": "transport-000001"' in output
-        assert '"transport_attempt_id": "transport-000001:attempt-3"' in output
+        assert '"transport_attempt_id": "transport-000001:attempt-1"' in output
         assert "secret prompt" not in output
-    assert "attempt=3/3" in caplog.text
+    assert "attempt=1/3" in caplog.text
     assert "exhausted=true" in caplog.text
 
 

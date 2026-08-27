@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -88,6 +89,11 @@ def collect_server_diagnostics(
         "config_files": [],
         "model_config_path": None,
         "models": [],
+        "log_path": (
+            getattr(server_proc, "seam_log_path", None)
+            if server_proc is not None
+            else None
+        ),
     }
 
     try:
@@ -336,6 +342,7 @@ def resolve_server_url(
     default_url: str = "http://127.0.0.1:4096",
     work_dir: str,
     server_port: int = 0,
+    server_log_dir: str | Path | None = None,
 ) -> tuple[str, ServerProcess | None]:
     """Resolve *base_url* and auto-start a local server when needed.
 
@@ -351,7 +358,10 @@ def resolve_server_url(
     if auto_start and base_url is None:
         port = server_port if server_port > 0 else find_available_port()
         resolved = f"http://127.0.0.1:{port}"
-        server_proc = start_server(work_dir=work_dir, port=port)
+        start_kwargs: dict[str, object] = {"work_dir": work_dir, "port": port}
+        if server_log_dir is not None:
+            start_kwargs["log_dir"] = server_log_dir
+        server_proc = start_server(**start_kwargs)
         if not wait_for_server(resolved, timeout=30):
             _ = stop_server(server_proc)
             raise RuntimeError(f"Server failed to start on {resolved}")
@@ -368,7 +378,14 @@ def resolve_server_url(
         if not health_check(health_url):
             if is_local_url(base_url):
                 host, port = parse_host_port(base_url)
-                server_proc = start_server(work_dir=work_dir, port=port, hostname=host)
+                start_kwargs = {
+                    "work_dir": work_dir,
+                    "port": port,
+                    "hostname": host,
+                }
+                if server_log_dir is not None:
+                    start_kwargs["log_dir"] = server_log_dir
+                server_proc = start_server(**start_kwargs)
                 if not wait_for_server(base_url, timeout=30):
                     _ = stop_server(server_proc)
                     raise RuntimeError(f"Server failed to start on {base_url}")
@@ -409,8 +426,13 @@ def resolve_server_url(
     resolved = base_url or default_url
     return resolved, None
 
-def start_server(work_dir: str, port: int, auth_header: str = "",
-                 hostname: str = "127.0.0.1") -> ServerProcess:
+def start_server(
+    work_dir: str,
+    port: int,
+    auth_header: str = "",
+    hostname: str = "127.0.0.1",
+    log_dir: str | Path | None = None,
+) -> ServerProcess:
     """Launch opencode server as a subprocess."""
     if shutil.which("opencode") is None:
         raise FileNotFoundError("opencode not found in PATH")
@@ -420,13 +442,30 @@ def start_server(work_dir: str, port: int, auth_header: str = "",
     if auth_header:
         env = {**os.environ, "AUTH_HEADER": auth_header}
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=work_dir,
-        env=env,
+    log_file = tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix=f"seam-opencode-{port}-",
+        suffix=".log",
+        dir=log_dir,
+        delete=False,
     )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            cwd=work_dir,
+            env=env,
+        )
+    except BaseException:
+        log_file.close()
+        try:
+            os.unlink(log_file.name)
+        except OSError:
+            pass
+        raise
+    log_file.close()
+    setattr(proc, "seam_log_path", log_file.name)
     return proc
 
 def wait_for_server(url: str, timeout: int = 30) -> bool:

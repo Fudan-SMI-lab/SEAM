@@ -158,7 +158,7 @@ def test_run_single_phase_saves_phase_0_output(tmp_path: Path) -> None:
     assert saved is not None
     assert saved["platform"] == "npu"
     assert saved["npu_detected"] is True
-    assert session.calls[0][1] is None
+    assert session.calls[0][1] == 600
 
 
 def test_run_single_phase_appends_agent_and_phase_runtime_skills(tmp_path: Path) -> None:

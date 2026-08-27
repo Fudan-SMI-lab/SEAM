@@ -59,10 +59,10 @@ __all__ = (
 )
 
 
-def test_characterization_timeout_keeps_three_posts_and_transport_error(
+def test_characterization_timeout_stops_same_session_reposts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given the existing request timeout and retries=2 policy.
+    # Given a request timeout with retries=2 configured.
     posts: list[tuple[str, str]] = []
     events: list[TransportAttemptEvent] = []
 
@@ -83,16 +83,16 @@ def test_characterization_timeout_keeps_three_posts_and_transport_error(
         transport_observer=events.append,
     )
 
-    # When the public command exhausts its configured attempts.
+    # When the public command cannot determine whether OpenCode accepted the POST.
     response = manager.send_command("session-review", "review", timeout=17, retries=2)
 
-    # Then Task 9 must preserve the physical requests and error classification.
-    assert posts == [("POST", "/session/session-review/message")] * 3
+    # Then it must preserve the error classification without duplicating the turn.
+    assert posts == [("POST", "/session/session-review/message")]
     assert response == (
         '{"ok": false, "error": '
         '"POST /session/session-review/message failed: timed out"}'
     )
-    assert [event.attempt for event in events if event.phase == "timeout"] == [1, 2, 3]
+    assert [event.attempt for event in events if event.phase == "timeout"] == [1]
 
 
 def test_characterization_initial_prompt_timeout_keeps_transport_error_type(

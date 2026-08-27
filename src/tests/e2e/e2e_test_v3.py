@@ -247,7 +247,8 @@ def log_server_diagnostics(
         f"source={display(diagnostics.get('source'))} "
         f"pid={display(diagnostics.get('pid'))} "
         f"cwd={display(diagnostics.get('cwd'))} "
-        f"start_work_dir={display(diagnostics.get('start_work_dir'))}"
+        f"start_work_dir={display(diagnostics.get('start_work_dir'))} "
+        f"log_path={display(diagnostics.get('log_path'))}"
     )
 
     config_files = diagnostics.get("config_files")
@@ -891,11 +892,17 @@ def run_e2e_v3(
                 default_url=DEFAULT_SERVER_URL,
                 work_dir=str(REPO_ROOT),
                 server_port=server_port,
+                server_log_dir=output_dir,
             )
             if server_proc is not None:
+                server_log_path = getattr(server_proc, "seam_log_path", None)
+                log_suffix = (
+                    f"; server log: {server_log_path}" if server_log_path else ""
+                )
                 log(
                     "OpenCode server auto-started by this run "
                     f"at {base_url} (pid={server_proc.pid}); cleanup will stop it"
+                    f"{log_suffix}"
                 )
             else:
                 log(

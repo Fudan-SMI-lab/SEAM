@@ -7,6 +7,8 @@ replaced via monkeypatch or mock.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -196,13 +198,18 @@ class TestServerDiagnostics:
 
 
 class TestStartServerHostname:
-    def test_custom_hostname_passed_to_subprocess(self) -> None:
+    def test_custom_hostname_passed_to_subprocess(self, tmp_path: Path) -> None:
         with patch("harness.server.lifecycle.shutil.which", return_value="/usr/bin/opencode"):
             with patch("harness.server.lifecycle.subprocess.Popen") as mock_popen:
                 mock_proc = MagicMock()
                 mock_popen.return_value = mock_proc
 
-                _ = start_server("/tmp/work", port=4098, hostname="0.0.0.0")
+                _ = start_server(
+                    "/tmp/work",
+                    port=4098,
+                    hostname="0.0.0.0",
+                    log_dir=tmp_path,
+                )
 
                 mock_popen.assert_called_once()
                 call_args, call_kwargs = mock_popen.call_args
@@ -213,6 +220,12 @@ class TestStartServerHostname:
                 assert "--port" in cmd
                 idx = cmd.index("--port")
                 assert cmd[idx + 1] == "4098"
+                assert call_kwargs["stdout"] is not subprocess.PIPE
+                assert call_kwargs["stderr"] is subprocess.STDOUT
+                log_path = Path(mock_proc.seam_log_path)
+                assert log_path.exists()
+                assert log_path.parent == tmp_path
+                log_path.unlink()
 
     def test_default_hostname_is_loopback(self) -> None:
         with patch("harness.server.lifecycle.shutil.which", return_value="/usr/bin/opencode"):
