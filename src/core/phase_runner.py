@@ -466,7 +466,7 @@ class PhaseRunner:
         )
         prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
-        raw_response = session_mgr.send_command(main_session_id, prompt, timeout=None)
+        raw_response = session_mgr.send_command(main_session_id, prompt, timeout=600)
         parsed: JsonObject = dict(extract_json_response(raw_response))
         constraint_summary = str(parsed.get("constraint_summary", ""))
 
@@ -540,7 +540,7 @@ class PhaseRunner:
 
         for attempt in range(1, max_retry + 1):
             raw_response = session_mgr.send_command(
-                review_session_id, active_prompt, timeout=None
+                review_session_id, active_prompt, timeout=600
             )
             session_error = self._session_error_from_response(raw_response)
             if session_error:
@@ -1221,7 +1221,7 @@ class PhaseRunner:
     def _resolve_timeout(phase: PhaseSpec, context: JsonObject) -> int | None:
         raw_timeout = context.get("timeout", phase.timeout)
         if raw_timeout is None:
-            return None
+            return 600
         if isinstance(raw_timeout, bool):
             return int(raw_timeout)
         if isinstance(raw_timeout, int):

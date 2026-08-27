@@ -49,7 +49,7 @@ COMPACTION_TOKENS = {"compaction", "summary"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
 FALLBACK_AGENT_NAME = "sisyphus"
 _DEFAULT_HTTP_TIMEOUT = object()
-DEFAULT_SESSION_WAIT_TIMEOUT = 30000.0
+DEFAULT_SESSION_WAIT_TIMEOUT = 600.0
 DEFAULT_HARD_ERROR_WAIT_TIMEOUT = 300.0
 # 停止生成但 TODO 非空时，二次确认前等待的时间（秒）
 DEFAULT_TODO_STABILIZE_WAIT_S = 10.0
@@ -566,12 +566,23 @@ class MigrationSessionManager:
                 break
             except SessionTransportError as exc:
                 last_error = exc
-                will_retry = attempt < retries and self._transport_lifecycle.is_active(
-                    transport_attempt
+                # A timed-out POST may already have been accepted by OpenCode. Reposting
+                # the same prompt to the same session can duplicate work or queue behind
+                # the orphaned turn indefinitely. Let the workflow layer rotate to a
+                # fresh session instead.
+                if exc.timed_out:
+                    self._transport_lifecycle.post_acceptance_transport_failure(
+                        transport_attempt,
+                        timed_out=True,
+                    )
+                    break
+                will_retry = (
+                    attempt < retries
+                    and self._transport_lifecycle.is_active(transport_attempt)
                 )
                 self._transport_lifecycle.transport_failure(
                     transport_attempt,
-                    timed_out=exc.timed_out,
+                    timed_out=False,
                     will_retry=will_retry,
                 )
                 if not will_retry:
@@ -1331,7 +1342,11 @@ class MigrationSessionManager:
         started = time.time()
         effective_timeout = self._effective_wait_timeout(timeout_s)
         while time.time() - started < effective_timeout:
-            status = self._http("GET", "/session/status")
+            status = self._http(
+                "GET",
+                "/session/status",
+                query=self._session_query(session_id),
+            )
             if not status.get("ok"):
                 error_status = status.get("status")
                 if error_status in {401, 403}:
@@ -1398,7 +1413,11 @@ class MigrationSessionManager:
         stable_message_count = 0
 
         while time.time() < deadline:
-            status = self._http("GET", "/session/status")
+            status = self._http(
+                "GET",
+                "/session/status",
+                query=self._session_query(session_id),
+            )
             if status.get("ok"):
                 saw_observation = True
                 token = self._extract_status_token(status.get("data"), session_id)
@@ -1710,7 +1729,11 @@ class MigrationSessionManager:
         )
         deadline = started + hard_error_timeout
         while time.time() < deadline:
-            status = self._http("GET", "/session/status")
+            status = self._http(
+                "GET",
+                "/session/status",
+                query=self._session_query(session_id),
+            )
             if status.get("ok"):
                 token = self._extract_status_token(status.get("data"), session_id)
                 if token in RUNNING_TOKENS:

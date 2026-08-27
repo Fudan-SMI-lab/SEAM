@@ -48,7 +48,7 @@ class TransportLifecycle:
     ) -> TransportInvocation:
         invocation_id = TransportInvocationId(f"transport-{self._next_invocation:06d}")
         self._next_invocation += 1
-        configured_timeout = 30000.0 if timeout_s is None else float(timeout_s)
+        configured_timeout = 600.0 if timeout_s is None else float(timeout_s)
         return TransportInvocation(
             session_id=session_id,
             invocation_id=invocation_id,

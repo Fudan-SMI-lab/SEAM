@@ -182,11 +182,18 @@ FIXER_STRUCTURED_OUTPUT_FIELDS = {
     "remaining_blockers",
 }
 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
-SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 30000
+SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 3600
+LLM_PHASE_TIMEOUT_DEFAULT = 600
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",
 }
+RETRYABLE_PHASE_SESSION_ERROR_MARKERS = (
+    "timed out",
+    "timeout",
+    "empty session response",
+    "compaction response is incomplete",
+)
 
 
 def _rewrite_container_to_host_path(
@@ -1565,11 +1572,12 @@ class WorkflowExecutor:
 
         # 4. Send command
         try:
-            send_kwargs = {"timeout": timeout}
-            if phase.id == "phase_6_report":
-                send_kwargs["retries"] = 0
-            raw_response = self.session_mgr.send_command(
-                sid, prompt_text, **send_kwargs
+            raw_response, sid = self._send_top_level_llm_command(
+                phase=phase,
+                agent_id=agent_id,
+                session_id=sid,
+                prompt_text=prompt_text,
+                timeout=timeout,
             )
         except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
             if phase.id == "phase_6_report":
@@ -1604,8 +1612,12 @@ class WorkflowExecutor:
                 is_parse_failure=True,
                 phase_name=phase.id,
             )
-            raw_response = self.session_mgr.send_command(
-                sid, parse_correction, timeout=timeout
+            raw_response, sid = self._send_top_level_llm_command(
+                phase=phase,
+                agent_id=agent_id,
+                session_id=sid,
+                prompt_text=parse_correction,
+                timeout=timeout,
             )
             output = extract_json_response(raw_response)
             self._raise_for_session_error_output(output, phase.id)
@@ -1644,8 +1656,12 @@ class WorkflowExecutor:
                     output_format_example=output_format,
                     phase_name=phase.id,
                 )
-                raw_response = self.session_mgr.send_command(
-                    sid, correction_prompt, timeout=timeout
+                raw_response, sid = self._send_top_level_llm_command(
+                    phase=phase,
+                    agent_id=agent_id,
+                    session_id=sid,
+                    prompt_text=correction_prompt,
+                    timeout=timeout,
                 )
                 output = extract_json_response(raw_response)
                 self._raise_for_session_error_output(output, phase.id)
@@ -1656,8 +1672,12 @@ class WorkflowExecutor:
                         is_parse_failure=True,
                         phase_name=phase.id,
                     )
-                    raw_response = self.session_mgr.send_command(
-                        sid, parse_correction, timeout=timeout
+                    raw_response, sid = self._send_top_level_llm_command(
+                        phase=phase,
+                        agent_id=agent_id,
+                        session_id=sid,
+                        prompt_text=parse_correction,
+                        timeout=timeout,
                     )
                     output = extract_json_response(raw_response)
                     self._raise_for_session_error_output(output, phase.id)
@@ -1725,9 +1745,86 @@ class WorkflowExecutor:
     def _llm_timeout_for_phase(self, phase: PhaseDefinition) -> int | None:
         if phase.timeout is not None:
             return phase.timeout
-        if phase.id != "phase_6_report":
-            return None
-        return resolve_phase6_timeout(self.framework_config, phase.timeout, logger)
+        if phase.id == "phase_6_report":
+            return resolve_phase6_timeout(self.framework_config, phase.timeout, logger)
+        return self._resolve_configured_sub_workflow_timeout(
+            phase,
+            ("session_timeout_phase",),
+            LLM_PHASE_TIMEOUT_DEFAULT,
+        )
+
+    @staticmethod
+    def _retryable_phase_session_error(raw_response: str) -> str:
+        output = extract_json_response(raw_response)
+        if not isinstance(output, dict) or output.get("ok") is not False:
+            return ""
+        error = str(output.get("error") or "").strip()
+        lowered = error.lower()
+        if any(marker in lowered for marker in RETRYABLE_PHASE_SESSION_ERROR_MARKERS):
+            return error
+        return ""
+
+    def _send_top_level_llm_command(
+        self,
+        *,
+        phase: PhaseDefinition,
+        agent_id: str,
+        session_id: str,
+        prompt_text: str,
+        timeout: int | None,
+    ) -> tuple[str, str]:
+        send_kwargs: dict[str, Any] = {"timeout": timeout}
+        if phase.id == "phase_6_report":
+            send_kwargs["retries"] = 0
+        raw_response = self.session_mgr.send_command(
+            session_id,
+            prompt_text,
+            **send_kwargs,
+        )
+        retry_error = self._retryable_phase_session_error(raw_response)
+        if not retry_error or phase.id == "phase_6_report":
+            return raw_response, session_id
+
+        snapshot: dict[str, Any] = {
+            "phase_id": phase.id,
+            "agent_id": agent_id,
+            "reason": retry_error,
+        }
+        if self.session_registry is not None:
+            record = self.session_registry.rotate(
+                agent_id,
+                "phase_transport_failure",
+                snapshot,
+            )
+            register_session = getattr(self.session_mgr, "register_session", None)
+            if callable(register_session):
+                register_session(record)
+            retry_session_id = record.session_id
+        else:
+            retry_session_id = self._create_sub_workflow_retry_session(
+                agent_id,
+                phase.id,
+            )
+        logger.warning(
+            "Retrying top-level LLM phase in a fresh session: "
+            "phase_id=%s agent_id=%s old_session_id=%s "
+            "retry_session_id=%s error=%s",
+            phase.id,
+            agent_id,
+            session_id,
+            retry_session_id,
+            retry_error,
+        )
+        retry_kwargs = dict(send_kwargs)
+        retry_kwargs["retries"] = 0
+        return (
+            self.session_mgr.send_command(
+                retry_session_id,
+                prompt_text,
+                **retry_kwargs,
+            ),
+            retry_session_id,
+        )
 
     @staticmethod
     def _phase_6_output_complete(output: dict[str, Any]) -> bool:
@@ -1769,7 +1866,11 @@ class WorkflowExecutor:
                 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT,
             )
         if phase.id not in SUB_WORKFLOW_REPAIR_PHASE_IDS:
-            return None
+            return self._resolve_configured_sub_workflow_timeout(
+                phase,
+                ("session_timeout_phase",),
+                LLM_PHASE_TIMEOUT_DEFAULT,
+            )
 
         return self._resolve_configured_sub_workflow_timeout(
             phase,

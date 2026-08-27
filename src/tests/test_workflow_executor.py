@@ -127,6 +127,69 @@ class TestWorkflowExecutorInit:
         assert executor.phase_index["phase_a"] == 0
 
 
+def test_top_level_llm_phase_uses_finite_default_timeout(executor) -> None:
+    phase = executor.workflow.phases[0]
+
+    assert executor._llm_timeout_for_phase(phase) == 600
+
+
+def test_top_level_llm_phase_uses_configured_timeout(executor) -> None:
+    phase = executor.workflow.phases[0]
+    executor.framework_config["session_timeout_phase"] = "45"
+
+    assert executor._llm_timeout_for_phase(phase) == 45
+
+
+def test_top_level_timeout_rotates_once_to_fresh_session(
+    basic_workflow,
+    temp_dir,
+) -> None:
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = ["session:old", "session:fresh"]
+    session_mgr.send_command.side_effect = [
+        json.dumps(
+            {
+                "ok": False,
+                "error": "POST /session/session:old/message failed: timed out",
+            }
+        ),
+        json.dumps({"ok": True}),
+    ]
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = "phase prompt"
+    artifact_store = MagicMock()
+    executor = WorkflowExecutor(
+        basic_workflow,
+        session_mgr,
+        artifact_store,
+        prompt_loader,
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
+    )
+
+    status, output = executor._execute_llm_phase(
+        basic_workflow.phases[0],
+        {},
+        {},
+    )
+
+    assert status == "success"
+    assert output == {"ok": True}
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == [
+        "session:old",
+        "session:fresh",
+    ]
+    assert session_mgr.send_command.call_args_list[0].kwargs["timeout"] == 600
+    assert session_mgr.send_command.call_args_list[1].kwargs == {
+        "timeout": 600,
+        "retries": 0,
+    }
+    session_mgr.register_session.assert_called_once()
+    assert executor.session_registry is not None
+    assert executor.session_registry.resolve("main_engineer") == "session:fresh"
+
+
 class TestExecute:
     def test_basic_execute_flow(self, executor, temp_dir):
         executor.hook_manager = MagicMock()
@@ -1703,12 +1766,12 @@ def test_fix_operator_without_explicit_timeout_uses_finite_default_and_logs(
         },
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 30000
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 3600
     log_text = caplog.text
     assert "phase_id=fix_operator" in log_text
     assert "agent_id=operator_fixer" in log_text
     assert "session_id=session:operator_fixer" in log_text
-    assert "timeout=30000" in log_text
+    assert "timeout=3600" in log_text
     assert "prompt_length=" in log_text
     assert "raw_response_length=" in log_text
 
@@ -1745,7 +1808,7 @@ def test_invalid_repair_timeout_config_uses_default_and_logs_warning(
         framework_config={"session_timeout_repair": "not-an-int"},
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] == 30000
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 3600
     assert "Invalid session_timeout_repair" in caplog.text
 
 
@@ -1812,7 +1875,7 @@ def test_analyze_error_without_explicit_timeout_uses_finite_default(tmp_path: Pa
     assert session_mgr.send_command.call_args.kwargs["timeout"] == 600
 
 
-def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_explicit_timeout(
+def test_non_repair_non_analyzer_subphase_uses_finite_phase_default(
     tmp_path: Path,
 ):
     session_mgr = _run_single_llm_subphase(
@@ -1826,7 +1889,7 @@ def test_non_repair_non_analyzer_subphase_timeout_remains_unbounded_without_expl
         framework_config={"session_timeout_repair": "123"},
     )
 
-    assert session_mgr.send_command.call_args.kwargs["timeout"] is None
+    assert session_mgr.send_command.call_args.kwargs["timeout"] == 600
 
 
 def test_workflow_executor_forces_custom_op_gate_analysis_to_operator_dispatch(

@@ -93,6 +93,7 @@ def test_send_command_timeout_none_uses_finite_post_timeout() -> None:
 
     post_call = next(call for call in manager.calls if call["method"] == "POST")
     assert result == "phase complete"
+    assert manager_module.DEFAULT_SESSION_WAIT_TIMEOUT == 600
     assert post_call["timeout"] == manager_module.DEFAULT_SESSION_WAIT_TIMEOUT + 30
 
 
@@ -180,12 +181,17 @@ def test_session_message_request_reuses_created_session_directory(
     session_calls = [
         call for call in manager.calls if call["path"].startswith("/session/ses-scoped")
     ]
+    status_calls = [
+        call for call in manager.calls if call["path"] == "/session/status"
+    ]
     assert result == "done"
     assert session_calls
     assert all(
         call["query"]["directory"] == expected_query["directory"]
         for call in session_calls
     )
+    assert status_calls
+    assert all(call["query"] == expected_query for call in status_calls)
 
 
 def test_detect_agent_prefers_exact_sisyphus_then_contains_sisyphus() -> None:

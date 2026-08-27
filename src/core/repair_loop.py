@@ -884,7 +884,7 @@ def _get_timeout(
         framework_settings = cast(ConfigDict, framework_config)
         value = framework_settings.get(key)
         if value is None:
-            return None
+            return default
         if isinstance(value, (int, float, str)):
             return int(value)
     return default
@@ -1761,7 +1761,7 @@ class RepairLoopEngine:
                                 repair_session_id,
                                 repair_prompt,
                                 timeout=_get_timeout(
-                                    self.config, "session_timeout_repair"
+                                    self.config, "session_timeout_repair", 3600
                                 ),
                             )
                             session_error = self._session_error_from_response(
@@ -2014,7 +2014,9 @@ class RepairLoopEngine:
                 raw_response = self.session_mgr.send_command(
                     analyzer_session_id,
                     analyzer_prompt,
-                    timeout=_get_timeout(self.config, "session_timeout_repair"),
+                    timeout=_get_timeout(
+                        self.config, "session_timeout_repair", 3600
+                    ),
                 )
                 session_error = self._session_error_from_response(raw_response)
                 if session_error:
@@ -2084,7 +2086,9 @@ class RepairLoopEngine:
                 raw_response = self.session_mgr.send_command(
                     analyzer_session_id,
                     follow_up,
-                    timeout=_get_timeout(self.config, "session_timeout_followup"),
+                    timeout=_get_timeout(
+                        self.config, "session_timeout_followup", 300
+                    ),
                 )
                 session_error = self._session_error_from_response(raw_response)
                 if session_error:
@@ -2606,7 +2610,9 @@ class RepairLoopEngine:
                 response = self.session_mgr.send_command(
                     repair_session_id,
                     follow_up,
-                    timeout=_get_timeout(self.config, "session_timeout_followup"),
+                    timeout=_get_timeout(
+                        self.config, "session_timeout_followup", 300
+                    ),
                 )
                 session_error = self._session_error_from_response(response)
                 if session_error:
@@ -2977,7 +2983,9 @@ class RepairLoopEngine:
             raw = self.session_mgr.send_command(
                 analyzer_session_id,
                 imp_prompt,
-                timeout=_get_timeout(self.config, "session_timeout_analyzer"),
+                timeout=_get_timeout(
+                    self.config, "session_timeout_analyzer", 3600
+                ),
             )
         except (TimeoutError, RuntimeError, ConnectionRefusedError):
             return {"status": "improvement_failed"}
@@ -3029,7 +3037,9 @@ class RepairLoopEngine:
             repair_response = self.session_mgr.send_command(
                 repair_session_id,
                 improvement_instruction,
-                timeout=_get_timeout(self.config, "session_timeout_repair"),
+                timeout=_get_timeout(
+                    self.config, "session_timeout_repair", 3600
+                ),
             )
         except (TimeoutError, RuntimeError, ConnectionRefusedError):
             self._log(
