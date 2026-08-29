@@ -192,6 +192,7 @@ RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
 RETRYABLE_PHASE_SESSION_ERROR_MARKERS = (
     "timed out",
     "timeout",
+    "opencode_tool_barrier_stalled",
     "empty session response",
     "compaction response is incomplete",
 )

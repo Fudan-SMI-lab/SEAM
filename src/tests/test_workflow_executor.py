@@ -221,6 +221,40 @@ def test_top_level_timeout_rotates_once_to_fresh_session(
     assert executor.session_registry.resolve("main_engineer") == "session:fresh"
 
 
+def test_top_level_tool_barrier_stall_rotates_once_to_fresh_session(
+    basic_workflow,
+    temp_dir,
+) -> None:
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = ["session:old", "session:fresh"]
+    session_mgr.send_command.side_effect = [
+        json.dumps({
+            "ok": False,
+            "error": "opencode_tool_barrier_stalled: tools completed without next step",
+        }),
+        json.dumps({"ok": True}),
+    ]
+    executor = WorkflowExecutor(
+        basic_workflow,
+        session_mgr,
+        MagicMock(),
+        MagicMock(load_prompt=MagicMock(return_value="phase prompt")),
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
+    )
+
+    status, output = executor._execute_llm_phase(basic_workflow.phases[0], {}, {})
+
+    assert status == "success"
+    assert output == {"ok": True}
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == [
+        "session:old",
+        "session:fresh",
+    ]
+    session_mgr.abort_session.assert_called_once_with("session:old")
+
+
 def test_top_level_recovery_continues_when_abort_is_rejected(
     basic_workflow,
     temp_dir,

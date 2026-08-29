@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ import harness.session.manager as manager_module
 from core.session_registry import ContextExhaustedError
 from core.sqlite_provider import available as _sqlite_available
 from core.sqlite_provider import connect as _sqlite_connect
-from harness.session.manager import MigrationSessionManager
+from harness.session.manager import MigrationSessionManager, SessionTransportError
 
 _SKIP_SQLITE = pytest.mark.skipif(
     not _sqlite_available, reason="no SQLite backend resolved on this system"
@@ -57,6 +58,35 @@ def _manager_with_message(message: Response, history: RouteValue | None = None, 
         ("GET", "/session/status"): {"ok": True, "data": {"ses-1": {"type": status_type}}},
         ("GET", "/session/ses-1/message"): history or {"ok": True, "data": [{"todos": [{"status": "completed"}]}]},
     })
+
+
+def _terminal_tool_history(message_id: str = "msg-tool") -> Response:
+    return {
+        "ok": True,
+        "data": [{
+            "info": {"id": message_id, "role": "assistant"},
+            "parts": [
+                {
+                    "type": "tool",
+                    "callID": "call-1",
+                    "tool": "read",
+                    "state": {
+                        "status": "completed",
+                        "time": {"start": 1, "end": 2},
+                    },
+                },
+                {
+                    "type": "tool",
+                    "callID": "call-2",
+                    "tool": "bash",
+                    "state": {
+                        "status": "error",
+                        "time": {"start": 1, "end": 3},
+                    },
+                },
+            ],
+        }],
+    }
 
 
 def _sqlite_backed_manager(db_path: Path, status_data: dict[str, Any] | None = None) -> FakeSessionManager:
@@ -166,6 +196,75 @@ def test_abort_session_is_scoped_and_has_short_timeout(tmp_path: Path) -> None:
         "body": None,
         "timeout": 10,
     }
+
+
+def test_tool_progress_treats_completed_and_error_as_terminal() -> None:
+    snapshot = MigrationSessionManager._tool_progress_from_messages(
+        _terminal_tool_history()["data"]
+    )
+
+    assert snapshot is not None
+    assert snapshot.message_id == "msg-tool"
+    assert snapshot.tool_count == 2
+    assert snapshot.terminal_count == 2
+    assert snapshot.all_terminal is True
+
+
+def test_tool_progress_ignores_barrier_after_final_assistant_text() -> None:
+    messages = list(_terminal_tool_history()["data"])
+    messages.append({
+        "info": {"id": "msg-final", "role": "assistant", "finish": "stop"},
+        "parts": [{"type": "text", "text": "done"}],
+    })
+
+    assert MigrationSessionManager._tool_progress_from_messages(messages) is None
+
+
+def test_tool_progress_ignores_next_step_in_same_assistant_message() -> None:
+    messages = list(_terminal_tool_history()["data"])
+    messages[0]["parts"].append({"type": "step-start", "id": "step-next"})
+
+    assert MigrationSessionManager._tool_progress_from_messages(messages) is None
+
+
+def test_message_watchdog_aborts_terminal_tool_barrier() -> None:
+    post_started = threading.Event()
+    release_post = threading.Event()
+
+    def blocking_post(_call: dict[str, Any]) -> Response:
+        post_started.set()
+        release_post.wait(timeout=2)
+        return {"ok": False, "error": "aborted"}
+
+    manager = FakeSessionManager({
+        ("POST", "/session/ses-1/message"): blocking_post,
+        ("GET", "/session/status"): {
+            "ok": True,
+            "data": {"ses-1": {"type": "busy"}},
+        },
+        ("GET", "/session/ses-1/message"): _terminal_tool_history(),
+        ("POST", "/session/ses-1/abort"): {"ok": True, "data": True},
+    })
+    manager._tool_barrier_poll_interval_s = 0.005
+    manager._tool_barrier_stall_timeout_s = 0.015
+
+    try:
+        with pytest.raises(
+            SessionTransportError,
+            match="opencode_tool_barrier_stalled",
+        ) as exc_info:
+            manager._post_message_with_tool_barrier_watchdog(
+                session_id="ses-1",
+                payload={"parts": [{"type": "text", "text": "probe"}]},
+                http_timeout=1,
+                baseline_tool_message_id="",
+            )
+    finally:
+        release_post.set()
+
+    assert post_started.is_set()
+    assert exc_info.value.timed_out is True
+    assert any(call["path"] == "/session/ses-1/abort" for call in manager.calls)
 
 
 def test_session_message_request_reuses_created_session_directory(

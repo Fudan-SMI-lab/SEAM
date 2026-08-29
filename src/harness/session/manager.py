@@ -5,7 +5,9 @@ import json
 import logging
 import math
 import os
+import queue
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -59,6 +61,17 @@ DEFAULT_MAX_TODO_NUDGES = 2
 DEFAULT_TODO_NUDGE_ENABLED = True
 # 一次命令最多执行多少次 compaction 恢复（bounded wait + refetch）
 DEFAULT_MAX_RECOVERIES_PER_COMMAND = 1
+# OpenCode serve 1.18.x can leave a session permanently busy after every tool
+# part in an assistant turn has reached a terminal state.  In that failure
+# mode no follow-up provider request is issued, so the synchronous /message
+# request has no response to return.  Detect this narrower state before the
+# whole phase timeout expires.  The threshold is intentionally longer than
+# ordinary tool-result persistence jitter but shorter than Phase 0's limit.
+DEFAULT_TOOL_BARRIER_STALL_TIMEOUT_S = 45.0
+DEFAULT_TOOL_BARRIER_POLL_INTERVAL_S = 2.0
+TOOL_TERMINAL_STATES = frozenset(
+    {"completed", "complete", "success", "succeeded", "error", "failed", "cancelled"}
+)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -115,6 +128,18 @@ class SessionServerError(SessionManagerError):
 
 class SessionCompacted(SessionManagerError):
     pass
+
+
+@dataclass(frozen=True)
+class ToolProgressSnapshot:
+    message_id: str
+    fingerprint: str
+    tool_count: int
+    terminal_count: int
+
+    @property
+    def all_terminal(self) -> bool:
+        return self.tool_count > 0 and self.terminal_count == self.tool_count
 
 
 def extract_json_response(text: str) -> dict[str, Any]:
@@ -200,6 +225,8 @@ class MigrationSessionManager:
         todo_stabilize_wait_s: float = DEFAULT_TODO_STABILIZE_WAIT_S,
         max_todo_nudges: int = DEFAULT_MAX_TODO_NUDGES,
         max_recoveries_per_command: int = DEFAULT_MAX_RECOVERIES_PER_COMMAND,
+        tool_barrier_stall_timeout_s: float = DEFAULT_TOOL_BARRIER_STALL_TIMEOUT_S,
+        tool_barrier_poll_interval_s: float = DEFAULT_TOOL_BARRIER_POLL_INTERVAL_S,
         transport_observer: TransportObserver | None = None,
     ) -> None:
         self._work_dir = Path(work_dir).resolve()
@@ -225,6 +252,20 @@ class MigrationSessionManager:
             0,
             _env_int(
                 "SEAM_MAX_RECOVERIES_PER_COMMAND", int(max_recoveries_per_command)
+            ),
+        )
+        self._tool_barrier_stall_timeout_s = max(
+            0.0,
+            _env_float(
+                "SEAM_TOOL_BARRIER_STALL_TIMEOUT_S",
+                float(tool_barrier_stall_timeout_s),
+            ),
+        )
+        self._tool_barrier_poll_interval_s = max(
+            0.05,
+            _env_float(
+                "SEAM_TOOL_BARRIER_POLL_INTERVAL_S",
+                float(tool_barrier_poll_interval_s),
             ),
         )
         self._last_todo_summary = ""
@@ -389,9 +430,7 @@ class MigrationSessionManager:
         initial_prompt: str = "",
     ) -> str:
         effective_working_dir = str(
-            Path(working_dir).expanduser().resolve()
-            if working_dir
-            else self._work_dir
+            Path(working_dir).expanduser().resolve() if working_dir else self._work_dir
         )
         payload = {"title": title or f"migration-{role}"}
         resp = self._http(
@@ -576,9 +615,8 @@ class MigrationSessionManager:
                         timed_out=True,
                     )
                     break
-                will_retry = (
-                    attempt < retries
-                    and self._transport_lifecycle.is_active(transport_attempt)
+                will_retry = attempt < retries and self._transport_lifecycle.is_active(
+                    transport_attempt
                 )
                 self._transport_lifecycle.transport_failure(
                     transport_attempt,
@@ -1471,6 +1509,285 @@ class MigrationSessionManager:
             return ""
         return self._extract_message_text(resp.get("data"))
 
+    @staticmethod
+    def _latest_tool_message_id(payload: Any) -> str:
+        if not isinstance(payload, list):
+            return ""
+        latest = ""
+        for message in payload:
+            if not isinstance(message, dict):
+                continue
+            parts = message.get("parts")
+            if not isinstance(parts, list) or not any(
+                isinstance(part, dict) and part.get("type") == "tool" for part in parts
+            ):
+                continue
+            info = message.get("info")
+            if isinstance(info, dict) and info.get("id"):
+                latest = str(info["id"])
+        return latest
+
+    def _message_observation_tolerant(self, session_id: str) -> tuple[str, str]:
+        """Return current text and latest tool-message id using one history read."""
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 1}),
+        )
+        if not resp.get("ok"):
+            return "", ""
+        payload = resp.get("data")
+        latest_payload = payload[-1:] if isinstance(payload, list) else payload
+        return (
+            self._extract_message_text(latest_payload),
+            self._latest_tool_message_id(payload),
+        )
+
+    @staticmethod
+    def _tool_progress_from_messages(payload: Any) -> ToolProgressSnapshot | None:
+        """Describe the latest assistant tool turn without retaining tool output.
+
+        A later assistant text/stop message means the tool barrier already
+        converged and must never be classified as stalled.
+        """
+        if not isinstance(payload, list):
+            return None
+
+        latest_index = -1
+        latest_message: dict[str, Any] | None = None
+        latest_tools: list[dict[str, Any]] = []
+        latest_tool_part_index = -1
+        for index, message in enumerate(payload):
+            if not isinstance(message, dict):
+                continue
+            parts = message.get("parts")
+            if not isinstance(parts, list):
+                continue
+            tools = [
+                part
+                for part in parts
+                if isinstance(part, dict) and part.get("type") == "tool"
+            ]
+            if tools:
+                latest_index = index
+                latest_message = message
+                latest_tools = tools
+                latest_tool_part_index = max(
+                    part_index
+                    for part_index, part in enumerate(parts)
+                    if isinstance(part, dict) and part.get("type") == "tool"
+                )
+
+        if latest_message is None:
+            return None
+
+        # OpenCode normally appends the next step (and eventually the final
+        # text) to the same assistant message.  Seeing either after the latest
+        # tool proves that the agent loop crossed the tool barrier; a slow
+        # provider response after that point must remain governed by the
+        # ordinary request timeout instead of this watchdog.
+        latest_parts = latest_message.get("parts")
+        if isinstance(latest_parts, list):
+            for part in latest_parts[latest_tool_part_index + 1 :]:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type", "")).lower()
+                if part_type in {"step-start", "reasoning"}:
+                    return None
+                if (
+                    part_type == "text"
+                    and isinstance(part.get("text"), str)
+                    and bool(part["text"].strip())
+                ):
+                    return None
+        latest_info = latest_message.get("info")
+        if isinstance(latest_info, dict) and str(
+            latest_info.get("finish", "")
+        ).lower() in {"stop", "success"}:
+            return None
+
+        # A later assistant message with final text or a terminal finish reason
+        # is the other normal representation of a crossed tool barrier.
+        for message in payload[latest_index + 1 :]:
+            if not isinstance(message, dict):
+                continue
+            info = message.get("info")
+            if (
+                not isinstance(info, dict)
+                or str(info.get("role", "")).lower() != "assistant"
+            ):
+                continue
+            finish = str(info.get("finish", "")).lower()
+            parts = message.get("parts")
+            has_next_step = isinstance(parts, list) and any(
+                isinstance(part, dict)
+                and (
+                    str(part.get("type", "")).lower() in {"step-start", "reasoning"}
+                    or (
+                        part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                        and bool(part["text"].strip())
+                    )
+                )
+                for part in parts
+            )
+            if has_next_step or finish in {"stop", "success"}:
+                return None
+
+        info = latest_message.get("info")
+        message_id = str(info.get("id", "")) if isinstance(info, dict) else ""
+        states: list[dict[str, Any]] = []
+        terminal_count = 0
+        for part in latest_tools:
+            state = part.get("state")
+            state_dict = state if isinstance(state, dict) else {}
+            status = str(state_dict.get("status", "unknown")).lower()
+            if status in TOOL_TERMINAL_STATES:
+                terminal_count += 1
+            timing = state_dict.get("time")
+            timing_dict = timing if isinstance(timing, dict) else {}
+            states.append(
+                {
+                    "call_id": str(part.get("callID", "")),
+                    "tool": str(part.get("tool", "")),
+                    "status": status,
+                    "start": timing_dict.get("start"),
+                    "end": timing_dict.get("end"),
+                }
+            )
+        fingerprint = json.dumps(states, sort_keys=True, default=str)
+        return ToolProgressSnapshot(
+            message_id=message_id,
+            fingerprint=fingerprint,
+            tool_count=len(latest_tools),
+            terminal_count=terminal_count,
+        )
+
+    def _current_tool_progress(
+        self,
+        session_id: str,
+    ) -> tuple[bool, ToolProgressSnapshot | None]:
+        status = self._http(
+            "GET",
+            "/session/status",
+            query=self._session_query(session_id),
+            timeout=5,
+        )
+        if not status.get("ok"):
+            return False, None
+        token = self._extract_status_token(status.get("data"), session_id)
+        if token not in RUNNING_TOKENS:
+            return False, None
+
+        messages = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 20}),
+            timeout=5,
+        )
+        if not messages.get("ok"):
+            return True, None
+        return True, self._tool_progress_from_messages(messages.get("data"))
+
+    def _post_message_with_tool_barrier_watchdog(
+        self,
+        *,
+        session_id: str,
+        payload: dict[str, Any],
+        http_timeout: float,
+        baseline_tool_message_id: str,
+    ) -> dict[str, Any]:
+        """POST a message while detecting OpenCode's stuck multi-tool barrier.
+
+        The synchronous endpoint cannot be polled by the calling thread, so the
+        POST runs in a daemon worker while this thread observes status/history.
+        A daemon is deliberate: even a broken server that ignores abort cannot
+        keep SEAM alive after the bounded urllib timeout.
+        """
+        if self._tool_barrier_stall_timeout_s <= 0:
+            return self._http(
+                "POST",
+                f"/session/{session_id}/message",
+                query=self._session_query(session_id),
+                body=payload,
+                timeout=http_timeout,
+            )
+
+        responses: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(maxsize=1)
+
+        def post_message() -> None:
+            try:
+                responses.put(
+                    self._http(
+                        "POST",
+                        f"/session/{session_id}/message",
+                        query=self._session_query(session_id),
+                        body=payload,
+                        timeout=http_timeout,
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - defensive worker boundary
+                responses.put(exc)
+
+        threading.Thread(
+            target=post_message,
+            name="seam-opencode-message",
+            daemon=True,
+        ).start()
+
+        candidate_fingerprint = ""
+        candidate_since = 0.0
+        while True:
+            try:
+                result = responses.get(timeout=self._tool_barrier_poll_interval_s)
+            except queue.Empty:
+                running, snapshot = self._current_tool_progress(session_id)
+                if (
+                    not running
+                    or snapshot is None
+                    or not snapshot.all_terminal
+                    or snapshot.message_id == baseline_tool_message_id
+                ):
+                    candidate_fingerprint = ""
+                    candidate_since = 0.0
+                    continue
+
+                now = time.monotonic()
+                if snapshot.fingerprint != candidate_fingerprint:
+                    candidate_fingerprint = snapshot.fingerprint
+                    candidate_since = now
+                    logger.info(
+                        "OpenCode tools reached terminal states; waiting for next agent step: "
+                        "session=%s message=%s tools=%d",
+                        session_id,
+                        snapshot.message_id or "unknown",
+                        snapshot.tool_count,
+                    )
+                    continue
+                if now - candidate_since < self._tool_barrier_stall_timeout_s:
+                    continue
+
+                aborted = self.abort_session(session_id)
+                logger.warning(
+                    "opencode_tool_barrier_stalled session=%s message=%s "
+                    "tools=%d terminal=%d stalled_s=%.3f abort_accepted=%s",
+                    session_id,
+                    snapshot.message_id or "unknown",
+                    snapshot.tool_count,
+                    snapshot.terminal_count,
+                    now - candidate_since,
+                    aborted,
+                )
+                raise SessionTransportError(
+                    "opencode_tool_barrier_stalled: every tool reached a terminal "
+                    "state but OpenCode did not schedule the next agent step",
+                    timed_out=True,
+                )
+            else:
+                if isinstance(result, BaseException):
+                    raise result
+                return result
+
     def _is_usable_refetched_text(
         self,
         candidate: str,
@@ -1587,7 +1904,9 @@ class MigrationSessionManager:
         if agent:
             payload["agent"] = agent
         http_timeout = self._effective_wait_timeout(timeout) + 30
-        previous_text = self._last_message_text_tolerant(session_id)
+        previous_text, baseline_tool_message_id = self._message_observation_tolerant(
+            session_id
+        )
         owns_transport_attempt = transport_attempt is None
         if owns_transport_attempt:
             transport_attempt = self._transport_lifecycle.prepare(
@@ -1601,12 +1920,11 @@ class MigrationSessionManager:
         active_transport = self._transport_lifecycle.start(transport_attempt)
         convergence_started = False
         try:
-            resp = self._http(
-                "POST",
-                f"/session/{session_id}/message",
-                query=self._session_query(session_id),
-                body=payload,
-                timeout=http_timeout,
+            resp = self._post_message_with_tool_barrier_watchdog(
+                session_id=session_id,
+                payload=payload,
+                http_timeout=http_timeout,
+                baseline_tool_message_id=baseline_tool_message_id,
             )
             if not resp.get("ok"):
                 self._classify_post_failure(resp, session_id)
@@ -1791,14 +2109,14 @@ class MigrationSessionManager:
         if agent:
             payload["agent"] = agent
         http_timeout = self._effective_wait_timeout(timeout) + 30
+        _, baseline_tool_message_id = self._message_observation_tolerant(session_id)
         active_transport = self._transport_lifecycle.start(transport_attempt)
         try:
-            resp = self._http(
-                "POST",
-                f"/session/{session_id}/message",
-                query=self._session_query(session_id),
-                body=payload,
-                timeout=http_timeout,
+            resp = self._post_message_with_tool_barrier_watchdog(
+                session_id=session_id,
+                payload=payload,
+                http_timeout=http_timeout,
+                baseline_tool_message_id=baseline_tool_message_id,
             )
             if not resp.get("ok"):
                 self._classify_post_failure(resp, session_id)

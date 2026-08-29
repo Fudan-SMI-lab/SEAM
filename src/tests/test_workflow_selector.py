@@ -1026,6 +1026,11 @@ class TestWorkflowSelectPromptContent:
         assert "actual platform/environment selection" in lowered
         assert "current real device/environment discovery" in lowered
 
+    def test_prompt_uses_one_bounded_tool_turn(self, _prompt_text: str) -> None:
+        assert "at most one `bash` tool call in total" in _prompt_text
+        assert "Never emit parallel or multiple tool calls" in _prompt_text
+        assert "15-second command timeout" in _prompt_text
+
     def test_new_constraints_guidance_has_no_specific_platform_names(
         self, _prompt_text: str
     ) -> None:

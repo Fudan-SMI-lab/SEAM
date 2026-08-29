@@ -28,6 +28,12 @@ PHASE3_ENTRY_PROMPT_FILES = [
     "phase_3_entry_script_musa_container_baseaware_entryfix_normal.md",
 ]
 
+ENV_DETECT_PROMPT_FILES = [
+    "phase_0_env_detect.md",
+    "phase_0_env_detect_musa.md",
+    "phase_0_env_detect_ppu.md",
+]
+
 ENTRY_SCRIPT_CHILD_OUTPUT_GUIDANCE = "If a generated/wrapper script launches child processes, it must drain and capture child stdout/stderr before exiting"
 ENTRY_SCRIPT_FAILURE_SUMMARY_GUIDANCE = "On failure, generated/wrapper scripts must print a concise diagnostic summary to stderr"
 
@@ -49,6 +55,16 @@ def test_all_prompts_contain_relaxed_constraint():
     for filename in PHASE_PROMPT_FILES:
         content = (PROMPTS_DIR / filename).read_text(encoding="utf-8")
         assert NEW_CONSTRAINT in content, f"{filename} missing relaxed constraint"
+
+
+def test_env_detect_prompts_avoid_parallel_tool_barrier():
+    for filename in ENV_DETECT_PROMPT_FILES:
+        content = (PROMPTS_DIR / filename).read_text(encoding="utf-8")
+        assert "Never emit parallel or multiple tool calls" in content
+        assert "at most one `bash` tool call in total" in content or (
+            "exactly one `bash` tool call in total" in content
+        )
+        assert "15-second command timeout" in content
 
 
 def test_phase_35_prompt_mentions_custom_op_contract_static_gate():

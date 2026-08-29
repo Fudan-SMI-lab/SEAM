@@ -115,6 +115,14 @@ PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
 - public `wait_for_idle` 默认 300 秒。
 - hard HTTP error 后的等待上限为 300 秒。
 - message POST transport timeout 是有效 session wait 加 30 秒。
+- 当 OpenCode session 保持 `busy`、当前 assistant turn 的全部 tool part 已进入
+  `completed`/`error` 等终态、且 45 秒内没有出现下一条 `step-start` 或最终文本时，
+  session manager 会判定为 `opencode_tool_barrier_stalled`，主动 abort，并让顶层
+  phase 最多在新 session 中重试一次。这个检测不会把仍在 `running` 的长命令当作
+  tool barrier 故障。
+- 可用 `SEAM_TOOL_BARRIER_STALL_TIMEOUT_S` 调整上述 45 秒窗口；用
+  `SEAM_TOOL_BARRIER_POLL_INTERVAL_S` 调整默认 2 秒的观察间隔。将 stall timeout
+  设为 `0` 可关闭该检测。
 - message POST 超时后不会向同一 session 重投；顶层 phase 会先请求 abort 旧
   session，再最多轮换到一个新 session 重试一次。
 - 非有限 timeout 在 POST 前拒绝。
