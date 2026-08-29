@@ -184,6 +184,7 @@ FIXER_STRUCTURED_OUTPUT_FIELDS = {
 SUB_WORKFLOW_ANALYZE_TIMEOUT_DEFAULT = 600
 SUB_WORKFLOW_REPAIR_TIMEOUT_DEFAULT = 3600
 LLM_PHASE_TIMEOUT_DEFAULT = 600
+LLM_PHASE_0_TIMEOUT_DEFAULT = 300
 RETRYABLE_SUB_WORKFLOW_SESSION_ERRORS = {
     "empty session response",
     "compaction response is incomplete",
@@ -1569,16 +1570,19 @@ class WorkflowExecutor:
             prompt_text, framework_config=self.framework_config
         )
         timeout = self._llm_timeout_for_phase(phase)
+        recovery_available = True
 
         # 4. Send command
         try:
-            raw_response, sid = self._send_top_level_llm_command(
+            raw_response, sid, recovered = self._send_top_level_llm_command(
                 phase=phase,
                 agent_id=agent_id,
                 session_id=sid,
                 prompt_text=prompt_text,
                 timeout=timeout,
+                allow_recovery=recovery_available,
             )
+            recovery_available = not recovered
         except (TimeoutError, RuntimeError, ConnectionRefusedError) as exc:
             if phase.id == "phase_6_report":
                 output = self._phase_6_fallback_output(input_ctx, state, str(exc))
@@ -1612,13 +1616,15 @@ class WorkflowExecutor:
                 is_parse_failure=True,
                 phase_name=phase.id,
             )
-            raw_response, sid = self._send_top_level_llm_command(
+            raw_response, sid, recovered = self._send_top_level_llm_command(
                 phase=phase,
                 agent_id=agent_id,
                 session_id=sid,
                 prompt_text=parse_correction,
                 timeout=timeout,
+                allow_recovery=recovery_available,
             )
+            recovery_available = recovery_available and not recovered
             output = extract_json_response(raw_response)
             self._raise_for_session_error_output(output, phase.id)
         if not output:
@@ -1656,13 +1662,15 @@ class WorkflowExecutor:
                     output_format_example=output_format,
                     phase_name=phase.id,
                 )
-                raw_response, sid = self._send_top_level_llm_command(
+                raw_response, sid, recovered = self._send_top_level_llm_command(
                     phase=phase,
                     agent_id=agent_id,
                     session_id=sid,
                     prompt_text=correction_prompt,
                     timeout=timeout,
+                    allow_recovery=recovery_available,
                 )
+                recovery_available = recovery_available and not recovered
                 output = extract_json_response(raw_response)
                 self._raise_for_session_error_output(output, phase.id)
                 if not output:
@@ -1672,13 +1680,15 @@ class WorkflowExecutor:
                         is_parse_failure=True,
                         phase_name=phase.id,
                     )
-                    raw_response, sid = self._send_top_level_llm_command(
+                    raw_response, sid, recovered = self._send_top_level_llm_command(
                         phase=phase,
                         agent_id=agent_id,
                         session_id=sid,
                         prompt_text=parse_correction,
                         timeout=timeout,
+                        allow_recovery=recovery_available,
                     )
+                    recovery_available = recovery_available and not recovered
                     output = extract_json_response(raw_response)
                     self._raise_for_session_error_output(output, phase.id)
                     if not output:
@@ -1747,6 +1757,12 @@ class WorkflowExecutor:
             return phase.timeout
         if phase.id == "phase_6_report":
             return resolve_phase6_timeout(self.framework_config, phase.timeout, logger)
+        if phase.id == "phase_0_env_detect":
+            return self._resolve_configured_sub_workflow_timeout(
+                phase,
+                ("session_timeout_phase0", "session_timeout_phase"),
+                LLM_PHASE_0_TIMEOUT_DEFAULT,
+            )
         return self._resolve_configured_sub_workflow_timeout(
             phase,
             ("session_timeout_phase",),
@@ -1772,10 +1788,12 @@ class WorkflowExecutor:
         session_id: str,
         prompt_text: str,
         timeout: int | None,
-    ) -> tuple[str, str]:
-        send_kwargs: dict[str, Any] = {"timeout": timeout}
-        if phase.id == "phase_6_report":
-            send_kwargs["retries"] = 0
+        allow_recovery: bool,
+    ) -> tuple[str, str, bool]:
+        # A top-level phase owns recovery at the session level below. Keep each
+        # physical session invocation single-shot so observability says 1/1 and
+        # a transport failure can never be hidden behind same-session retries.
+        send_kwargs: dict[str, Any] = {"timeout": timeout, "retries": 0}
         raw_response = self.session_mgr.send_command(
             session_id,
             prompt_text,
@@ -1783,13 +1801,28 @@ class WorkflowExecutor:
         )
         retry_error = self._retryable_phase_session_error(raw_response)
         if not retry_error or phase.id == "phase_6_report":
-            return raw_response, session_id
+            return raw_response, session_id, False
+        if not allow_recovery:
+            logger.warning(
+                "Top-level LLM phase recovery already exhausted: "
+                "phase_id=%s agent_id=%s session_id=%s error=%s",
+                phase.id,
+                agent_id,
+                session_id,
+                retry_error,
+            )
+            return raw_response, session_id, False
 
         snapshot: dict[str, Any] = {
             "phase_id": phase.id,
             "agent_id": agent_id,
             "reason": retry_error,
         }
+        self._abort_stalled_phase_session(
+            phase_id=phase.id,
+            agent_id=agent_id,
+            session_id=session_id,
+        )
         if self.session_registry is not None:
             record = self.session_registry.rotate(
                 agent_id,
@@ -1816,7 +1849,6 @@ class WorkflowExecutor:
             retry_error,
         )
         retry_kwargs = dict(send_kwargs)
-        retry_kwargs["retries"] = 0
         return (
             self.session_mgr.send_command(
                 retry_session_id,
@@ -1824,6 +1856,46 @@ class WorkflowExecutor:
                 **retry_kwargs,
             ),
             retry_session_id,
+            True,
+        )
+
+    def _abort_stalled_phase_session(
+        self,
+        *,
+        phase_id: str,
+        agent_id: str,
+        session_id: str,
+    ) -> None:
+        """Best-effort cancellation before abandoning a stalled session."""
+        abort_session = getattr(self.session_mgr, "abort_session", None)
+        if not callable(abort_session):
+            logger.warning(
+                "Cannot abort stalled phase session before recovery: "
+                "phase_id=%s agent_id=%s session_id=%s reason=unsupported",
+                phase_id,
+                agent_id,
+                session_id,
+            )
+            return
+        try:
+            aborted = bool(abort_session(session_id))
+        except Exception as exc:
+            logger.warning(
+                "Failed to abort stalled phase session before recovery: "
+                "phase_id=%s agent_id=%s session_id=%s error=%s",
+                phase_id,
+                agent_id,
+                session_id,
+                exc,
+            )
+            return
+        logger.warning(
+            "Stalled phase session abort requested before recovery: "
+            "phase_id=%s agent_id=%s session_id=%s accepted=%s",
+            phase_id,
+            agent_id,
+            session_id,
+            aborted,
         )
 
     @staticmethod

@@ -1526,6 +1526,7 @@ class MigrationSessionManager:
                 "POST",
                 f"/session/{session_id}/abort",
                 query=self._session_query(session_id),
+                timeout=10,
             ).get("ok")
         )
 

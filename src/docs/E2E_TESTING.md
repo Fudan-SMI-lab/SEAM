@@ -110,11 +110,13 @@ PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
 当前 session manager 的可观测默认值如下：
 
 - HTTP 默认 30 秒。
-- 普通 LLM phase 和未显式传入 timeout 的 session command 默认上限为 600 秒。
+- Phase 0 默认上限为 300 秒（可用 `session_timeout_phase0` 覆盖）；其他普通
+  LLM phase 和未显式传入 timeout 的 session command 默认上限为 600 秒。
 - public `wait_for_idle` 默认 300 秒。
 - hard HTTP error 后的等待上限为 300 秒。
 - message POST transport timeout 是有效 session wait 加 30 秒。
-- message POST 超时后不会向同一 session 重投；顶层 phase 最多轮换到一个新 session 重试一次。
+- message POST 超时后不会向同一 session 重投；顶层 phase 会先请求 abort 旧
+  session，再最多轮换到一个新 session 重试一次。
 - 非有限 timeout 在 POST 前拒绝。
 - POST 一旦被服务器接受，后续 timeout 处理只轮询 status、message history 和 TODO 收敛，不重新 POST 同一命令。
 
