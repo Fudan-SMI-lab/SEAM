@@ -145,6 +145,29 @@ def test_create_session_scopes_opencode_requests_to_working_directory(
     assert manager.list_sessions()[0].working_dir == str(project_dir.resolve())
 
 
+def test_abort_session_is_scoped_and_has_short_timeout(tmp_path: Path) -> None:
+    project_dir = tmp_path / "output_projects" / "project-copy"
+    project_dir.mkdir(parents=True)
+    manager = FakeSessionManager(
+        {
+            ("POST", "/session"): {"ok": True, "data": {"id": "ses-scoped"}},
+            ("POST", "/session/ses-scoped/abort"): {"ok": True, "data": True},
+        }
+    )
+    session_id = manager.create_session("worker", working_dir=str(project_dir))
+
+    aborted = manager.abort_session(session_id)
+
+    assert aborted is True
+    assert manager.calls[-1] == {
+        "method": "POST",
+        "path": "/session/ses-scoped/abort",
+        "query": {"directory": str(project_dir.resolve())},
+        "body": None,
+        "timeout": 10,
+    }
+
+
 def test_session_message_request_reuses_created_session_directory(
     tmp_path: Path,
 ) -> None:

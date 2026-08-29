@@ -140,6 +140,33 @@ def test_top_level_llm_phase_uses_configured_timeout(executor) -> None:
     assert executor._llm_timeout_for_phase(phase) == 45
 
 
+def test_phase_0_uses_shorter_finite_default_timeout(executor) -> None:
+    phase = PhaseDefinition(
+        id="phase_0_env_detect",
+        name="Environment detection",
+        prompt_template="phase_0.md",
+        output_schema={},
+    )
+
+    assert executor._llm_timeout_for_phase(phase) == 300
+
+
+def test_phase_0_timeout_has_specific_then_global_config_precedence(executor) -> None:
+    phase = PhaseDefinition(
+        id="phase_0_env_detect",
+        name="Environment detection",
+        prompt_template="phase_0.md",
+        output_schema={},
+    )
+    executor.framework_config["session_timeout_phase"] = "240"
+
+    assert executor._llm_timeout_for_phase(phase) == 240
+
+    executor.framework_config["session_timeout_phase0"] = "180"
+
+    assert executor._llm_timeout_for_phase(phase) == 180
+
+
 def test_top_level_timeout_rotates_once_to_fresh_session(
     basic_workflow,
     temp_dir,
@@ -180,14 +207,93 @@ def test_top_level_timeout_rotates_once_to_fresh_session(
         "session:old",
         "session:fresh",
     ]
-    assert session_mgr.send_command.call_args_list[0].kwargs["timeout"] == 600
+    assert session_mgr.send_command.call_args_list[0].kwargs == {
+        "timeout": 600,
+        "retries": 0,
+    }
     assert session_mgr.send_command.call_args_list[1].kwargs == {
         "timeout": 600,
         "retries": 0,
     }
+    session_mgr.abort_session.assert_called_once_with("session:old")
     session_mgr.register_session.assert_called_once()
     assert executor.session_registry is not None
     assert executor.session_registry.resolve("main_engineer") == "session:fresh"
+
+
+def test_top_level_recovery_continues_when_abort_is_rejected(
+    basic_workflow,
+    temp_dir,
+) -> None:
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = ["session:old", "session:fresh"]
+    session_mgr.abort_session.return_value = False
+    session_mgr.send_command.side_effect = [
+        json.dumps({"ok": False, "error": "request timed out"}),
+        json.dumps({"ok": True}),
+    ]
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = "phase prompt"
+    executor = WorkflowExecutor(
+        basic_workflow,
+        session_mgr,
+        MagicMock(),
+        prompt_loader,
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
+    )
+
+    status, output = executor._execute_llm_phase(
+        basic_workflow.phases[0],
+        {},
+        {},
+    )
+
+    assert status == "success"
+    assert output == {"ok": True}
+    session_mgr.abort_session.assert_called_once_with("session:old")
+
+
+def test_top_level_phase_uses_at_most_one_fresh_recovery_session(
+    basic_workflow,
+    temp_dir,
+) -> None:
+    timeout_response = json.dumps({"ok": False, "error": "request timed out"})
+    session_mgr = MagicMock()
+    session_mgr.get_or_create.side_effect = ["session:old", "session:fresh"]
+    session_mgr.abort_session.return_value = True
+    session_mgr.send_command.side_effect = [
+        timeout_response,
+        "{}",
+        timeout_response,
+    ]
+    prompt_loader = MagicMock()
+    prompt_loader.load_prompt.return_value = "phase prompt"
+    executor = WorkflowExecutor(
+        basic_workflow,
+        session_mgr,
+        MagicMock(),
+        prompt_loader,
+        MagicMock(),
+        project_dir=temp_dir,
+        output_dir=temp_dir,
+    )
+
+    with pytest.raises(RuntimeError, match="request timed out"):
+        executor._execute_llm_phase(
+            basic_workflow.phases[0],
+            {},
+            {},
+        )
+
+    assert [call.args[0] for call in session_mgr.send_command.call_args_list] == [
+        "session:old",
+        "session:fresh",
+        "session:fresh",
+    ]
+    session_mgr.abort_session.assert_called_once_with("session:old")
+    assert session_mgr.get_or_create.call_count == 2
 
 
 class TestExecute:
