@@ -49,4 +49,4 @@ overrides:
   globals:
     max_repair_iterations: 8
     review_gate_enabled: false
-    max_review_iterations: 2
+    max_review_iterations: 3

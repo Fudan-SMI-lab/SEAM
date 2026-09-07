@@ -1,0 +1,2 @@
+class RequestedContainerCleanupError(RuntimeError):
+    pass

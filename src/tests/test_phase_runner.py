@@ -158,7 +158,7 @@ def test_run_single_phase_saves_phase_0_output(tmp_path: Path) -> None:
     assert saved is not None
     assert saved["platform"] == "npu"
     assert saved["npu_detected"] is True
-    assert session.calls[0][1] is None
+    assert session.calls[0][1] == 600
 
 
 def test_run_single_phase_appends_agent_and_phase_runtime_skills(tmp_path: Path) -> None:
@@ -326,9 +326,8 @@ def test_run_review_check_maps_subworkflow_runtime_skills(tmp_path: Path) -> Non
 
 def test_run_review_check_session_error_envelope_fails_closed(tmp_path: Path) -> None:
     artifact_store = ArtifactStore(str(tmp_path), "testrun")
-    session_mgr = RecordingSessionManager(
-        '{"ok": false, "error": "Compaction response is incomplete"}'
-    )
+    # rationale: Task 6 contract — compaction raises ContextExhaustedError, envelope path remains for transport errors.
+    session_mgr = RecordingSessionManager('{"ok": false, "error": "transport failure"}')
     runner = PhaseRunner(
         session_mgr,
         artifact_store,
@@ -344,8 +343,8 @@ def test_run_review_check_session_error_envelope_fails_closed(tmp_path: Path) ->
     )
 
     assert result["verdict"] == "session_error"
-    assert result["session_error"] == "Compaction response is incomplete"
-    assert "Compaction response is incomplete" in str(result["reasoning"])
+    assert result["session_error"] == "transport failure"
+    assert "transport failure" in str(result["reasoning"])
     assert len(session_mgr.send_calls) == 1
 
 

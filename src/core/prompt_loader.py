@@ -1,5 +1,7 @@
 """Load and render phase prompt templates from the prompts directory."""
 
+from __future__ import annotations
+
 import re
 from pathlib import Path
 from typing import ClassVar

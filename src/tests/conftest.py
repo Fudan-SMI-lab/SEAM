@@ -1,66 +1,43 @@
 """Test configuration for migration_utils.
 
-Python 3.10 on this system lacks the ``sqlite3`` C extension (``_sqlite3``),
-which blocks import of ``harness.session.manager`` during test collection.
-Provide a minimal stub only when ``_sqlite3`` is truly missing. On properly
-built Python installations this code is never executed.
+SQLite availability is resolved through the typed provider boundary in
+``core.sqlite_provider``. No ``sys.modules`` stubs are injected: when the
+stdlib ``sqlite3`` C extension is missing, the provider returns a typed
+unavailable state and the session manager skips SQLite evidence
+gracefully. Test files that require real SQLite create databases through
+the provider's ``connect`` function, which is a no-op (raises) when
+unavailable, and tests are skipped via ``_sqlite_provider.available``.
 """
-import sys
-import types
 
-class _FakeSqliteError(Exception):
-    pass
+from __future__ import annotations
 
-
-class _FakeSqliteConnection:
-    """Minimal context-manager stub for Python without _sqlite3."""
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def execute(self, sql, params=None):
-        raise _FakeSqliteError("sqlite connect unavailable")
-
-    def cursor(self):
-        raise _FakeSqliteError("sqlite connect unavailable")
-
-
-class _FakeSqliteDbapi2:
-    """Minimal sqlite3.dbapi2 stub."""
-    apilevel = "2.0"
-    paramstyle = "qmark"
-    threadsafety = 1
-    Error = _FakeSqliteError
-    Row = type("Row", (), {})
-    connect = _FakeSqliteConnection
-
-
-if "_sqlite3" not in sys.modules:
-    try:
-        import sqlite3  # noqa: F401
-    except ImportError:
-        sys.modules["_sqlite3"] = _FakeSqliteDbapi2
-        sys.modules["sqlite3.dbapi2"] = _FakeSqliteDbapi2
-        sys.modules["sqlite3"] = _FakeSqliteDbapi2
-        _NO_REAL_SQLITE3 = True
-    else:
-        _NO_REAL_SQLITE3 = False
-else:
-    _NO_REAL_SQLITE3 = False
-
-# Expose so test files can skip when real sqlite3 is unavailable.
-NO_REAL_SQLITE3 = _NO_REAL_SQLITE3
+from pathlib import Path
+from typing import Iterator
 
 import pytest
+
+from core.sqlite_provider import available as SQLITE_AVAILABLE
+
+NO_REAL_SQLITE3: bool = not SQLITE_AVAILABLE
 
 
 @pytest.fixture
 def base_path():
     """Return the base path for test fixtures."""
     return __file__
+
+
+@pytest.fixture(autouse=True)
+def isolate_phase7_fallback_reports(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    isolated = request.node.nodeid.endswith(
+        "test_workflow_executor.py::TestPhase7SkipAndReroute::test_phase7_skipped_in_execute_loop"
+    )
+    if isolated:
+        monkeypatch.chdir(request.getfixturevalue("tmp_path"))
+    yield
+    if isolated:
+        repository_root = Path(__file__).resolve().parents[2]
+        assert not (repository_root / "MagicMock").exists()

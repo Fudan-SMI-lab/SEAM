@@ -31,6 +31,10 @@ Detect facts about the target runtime that later validation phases will use. The
 
 ## Hard Rules
 - Do not modify files, install packages, start extra containers, or use stale pre-existing containers.
+- Do not create TODOs or use sub-agents.
+- Never emit parallel or multiple tool calls in one assistant turn. If direct probes are needed, make exactly one `bash` tool call in total: combine the README preview and all read-only environment probes into one bounded sequential command.
+- Wrap potentially blocking Python, SDK, driver, and device probes with a 15-second command timeout when the runtime provides `timeout`. Limit command output; do not recursively list directories or dump package inventories.
+- After that single tool result returns, whether fully successful or partially failed, call no more tools. Represent unavailable facts as `unknown`, `not_found`, or `false` as appropriate and immediately return the final JSON object.
 - Do not claim `torch_musa`, `torch.musa`, MACA, or MetaX support unless directly observed.
 - Do not report CPU as the target platform; CPU can only be mentioned as non-target baseline context.
 - Final response must be exactly one JSON object. Start with `{` and end with `}`.

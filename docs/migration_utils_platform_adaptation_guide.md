@@ -911,11 +911,13 @@ devices:
 
 ### 8.8 容器镜像候选
 
+SEAM 的生产运行契约是 Linux 和 Python 3.10+。强制 CI 仅验证无硬件运行契约；真实加速器、厂商 SDK 和设备验证保持可选且非 gating。
+
 为 `execution_backend.images` 提供至少 1 个（`auto` 模式下至少 2 个）可用的镜像候选。镜像必须包含：
 
 - 目标平台的 PyTorch wheel（如 `torch_musa`、`torch_rocm`、`torch_mlu`）
 - 平台 SDK（编译器、运行时库、驱动头文件）
-- Python 3.8+
+- Python 3.10+
 
 ### 8.9 性能和基线策略调整
 

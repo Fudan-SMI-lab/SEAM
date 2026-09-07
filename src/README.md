@@ -75,6 +75,22 @@ python3 -m tests.e2e.e2e_test_v3 \
 
 Direct Python entrypoint 面向高级调试和自动化集成；日常运行优先使用 V3 Shell Launcher。
 
+### 5. 可选实时仪表盘
+
+实时终端仪表盘是可选功能。安装 dashboard extra 后可用：
+
+```bash
+python -m pip install -e "./src[dashboard]"
+```
+
+`--dashboard-mode auto|on|off`（或 `--dashboard` / `--no-dashboard`）：
+
+- `auto`（默认）：仅在非 CI 的交互式 TTY 上启用；否则运行行为与无仪表盘版本完全一致。
+- `on`：强制启用。未安装渲染器时（textual 优先，rich 回退）在任何副作用之前报错并给出上述安装命令。
+- `off`：完全关闭，运行行为与无仪表盘版本完全一致。
+
+仪表盘激活时按 `q` 仅退出仪表盘视图，迁移与日志继续。事件遥测仅在仪表盘激活时写入报告目录下的 `ui_events.jsonl`；`off` 或未激活的 `auto` 不创建该文件。
+
 常用参数：
 
 | 参数 | 说明 |
@@ -85,6 +101,12 @@ Direct Python entrypoint 面向高级调试和自动化集成；日常运行优�
 | `--max-phase5-iter` / `--max-iter` | Phase 5 修复循环最大迭代次数。 |
 | `--review-gate` / `--review` | 开启可选 review gate。 |
 | `--server-url` | OpenCode server 地址；推荐使用 `http://127.0.0.1:4098`。 |
+
+### 6. Continuation sealing 与包依赖
+
+`--seal-manifest` 是直接运行的可选、独立、outcome-neutral 旁路：只有显式请求且封存成功时，该运行才具备 `--continue-from` 续做资格。封存结果投影到 `summary.json` 并写出 `manifest-sealing.v1.json` sidecar（`not_requested|succeeded|failed`、`continuation_eligible`），但封存失败不改变迁移 PASS/FAIL 或退出码。`--seal-manifest` 与 `--continue-from` 互斥，会被 parser 和两个 shell 启动器拒绝。环境绑定 authority 要求精确的 `environment_id` 加上匹配的 `namespace`；namespace 单独不是 authority，不接受 list-order、fact-count 或 silent fallback，缺失或歧义时 fail closed。详见 [`docs/E2E_TESTING.md`](docs/E2E_TESTING.md) 第 5 节和 5.1 节。
+
+包依赖边界：base 安装包含 `typing_extensions>=4.12,<5`；`[sqlite]` 是可选 extra（`pysqlite3-binary`），不安装只会禁用 SQLite completion evidence，不影响常规 import；`[dev]` 是测试工具链；`[dashboard]` 是渲染器。生产 floor 为 Linux / Python 3.10+。
 
 ## YAML runtime skills
 

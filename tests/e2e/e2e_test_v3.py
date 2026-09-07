@@ -3,16 +3,20 @@
 
 from __future__ import annotations
 
-import os
+import subprocess
 import sys
 from pathlib import Path
 
 
-def main() -> None:
+def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     real_script = repo_root / "src" / "tests" / "e2e" / "e2e_test_v3.py"
-    os.execv(sys.executable, [sys.executable, str(real_script), *sys.argv[1:]])
+    completed = subprocess.run(
+        [sys.executable, str(real_script), *sys.argv[1:]],
+        check=False,
+    )
+    return completed.returncode
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

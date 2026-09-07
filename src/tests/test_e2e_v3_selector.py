@@ -99,7 +99,7 @@ class TestSelectorIntegrationFlow:
             output_dir=tmp_path / "output",
         )
         assert materialized.exists()
-        loaded = yaml.safe_load(materialized.read_text())
+        loaded = yaml.safe_load(materialized.read_text(encoding="utf-8"))
         assert loaded["name"] == "test_wf"
 
     def test_selector_result_log_includes_all_paths(self, tmp_path: Path) -> None:
@@ -159,7 +159,7 @@ class TestSelectorIntegrationFlow:
             str(selector), _FakeSM(), _FakePL(),
             output_dir=tmp_path / "output",
         )
-        loaded = yaml.safe_load(materialized.read_text())
+        loaded = yaml.safe_load(materialized.read_text(encoding="utf-8"))
         assert loaded["experience"]["enabled"] is True
         assert loaded["globals"]["review_gate_enabled"] is True
         assert loaded["globals"]["max_repair_iterations"] == 5
@@ -186,7 +186,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
         candidates = raw["candidate_workflows"]
         assert len(candidates) >= 2
         for entry in candidates:
@@ -199,7 +199,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
         assert "overrides" in raw
         assert "experience" in raw["overrides"]
         assert "globals" in raw["overrides"]
@@ -213,7 +213,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
         assert raw.get("fallback") is not None
 
     def test_smoke_selector_fallback_is_not_npu(self) -> None:
@@ -221,7 +221,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
         top_fallback = raw.get("fallback", "")
         assert top_fallback != "npu_migration_v2.yaml", (
             f"Smoke selector fallback should not be NPU, got {top_fallback!r}"
@@ -238,7 +238,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
         selector_cfg = raw.get("selector", {})
         assert isinstance(selector_cfg, dict), "Smoke selector should have a 'selector' config block"
         assert "agent" in selector_cfg, "Smoke selector should specify selector.agent"
@@ -251,7 +251,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
         candidates = raw["candidate_workflows"]
         musa_candidates = [
             c for c in candidates
@@ -271,7 +271,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
 
         forbidden_keys_root = [
             "target_platform_hint",
@@ -299,7 +299,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
 
         overrides = raw.get("overrides", {})
         if isinstance(overrides, dict):
@@ -312,7 +312,7 @@ class TestSmokeSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         smoke_path = wf_dir / "workflow_selector_smoke.yaml"
-        raw = _yaml.safe_load(smoke_path.read_text())
+        raw = _yaml.safe_load(smoke_path.read_text(encoding="utf-8"))
 
         fallback = raw.get("fallback", "")
         assert fallback == "experience_memory_test.yaml", (
@@ -340,7 +340,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
         candidates = raw["candidate_workflows"]
         assert len(candidates) >= 2
         for entry in candidates:
@@ -352,7 +352,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
         selector_cfg = raw.get("selector", {})
         assert isinstance(selector_cfg, dict), "seam_auto_default should have a 'selector' config block"
         assert "agent" in selector_cfg, "seam_auto_default should specify selector.agent"
@@ -363,7 +363,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
 
         top_fallback = raw.get("fallback", "")
         assert top_fallback != "npu_migration_v2.yaml", (
@@ -386,7 +386,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
 
         assert "fallback" not in raw, (
             f"seam_auto_default MUST NOT have a top-level 'fallback' field. "
@@ -407,7 +407,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
 
         has_top_fallback = "fallback" in raw
         selector_cfg = raw.get("selector", {})
@@ -428,7 +428,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
         assert "overrides" in raw
         assert "experience" in raw["overrides"]
         assert "globals" in raw["overrides"]
@@ -444,7 +444,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
         candidates = raw["candidate_workflows"]
         musa_candidates = [
             c for c in candidates
@@ -464,7 +464,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
         candidates = raw["candidate_workflows"]
         npu_paths = [c["path"] for c in candidates if "npu" in c.get("path", "").lower()]
         assert len(npu_paths) >= 1, (
@@ -478,7 +478,7 @@ class TestSeamAutoDefaultSelectorYaml:
         import yaml as _yaml
         wf_dir = PROJECT_ROOT / "workflows"
         sel_path = wf_dir / "seam_auto_default.yaml"
-        raw = _yaml.safe_load(sel_path.read_text())
+        raw = _yaml.safe_load(sel_path.read_text(encoding="utf-8"))
 
         forbidden_keys = [
             "target_platform_hint", "accelerator_family",

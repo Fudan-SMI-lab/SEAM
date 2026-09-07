@@ -571,7 +571,9 @@ class Orchestrator:
             session_id,
             prompt,
             timeout=get_timeout(
-                getattr(self, "_fw_config", None), "session_timeout_repair"
+                getattr(self, "_fw_config", None),
+                "session_timeout_repair",
+                3600,
             ),
         )
         recovery_output: JsonDict = {

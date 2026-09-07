@@ -1,5 +1,7 @@
 """Rule-based CUDA to NPU code migrator."""
 
+from __future__ import annotations
+
 import os
 import re
 import glob as glob_module

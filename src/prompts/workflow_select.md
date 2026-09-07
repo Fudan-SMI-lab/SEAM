@@ -82,6 +82,9 @@ workflow that best matches:
 ## Hard Rules
 
 - Select **exactly one** workflow from the candidate list above.
+- Do not create TODOs or use sub-agents.
+- Never emit parallel or multiple tool calls in one assistant turn. Perform device and project discovery with at most one `bash` tool call in total by combining the read-only probes into one bounded sequential command; wrap potentially blocking probes with a 15-second command timeout when available and limit their output.
+- After that single tool result returns, call no more tools and immediately select a workflow from the supplied candidates.
 - Your selection MUST match one of the listed workflows verbatim (by path).
 - Do NOT modify, combine, or invent workflow names.
 - User-provided constraints MUST NOT override current real device/environment discovery for platform/environment selection.

@@ -5,7 +5,17 @@ import pytest
 from . import BASE_URL, cleanup_remote_sessions, server_available
 from harness.session.manager import SessionManager
 
-pytestmark = pytest.mark.skipif(not server_available(), reason="No OpenCode server")
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.opencode,
+    pytest.mark.slow,
+]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def require_opencode_server() -> None:
+    if not server_available():
+        pytest.skip("real OpenCode service or model credentials are unavailable")
 
 
 def test_session_manager_round_trip_and_json_parsing() -> None:

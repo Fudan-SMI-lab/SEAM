@@ -774,8 +774,8 @@ class TestResolveWorkflowFromSelector:
         }
         _write_yaml(selector, selector_data)
 
-        # Simulate what extract_json_response handles: fenced JSON block
-        response = f"I think we should use:\n```json\n{{\"selected_workflow\": \"{str(wf)}\"}}\n```"
+        selection = json.dumps({"selected_workflow": str(wf)})
+        response = f"I think we should use:\n```json\n{selection}\n```"
         session_mgr = FakeSessionManager(agent_response=response)
         prompt_loader = FakePromptLoader()
 
@@ -1025,6 +1025,11 @@ class TestWorkflowSelectPromptContent:
         assert "same currently detected platform/environment" in lowered
         assert "actual platform/environment selection" in lowered
         assert "current real device/environment discovery" in lowered
+
+    def test_prompt_uses_one_bounded_tool_turn(self, _prompt_text: str) -> None:
+        assert "at most one `bash` tool call in total" in _prompt_text
+        assert "Never emit parallel or multiple tool calls" in _prompt_text
+        assert "15-second command timeout" in _prompt_text
 
     def test_new_constraints_guidance_has_no_specific_platform_names(
         self, _prompt_text: str

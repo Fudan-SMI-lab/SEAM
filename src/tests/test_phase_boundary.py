@@ -187,9 +187,10 @@ def test_omo_directives_config_does_not_affect_presence() -> None:
 
 # ── Boundary injection: content assertions ─────────────────────────────
 
-def test_allows_current_phase_substeps() -> None:
+def test_serializes_tools_and_avoids_implicit_subagents() -> None:
     result = inject_phase_boundary("prompt")
-    assert "You may use TODOs, tools, and sub-agents freely" in result
+    assert "at most one tool call per assistant turn" in result
+    assert "Do not use sub-agents unless" in result
 
 
 def test_forbids_later_phase_actions() -> None:

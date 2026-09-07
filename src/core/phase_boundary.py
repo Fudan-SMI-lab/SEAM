@@ -72,8 +72,10 @@ def _bool_from_config(
 
 _BOUNDARY_BLOCK = (
     "\n\n## Phase Boundary\n"
-    "You are working on the **current phase** only. You may use TODOs, "
-    "tools, and sub-agents freely to complete the current phase's substeps. "
+    "You are working on the **current phase** only. Use only the tools needed "
+    "for this phase, issue at most one tool call per assistant turn, and wait "
+    "for its result before calling another tool. Do not use sub-agents unless "
+    "the current phase explicitly requires them. "
     "Do **not** create TODOs or take actions that belong to later phases. "
     "Return the phase output, then wait for the controller to advance.\n"
 )

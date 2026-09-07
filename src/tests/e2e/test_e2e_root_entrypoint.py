@@ -2,9 +2,13 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 MIGRATION_UTILS_ROOT = Path(__file__).resolve().parents[2]
 EXECUTION_ROOT = MIGRATION_UTILS_ROOT.parent
+
+pytestmark = pytest.mark.integration
 
 
 def test_root_module_entrypoint_shows_v2_help() -> None:

@@ -40,6 +40,10 @@ This workflow uses a container execution backend for Phase 5 validation and repa
 Do NOT use, exec into, or install packages into pre-existing containers. Always use
 the `actual_execution_command` provided by the framework.
 
+Do NOT stop, remove, recreate, or replace the framework-created container; if it is
+missing or not running, report an infrastructure/framework-state failure instead of
+attempting container lifecycle repair.
+
 The Phase 3 entry script is: `{entry_script}`
 
 When validating manually, use the `actual_execution_command` / container execution instructions shown above.

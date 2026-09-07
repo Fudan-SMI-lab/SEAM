@@ -1,0 +1,7 @@
+{
+  "fixtureVersion": 1,
+  "health": {"status": 200, "body": {"healthy": true, "version": "1.18.5"}},
+  "doc": {"status": 404, "body": {"message": "route unavailable"}},
+  "messages": {"status": 200, "query": {}, "headers": {}, "body": []},
+  "children": {"status": 200, "body": []}
+}

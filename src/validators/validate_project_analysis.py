@@ -1,5 +1,7 @@
 """Validation for Phase 1 project analysis output."""
 
+from __future__ import annotations
+
 from typing import cast
 
 from core.validator_engine import ValidationDict
@@ -219,11 +221,12 @@ def _validate_required_sources(surface: dict[str, object], errors: list[str]) ->
     sources = surface.get("discovery_sources_checked")
     if not isinstance(sources, list):
         return
-    source_values = {
+    source_values: set[str] = {
         str(source).strip().lower().replace("-", "_")
         for source in cast(list[object], sources)
     }
-    missing_sources = sorted(set(REQUIRED_DISCOVERY_SOURCES) - source_values)
+    required_sources: set[str] = set(REQUIRED_DISCOVERY_SOURCES)
+    missing_sources = sorted(required_sources - source_values)
     if missing_sources:
         errors.append(
             "custom_op_surface.discovery_sources_checked missing required sources: "

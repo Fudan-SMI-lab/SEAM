@@ -1,3 +1,5 @@
+import { emitUiEvent } from "./ui-events"
+
 const TOOL_WHITELIST = {
   build: ["bash", "read", "write", "edit"],
   ultrabrain: ["bash", "read", "write", "edit", "grep", "lsp_diagnostics", "ast_grep"],
@@ -93,6 +95,14 @@ export const hooks = {
     if (!toolName) {
       return
     }
+
+    emitUiEvent({
+      eventType: "opencode_tool_started",
+      sessionId: typeof input.sessionID === "string" ? input.sessionID : null,
+      status: "running",
+      message: toolName,
+      details: { tool: toolName },
+    })
 
     if (!getAllowedTools().has(toolName)) {
       throw new Error(

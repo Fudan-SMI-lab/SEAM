@@ -31,8 +31,10 @@ You are executing `{phase_name}` for the target project at `{project_dir}`.
 
 ## IMPORTANT INSTRUCTIONS
 - DO NOT explore or search project code. Your ONLY task is hardware/environment detection.
-- Keep total tool calls under 15.
-- Execute the required commands, then IMMEDIATELY respond with the JSON result.
+- Do not create TODOs or use sub-agents.
+- Never emit parallel or multiple tool calls in one assistant turn. Make at most one `bash` tool call in total: combine the README preview and all required read-only probes into one bounded sequential command.
+- Wrap potentially blocking Python, SDK, driver, and device probes with a 15-second command timeout when available. Limit output and do not recursively list directories.
+- After the single tool result returns, call no more tools. Use `not_found`, `n/a`, or `false` for unavailable evidence and IMMEDIATELY respond with the JSON result.
 
 ## Output Format
 Return exactly one JSON object with this shape:

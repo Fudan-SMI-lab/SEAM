@@ -1,5 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 
+import { emitUiEvent } from "./ui-events"
+
 const PHASE_ID_ENV_KEY = "PHASE_ID"
 
 function getExpectedPhaseId(): string | undefined {
@@ -24,6 +26,14 @@ export const smPhaseCompleteTool = tool({
         `sm_phase_complete phase_id mismatch: expected ${expectedPhaseId}, received ${args.phase_id}`,
       )
     }
+
+    emitUiEvent({
+      eventType: "opencode_phase_complete",
+      phaseId: args.phase_id,
+      status: "passed",
+      message: `Phase ${args.phase_id} submitted structured output`,
+      details: {},
+    })
 
     return JSON.stringify(
       {

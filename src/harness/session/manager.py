@@ -5,8 +5,9 @@ import json
 import logging
 import math
 import os
+import queue
 import re
-import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -14,7 +15,24 @@ import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
+
+from core import sqlite_provider as _sqlite
+
+from .event_lifecycle import (
+    TransportLifecycle,
+)
+from .events import (
+    ActiveTransportAttempt,
+    PreparedTransportAttempt,
+    TransportInvocation,
+    TransportInvocationId,
+    TransportObserver,
+)
+from .opencode_contract import JsonObject
+from .opencode_trace_client import OpenCodeTraceClient
+from .http_body import HTTPBodyTooLarge, read_bounded_http_body
+from .trace_seeds import SessionLifecycle, TraceSeed, TraceSeedRegistry
 
 logger = logging.getLogger("harness.session.manager")
 
@@ -33,7 +51,7 @@ COMPACTION_TOKENS = {"compaction", "summary"}
 HARD_HTTP_STATUSES = {401, 403, 500, 502, 503, 504}
 FALLBACK_AGENT_NAME = "sisyphus"
 _DEFAULT_HTTP_TIMEOUT = object()
-DEFAULT_SESSION_WAIT_TIMEOUT = 30000.0
+DEFAULT_SESSION_WAIT_TIMEOUT = 600.0
 DEFAULT_HARD_ERROR_WAIT_TIMEOUT = 300.0
 # 停止生成但 TODO 非空时，二次确认前等待的时间（秒）
 DEFAULT_TODO_STABILIZE_WAIT_S = 10.0
@@ -41,6 +59,19 @@ DEFAULT_TODO_STABILIZE_WAIT_S = 10.0
 DEFAULT_MAX_TODO_NUDGES = 2
 # 是否默认启用 TODO 追问
 DEFAULT_TODO_NUDGE_ENABLED = True
+# 一次命令最多执行多少次 compaction 恢复（bounded wait + refetch）
+DEFAULT_MAX_RECOVERIES_PER_COMMAND = 1
+# OpenCode serve 1.18.x can leave a session permanently busy after every tool
+# part in an assistant turn has reached a terminal state.  In that failure
+# mode no follow-up provider request is issued, so the synchronous /message
+# request has no response to return.  Detect this narrower state before the
+# whole phase timeout expires.  The threshold is intentionally longer than
+# ordinary tool-result persistence jitter but shorter than Phase 0's limit.
+DEFAULT_TOOL_BARRIER_STALL_TIMEOUT_S = 45.0
+DEFAULT_TOOL_BARRIER_POLL_INTERVAL_S = 2.0
+TOOL_TERMINAL_STATES = frozenset(
+    {"completed", "complete", "success", "succeeded", "error", "failed", "cancelled"}
+)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -71,10 +102,10 @@ def _env_int(name: str, default: int) -> int:
 
 
 class IdleOutcome(str, Enum):
-    IDLE = "idle"                  # 非 running 且 TODO 非未完成态
+    IDLE = "idle"  # 非 running 且 TODO 非未完成态
     TODO_PENDING = "todo_pending"  # 非 running 但 TODO 明确未完成（仅 _todo == True）
-    TIMEOUT = "timeout"            # 超时仍未收敛
-    RUNNING = "running"            # 退出时仍 running
+    TIMEOUT = "timeout"  # 超时仍未收敛
+    RUNNING = "running"  # 退出时仍 running
 
 
 class SessionManagerError(RuntimeError):
@@ -82,7 +113,9 @@ class SessionManagerError(RuntimeError):
 
 
 class SessionTransportError(SessionManagerError):
-    pass
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
 
 
 class SessionAuthError(SessionManagerError):
@@ -95,6 +128,18 @@ class SessionServerError(SessionManagerError):
 
 class SessionCompacted(SessionManagerError):
     pass
+
+
+@dataclass(frozen=True)
+class ToolProgressSnapshot:
+    message_id: str
+    fingerprint: str
+    tool_count: int
+    terminal_count: int
+
+    @property
+    def all_terminal(self) -> bool:
+        return self.tool_count > 0 and self.terminal_count == self.tool_count
 
 
 def extract_json_response(text: str) -> dict[str, Any]:
@@ -145,7 +190,11 @@ def _parse_last_json_object(text: str) -> dict[str, Any]:
             continue
 
         absolute_end = start + end
-        if best is None or absolute_end > best[1] or (absolute_end == best[1] and start < best[0]):
+        if (
+            best is None
+            or absolute_end > best[1]
+            or (absolute_end == best[1] and start < best[0])
+        ):
             best = (start, absolute_end, parsed)
 
     return best[2] if best is not None else {}
@@ -156,7 +205,7 @@ class SessionRecord:
     session_id: str
     role: str
     agent: str
-    lifecycle: Literal["persistent", "reusable", "ephemeral"]
+    lifecycle: SessionLifecycle
     created_at: float = field(default_factory=time.time)
     last_used_at: float = field(default_factory=time.time)
     command_count: int = 0
@@ -175,6 +224,10 @@ class MigrationSessionManager:
         todo_nudge_enabled: bool = DEFAULT_TODO_NUDGE_ENABLED,
         todo_stabilize_wait_s: float = DEFAULT_TODO_STABILIZE_WAIT_S,
         max_todo_nudges: int = DEFAULT_MAX_TODO_NUDGES,
+        max_recoveries_per_command: int = DEFAULT_MAX_RECOVERIES_PER_COMMAND,
+        tool_barrier_stall_timeout_s: float = DEFAULT_TOOL_BARRIER_STALL_TIMEOUT_S,
+        tool_barrier_poll_interval_s: float = DEFAULT_TOOL_BARRIER_POLL_INTERVAL_S,
+        transport_observer: TransportObserver | None = None,
     ) -> None:
         self._work_dir = Path(work_dir).resolve()
         self._base_url = base_url.rstrip("/")
@@ -195,7 +248,30 @@ class MigrationSessionManager:
         self._max_todo_nudges = max(
             0, _env_int("SEAM_MAX_TODO_NUDGES", int(max_todo_nudges))
         )
+        self._max_recoveries_per_command = max(
+            0,
+            _env_int(
+                "SEAM_MAX_RECOVERIES_PER_COMMAND", int(max_recoveries_per_command)
+            ),
+        )
+        self._tool_barrier_stall_timeout_s = max(
+            0.0,
+            _env_float(
+                "SEAM_TOOL_BARRIER_STALL_TIMEOUT_S",
+                float(tool_barrier_stall_timeout_s),
+            ),
+        )
+        self._tool_barrier_poll_interval_s = max(
+            0.05,
+            _env_float(
+                "SEAM_TOOL_BARRIER_POLL_INTERVAL_S",
+                float(tool_barrier_poll_interval_s),
+            ),
+        )
         self._last_todo_summary = ""
+        self._transport_lifecycle = TransportLifecycle(transport_observer)
+        self._trace_seed_registry: TraceSeedRegistry = TraceSeedRegistry()
+        self._trace_client: OpenCodeTraceClient = OpenCodeTraceClient(self._trace_http)
         if auto_detect_agent:
             self._detect_agent()
 
@@ -213,6 +289,30 @@ class MigrationSessionManager:
     @property
     def work_dir(self) -> Path:
         return self._work_dir
+
+    @property
+    def trace_client(self) -> OpenCodeTraceClient:
+        return self._trace_client
+
+    @property
+    def trace_seeds(self) -> tuple[TraceSeed, ...]:
+        return self._trace_seed_registry.snapshot()
+
+    def annotate_trace_seed(
+        self,
+        session_id: str,
+        logical_role: str | None,
+        scope: str | None,
+    ) -> None:
+        _ = self._trace_seed_registry.annotate(session_id, logical_role, scope)
+
+    def _trace_http(
+        self,
+        method: str,
+        path: str,
+        query: JsonObject | None = None,
+    ) -> JsonObject:
+        return self._http(method, path, query=query)
 
     def _detect_agent(self) -> None:
         agent_names = self.available_agents
@@ -324,13 +424,21 @@ class MigrationSessionManager:
         self,
         role: str,
         agent: str = "",
-        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "ephemeral",
+        lifecycle: SessionLifecycle = "ephemeral",
         title: str = "",
         working_dir: str = "",
         initial_prompt: str = "",
     ) -> str:
+        effective_working_dir = str(
+            Path(working_dir).expanduser().resolve() if working_dir else self._work_dir
+        )
         payload = {"title": title or f"migration-{role}"}
-        resp = self._http("POST", "/session", body=payload)
+        resp = self._http(
+            "POST",
+            "/session",
+            query={"directory": effective_working_dir},
+            body=payload,
+        )
         if not resp.get("ok") or not isinstance(resp.get("data"), dict):
             raise RuntimeError(
                 f"Failed to create session: {resp.get('error') or resp.get('details')}"
@@ -342,18 +450,69 @@ class MigrationSessionManager:
             role=role,
             agent=agent or self.active_agent,
             lifecycle=lifecycle,
-            working_dir=working_dir or str(self._work_dir),
+            working_dir=effective_working_dir,
         )
         self._sessions[session_id] = record
+        _ = self._trace_seed_registry.record(
+            session_id=record.session_id,
+            logical_role=record.role,
+            lifecycle=record.lifecycle,
+            agent=record.agent,
+            working_directory=record.working_dir,
+        )
         if initial_prompt:
-            self._send_message_raw(session_id, initial_prompt, agent=record.agent, timeout=120)
+            self._send_message_raw(
+                session_id, initial_prompt, agent=record.agent, timeout=120
+            )
         return session_id
+
+    def _session_query(
+        self,
+        session_id: str,
+        query: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Scope an OpenCode request to the session's recorded project root."""
+        scoped = dict(query or {})
+        record = self._sessions.get(session_id)
+        if record is not None and record.working_dir:
+            scoped["directory"] = record.working_dir
+        return scoped or None
+
+    def register_session(self, record: SessionRecord) -> str:
+        """Register a :class:`SessionRecord` in the manager session layer.
+
+        Dual-layer sync helper for the registry ``rotate`` contract (Metis
+        Q5): ``SessionRegistry.rotate`` atomically swaps only its own
+        ``_cache``; the caller MUST keep ``manager._sessions`` consistent by
+        handing the returned record back through this helper::
+
+            rec = registry.rotate(agent_id, reason, handoff_snapshot)
+            manager.register_session(rec)
+
+        Registration is idempotent: re-registering an existing ``session_id``
+        overwrites the stored record (e.g. after a rotation that reuses the
+        same id through a custom ``session_factory``) and never duplicates
+        the trace seed (``TraceSeedRegistry.record`` short-circuits on an
+        existing seed).
+
+        Returns:
+            The registered ``session_id``.
+        """
+        self._sessions[record.session_id] = record
+        _ = self._trace_seed_registry.record(
+            session_id=record.session_id,
+            logical_role=record.role,
+            lifecycle=record.lifecycle,
+            agent=record.agent,
+            working_directory=record.working_dir,
+        )
+        return record.session_id
 
     def attach_session(
         self,
         session_id: str,
         role: str = "",
-        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
+        lifecycle: SessionLifecycle = "persistent",
     ) -> bool:
         resp = self._http("GET", f"/session/{session_id}")
         if not resp.get("ok"):
@@ -366,13 +525,21 @@ class MigrationSessionManager:
                 lifecycle=lifecycle,
                 working_dir=str(self._work_dir),
             )
+        record = self._sessions[session_id]
+        _ = self._trace_seed_registry.record(
+            session_id=record.session_id,
+            logical_role=record.role,
+            lifecycle=record.lifecycle,
+            agent=record.agent,
+            working_directory=record.working_dir,
+        )
         return True
 
     def get_or_create(
         self,
         role: str,
         agent: str = "",
-        lifecycle: Literal["persistent", "reusable", "ephemeral"] = "persistent",
+        lifecycle: SessionLifecycle = "persistent",
         title: str = "",
         working_dir: str = "",
         initial_prompt: str = "",
@@ -410,31 +577,76 @@ class MigrationSessionManager:
             record.last_used_at = time.time()
             record.command_count += 1
 
+        invocation = self._transport_lifecycle.new_invocation(
+            session_id=session_id,
+            timeout_s=timeout,
+            max_attempts=retries + 1,
+        )
         for attempt in range(retries + 1):
+            transport_attempt = self._transport_lifecycle.prepare(
+                invocation,
+                attempt + 1,
+            )
             try:
                 return self._send_message_raw(
-                    session_id, command, agent=selected_agent, timeout=timeout
+                    session_id,
+                    command,
+                    agent=selected_agent,
+                    timeout=timeout,
+                    transport_attempt=transport_attempt,
                 )
             except (SessionAuthError, SessionServerError) as exc:
                 last_error = exc
+                self._transport_lifecycle.hard_error(transport_attempt)
                 self._wait_after_hard_error(session_id, timeout=timeout)
                 break
             except TimeoutError as exc:
                 last_error = exc
                 break
+            except SessionTransportError as exc:
+                last_error = exc
+                # A timed-out POST may already have been accepted by OpenCode. Reposting
+                # the same prompt to the same session can duplicate work or queue behind
+                # the orphaned turn indefinitely. Let the workflow layer rotate to a
+                # fresh session instead.
+                if exc.timed_out:
+                    self._transport_lifecycle.post_acceptance_transport_failure(
+                        transport_attempt,
+                        timed_out=True,
+                    )
+                    break
+                will_retry = attempt < retries and self._transport_lifecycle.is_active(
+                    transport_attempt
+                )
+                self._transport_lifecycle.transport_failure(
+                    transport_attempt,
+                    timed_out=False,
+                    will_retry=will_retry,
+                )
+                if not will_retry:
+                    break
+                time.sleep(2**attempt)
             except (
-                SessionTransportError,
                 SessionCompacted,
                 urllib.error.URLError,
                 RuntimeError,
                 ValueError,
             ) as exc:
                 last_error = exc
-                if attempt >= retries:
+                will_retry = attempt < retries and self._transport_lifecycle.is_active(
+                    transport_attempt
+                )
+                self._transport_lifecycle.session_failure(
+                    transport_attempt,
+                    will_retry=will_retry,
+                )
+                if not will_retry:
                     break
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
 
-        return json.dumps({"ok": False, "error": str(last_error or 'unknown session error')})
+        return json.dumps(
+            {"ok": False, "error": str(last_error or "unknown session error")}
+        )
 
     @staticmethod
     def _effective_wait_timeout(timeout: int | float | None) -> float:
@@ -453,14 +665,20 @@ class MigrationSessionManager:
         timeout: int | float | None = None,
         retries: int = 2,
     ) -> dict[str, Any]:
-        text = self.send_command(session_id, command, agent=agent, timeout=timeout, retries=retries)
+        text = self.send_command(
+            session_id, command, agent=agent, timeout=timeout, retries=retries
+        )
         parsed = extract_json_response(text)
         if parsed:
             return parsed
         return {"ok": False, "error": "malformed_json", "raw": text}
 
     def get_last_response(self, session_id: str) -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 1})
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 1}),
+        )
         if not resp.get("ok"):
             return ""
         return self._extract_message_text(resp.get("data"))
@@ -600,7 +818,10 @@ class MigrationSessionManager:
                 return True
 
         for part in data.get("parts", []):
-            if isinstance(part, dict) and str(part.get("type", "")).lower() == "compaction":
+            if (
+                isinstance(part, dict)
+                and str(part.get("type", "")).lower() == "compaction"
+            ):
                 return True
 
         text = self._extract_message_text(data).lower()
@@ -617,7 +838,10 @@ class MigrationSessionManager:
                 return True
             if "incomplete todo" in text or "unfinished todo" in text:
                 return True
-            if any(token in text for token in ("[x]", "done", "completed", "resolved", "closed")):
+            if any(
+                token in text
+                for token in ("[x]", "done", "completed", "resolved", "closed")
+            ):
                 return False
             return None
         if isinstance(payload, list):
@@ -645,10 +869,8 @@ class MigrationSessionManager:
                 "open_todos",
                 "pending_todos",
             )
-            found_explicit = False
             for key in explicit_keys:
                 if key in payload:
-                    found_explicit = True
                     container = payload.get(key)
                     # An empty todo container means nothing is pending.
                     if isinstance(container, (list, tuple)) and not container:
@@ -745,16 +967,22 @@ class MigrationSessionManager:
                 seen.add(key)
         return unique
 
-    def _sqlite_table_names(self, conn: sqlite3.Connection) -> set[str]:
-        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    def _sqlite_table_names(self, conn: _sqlite.Connection) -> set[str]:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
         return {str(row[0]) for row in rows if row and row[0]}
 
     @staticmethod
     def _normalize_sql_name(name: str) -> str:
         return name.replace("_", "").lower()
 
-    def _resolve_sql_column(self, columns: list[str], candidates: set[str]) -> str | None:
-        normalized_candidates = {self._normalize_sql_name(candidate) for candidate in candidates}
+    def _resolve_sql_column(
+        self, columns: list[str], candidates: set[str]
+    ) -> str | None:
+        normalized_candidates = {
+            self._normalize_sql_name(candidate) for candidate in candidates
+        }
         for column in columns:
             if self._normalize_sql_name(str(column)) in normalized_candidates:
                 return str(column)
@@ -764,7 +992,7 @@ class MigrationSessionManager:
     def _quote_sql_identifier(identifier: str) -> str:
         return '"' + identifier.replace('"', '""') + '"'
 
-    def _sqlite_row_state(self, row: sqlite3.Row) -> bool | None:
+    def _sqlite_row_state(self, row: _sqlite.Row) -> bool | None:
         mapping = {key: row[key] for key in row.keys()}
         signal = self._todo_signal_from_payload(mapping)
         if signal is not None:
@@ -791,7 +1019,7 @@ class MigrationSessionManager:
 
     def _sqlite_assistant_completion_evidence(
         self,
-        conn: sqlite3.Connection,
+        conn: _sqlite.Connection,
         tables: set[str],
         session_id: str,
     ) -> bool | None:
@@ -841,14 +1069,18 @@ class MigrationSessionManager:
                 return self._sqlite_message_completion_state(row, data_column)
         return None
 
-    def _sqlite_message_completion_state(self, row: sqlite3.Row, data_column: str) -> bool | None:
+    def _sqlite_message_completion_state(
+        self, row: _sqlite.Row, data_column: str
+    ) -> bool | None:
         payload = self._sqlite_json_value(row[data_column])
         if not isinstance(payload, dict):
             return None
         if self._is_compaction_payload(payload):
             return True
 
-        role = str(payload.get("role", row["role"] if "role" in row.keys() else "")).lower()
+        role = str(
+            payload.get("role", row["role"] if "role" in row.keys() else "")
+        ).lower()
         if role and role != "assistant":
             return None
 
@@ -876,7 +1108,11 @@ class MigrationSessionManager:
 
     def _sqlite_payload_has_completed_time(self, payload: dict[str, Any]) -> bool:
         time_value = payload.get("time")
-        if isinstance(time_value, dict) and time_value.get("completed") not in (None, "", 0):
+        if isinstance(time_value, dict) and time_value.get("completed") not in (
+            None,
+            "",
+            0,
+        ):
             return True
         for key in ("time_completed", "timeCompleted", "completed_at", "completedAt"):
             if payload.get(key) not in (None, "", 0):
@@ -884,20 +1120,33 @@ class MigrationSessionManager:
         info = payload.get("info")
         if isinstance(info, dict):
             info_time = info.get("time")
-            if isinstance(info_time, dict) and info_time.get("completed") not in (None, "", 0):
+            if isinstance(info_time, dict) and info_time.get("completed") not in (
+                None,
+                "",
+                0,
+            ):
                 return True
-            for key in ("time_completed", "timeCompleted", "completed_at", "completedAt"):
+            for key in (
+                "time_completed",
+                "timeCompleted",
+                "completed_at",
+                "completedAt",
+            ):
                 if info.get(key) not in (None, "", 0):
                     return True
         return False
 
     def _session_completion_from_sqlite(self, session_id: str) -> bool | None:
+        if not _sqlite.available:
+            return None
         for db_path in self._candidate_sqlite_paths():
             if not db_path.is_file():
                 continue
             try:
-                with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.2) as conn:
-                    conn.row_factory = sqlite3.Row
+                with _sqlite.connect(
+                    f"file:{db_path}?mode=ro", uri=True, timeout=0.2
+                ) as conn:
+                    conn.row_factory = _sqlite.RowFactory
                     conn.execute("PRAGMA query_only=ON")
                     tables = self._sqlite_table_names(conn)
                     if not tables:
@@ -905,7 +1154,9 @@ class MigrationSessionManager:
 
                     session_row_seen = False
                     session_not_running = False
-                    session_tables = [name for name in ("session", "sessions") if name in tables]
+                    session_tables = [
+                        name for name in ("session", "sessions") if name in tables
+                    ]
                     for table_name in session_tables:
                         columns = [
                             row[1]
@@ -1002,14 +1253,20 @@ class MigrationSessionManager:
                     )
                     if assistant_state is True:
                         return True
-                    if assistant_state is False and (session_row_seen or session_not_running):
+                    if assistant_state is False and (
+                        session_row_seen or session_not_running
+                    ):
                         return False
-            except sqlite3.Error:
+            except _sqlite.Error:
                 continue
         return None
 
     def _session_has_incomplete_todos(self, session_id: str) -> bool | None:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 20})
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 20}),
+        )
         if not resp.get("ok"):
             status = resp.get("status")
             if status in {401, 403}:
@@ -1123,7 +1380,11 @@ class MigrationSessionManager:
         started = time.time()
         effective_timeout = self._effective_wait_timeout(timeout_s)
         while time.time() - started < effective_timeout:
-            status = self._http("GET", "/session/status")
+            status = self._http(
+                "GET",
+                "/session/status",
+                query=self._session_query(session_id),
+            )
             if not status.get("ok"):
                 error_status = status.get("status")
                 if error_status in {401, 403}:
@@ -1176,9 +1437,13 @@ class MigrationSessionManager:
         interval_s: float = 1.0,
     ) -> None:
         started = time.time()
-        hard_error_timeout = DEFAULT_HARD_ERROR_WAIT_TIMEOUT if timeout is None else min(
-            self._effective_wait_timeout(timeout),
-            DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+        hard_error_timeout = (
+            DEFAULT_HARD_ERROR_WAIT_TIMEOUT
+            if timeout is None
+            else min(
+                self._effective_wait_timeout(timeout),
+                DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+            )
         )
         deadline = started + hard_error_timeout
         saw_observation = False
@@ -1186,7 +1451,11 @@ class MigrationSessionManager:
         stable_message_count = 0
 
         while time.time() < deadline:
-            status = self._http("GET", "/session/status")
+            status = self._http(
+                "GET",
+                "/session/status",
+                query=self._session_query(session_id),
+            )
             if status.get("ok"):
                 saw_observation = True
                 token = self._extract_status_token(status.get("data"), session_id)
@@ -1231,10 +1500,293 @@ class MigrationSessionManager:
             time.sleep(interval_s)
 
     def _last_message_text_tolerant(self, session_id: str) -> str:
-        resp = self._http("GET", f"/session/{session_id}/message", query={"limit": 1})
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 1}),
+        )
         if not resp.get("ok"):
             return ""
         return self._extract_message_text(resp.get("data"))
+
+    @staticmethod
+    def _latest_tool_message_id(payload: Any) -> str:
+        if not isinstance(payload, list):
+            return ""
+        latest = ""
+        for message in payload:
+            if not isinstance(message, dict):
+                continue
+            parts = message.get("parts")
+            if not isinstance(parts, list) or not any(
+                isinstance(part, dict) and part.get("type") == "tool" for part in parts
+            ):
+                continue
+            info = message.get("info")
+            if isinstance(info, dict) and info.get("id"):
+                latest = str(info["id"])
+        return latest
+
+    def _message_observation_tolerant(self, session_id: str) -> tuple[str, str]:
+        """Return current text and latest tool-message id using one history read."""
+        resp = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 1}),
+        )
+        if not resp.get("ok"):
+            return "", ""
+        payload = resp.get("data")
+        latest_payload = payload[-1:] if isinstance(payload, list) else payload
+        return (
+            self._extract_message_text(latest_payload),
+            self._latest_tool_message_id(payload),
+        )
+
+    @staticmethod
+    def _tool_progress_from_messages(payload: Any) -> ToolProgressSnapshot | None:
+        """Describe the latest assistant tool turn without retaining tool output.
+
+        A later assistant text/stop message means the tool barrier already
+        converged and must never be classified as stalled.
+        """
+        if not isinstance(payload, list):
+            return None
+
+        latest_index = -1
+        latest_message: dict[str, Any] | None = None
+        latest_tools: list[dict[str, Any]] = []
+        latest_tool_part_index = -1
+        for index, message in enumerate(payload):
+            if not isinstance(message, dict):
+                continue
+            parts = message.get("parts")
+            if not isinstance(parts, list):
+                continue
+            tools = [
+                part
+                for part in parts
+                if isinstance(part, dict) and part.get("type") == "tool"
+            ]
+            if tools:
+                latest_index = index
+                latest_message = message
+                latest_tools = tools
+                latest_tool_part_index = max(
+                    part_index
+                    for part_index, part in enumerate(parts)
+                    if isinstance(part, dict) and part.get("type") == "tool"
+                )
+
+        if latest_message is None:
+            return None
+
+        # OpenCode normally appends the next step (and eventually the final
+        # text) to the same assistant message.  Seeing either after the latest
+        # tool proves that the agent loop crossed the tool barrier; a slow
+        # provider response after that point must remain governed by the
+        # ordinary request timeout instead of this watchdog.
+        latest_parts = latest_message.get("parts")
+        if isinstance(latest_parts, list):
+            for part in latest_parts[latest_tool_part_index + 1 :]:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type", "")).lower()
+                if part_type in {"step-start", "reasoning"}:
+                    return None
+                if (
+                    part_type == "text"
+                    and isinstance(part.get("text"), str)
+                    and bool(part["text"].strip())
+                ):
+                    return None
+        latest_info = latest_message.get("info")
+        if isinstance(latest_info, dict) and str(
+            latest_info.get("finish", "")
+        ).lower() in {"stop", "success"}:
+            return None
+
+        # A later assistant message with final text or a terminal finish reason
+        # is the other normal representation of a crossed tool barrier.
+        for message in payload[latest_index + 1 :]:
+            if not isinstance(message, dict):
+                continue
+            info = message.get("info")
+            if (
+                not isinstance(info, dict)
+                or str(info.get("role", "")).lower() != "assistant"
+            ):
+                continue
+            finish = str(info.get("finish", "")).lower()
+            parts = message.get("parts")
+            has_next_step = isinstance(parts, list) and any(
+                isinstance(part, dict)
+                and (
+                    str(part.get("type", "")).lower() in {"step-start", "reasoning"}
+                    or (
+                        part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                        and bool(part["text"].strip())
+                    )
+                )
+                for part in parts
+            )
+            if has_next_step or finish in {"stop", "success"}:
+                return None
+
+        info = latest_message.get("info")
+        message_id = str(info.get("id", "")) if isinstance(info, dict) else ""
+        states: list[dict[str, Any]] = []
+        terminal_count = 0
+        for part in latest_tools:
+            state = part.get("state")
+            state_dict = state if isinstance(state, dict) else {}
+            status = str(state_dict.get("status", "unknown")).lower()
+            if status in TOOL_TERMINAL_STATES:
+                terminal_count += 1
+            timing = state_dict.get("time")
+            timing_dict = timing if isinstance(timing, dict) else {}
+            states.append(
+                {
+                    "call_id": str(part.get("callID", "")),
+                    "tool": str(part.get("tool", "")),
+                    "status": status,
+                    "start": timing_dict.get("start"),
+                    "end": timing_dict.get("end"),
+                }
+            )
+        fingerprint = json.dumps(states, sort_keys=True, default=str)
+        return ToolProgressSnapshot(
+            message_id=message_id,
+            fingerprint=fingerprint,
+            tool_count=len(latest_tools),
+            terminal_count=terminal_count,
+        )
+
+    def _current_tool_progress(
+        self,
+        session_id: str,
+    ) -> tuple[bool, ToolProgressSnapshot | None]:
+        status = self._http(
+            "GET",
+            "/session/status",
+            query=self._session_query(session_id),
+            timeout=5,
+        )
+        if not status.get("ok"):
+            return False, None
+        token = self._extract_status_token(status.get("data"), session_id)
+        if token not in RUNNING_TOKENS:
+            return False, None
+
+        messages = self._http(
+            "GET",
+            f"/session/{session_id}/message",
+            query=self._session_query(session_id, {"limit": 20}),
+            timeout=5,
+        )
+        if not messages.get("ok"):
+            return True, None
+        return True, self._tool_progress_from_messages(messages.get("data"))
+
+    def _post_message_with_tool_barrier_watchdog(
+        self,
+        *,
+        session_id: str,
+        payload: dict[str, Any],
+        http_timeout: float,
+        baseline_tool_message_id: str,
+    ) -> dict[str, Any]:
+        """POST a message while detecting OpenCode's stuck multi-tool barrier.
+
+        The synchronous endpoint cannot be polled by the calling thread, so the
+        POST runs in a daemon worker while this thread observes status/history.
+        A daemon is deliberate: even a broken server that ignores abort cannot
+        keep SEAM alive after the bounded urllib timeout.
+        """
+        if self._tool_barrier_stall_timeout_s <= 0:
+            return self._http(
+                "POST",
+                f"/session/{session_id}/message",
+                query=self._session_query(session_id),
+                body=payload,
+                timeout=http_timeout,
+            )
+
+        responses: queue.Queue[dict[str, Any] | BaseException] = queue.Queue(maxsize=1)
+
+        def post_message() -> None:
+            try:
+                responses.put(
+                    self._http(
+                        "POST",
+                        f"/session/{session_id}/message",
+                        query=self._session_query(session_id),
+                        body=payload,
+                        timeout=http_timeout,
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - defensive worker boundary
+                responses.put(exc)
+
+        threading.Thread(
+            target=post_message,
+            name="seam-opencode-message",
+            daemon=True,
+        ).start()
+
+        candidate_fingerprint = ""
+        candidate_since = 0.0
+        while True:
+            try:
+                result = responses.get(timeout=self._tool_barrier_poll_interval_s)
+            except queue.Empty:
+                running, snapshot = self._current_tool_progress(session_id)
+                if (
+                    not running
+                    or snapshot is None
+                    or not snapshot.all_terminal
+                    or snapshot.message_id == baseline_tool_message_id
+                ):
+                    candidate_fingerprint = ""
+                    candidate_since = 0.0
+                    continue
+
+                now = time.monotonic()
+                if snapshot.fingerprint != candidate_fingerprint:
+                    candidate_fingerprint = snapshot.fingerprint
+                    candidate_since = now
+                    logger.info(
+                        "OpenCode tools reached terminal states; waiting for next agent step: "
+                        "session=%s message=%s tools=%d",
+                        session_id,
+                        snapshot.message_id or "unknown",
+                        snapshot.tool_count,
+                    )
+                    continue
+                if now - candidate_since < self._tool_barrier_stall_timeout_s:
+                    continue
+
+                aborted = self.abort_session(session_id)
+                logger.warning(
+                    "opencode_tool_barrier_stalled session=%s message=%s "
+                    "tools=%d terminal=%d stalled_s=%.3f abort_accepted=%s",
+                    session_id,
+                    snapshot.message_id or "unknown",
+                    snapshot.tool_count,
+                    snapshot.terminal_count,
+                    now - candidate_since,
+                    aborted,
+                )
+                raise SessionTransportError(
+                    "opencode_tool_barrier_stalled: every tool reached a terminal "
+                    "state but OpenCode did not schedule the next agent step",
+                    timed_out=True,
+                )
+            else:
+                if isinstance(result, BaseException):
+                    raise result
+                return result
 
     def _is_usable_refetched_text(
         self,
@@ -1286,7 +1838,14 @@ class MigrationSessionManager:
             return self._session_completion_from_sqlite(session_id)
 
     def abort_session(self, session_id: str) -> bool:
-        return bool(self._http("POST", f"/session/{session_id}/abort").get("ok"))
+        return bool(
+            self._http(
+                "POST",
+                f"/session/{session_id}/abort",
+                query=self._session_query(session_id),
+                timeout=10,
+            ).get("ok")
+        )
 
     def cleanup_session(self, session_id: str) -> bool:
         record = self._sessions.get(session_id)
@@ -1294,7 +1853,11 @@ class MigrationSessionManager:
             return False
         if record.lifecycle == "ephemeral":
             self.abort_session(session_id)
-            self._http("DELETE", f"/session/{session_id}")
+            self._http(
+                "DELETE",
+                f"/session/{session_id}",
+                query=self._session_query(session_id),
+            )
         self._sessions.pop(session_id, None)
         return True
 
@@ -1316,10 +1879,17 @@ class MigrationSessionManager:
         status = resp.get("status")
         detail = resp.get("details") or resp.get("error") or "request failed"
         if status in {401, 403}:
-            raise SessionAuthError(f"POST /session/{session_id}/message unauthorized: {detail}")
+            raise SessionAuthError(
+                f"POST /session/{session_id}/message unauthorized: {detail}"
+            )
         if isinstance(status, int) and status >= 500:
-            raise SessionServerError(f"POST /session/{session_id}/message failed: {detail}")
-        raise SessionTransportError(f"POST /session/{session_id}/message failed: {detail}")
+            raise SessionServerError(
+                f"POST /session/{session_id}/message failed: {detail}"
+            )
+        raise SessionTransportError(
+            f"POST /session/{session_id}/message failed: {detail}",
+            timed_out=resp.get("_transport_timeout") is True,
+        )
 
     def _send_message_raw(
         self,
@@ -1327,49 +1897,202 @@ class MigrationSessionManager:
         text: str,
         agent: str = "",
         timeout: int | float | None = None,
+        transport_attempt: PreparedTransportAttempt | None = None,
     ) -> str:
         command_text = text
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if agent:
             payload["agent"] = agent
         http_timeout = self._effective_wait_timeout(timeout) + 30
-        previous_text = self._last_message_text_tolerant(session_id)
-        resp = self._http(
-            "POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout
+        previous_text, baseline_tool_message_id = self._message_observation_tolerant(
+            session_id
         )
-        if not resp.get("ok"):
-            self._classify_post_failure(resp, session_id)
-        data = resp.get("data") or {}
-        if not isinstance(data, dict):
-            raise ValueError("Unexpected session response payload")
-
-        info = data.get("info") or {}
-        if isinstance(info, dict) and info.get("error"):
-            raise RuntimeError(self._extract_error_text(info.get("error")))
-
-        if self._is_compaction_payload(data):
-            raise SessionCompacted("Compaction response is incomplete")
-
-        finish = str(info.get("finish", "")).lower() if isinstance(info, dict) else ""
-        if finish and finish not in {"stop", "success"}:
-            raise RuntimeError(f"Agent finished unexpectedly: {finish}")
-
-        text = self._extract_message_text(data)
-        if not text:
-            text = self._recover_empty_response_text(
-                session_id, timeout, previous_text, command_text=command_text
+        owns_transport_attempt = transport_attempt is None
+        if owns_transport_attempt:
+            transport_attempt = self._transport_lifecycle.prepare(
+                self._transport_lifecycle.new_invocation(
+                    session_id=session_id,
+                    timeout_s=timeout,
+                    max_attempts=1,
+                ),
+                1,
             )
-            if not text:
-                raise RuntimeError("Empty session response")
-            return text
+        active_transport = self._transport_lifecycle.start(transport_attempt)
+        convergence_started = False
+        try:
+            resp = self._post_message_with_tool_barrier_watchdog(
+                session_id=session_id,
+                payload=payload,
+                http_timeout=http_timeout,
+                baseline_tool_message_id=baseline_tool_message_id,
+            )
+            if not resp.get("ok"):
+                self._classify_post_failure(resp, session_id)
+            data = resp.get("data") or {}
+            if not isinstance(data, dict):
+                raise ValueError("Unexpected session response payload")
 
-        return self._await_and_finalize(
+            info = data.get("info") or {}
+            if isinstance(info, dict) and info.get("error"):
+                raise RuntimeError(self._extract_error_text(info.get("error")))
+
+            if self._is_compaction_payload(data):
+                # Bug #16: compaction is an intermediate state, not a failure.
+                # Recover with one bounded wait + refetch instead of re-POSTing.
+                return self._recover_from_compaction(
+                    session_id=session_id,
+                    previous_text=previous_text,
+                    command_text=command_text,
+                    timeout=timeout,
+                    transport_attempt=transport_attempt,
+                    active_transport=active_transport,
+                    data=data,
+                )
+
+            finish = (
+                str(info.get("finish", "")).lower() if isinstance(info, dict) else ""
+            )
+            if finish and finish not in {"stop", "success"}:
+                raise RuntimeError(f"Agent finished unexpectedly: {finish}")
+
+            text = self._extract_message_text(data)
+            if not text:
+                text = self._recover_empty_response_text(
+                    session_id, timeout, previous_text, command_text=command_text
+                )
+                if not text:
+                    raise RuntimeError("Empty session response")
+                self._transport_lifecycle.complete(active_transport)
+                return text
+
+            convergence_started = True
+            final_text = self._await_and_finalize(
+                session_id=session_id,
+                post_text=text,
+                previous_text=previous_text,
+                command_text=command_text,
+                agent=agent,
+                timeout=timeout,
+                transport_attempt=transport_attempt,
+            )
+        except TimeoutError:
+            self._transport_lifecycle.post_acceptance_timeout(transport_attempt)
+            raise
+        except (SessionAuthError, SessionServerError):
+            if convergence_started or owns_transport_attempt:
+                self._transport_lifecycle.hard_error(transport_attempt)
+            raise
+        except SessionTransportError as exc:
+            if convergence_started:
+                self._transport_lifecycle.post_acceptance_transport_failure(
+                    transport_attempt,
+                    timed_out=exc.timed_out,
+                )
+            elif owns_transport_attempt:
+                self._transport_lifecycle.transport_failure(
+                    transport_attempt,
+                    timed_out=exc.timed_out,
+                    will_retry=False,
+                )
+            raise
+        except (
+            SessionCompacted,
+            urllib.error.URLError,
+            RuntimeError,
+            ValueError,
+        ):
+            if convergence_started:
+                self._transport_lifecycle.post_acceptance_session_failure(
+                    transport_attempt,
+                )
+            elif owns_transport_attempt:
+                self._transport_lifecycle.session_failure(
+                    transport_attempt,
+                    will_retry=False,
+                )
+            raise
+        self._transport_lifecycle.complete(active_transport)
+        return final_text
+
+    @staticmethod
+    def _tokens_used_from_payload(data: Any) -> int:
+        info = data.get("info") if isinstance(data, dict) else None
+        if not isinstance(info, dict):
+            return 0
+        tokens = info.get("tokens")
+        if isinstance(tokens, dict):
+            total = 0
+            for key in ("input", "output", "reasoning"):
+                value = tokens.get(key)
+                if isinstance(value, (int, float)):
+                    total += int(value)
+            return total
+        if isinstance(tokens, (int, float)):
+            return int(tokens)
+        return 0
+
+    def _wait_for_session_to_leave_compacting(
+        self,
+        session_id: str,
+        timeout: int | float | None,
+        interval_s: float = 1.0,
+    ) -> None:
+        started = time.time()
+        hard_error_timeout = (
+            DEFAULT_HARD_ERROR_WAIT_TIMEOUT
+            if timeout is None
+            else min(
+                self._effective_wait_timeout(timeout),
+                DEFAULT_HARD_ERROR_WAIT_TIMEOUT,
+            )
+        )
+        deadline = started + hard_error_timeout
+        while time.time() < deadline:
+            status = self._http(
+                "GET",
+                "/session/status",
+                query=self._session_query(session_id),
+            )
+            if status.get("ok"):
+                token = self._extract_status_token(status.get("data"), session_id)
+                if token in RUNNING_TOKENS:
+                    time.sleep(interval_s)
+                    continue
+                if token:
+                    return
+            sqlite_state = self._session_completion_from_sqlite(session_id)
+            if sqlite_state is True:
+                time.sleep(interval_s)
+                continue
+            if sqlite_state is False:
+                return
+            return
+
+    def _recover_from_compaction(
+        self,
+        session_id: str,
+        previous_text: str,
+        command_text: str,
+        timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
+        active_transport: ActiveTransportAttempt,
+        data: dict[str, Any],
+    ) -> str:
+        from core.session_registry import ContextExhaustedError
+
+        for _ in range(self._max_recoveries_per_command):
+            self._wait_for_session_to_leave_compacting(session_id, timeout)
+            latest = self._last_message_text_tolerant(session_id)
+            if self._is_usable_refetched_text(latest, previous_text, command_text):
+                self._transport_lifecycle.complete(active_transport)
+                return latest
+        self._transport_lifecycle.post_acceptance_session_failure(transport_attempt)
+        raise ContextExhaustedError(
             session_id=session_id,
-            post_text=text,
-            previous_text=previous_text,
-            command_text=command_text,
-            agent=agent,
-            timeout=timeout,
+            agent_id=self.active_agent,
+            tokens_used=self._tokens_used_from_payload(data),
+            compaction_count=self._max_recoveries_per_command,
+            reason="compaction response is incomplete; recovery budget exhausted",
         )
 
     def _post_message_only(
@@ -1378,6 +2101,7 @@ class MigrationSessionManager:
         text: str,
         agent: str,
         timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
     ) -> str:
         """Send a single POST /message and return its text without entering the
         idle/nudge convergence loop. Used by TODO nudges to avoid recursion."""
@@ -1385,18 +2109,46 @@ class MigrationSessionManager:
         if agent:
             payload["agent"] = agent
         http_timeout = self._effective_wait_timeout(timeout) + 30
-        resp = self._http(
-            "POST", f"/session/{session_id}/message", body=payload, timeout=http_timeout
-        )
-        if not resp.get("ok"):
-            self._classify_post_failure(resp, session_id)
-        data = resp.get("data") or {}
-        if isinstance(data, dict):
-            info = data.get("info") or {}
-            if isinstance(info, dict) and info.get("error"):
-                raise RuntimeError(self._extract_error_text(info.get("error")))
-            if self._is_compaction_payload(data):
-                raise SessionCompacted("Compaction response is incomplete")
+        _, baseline_tool_message_id = self._message_observation_tolerant(session_id)
+        active_transport = self._transport_lifecycle.start(transport_attempt)
+        try:
+            resp = self._post_message_with_tool_barrier_watchdog(
+                session_id=session_id,
+                payload=payload,
+                http_timeout=http_timeout,
+                baseline_tool_message_id=baseline_tool_message_id,
+            )
+            if not resp.get("ok"):
+                self._classify_post_failure(resp, session_id)
+            data = resp.get("data") or {}
+            if isinstance(data, dict):
+                info = data.get("info") or {}
+                if isinstance(info, dict) and info.get("error"):
+                    raise RuntimeError(self._extract_error_text(info.get("error")))
+                if self._is_compaction_payload(data):
+                    raise SessionCompacted("Compaction response is incomplete")
+        except (SessionAuthError, SessionServerError):
+            self._transport_lifecycle.hard_error(transport_attempt)
+            raise
+        except SessionTransportError as exc:
+            self._transport_lifecycle.transport_failure(
+                transport_attempt,
+                timed_out=exc.timed_out,
+                will_retry=False,
+            )
+            raise
+        except (
+            SessionCompacted,
+            urllib.error.URLError,
+            RuntimeError,
+            ValueError,
+        ):
+            self._transport_lifecycle.session_failure(
+                transport_attempt,
+                will_retry=False,
+            )
+            raise
+        self._transport_lifecycle.complete(active_transport)
         return self._extract_message_text(data)
 
     def _build_todo_nudge_prompt(self) -> str:
@@ -1423,10 +2175,30 @@ class MigrationSessionManager:
         session_id: str,
         agent: str,
         timeout: int | float | None,
+        parent_attempt: PreparedTransportAttempt,
+        nudge_number: int,
     ) -> str:
         nudge = self._build_todo_nudge_prompt()
         logger.info("[TODO NUDGE] session=%s", session_id)
-        return self._post_message_only(session_id, nudge, agent=agent, timeout=timeout)
+        parent_invocation = parent_attempt.invocation
+        nudge_attempt = PreparedTransportAttempt(
+            invocation=TransportInvocation(
+                session_id=session_id,
+                invocation_id=TransportInvocationId(
+                    f"{parent_invocation.invocation_id}:nudge-{nudge_number:02d}"
+                ),
+                max_attempts=1,
+                timeout_s=parent_invocation.timeout_s,
+            ),
+            attempt=1,
+        )
+        return self._post_message_only(
+            session_id,
+            nudge,
+            agent=agent,
+            timeout=timeout,
+            transport_attempt=nudge_attempt,
+        )
 
     def _await_and_finalize(
         self,
@@ -1436,6 +2208,7 @@ class MigrationSessionManager:
         command_text: str,
         agent: str,
         timeout: int | float | None,
+        transport_attempt: PreparedTransportAttempt,
     ) -> str:
         effective_timeout = self._effective_wait_timeout(timeout)
         deadline = time.time() + effective_timeout
@@ -1475,9 +2248,7 @@ class MigrationSessionManager:
                     nudge_count,
                     self._last_todo_summary or "unknown",
                 )
-                raise TimeoutError(
-                    "Session stopped with incomplete todos after nudges"
-                )
+                raise TimeoutError("Session stopped with incomplete todos after nudges")
 
             # 等待稳定窗后二次确认；窗内回到 running 由下方分支处理。
             # 此处尚未决定发送 nudge：模型可能仍在生成（例如 todo 处于
@@ -1522,7 +2293,11 @@ class MigrationSessionManager:
                 self._max_todo_nudges,
             )
             nudge_text = self._send_todo_nudge(
-                session_id, agent=agent, timeout=timeout
+                session_id,
+                agent=agent,
+                timeout=timeout,
+                parent_attempt=transport_attempt,
+                nudge_number=nudge_count,
             )
             if nudge_text:
                 current_post_text = nudge_text
@@ -1539,7 +2314,9 @@ class MigrationSessionManager:
         ):
             raise TimeoutError("Session still running or has incomplete todos")
         recovered_text = self._last_message_text_tolerant(session_id)
-        if not self._is_usable_refetched_text(recovered_text, previous_text, command_text):
+        if not self._is_usable_refetched_text(
+            recovered_text, previous_text, command_text
+        ):
             return ""
         return recovered_text
 
@@ -1553,7 +2330,9 @@ class MigrationSessionManager:
     ) -> dict[str, Any]:
         url = self._base_url + (path if path.startswith("/") else f"/{path}")
         if query:
-            url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+            url += "?" + urllib.parse.urlencode(
+                {k: v for k, v in query.items() if v is not None}
+            )
         headers = {"Accept": "application/json"}
         payload = None
         if body is not None:
@@ -1573,18 +2352,80 @@ class MigrationSessionManager:
             else:
                 request_timeout = self._timeout
             with urllib.request.urlopen(request, timeout=request_timeout) as response:
-                raw = response.read()
+                try:
+                    raw = read_bounded_http_body(response)
+                except HTTPBodyTooLarge as exc:
+                    return {
+                        "ok": False,
+                        "status": response.status,
+                        "error": str(exc),
+                        "details": "",
+                        "headers": {},
+                        "raw_body": "",
+                        "body_too_large": True,
+                    }
+                response_headers = {
+                    str(key): str(value)
+                    for key, value in (getattr(response, "headers", None) or {}).items()
+                }
                 if response.status == 204 or not raw:
-                    return {"ok": True, "status": response.status, "data": None}
+                    return {
+                        "ok": True,
+                        "status": response.status,
+                        "data": None,
+                        "headers": response_headers,
+                        "raw_body": "",
+                    }
                 text = raw.decode()
                 try:
                     parsed = json.loads(text)
                 except json.JSONDecodeError:
                     parsed = text
-                return {"ok": True, "status": response.status, "data": parsed}
+                return {
+                    "ok": True,
+                    "status": response.status,
+                    "data": parsed,
+                    "headers": response_headers,
+                    "raw_body": text,
+                }
         except urllib.error.HTTPError as exc:
-            details = exc.read().decode(errors="replace") if exc.fp else ""
-            return {"ok": False, "status": exc.code, "error": str(exc), "details": details}
+            try:
+                details = (
+                    read_bounded_http_body(exc).decode(errors="replace")
+                    if exc.fp
+                    else ""
+                )
+            except HTTPBodyTooLarge as body_error:
+                return {
+                    "ok": False,
+                    "status": exc.code,
+                    "error": str(body_error),
+                    "details": "",
+                    "headers": {},
+                    "raw_body": "",
+                    "body_too_large": True,
+                }
+            return {
+                "ok": False,
+                "status": exc.code,
+                "error": str(exc),
+                "details": details,
+                "headers": {
+                    str(key): str(value)
+                    for key, value in (exc.headers.items() if exc.headers else ())
+                },
+                "raw_body": details,
+            }
+        except TimeoutError as exc:
+            logger.debug("HTTP timeout for %s %s: %s", method, path, exc)
+            return {"ok": False, "error": str(exc), "_transport_timeout": True}
+        except urllib.error.URLError as exc:
+            logger.debug("HTTP URL error for %s %s: %s", method, path, exc)
+            return {
+                "ok": False,
+                "error": str(exc),
+                "_transport_timeout": isinstance(exc.reason, TimeoutError),
+            }
         except Exception as exc:  # pragma: no cover - network failure path
             logger.debug("HTTP error for %s %s: %s", method, path, exc)
             return {"ok": False, "error": str(exc)}

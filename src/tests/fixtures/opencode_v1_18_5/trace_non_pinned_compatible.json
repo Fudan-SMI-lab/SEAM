@@ -1,0 +1,20 @@
+{
+  "fixtureVersion": 1,
+  "health": {"status": 200, "body": {"healthy": true, "version": "1.18.10", "build": "future"}},
+  "doc": {
+    "status": 200,
+    "body": {
+      "openapi": "3.1.0",
+      "info": {"title": "opencode", "version": "1.1.0"},
+      "paths": {
+        "/global/health": {},
+        "/session/{sessionID}/message": {},
+        "/session/{sessionID}/children": {},
+        "/api/session/{sessionID}/history": {}
+      },
+      "futureDocument": {"contract": 2}
+    }
+  },
+  "messages": {"status": 200, "query": {}, "headers": {}, "body": []},
+  "children": {"status": 200, "body": []}
+}

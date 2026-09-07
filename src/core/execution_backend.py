@@ -6,10 +6,31 @@ import shlex
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+from core.compat import assert_never
+
+from core.execution_env_context import EnvironmentProbe
+from core.phase5_attempt_receipt import BackendExecution, BackendKind
+from core.continuation_environment_probe import (
+    inspect_retained_container as inspect_retained_container,
+    probe_retained_environment as probe_retained_environment,
+)
+from core.continuation_environment_models import (
+    framework_container_delete_eligibility_is_verified,
+)
+from core.continuation_lock import project_owner_lock_is_active
 from core.types import ExecutionBackendConfig
+from core.resource_retention import (
+    ContainerDeleteAuthority,
+    ContainerDeletionError,
+    ContainerDeletionReceipt,
+    ContinuationContainerDeleteAuthority,
+    CurrentRunContainerDeleteAuthority,
+    _container_cleanup_is_authorized,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +53,8 @@ class ExecResult:
     stdout: str
     stderr: str
     duration: float
+    backend_execution: BackendExecution | None = None
+    argv: tuple[str, ...] | None = None
 
 
 class ExecutionBackend(Protocol):
@@ -120,10 +143,7 @@ class LocalBackend:
         command: str | list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> dict[str, str]:
-        _ = cwd, env
-        cmd_str = command
-        if isinstance(command, list):
-            cmd_str = " ".join(command)
+        _ = cwd, command, env
         return {
             "execution_backend_mode": "local",
             "actual_execution_command": "(local execution; run entry_script directly)",
@@ -153,9 +173,40 @@ class ContainerBackend:
             )
         self.config = config
         self._container_id: str | None = None
+        self._container_name: str | None = None
         self._initialized = False
         self._runtime_cmd = "docker" if config.runtime == "docker" else "podman"
         self._host_project_dir: str | None = None
+        self._last_execution: BackendExecution | None = None
+        self._delete_authority: ContainerDeleteAuthority | None = None
+        self._environment_probe_status = "not_requested"
+        self._observed_environment_probe: EnvironmentProbe | None = None
+
+    @classmethod
+    def _for_v3(
+        cls,
+        config: ExecutionBackendConfig,
+        delete_authority: ContainerDeleteAuthority,
+    ) -> ContainerBackend:
+        backend = cls(config)
+        backend._delete_authority = delete_authority
+        return backend
+
+    @property
+    def container_id(self) -> str | None:
+        return self._container_id
+
+    @property
+    def container_name(self) -> str | None:
+        return self._container_name
+
+    @property
+    def environment_probe_status(self) -> str:
+        return self._environment_probe_status
+
+    @property
+    def observed_environment_probe(self) -> EnvironmentProbe | None:
+        return self._observed_environment_probe
 
     def _resolve_candidate_images(self) -> list[str]:
         """Return the ordered list of candidate images, normalized.
@@ -287,6 +338,11 @@ class ContainerBackend:
                     f"Cached container '{cid}' no longer exists. "
                     f"{result.stderr.strip()}"
                 )
+            if self._delete_authority is not None:
+                raise ContainerNotFoundError(
+                    f"Retained V3 container '{cid}' no longer exists; "
+                    "implicit replacement is prohibited"
+                )
             logger.warning("Cached container '%s' not found — will recreate", cid)
             self._container_id = None
             self._initialized = False
@@ -296,8 +352,12 @@ class ContainerBackend:
         if status != "running":
             if self.config.source == "existing_container":
                 raise ContainerNotRunningError(
-                    f"Cached container '{cid}' status is '{status}', "
-                    f"expected 'running'"
+                    f"Cached container '{cid}' status is '{status}', expected 'running'"
+                )
+            if self._delete_authority is not None:
+                raise ContainerNotRunningError(
+                    f"Retained V3 container '{cid}' status is '{status}'; "
+                    "implicit replacement is prohibited"
                 )
             logger.warning(
                 "Cached container '%s' status is '%s' — will recreate",
@@ -407,6 +467,11 @@ class ContainerBackend:
         return inspect_data
 
     def recreate_execution_environment(self, reason: str = "") -> dict[str, Any]:
+        if self._delete_authority is not None:
+            raise RuntimeError(
+                "V3 retention prohibits destructive container recreation before "
+                "finalization"
+            )
         if self.config.source != "image":
             raise RuntimeError(
                 "Execution environment reset is only supported for source=image "
@@ -496,6 +561,7 @@ class ContainerBackend:
 
         proj = self._host_project_dir or "."
         cmd.extend(["-v", f"{proj}:{self.config.container_workdir}:rw"])
+        cmd.extend(["-w", str(self.config.container_workdir)])
         for vol in self.config.volumes:
             cmd.extend(["-v", vol])
         for k, v in self.config.env_vars.items():
@@ -504,6 +570,14 @@ class ContainerBackend:
             cmd.extend(["--network", self.config.network_mode])
         for flag in self.config.runtime_flags:
             cmd.append(flag)
+        authority = self._delete_authority
+        if isinstance(authority, CurrentRunContainerDeleteAuthority):
+            cmd.extend(["--label", authority.ownership_label])
+            cmd.extend(["--label", f"seam.owner-token={authority.ownership_token}"])
+        elif authority is not None and not isinstance(
+            authority, ContinuationContainerDeleteAuthority
+        ):
+            assert_never(authority)
         if self.config.cleanup:
             cmd.append("--rm")
 
@@ -519,6 +593,7 @@ class ContainerBackend:
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create container: {result.stderr.strip()}")
         self._container_id = result.stdout.strip()
+        self._container_name = cname
         self._initialized = True
         logger.info("Container created: %s", self._container_id)
 
@@ -530,7 +605,13 @@ class ContainerBackend:
             )
 
         result = subprocess.run(
-            [self._runtime_cmd, "inspect", "--format", "{{.State.Status}}", cname],
+            [
+                self._runtime_cmd,
+                "inspect",
+                "--format",
+                "{{.State.Status}}|{{.Id}}",
+                cname,
+            ],
             capture_output=True,
             text=True,
             timeout=30,
@@ -539,16 +620,22 @@ class ContainerBackend:
             raise ContainerNotFoundError(
                 f"Container '{cname}' not found. {result.stderr.strip()}"
             )
-        status = result.stdout.strip()
+        identity = result.stdout.strip().split("|", 1)
+        status = identity[0]
         if status != "running":
             raise ContainerNotRunningError(
                 f"Container '{cname}' status is '{status}', expected 'running'"
             )
+        if len(identity) != 2 or not identity[1]:
+            raise ContainerNotFoundError(
+                f"Container '{cname}' has no immutable runtime identity"
+            )
+        container_id = identity[1]
 
         if self.config.required_devices:
             for dev in self.config.required_devices:
                 check = subprocess.run(
-                    [self._runtime_cmd, "exec", cname, "test", "-e", dev],
+                    [self._runtime_cmd, "exec", container_id, "test", "-e", dev],
                     capture_output=True,
                     timeout=10,
                 )
@@ -561,7 +648,7 @@ class ContainerBackend:
 
         if self.config.required_env_vars:
             env_result = subprocess.run(
-                [self._runtime_cmd, "exec", cname, "env"],
+                [self._runtime_cmd, "exec", container_id, "env"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -579,28 +666,28 @@ class ContainerBackend:
                         cname,
                     )
 
-        self._container_id = cname
+        self._container_id = container_id
+        self._container_name = cname
         self._initialized = True
-        logger.info("Existing container validated: %s", cname)
+        logger.info("Existing container validated: %s (%s)", cname, container_id)
 
     def _rewrite_host_path(self, path_str: str) -> str:
         if not self._host_project_dir:
             return path_str
-        host = str(Path(path_str).resolve()) if path_str else path_str
-        if host.startswith(self._host_project_dir):
-            rel = Path(host).relative_to(self._host_project_dir)
-            return str(Path(self.config.container_workdir) / rel)
-        return path_str
+        try:
+            rel = Path(path_str).resolve().relative_to(self._host_project_dir)
+        except (OSError, ValueError):
+            return path_str
+        return str(PurePosixPath(self.config.container_workdir, *rel.parts))
 
     def _rewrite_single_path(self, token: str) -> str:
         if not self._host_project_dir:
             return token
-        if token.startswith(self._host_project_dir):
-            rel = token[len(self._host_project_dir) :].lstrip("/")
-            if rel:
-                return str(Path(self.config.container_workdir) / rel)
-            return self.config.container_workdir
-        return token
+        try:
+            rel = Path(token).resolve().relative_to(self._host_project_dir)
+        except (OSError, ValueError):
+            return token
+        return str(PurePosixPath(self.config.container_workdir, *rel.parts))
 
     def _rewrite_command_paths(self, command: str) -> str:
         if not self._host_project_dir:
@@ -620,7 +707,7 @@ class ContainerBackend:
                 resolved = token
             if resolved.startswith(host_dir):
                 rel = Path(resolved).relative_to(host_dir)
-                rewritten.append(str(Path(container_dir) / rel))
+                rewritten.append(str(PurePosixPath(container_dir, *rel.parts)))
             else:
                 rewritten.append(token)
         return shlex.join(rewritten)
@@ -632,6 +719,7 @@ class ContainerBackend:
         env: dict[str, str] | None = None,
         timeout: int | float | None = None,
     ) -> ExecResult:
+        self._last_execution = None
         cid = self._ensure_container()
         exec_cmd: list[str] = [self._runtime_cmd, "exec", "-i"]
         workdir = self.config.container_workdir
@@ -640,7 +728,9 @@ class ContainerBackend:
                 host = str(Path(cwd).resolve())
                 if host.startswith(self._host_project_dir):
                     rel = Path(host).relative_to(self._host_project_dir)
-                    workdir = str(Path(self.config.container_workdir) / rel)
+                    workdir = str(
+                        PurePosixPath(self.config.container_workdir, *rel.parts)
+                    )
             except (ValueError, OSError):
                 pass
         if workdir:
@@ -652,9 +742,25 @@ class ContainerBackend:
         if isinstance(command, list):
             rewritten = [self._rewrite_single_path(token) for token in command]
             exec_cmd.extend([cid] + rewritten)
+            exact_argv = tuple(rewritten)
         else:
             rewritten = self._rewrite_command_paths(command)
             exec_cmd.extend([cid, "bash", "-c", rewritten])
+            exact_argv = ("bash", "-c", rewritten)
+
+        host_cwd = str(Path(cwd or self._host_project_dir or ".").resolve())
+        backend_execution = BackendExecution(
+            kind=BackendKind.CONTAINER,
+            namespace=f"container:{cid}",
+            host_cwd=host_cwd,
+            backend_cwd=workdir,
+            runtime=self._runtime_cmd,
+            container_id=cid,
+            container_retained=(
+                self.config.source == "existing_container" or not self.config.cleanup
+            ),
+        )
+        self._last_execution = backend_execution
 
         effective_timeout = timeout or self.config.timeout
         start = time.monotonic()
@@ -670,7 +776,179 @@ class ContainerBackend:
             stdout=proc.stdout or "",
             stderr=proc.stderr or "",
             duration=round(elapsed, 3),
+            backend_execution=backend_execution,
+            argv=exact_argv,
         )
+
+    def latest_execution(self) -> BackendExecution | None:
+        return self._last_execution
+
+    def retention_entry_command(self) -> tuple[str, ...]:
+        container_id = self._container_id
+        if container_id is None:
+            return ()
+        return (self._runtime_cmd, "exec", "-it", container_id, "bash")
+
+    def retention_state(self) -> str:
+        container_id = self._container_id
+        if container_id is None:
+            return "absent"
+        try:
+            observed = subprocess.run(
+                [
+                    self._runtime_cmd,
+                    "inspect",
+                    "--format",
+                    "{{.State.Status}}|{{.Id}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return "unknown"
+        if observed.returncode != 0:
+            return "absent"
+        state, separator, immutable_id = observed.stdout.strip().partition("|")
+        if not separator or immutable_id != container_id:
+            return "unknown"
+        return state or "unknown"
+
+    def delete_container(
+        self,
+        authority: ContainerDeleteAuthority,
+    ) -> ContainerDeletionReceipt:
+        container_id = self._container_id
+        if container_id is None:
+            raise ContainerDeletionError(
+                "unknown", "absent", "absent", "container identity is unavailable"
+            )
+        if not _container_cleanup_is_authorized(authority):
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "running",
+                "container deletion is outside authorized finalization",
+            )
+        if isinstance(authority, CurrentRunContainerDeleteAuthority):
+            authorized = (
+                self.config.source == "image" and authority is self._delete_authority
+            )
+            expected_token = authority.ownership_token
+            expected_label = authority.ownership_label
+        elif isinstance(authority, ContinuationContainerDeleteAuthority):
+            attachment = authority.attachment
+            eligibility = authority.eligibility
+            authorized = (
+                authority is self._delete_authority
+            and framework_container_delete_eligibility_is_verified(eligibility)
+                and project_owner_lock_is_active(authority.owner_lock)
+                and self.config.source == "existing_container"
+                and attachment.container_id == container_id
+                and attachment.runtime == self._runtime_cmd
+                and attachment.original_owner_run_id
+                == eligibility.original_owner_run_id
+                and attachment.lineage_root_run_id == eligibility.lineage_root_run_id
+                and attachment.ownership_token == eligibility.ownership_token
+                and attachment.ownership_label == eligibility.ownership_label
+            )
+            expected_token = eligibility.ownership_token
+            expected_label = eligibility.ownership_label
+        else:
+            assert_never(authority)
+        if not authorized:
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "running",
+                "container deletion authority does not match the backend",
+            )
+        try:
+            inspected = subprocess.run(
+                [
+                    self._runtime_cmd,
+                    "inspect",
+                    "--format",
+                    "{{.State.Status}}|{{.Id}}|{{json .Config.Labels}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ContainerDeletionError(
+                container_id, "unknown", "unknown", str(exc)
+            ) from exc
+        state, separator, remainder = inspected.stdout.strip().partition("|")
+        immutable_id, id_separator, raw_labels = remainder.partition("|")
+        try:
+            labels = json.loads(raw_labels) if raw_labels else {}
+        except json.JSONDecodeError as exc:
+            raise ContainerDeletionError(
+                container_id, "unknown", "unknown", "container labels are malformed"
+            ) from exc
+        owner_key, owner_separator, owner_value = expected_label.partition("=")
+        ownership_matches = (
+            isinstance(labels, dict)
+            and owner_separator == "="
+            and owner_key == "seam.owner"
+            and labels.get("seam.owner") == owner_value
+            and labels.get("seam.owner-token") == expected_token
+        )
+        if (
+            inspected.returncode != 0
+            or not separator
+            or not id_separator
+            or immutable_id != container_id
+            or state != "running"
+            or not ownership_matches
+        ):
+            raise ContainerDeletionError(
+                container_id,
+                state or "unknown",
+                state or "unknown",
+                "live container identity, state, or ownership changed",
+            )
+        try:
+            stopped = subprocess.run(
+                [self._runtime_cmd, "stop", container_id],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ContainerDeletionError(
+                container_id, "running", "unknown", str(exc)
+            ) from exc
+        if stopped.returncode != 0:
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "running",
+                stopped.stderr.strip() or "container stop failed",
+            )
+        try:
+            removed = subprocess.run(
+                [self._runtime_cmd, "rm", container_id],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ContainerDeletionError(
+                container_id, "running", "stopped", str(exc)
+            ) from exc
+        if removed.returncode != 0:
+            raise ContainerDeletionError(
+                container_id,
+                "running",
+                "stopped",
+                removed.stderr.strip() or "container remove failed",
+            )
+        self._container_id = None
+        return ContainerDeletionReceipt(container_id, "running", "absent")
 
     def cleanup(self) -> None:
         if self.config.source == "existing_container":
@@ -724,7 +1002,9 @@ class ContainerBackend:
                 host = str(Path(cwd).resolve())
                 if host.startswith(self._host_project_dir):
                     rel = Path(host).relative_to(self._host_project_dir)
-                    workdir = str(Path(self.config.container_workdir) / rel)
+                    workdir = str(
+                        PurePosixPath(self.config.container_workdir, *rel.parts)
+                    )
             except (ValueError, OSError):
                 pass
         if workdir:
@@ -771,10 +1051,13 @@ class ContainerBackend:
         if cid is None:
             result["status"] = "skipped"
             result["error"] = "Container not created — call preflight() first"
+            self._environment_probe_status = "skipped"
             return result
 
         probe_script = (
             "import json\n"
+            "import hashlib\n"
+            "import importlib.metadata\n"
             "import os\n"
             "import platform\n"
             "import sys\n"
@@ -782,9 +1065,15 @@ class ContainerBackend:
             "facts = {\n"
             '    "status": "ok",\n'
             '    "interpreter_path": sys.executable,\n'
+            '    "interpreter_realpath": os.path.realpath(sys.executable),\n'
+            '    "sys_executable": sys.executable,\n'
+            '    "sys_prefix": sys.prefix,\n'
+            '    "sys_base_prefix": sys.base_prefix,\n'
+            '    "python_implementation": platform.python_implementation(),\n'
             '    "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",\n'
             '    "platform": platform.system(),\n'
             '    "platform_machine": platform.machine(),\n'
+            '    "package_inventory_hash": hashlib.sha256("\\n".join(sorted(f"{d.metadata.get(\'Name\')}=={d.version}" for d in importlib.metadata.distributions() if d.metadata.get(\'Name\'))).encode()).hexdigest(),\n'
             '    "cwd": os.getcwd(),\n'
             '    "env_keys": sorted(os.environ.keys()),\n'
             "}\n"
@@ -857,6 +1146,34 @@ class ContainerBackend:
             result["status"] = "probe_failed"
             result["error"] = str(exc)
 
+        self._environment_probe_status = str(result.get("status", "unknown"))
+        if self._environment_probe_status == "ok":
+            try:
+                self._observed_environment_probe = EnvironmentProbe(
+                    status="ok",
+                    interpreter_realpath=result.get("interpreter_realpath"),
+                    sys_executable=result.get("sys_executable"),
+                    sys_prefix=result.get("sys_prefix"),
+                    sys_base_prefix=result.get("sys_base_prefix"),
+                    python_implementation=result.get("python_implementation"),
+                    python_version=result.get("python_version"),
+                    platform=result.get("platform"),
+                    architecture=result.get("platform_machine"),
+                    package_inventory_hash=result.get("package_inventory_hash"),
+                )
+            except ValidationError:
+                self._observed_environment_probe = EnvironmentProbe(
+                    status="error",
+                    error="container environment probe returned incomplete facts",
+                )
+        else:
+            self._observed_environment_probe = EnvironmentProbe(
+                status="error",
+                error=str(
+                    result.get("error")
+                    or f"container environment probe status: {self._environment_probe_status}"
+                )[:1024],
+            )
         return result
 
     def get_execution_context(
@@ -878,7 +1195,9 @@ class ContainerBackend:
                 host = str(Path(cwd).resolve())
                 if host.startswith(self._host_project_dir):
                     rel = Path(host).relative_to(self._host_project_dir)
-                    container_proj = str(Path(self.config.container_workdir) / rel)
+                    container_proj = str(
+                        PurePosixPath(self.config.container_workdir, *rel.parts)
+                    )
             except (ValueError, OSError):
                 pass
 

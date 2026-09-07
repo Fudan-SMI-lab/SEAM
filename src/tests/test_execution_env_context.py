@@ -224,7 +224,9 @@ class TestBaseAwareWorkflowPromptWiring:
     def _load_yaml(self):
         import yaml
         return yaml.safe_load(
-            (WORKFLOWS_DIR / "ppu_migration_v2_auto_vllm018_smoke_baseaware.yaml").read_text()
+            (WORKFLOWS_DIR / "ppu_migration_v2_auto_vllm018_smoke_baseaware.yaml").read_text(
+                encoding="utf-8"
+            )
         )
 
     def test_workflow_loads(self):

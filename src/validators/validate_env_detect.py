@@ -4,6 +4,8 @@ Supports NPU (Ascend), CUDA, and PPU platforms. PPU outputs use
 CUDA-compatible fields with NPU-compatibility fallbacks.
 """
 
+from __future__ import annotations
+
 from core.validator_engine import ValidationDict
 
 

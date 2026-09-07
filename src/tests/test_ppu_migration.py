@@ -102,6 +102,11 @@ class TestPPUPromptContent:
         content = (PROMPTS_DIR / "phase_0_env_detect_ppu.md").read_text(encoding="utf-8")
         assert "PPU-ZW810" in content
 
+    def test_env_detect_ppu_avoids_parallel_tool_barrier(self):
+        content = (PROMPTS_DIR / "phase_0_env_detect_ppu.md").read_text(encoding="utf-8")
+        assert "at most one `bash` tool call in total" in content
+        assert "Never emit parallel or multiple tool calls" in content
+
     def test_env_detect_ppu_outputs_compat_fields(self):
         content = (PROMPTS_DIR / "phase_0_env_detect_ppu.md").read_text(encoding="utf-8")
         assert "npu_detected" in content

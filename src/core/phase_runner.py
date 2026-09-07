@@ -7,8 +7,8 @@ import re
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol, cast, runtime_checkable
+from pathlib import Path, PurePosixPath
+from typing import Dict, Protocol, cast, runtime_checkable
 
 from harness.session.manager import extract_json_response
 
@@ -41,7 +41,7 @@ from validators.validate_project_analysis import validate as validate_project_an
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
 
-JsonObject = dict[str, object]
+JsonObject = Dict[str, object]
 
 CUSTOM_OP_REQUIRED_TERMS = (
     "custom_op",
@@ -108,6 +108,8 @@ def _rewrite_container_to_host_path(
     rel = path_str[len(safe) :].lstrip("/")
     if not rel:
         return project_dir
+    if project_dir.startswith("/"):
+        return str(PurePosixPath(project_dir) / rel)
     return str(Path(project_dir) / rel)
 
 
@@ -118,7 +120,11 @@ class SessionManagerLike(Protocol):
     def get_or_create(self, role: str, lifecycle: str) -> str: ...
 
     def send_command(
-        self, session_id: str, command: str, timeout: int | None = None
+        self,
+        session_id: str,
+        command: str,
+        timeout: int | None = None,
+        retries: int = 2,
     ) -> str: ...
 
 
@@ -141,7 +147,11 @@ class PhaseSpec:
 
     @property
     def artifact_id(self) -> str:
-        return self.prompt_id.removeprefix("phase_")
+        return (
+            self.prompt_id[6:]
+            if self.prompt_id.startswith("phase_")
+            else self.prompt_id
+        )
 
 
 class PhaseRunner:
@@ -456,7 +466,7 @@ class PhaseRunner:
         )
         prompt = inject_phase_boundary(prompt, framework_config=self.framework_config)
 
-        raw_response = session_mgr.send_command(main_session_id, prompt, timeout=None)
+        raw_response = session_mgr.send_command(main_session_id, prompt, timeout=600)
         parsed: JsonObject = dict(extract_json_response(raw_response))
         constraint_summary = str(parsed.get("constraint_summary", ""))
 
@@ -530,7 +540,7 @@ class PhaseRunner:
 
         for attempt in range(1, max_retry + 1):
             raw_response = session_mgr.send_command(
-                review_session_id, active_prompt, timeout=None
+                review_session_id, active_prompt, timeout=600
             )
             session_error = self._session_error_from_response(raw_response)
             if session_error:
@@ -689,6 +699,11 @@ class PhaseRunner:
             "project_dir": str(project_dir),
             "previous_outputs": self._serialize_context(prior_artifacts),
             "report_dir": report_dir,
+            "run_timeline": {
+                "run_started_at": None,
+                "run_ended_at": None,
+                "phases": [],
+            },
         }
         for k, v in self._container_context.items():
             prompt_context.setdefault(k, v)
@@ -1150,7 +1165,10 @@ class PhaseRunner:
     def _build_prompt_context(
         self, phase: PhaseSpec, context: JsonObject
     ) -> dict[str, str]:
-        previous_outputs = context.get("previous_outputs", {})
+        previous_outputs_value = context.get("previous_outputs", {})
+        previous_outputs = (
+            previous_outputs_value if isinstance(previous_outputs_value, dict) else {}
+        )
         prompt_ctx: dict[str, str] = {
             "phase_name": str(context.get("phase_name", phase.prompt_id)),
             "project_dir": str(context.get("project_dir", ".")),
@@ -1203,7 +1221,7 @@ class PhaseRunner:
     def _resolve_timeout(phase: PhaseSpec, context: JsonObject) -> int | None:
         raw_timeout = context.get("timeout", phase.timeout)
         if raw_timeout is None:
-            return None
+            return 600
         if isinstance(raw_timeout, bool):
             return int(raw_timeout)
         if isinstance(raw_timeout, int):

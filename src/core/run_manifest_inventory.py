@@ -1,0 +1,1 @@
+from core.run_manifest_paths import digest_inventory as digest_inventory

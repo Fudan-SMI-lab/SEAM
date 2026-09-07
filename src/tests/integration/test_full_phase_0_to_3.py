@@ -14,7 +14,17 @@ from core.prompt_loader import PromptLoader
 from core.validator_engine import ValidatorEngine
 from harness.session.manager import SessionManager
 
-pytestmark = pytest.mark.skipif(not server_available(), reason="No OpenCode server")
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.opencode,
+    pytest.mark.slow,
+]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def require_opencode_server() -> None:
+    if not server_available():
+        pytest.skip("real OpenCode service or model credentials are unavailable")
 
 
 class PhaseRunnerSessionManager(Protocol):

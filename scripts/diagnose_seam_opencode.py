@@ -317,10 +317,26 @@ def session_message_probe(
 
     if not result["response_text"] and history.get("ok"):
         result["response_text"] = extract_message_text(history.get("json")) or extract_message_text(history.get("body"))
-    result["ok"] = bool(message.get("ok") and result["response_text"])
     result["contains_marker"] = "SEAM_DIAG_OK" in str(result.get("response_text") or "")
-    if not result["ok"] and not result["error"]:
-        result["error"] = "message endpoint returned no usable response text"
+    response_obj = message.get("json") or message.get("body")
+    if isinstance(response_obj, str):
+        try:
+            response_obj = json.loads(response_obj)
+        except (json.JSONDecodeError, TypeError):
+            response_obj = None
+    info_obj = response_obj[0] if isinstance(response_obj, list) and response_obj else (response_obj if isinstance(response_obj, dict) else {})
+    info_obj = info_obj.get("info", info_obj) if isinstance(info_obj, dict) else {}
+    has_api_error = isinstance(info_obj.get("error"), dict)
+    result["ok"] = bool(message.get("ok") and result["contains_marker"] and not has_api_error)
+    if has_api_error:
+        err = info_obj.get("error", {})
+        err_data = err.get("data", {})
+        result["error"] = f"LLM API error: {err.get('name', 'unknown')} (statusCode={err_data.get('statusCode', '?')}): {str(err_data.get('message', ''))[:200]}"
+    elif not result["ok"] and not result["error"]:
+        if result.get("response_text"):
+            result["error"] = f"LLM responded but expected marker not found; response: {str(result['response_text'])[:200]}"
+        else:
+            result["error"] = "message endpoint returned no usable response text"
     return result
 
 
@@ -585,6 +601,10 @@ def summarize(
     elif listener_text and "opencode" not in listener_text.lower():
         cause = "the configured port is occupied by a non-OpenCode process"
         actions.append("Stop the conflicting process or pass SEAM a different `--server_url` using a free local port.")
+    elif direct_status is None and session_direct.get("ok"):
+        cause = "OpenCode /agent endpoint timed out; provider API key or model configuration may be invalid"
+        actions.append("Check the OpenCode server log for provider initialization errors.")
+        actions.append("Verify that API keys in .opencode/opencode.jsonc are valid and the configured model is accessible.")
     elif direct_status == 503:
         cause = "OpenCode is reachable but not ready or misconfigured; /agent returns HTTP 503"
         actions.append("Run `opencode serve --port 4098 --hostname 127.0.0.1` in the foreground and fix the provider/model/API-key error shown in its log.")
@@ -603,8 +623,13 @@ def summarize(
             cause = "OpenCode server is ready for SEAM"
             actions.append("Run SEAM with `--server-no-auto-start` to reuse the verified server, or keep auto-start enabled if no existing server is running.")
         else:
-            cause = "OpenCode session creation works but message round-trip failed"
-            actions.append("Inspect the OpenCode server log and fix model/provider/API-key errors before running SEAM.")
+            probe_err = str(message_probe.get("error") or "")
+            if "APIError" in probe_err or "statusCode=401" in probe_err or "statusCode=403" in probe_err:
+                cause = "OpenCode LLM provider authentication failed; check API keys in .opencode/opencode.jsonc"
+                actions.append("Verify that API keys in .opencode/opencode.jsonc are valid and not expired.")
+            else:
+                cause = "OpenCode session creation works but message round-trip failed"
+                actions.append("Inspect the OpenCode server log and fix model/provider/API-key errors before running SEAM.")
             if message_probe.get("error"):
                 findings.append(f"Message probe error: {message_probe.get('error')}")
 

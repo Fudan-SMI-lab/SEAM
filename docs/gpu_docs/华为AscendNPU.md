@@ -35,3 +35,5 @@
     - 比如：华为昇腾Ascend C算子开发文档：https://www.hiascend.com/document/detail/zh/canncommercial/900/programug/Ascendcopdevg/atlas\_ascendc\_map\_10\_0002.htmlatlas_ascendc_map_10_0002.html
         
     - 直接开箱能用的Docker镜像仓库：https://www.hiascend.com/developer/ascendhub
+
+更多变更，之后在[SEAM网站](https://alidocs.dingtalk.com/i/nodes/4lgGw3P8vRN0nwYrCgzArKaB85daZ90D)中文档更新。
