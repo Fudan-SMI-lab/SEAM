@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SEAM 迁移适配最终汇总报告（NPU · PPU · Muxi）</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+:root {
+    --bg: #ffffff;
+    --bg-secondary: #f8f9fc;
+    --fg: #1a1a2e;
+    --muted: #6b7280;
+    --muted-light: #94a3b8;
+    --border: #e5e7eb;
+    --border-subtle: rgba(0,0,0,0.06);
+    --accent: #2563eb;
+    --accent-light: #eff6ff;
+    --success: #059669;
+    --success-bg: #ecfdf5;
+    --warning: #d97706;
+    --warning-bg: #fffbeb;
+    --danger: #dc2626;
+    --danger-bg: #fef2f2;
+    --code-bg: #f3f4f6;
+    --radius: 8px;
+    --radius-lg: 14px;
+    --shadow-card: 0 2px 16px rgba(0,0,0,0.06);
+    --npu-color: #2563eb;
+    --ppu-color: #7c3aed;
+    --muxi-color: #059669;
+    --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: var(--font-display);
+    color: var(--fg);
+    background: var(--bg-secondary);
+    line-height: 1.7;
+    font-size: 15px;
+    overflow-x: hidden;
+}
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 80% 50% at 20% 20%, rgba(37,99,235,0.03) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 80% 60%, rgba(124,58,237,0.03) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 50% at 50% 80%, rgba(5,150,105,0.03) 0%, transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Navigation */
+.nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 1000;
+    background: rgba(248,249,252,0.94);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 0 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 56px;
+}
+.nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--fg);
+}
+.nav-brand .dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 12px rgba(37,99,235,0.5);
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+    0%, 100% { box-shadow: 0 0 8px rgba(37,99,235,0.3); }
+    50% { box-shadow: 0 0 20px rgba(37,99,235,0.7); }
+}
+.nav-links { display: flex; gap: 2px; list-style: none; }
+.nav-links a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.82rem;
+    padding: 6px 14px;
+    border-radius: 6px;
+    transition: all 0.25s ease;
+}
+.nav-links a:hover { color: var(--accent); background: rgba(37,99,235,0.06); }
+
+/* Hero */
+.hero {
+    position: relative;
+    z-index: 1;
+    padding: 7rem 2rem 3rem;
+    text-align: center;
+    max-width: 900px;
+    margin: 0 auto;
+}
+.hero h1 {
+    font-size: 2.4rem;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #475569 40%, var(--npu-color) 60%, var(--ppu-color) 80%, var(--muxi-color) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.5rem;
+}
+.hero .subtitle {
+    color: var(--muted);
+    font-size: 0.95rem;
+    margin-bottom: 0.3rem;
+}
+.hero .meta {
+    color: var(--muted-light);
+    font-size: 0.82rem;
+}
+
+/* KPI Cards */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1.2rem;
+    max-width: 1000px;
+    margin: 0 auto 2rem;
+    padding: 0 2rem;
+    position: relative;
+    z-index: 1;
+}
+.kpi-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.4rem 1.2rem;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.kpi-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-card);
+}
+.kpi-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+}
+.kpi-card:nth-child(1)::before { background: var(--npu-color); }
+.kpi-card:nth-child(2)::before { background: var(--ppu-color); }
+.kpi-card:nth-child(3)::before { background: var(--muxi-color); }
+.kpi-card:nth-child(4)::before { background: var(--success); }
+.kpi-card .kpi-value {
+    font-size: 1.9rem;
+    font-weight: 800;
+    font-family: "SF Mono", "Fira Code", monospace;
+    letter-spacing: -1px;
+    margin-bottom: 0.2rem;
+}
+.kpi-card:nth-child(1) .kpi-value { color: var(--npu-color); }
+.kpi-card:nth-child(2) .kpi-value { color: var(--ppu-color); }
+.kpi-card:nth-child(3) .kpi-value { color: var(--muxi-color); }
+.kpi-card:nth-child(4) .kpi-value { color: var(--success); }
+.kpi-card .kpi-label {
+    font-size: 0.75rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Content container */
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 2rem;
+    position: relative;
+    z-index: 1;
+}
+
+/* Section */
+.section {
+    margin-bottom: 3rem;
+}
+.section-header {
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.section-header .num {
+    width: 34px; height: 34px;
+    background: linear-gradient(135deg, var(--npu-color), var(--ppu-color));
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #fff;
+    flex-shrink: 0;
+}
+.section-header h2 {
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+.section-header .desc {
+    font-size: 0.78rem;
+    color: var(--muted-light);
+}
+
+/* Platform Grid */
+.platform-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 24px;
+    margin: 24px 0;
+}
+.platform-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    transition: box-shadow 0.2s, transform 0.2s;
+}
+.platform-card:hover {
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    transform: translateY(-2px);
+}
+.platform-card-npu { border-top: 4px solid var(--npu-color); }
+.platform-card-ppu { border-top: 4px solid var(--ppu-color); }
+.platform-card-muxi { border-top: 4px solid var(--muxi-color); }
+.platform-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+.platform-badge {
+    display: inline-block;
+    padding: 4px 14px;
+    border-radius: 6px;
+    font-size: 0.85em;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+.platform-badge-npu { background: #dbeafe; color: #1e40af; }
+.platform-badge-ppu { background: #ede9fe; color: #5b21b6; }
+.platform-badge-muxi { background: #d1fae5; color: #065f46; }
+.platform-chip { color: var(--muted); font-size: 0.82em; }
+.platform-stats {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.platform-stat {
+    flex: 1;
+    min-width: 75px;
+    text-align: center;
+    padding: 12px 6px;
+    background: var(--code-bg);
+    border-radius: var(--radius);
+}
+.platform-stat-value {
+    font-size: 1.4em;
+    font-weight: 700;
+    line-height: 1.2;
+}
+.platform-stat-value.success { color: var(--success); }
+.platform-stat-value.fail { color: var(--danger); }
+.platform-stat-value.info { color: var(--accent); }
+.platform-stat-label {
+    font-size: 0.75em;
+    color: var(--muted);
+    margin-top: 2px;
+}
+.platform-time-info {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 16px;
+    font-size: 0.83em;
+}
+.platform-time-info .label { color: var(--muted); }
+.platform-time-info .value { font-weight: 600; text-align: right; }
+
+/* Chart Wrapper */
+.chart-wrapper {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+.chart-wrapper:hover {
+    box-shadow: 0 2px 20px rgba(37,99,235,0.08);
+}
+.chart-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--fg);
+    margin-bottom: 0.3rem;
+}
+.chart-desc {
+    font-size: 0.76rem;
+    color: var(--muted-light);
+    margin-bottom: 1rem;
+}
+.chart-grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+}
+.chart-grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1.5rem;
+}
+.chart-full { grid-column: 1 / -1; }
+
+/* Tables */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1em 0;
+    font-size: 0.9em;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+thead { background: var(--code-bg); }
+th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border: 1px solid var(--border);
+}
+th {
+    font-weight: 600;
+    color: #374151;
+    white-space: nowrap;
+}
+tr:hover td { background: #f0f4ff; }
+
+/* Bar chart CSS */
+.bar-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.bar {
+    height: 20px;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+.bar-npu { background: var(--npu-color); }
+.bar-ppu { background: var(--ppu-color); }
+.bar-muxi { background: var(--muxi-color); }
+.bar-label {
+    font-size: 0.85em;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* Insight */
+.insight {
+    background: linear-gradient(135deg, rgba(37,99,235,0.06), rgba(5,150,105,0.04));
+    border: 1px solid rgba(37,99,235,0.12);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 1rem 1.3rem;
+    margin: 1.5rem 0;
+    font-size: 0.86rem;
+    color: var(--muted);
+    line-height: 1.7;
+}
+.insight strong { color: var(--fg); }
+.insight em { color: var(--accent); font-style: normal; }
+
+/* Model tag */
+.model-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75em;
+    margin: 1px;
+    background: var(--code-bg);
+    color: var(--fg);
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 2rem;
+    color: var(--muted-light);
+    font-size: 0.8rem;
+    border-top: 1px solid var(--border);
+    margin-top: 3rem;
+}
+.timestamp {
+    color: var(--muted-light);
+    font-size: 0.82em;
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .chart-grid-2, .chart-grid-3 { grid-template-columns: 1fr; }
+    .platform-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav class="nav">
+    <div class="nav-brand">
+        <span class="dot"></span>
+        <span>SEAM 迁移适配 · 最终汇总</span>
+    </div>
+    <ul class="nav-links">
+        <li><a href="#overview">概览</a></li>
+        <li><a href="#platforms">平台对比</a></li>
+        <li><a href="#time-analysis">时间分析</a></li>
+        <li><a href="#cross-platform">跨平台模型</a></li>
+        <li><a href="#findings">关键发现</a></li>
+    </ul>
+</nav>
+
+<!-- Hero -->
+<div class="hero">
+    <h1>SEAM 迁移适配 · 最终汇总报告</h1>
+    <p class="subtitle">覆盖 NPU（昇腾 910B）· PPU（PPU-ZW810）· Muxi（MetaX C550）三大国产 AI 芯片平台</p>
+    <p class="meta">生成时间: 2026-08-07 · 数据来源: 345 份自动化迁移适配测评报告</p>
+</div>
+
+<!-- KPI Cards -->
+<div class="kpi-grid">
+    <div class="kpi-card">
+        <div class="kpi-value">345</div>
+        <div class="kpi-label">报告总数</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-value">345</div>
+        <div class="kpi-label">含完整时间数据</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-value">3</div>
+        <div class="kpi-label">覆盖平台</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-value">100.0%</div>
+        <div class="kpi-label">整体成功率</div>
+    </div>
+</div>
+
+<!-- ═══ Section 1: Platform Overview ═══ -->
+<div class="container">
+<div class="section" id="overview">
+    <div class="section-header">
+        <div class="num">1</div>
+        <div><h2>平台概览</h2><div class="desc">三大国产 AI 芯片平台迁移结果总览</div></div>
+    </div>
+    
+    <div class="platform-grid">
+        
+    <div class="platform-card platform-card-npu">
+        <div class="platform-header">
+            <span class="platform-badge platform-badge-npu">NPU</span>
+            <span class="platform-chip">昇腾 910B</span>
+        </div>
+        <div class="platform-stats">
+            <div class="platform-stat">
+                <div class="platform-stat-value info">118</div>
+                <div class="platform-stat-label">总计</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value success">118</div>
+                <div class="platform-stat-label">✅ 成功</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value fail">0</div>
+                <div class="platform-stat-label">❌ 失败</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value" style="color: var(--success);">100.0%</div>
+                <div class="platform-stat-label">成功率</div>
+            </div>
+        </div>
+        <div class="platform-time-info">
+            <span class="label">平均时间</span><span class="value">14.7 分钟</span>
+            <span class="label">中位数</span><span class="value">12.7 分钟</span>
+            <span class="label">最短</span><span class="value">4.6 分钟</span>
+            <span class="label">最长</span><span class="value">48.3 分钟</span>
+            <span class="label">P95</span><span class="value">29.0 分钟</span>
+            <span class="label">总耗时</span><span class="value">1,734 分钟</span>
+        </div>
+    </div>
+        
+    <div class="platform-card platform-card-ppu">
+        <div class="platform-header">
+            <span class="platform-badge platform-badge-ppu">PPU</span>
+            <span class="platform-chip">PPU-ZW810</span>
+        </div>
+        <div class="platform-stats">
+            <div class="platform-stat">
+                <div class="platform-stat-value info">114</div>
+                <div class="platform-stat-label">总计</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value success">114</div>
+                <div class="platform-stat-label">✅ 成功</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value fail">0</div>
+                <div class="platform-stat-label">❌ 失败</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value" style="color: var(--success);">100.0%</div>
+                <div class="platform-stat-label">成功率</div>
+            </div>
+        </div>
+        <div class="platform-time-info">
+            <span class="label">平均时间</span><span class="value">17.8 分钟</span>
+            <span class="label">中位数</span><span class="value">12.9 分钟</span>
+            <span class="label">最短</span><span class="value">2.6 分钟</span>
+            <span class="label">最长</span><span class="value">82.7 分钟</span>
+            <span class="label">P95</span><span class="value">53.1 分钟</span>
+            <span class="label">总耗时</span><span class="value">2,034 分钟</span>
+        </div>
+    </div>
+        
+    <div class="platform-card platform-card-muxi">
+        <div class="platform-header">
+            <span class="platform-badge platform-badge-muxi">Muxi</span>
+            <span class="platform-chip">MetaX C550</span>
+        </div>
+        <div class="platform-stats">
+            <div class="platform-stat">
+                <div class="platform-stat-value info">113</div>
+                <div class="platform-stat-label">总计</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value success">113</div>
+                <div class="platform-stat-label">✅ 成功</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value fail">0</div>
+                <div class="platform-stat-label">❌ 失败</div>
+            </div>
+            <div class="platform-stat">
+                <div class="platform-stat-value" style="color: var(--success);">100.0%</div>
+                <div class="platform-stat-label">成功率</div>
+            </div>
+        </div>
+        <div class="platform-time-info">
+            <span class="label">平均时间</span><span class="value">13.9 分钟</span>
+            <span class="label">中位数</span><span class="value">7.8 分钟</span>
+            <span class="label">最短</span><span class="value">0.6 分钟</span>
+            <span class="label">最长</span><span class="value">108.5 分钟</span>
+            <span class="label">P95</span><span class="value">41.0 分钟</span>
+            <span class="label">总耗时</span><span class="value">1,575 分钟</span>
+        </div>
+    </div>
+    </div>
+</div>
+
+<!-- ═══ Section 2: Charts ═══ -->
+<div class="section" id="platforms">
+    <div class="section-header">
+        <div class="num">2</div>
+        <div><h2>平台对比图表</h2><div class="desc">迁移耗时、成功率等多维度可视化对比</div></div>
+    </div>
+    
+    <div class="chart-grid-2">
+        <div class="chart-wrapper">
+            <div class="chart-title">📊 各平台迁移报告数量与成功率</div>
+            <div id="chart-platform-bar" style="height:380px"></div>
+        </div>
+        <div class="chart-wrapper">
+            <div class="chart-title">🥧 报告平台分布</div>
+            <div id="chart-platform-pie" style="height:380px"></div>
+        </div>
+    </div>
+    
+    <div class="chart-grid-3">
+        <div class="chart-wrapper">
+            <div class="chart-title">⏱️ NPU 迁移时间分布</div>
+            <div id="chart-npu-gauge" style="height:320px"></div>
+        </div>
+        <div class="chart-wrapper">
+            <div class="chart-title">⏱️ PPU 迁移时间分布</div>
+            <div id="chart-ppu-gauge" style="height:320px"></div>
+        </div>
+        <div class="chart-wrapper">
+            <div class="chart-title">⏱️ Muxi 迁移时间分布</div>
+            <div id="chart-muxi-gauge" style="height:320px"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Section 3: Time Analysis ═══ -->
+<div class="section" id="time-analysis">
+    <div class="section-header">
+        <div class="num">3</div>
+        <div><h2>迁移时间分析</h2><div class="desc">各平台迁移耗时统计与对比</div></div>
+    </div>
+    
+    <div class="chart-wrapper">
+        <div class="chart-title">📈 各平台迁移时间箱线图</div>
+        <div class="chart-desc">展示各平台迁移耗时的分布情况（含平均值、中位数、P95）</div>
+        <div id="chart-time-boxplot" style="height:400px"></div>
+    </div>
+    
+    <h3 style="margin-top: 1.5em;">迁移时间统计对比</h3>
+    <table>
+    <thead>
+        <tr>
+            <th>平台</th>
+            <th>平均时间</th>
+            <th>中位数</th>
+            <th>最短</th>
+            <th>最长</th>
+            <th>P95</th>
+            <th>总耗时</th>
+            <th>可视化</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><span class="platform-badge platform-badge-npu" style="font-size:0.8em;">NPU</span></td>
+            <td>14.7 分钟</td>
+            <td>12.7 分钟</td>
+            <td>4.6 分钟</td>
+            <td>48.3 分钟</td>
+            <td>29.0 分钟</td>
+            <td>1,734 分钟</td>
+            <td><div class="bar-container"><div class="bar bar-npu" style="width:91.30434782608697px;"></div><span class="bar-label">14.7min</span></div></td>
+        </tr>
+        <tr>
+            <td><span class="platform-badge platform-badge-ppu" style="font-size:0.8em;">PPU</span></td>
+            <td>17.8 分钟</td>
+            <td>12.9 分钟</td>
+            <td>2.6 分钟</td>
+            <td>82.7 分钟</td>
+            <td>53.1 分钟</td>
+            <td>2,034 分钟</td>
+            <td><div class="bar-container"><div class="bar bar-ppu" style="width:110.55900621118013px;"></div><span class="bar-label">17.8min</span></div></td>
+        </tr>
+        <tr>
+            <td><span class="platform-badge platform-badge-muxi" style="font-size:0.8em;">Muxi</span></td>
+            <td>13.9 分钟</td>
+            <td>7.8 分钟</td>
+            <td>0.6 分钟</td>
+            <td>108.5 分钟</td>
+            <td>41.0 分钟</td>
+            <td>1,575 分钟</td>
+            <td><div class="bar-container"><div class="bar bar-muxi" style="width:86.33540372670808px;"></div><span class="bar-label">13.9min</span></div></td>
+        </tr>
+    </tbody>
+    </table>
+    
+    <h3 style="margin-top: 1.5em;">迁移时间分布对比</h3>
+    <table>
+    <thead>
+        <tr><th>时间段</th><th>NPU</th><th>PPU</th><th>Muxi</th></tr>
+    </thead>
+    <tbody>
+        <tr><td>&lt; 5 分钟</td><td>4 (3.4%)</td><td>10 (8.8%)</td><td>23 (20.4%)</td></tr>
+<tr><td>5-10 分钟</td><td>30 (25.4%)</td><td>33 (28.9%)</td><td>37 (32.7%)</td></tr>
+<tr><td>10-30 分钟</td><td>79 (66.9%)</td><td>54 (47.4%)</td><td>40 (35.4%)</td></tr>
+<tr><td>30-60 分钟</td><td>5 (4.2%)</td><td>16 (14.0%)</td><td>12 (10.6%)</td></tr>
+<tr><td>&gt; 60 分钟</td><td>0 (0.0%)</td><td>1 (0.9%)</td><td>1 (0.9%)</td></tr>
+<tr><td>无有效数据</td><td>0 (0.0%)</td><td>0 (0.0%)</td><td>0 (0.0%)</td></tr>
+    </tbody>
+    </table>
+    
+    <div class="chart-grid-2" style="margin-top: 1.5rem;">
+        <div class="chart-wrapper">
+            <div class="chart-title">📊 平台迁移时间对比柱状图</div>
+            <div id="chart-time-compare" style="height:380px"></div>
+        </div>
+        <div class="chart-wrapper">
+            <div class="chart-title">🎯 各平台成功率对比</div>
+            <div id="chart-success-rate" style="height:380px"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Section 4: Cross-Platform Models ═══ -->
+<div class="section" id="cross-platform">
+    <div class="section-header">
+        <div class="num">4</div>
+        <div><h2>跨平台覆盖模型</h2><div class="desc">同一模型在多个平台的迁移情况</div></div>
+    </div>
+    
+    <div class="insight">
+        <strong>跨平台覆盖概况：</strong><br>
+        三平台全覆盖模型：<strong>62 个</strong> &nbsp;|&nbsp;
+        两平台覆盖模型：<strong>42 个</strong> &nbsp;|&nbsp;
+        单平台独立模型：<strong>75 个</strong>
+    </div>
+    
+    <h3>三平台全覆盖模型（62 个）</h3>
+    <table>
+    <thead><tr><th>#</th><th>模型名称</th><th>模型来源</th><th>覆盖平台</th></tr></thead>
+    <tbody>
+        <tr><td>1</td><td><strong>AntAngelMed</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>2</td><td><strong>CoROM文本向量-中文-医疗领域-base</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>3</td><td><strong>ESM_protein_localization</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>4</td><td><strong>GLM-OCR</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>5</td><td><strong>Megrez-3B-Omni</strong></td><td><a href="https://huggingface.co/Infinigence/Megrez-3B-Omni" target="_blank">Megrez-3B-Omni</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>6</td><td><strong>RDesign</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>7</td><td><strong>Step-Audio-TTS-3B</strong></td><td><a href="https://huggingface.co/stepfun-ai/Step-Audio-TTS-3B" target="_blank">Step-Audio-TTS-3B</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>8</td><td><strong>Suiren-Foundation-Model</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>9</td><td><strong>Suiren-Property-Prediction</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>10</td><td><strong>esm2_t6_8M_UR50D_rna_binding_site_predictor</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>11</td><td><strong>proteinglm-10b-mlm</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>12</td><td><strong>xTrimoPGLM</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>13</td><td><strong>LucaVirus</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>14</td><td><strong>Pocket2Mol</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>15</td><td><strong>ProteinForceGPT</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>16</td><td><strong>CinDM</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>17</td><td><strong>RNAErnie</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>18</td><td><strong>RNAMSM</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>19</td><td><strong>BioGPT</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>20</td><td><strong>Champ</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>21</td><td><strong>SpliceBERT</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>22</td><td><strong>nucleotide-transformer-500m-1000g</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>23</td><td><strong>DISC-LawLLM</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>24</td><td><strong>StructBERT</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>25</td><td><strong>CAFA5</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>26</td><td><strong>CONCH</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>27</td><td><strong>InverseFoldingEvaluation</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>28</td><td><strong>Nanonets-OCR</strong></td><td><a href="https://huggingface.co/nanonets/Nanonets-OCR-s" target="_blank">Nanonets-OCR-s</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>29</td><td><strong>Nanbeige4.1-3B</strong></td><td><a href="https://huggingface.co/Nanbeige/Nanbeige4.1-3B" target="_blank">Nanbeige4.1-3B</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>30</td><td><strong>BlueLM-7B</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>31</td><td><strong>VulnLLM-R-7B</strong></td><td><a href="https://huggingface.co/virtue-ai-hub/VulnLLM-R-7B" target="_blank">VulnLLM-R-7B</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>32</td><td><strong>ChineseErrorCorrector3-4B</strong></td><td><a href="https://huggingface.co/twnlp/ChineseErrorCorrector3-4B" target="_blank">ChineseErrorCorrector3-4B</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>33</td><td><strong>ChatPLUG-3.7B</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>34</td><td><strong>Hallo3 (高质量图像生成视频)</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>35</td><td><strong>Kolors</strong></td><td><a href="https://huggingface.co/Kwai-Kolors/Kolors" target="_blank">Kwai-Kolors/Kolors</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>36</td><td><strong>BLIP2-Chinese</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>37</td><td><strong>Phi-3-mini</strong></td><td><a href="https://huggingface.co/microsoft/Phi-3-mini-4k-instruct" target="_blank">Phi-3-mini-4k-instruct</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>38</td><td><strong>BGE-M3</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>39</td><td><strong>All-MiniLM-L6-v2</strong></td><td><a href="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2" target="_blank">all-MiniLM-L6-v2</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>40</td><td><strong>proteinglm-3b-mlm</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>41</td><td><strong>proteinglm-1b-clm</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>42</td><td><strong>SeqGPT-560M</strong></td><td><a href="https://huggingface.co/DAMO-NLP/SeqGPT-560M" target="_blank">SeqGPT-560M</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>43</td><td><strong>SpeechGPT-2.0</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>44</td><td><strong>HyenaDNA</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>45</td><td><strong>Fish-Speech</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>46</td><td><strong>GOT-OCR</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>47</td><td><strong>UAV-DETR</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>48</td><td><strong>Spring-Couplet (春联生成模型)</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>49</td><td><strong>GPT3-Chinese</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>50</td><td><strong>Jina-Embeddings-v2</strong></td><td><a href="https://huggingface.co/jinaai/jina-embeddings-v2-base-zh" target="_blank">jina-embeddings-v2-base-zh</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>51</td><td><strong>Orion-14B-Base (猎户星空-14B)</strong></td><td><a href="https://huggingface.co/OrionStarAI/Orion-14B-Base" target="_blank">Orion-14B-Base</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>52</td><td><strong>SimpleAR (文生图0.5B)</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>53</td><td><strong>DAMO-YOLO</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>54</td><td><strong>StarWhisper (星语)</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>55</td><td><strong>ESM2-t12-35m-ur50d</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>56</td><td><strong>InternLM2.5-7B-Chat (书生·浦语2.5)</strong></td><td><a href="https://huggingface.co/internlm/internlm2_5-7b-chat" target="_blank">internlm2_5-7b-chat</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>57</td><td><strong>Zembed-1</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>58</td><td><strong>UNI v2</strong></td><td></td><td>muxi · npu · ppu</td></tr>
+
+        <tr><td>59</td><td><strong>Qwen3-14B (通义千问-14B-Chat-Int4)</strong></td><td><a href="https://huggingface.co/Qwen/Qwen3-14B" target="_blank">Qwen/Qwen3-14B</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>60</td><td><strong>DNA-Mamba2-370M (植物基础DNA大型语言模型)</strong></td><td><a href="https://huggingface.co/zhangtaolab/PlantDNA-Mamba2-370M" target="_blank">PlantDNA-Mamba2-370M</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>61</td><td><strong>Yi-1.5-9B</strong></td><td><a href="https://huggingface.co/01-ai/Yi-1.5-9B" target="_blank">01-ai/Yi-1.5-9B</a></td><td>muxi · npu · ppu</td></tr>
+        <tr><td>62</td><td><strong>IndexTTS-2</strong></td><td><a href="https://huggingface.co/IndexTeam/IndexTTS-2" target="_blank">IndexTeam/IndexTTS-2</a></td><td>muxi · npu · ppu</td></tr>
+    </tbody>
+    </table>
+    
+    <details style="margin:1em 0;">
+        <summary style="cursor:pointer;font-weight:600;color:var(--accent);">展开查看两平台覆盖模型（42 个）</summary>
+        <table style="margin-top:0.5em;">
+        <thead><tr><th>#</th><th>模型名称</th><th>模型来源</th><th>覆盖平台</th></tr></thead>
+        <tbody>
+        <tr><td>1</td><td>3dspeaker</td><td>muxi · ppu</td></tr>
+        <tr><td>2</td><td>ClueAI__PromptCLUE-base-v1-5</td><td>muxi · ppu</td></tr>
+        <tr><td>3</td><td>Fin-R1</td><td>muxi · ppu</td></tr>
+        <tr><td>4</td><td>MinerU</td><td>muxi · npu</td></tr>
+        <tr><td>5</td><td>UNI-main</td><td>muxi · ppu</td></tr>
+        <tr><td>6</td><td>Meta-Llama-3-8B-Instruct</td><td>muxi · ppu</td></tr>
+        <tr><td>7</td><td>evo-1-8k-base</td><td>muxi · npu</td></tr>
+        <tr><td>8</td><td>Evo2</td><td>muxi · ppu</td></tr>
+        <tr><td>9</td><td>iic_multi-modal_clip-vit-base-patch16_zh</td><td>muxi · ppu</td></tr>
+        <tr><td>10</td><td>iic_nlp_convai_text2sql_pretrain_cn</td><td>muxi · ppu</td></tr>
+        <tr><td>11</td><td>proteinglm-1b-mlm</td><td>muxi · ppu</td></tr>
+        <tr><td>13</td><td>GLM-4-9B-0414</td><td>muxi · ppu</td></tr>
+        <tr><td>14</td><td>DeepSeek-R1</td><td>npu · ppu</td></tr>
+        <tr><td>15</td><td>Qwen3-ASR</td><td>muxi · ppu</td></tr>
+        <tr><td>16</td><td>CodeGeeX4-All-9B</td><td>muxi · ppu</td></tr>
+        <tr><td colspan="3" style="text-align:center;color:var(--muted);padding:0.5em">（…以及其他 26 个两平台覆盖模型）</td></tr>
+        </tbody>
+        </table>
+    </details>
+</div>
+
+<!-- ═══ Section 5: Key Findings ═══ -->
+<div class="section" id="findings">
+    <div class="section-header">
+        <div class="num">5</div>
+        <div><h2>关键发现与结论</h2><div class="desc">基于 345 份迁移报告的综合分析</div></div>
+    </div>
+
+    <table>
+    <thead><tr><th>维度</th><th>结论</th></tr></thead>
+    <tbody>
+        <tr>
+            <td>迁移速度最快</td>
+            <td><strong>Muxi（MetaX C550）</strong> 中位数 7.8 分钟，领先其他平台</td>
+        </tr>
+        <tr>
+            <td>迁移一致性最好</td>
+            <td><strong>NPU（昇腾 910B）</strong> P95 仅 29.0 分钟，迁移时间波动最小</td>
+        </tr>
+        <tr>
+            <td>成功率</td>
+            <td>三大平台均为 <strong>100%</strong>（NPU 118 个、PPU 114 个、Muxi 113 个模型全部迁移成功）</td>
+        </tr>
+        <tr>
+            <td>时间集中度</td>
+            <td><strong>Muxi</strong> 53.1% 模型在 10 分钟内完成迁移，效率显著更高</td>
+        </tr>
+        <tr>
+            <td>跨平台覆盖</td>
+            <td><strong>62 个模型</strong>在所有三个平台成功完成迁移适配</td>
+        </tr>
+        <tr>
+            <td>整体效率</td>
+            <td>平均 15.5 分钟/模型，345 个模型全自动化迁移总耗时约 5,342 分钟（约 89.0 小时）</td>
+        </tr>
+    </tbody>
+    </table>
+    
+    <div class="insight" style="margin-top:1.5rem">
+        传统需要数天到数周的人工模型迁移工作被压缩至 <em>分钟级</em>。SEAM 自动化迁移平台在三大国产 AI 芯片（昇腾 NPU · PPU-ZW810 · MetaX C550）上均实现了 <strong>100%</strong> 的迁移成功率，覆盖 <strong>345</strong> 个 AI 模型，为国产 AI 芯片的生态建设提供了强大的自动化迁移能力支撑。
+    </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+    <div>SEAM 迁移适配最终汇总报告 · 数据来源：345 份自动化迁移适配测评报告</div>
+    <div class="timestamp">统计截止 2026-08-07 · 覆盖平台：昇腾 NPU / PPU-ZW810 / MetaX MUXI (C550)</div>
+</div>
+
+</div><!-- .container -->
+
+<!-- ══════════════════════ ECharts Scripts ══════════════════════ -->
+<script>
+(function() {
+    const C = {
+        npu:     '#2563eb',
+        ppu:     '#7c3aed',
+        muxi:    '#059669',
+        success: '#059669',
+        danger:  '#dc2626',
+        gold:    '#f0a500',
+        text:    '#1a1a2e',
+        muted:   '#64748b',
+        surface: '#f0f2f7',
+        green:   '#00c896',
+        orange:  '#ff6b35',
+        red:     '#e94560',
+        cyan:    '#00b4d8',
+    };
+
+    function initChart(id) {
+        const el = document.getElementById(id);
+        if (!el) return null;
+        const chart = echarts.init(el, null, { devicePixelRatio: window.devicePixelRatio || 1 });
+        return chart;
+    }
+
+    const allCharts = [];
+    function reg(chart) { if (chart) allCharts.push(chart); return chart; }
+
+    window.addEventListener('resize', function() {
+        allCharts.forEach(function(c) { try { c.resize(); } catch(e) {} });
+    });
+
+    // Platform data
+    const platNames = ['NPU', 'PPU', 'Muxi'];
+    const platTotals = [118, 114, 113];
+    const platSuccess = [118, 114, 113];
+    const platRates = [100.0, 100.0, 100.0];
+    const platAvgTimes = [14.7, 17.8, 13.9];
+    const platMedianTimes = [12.7, 12.9, 7.8];
+    const platP95Times = [29.0, 53.1, 41.0];
+    const platMaxTimes = [48.3, 82.7, 108.5];
+    const platMinTimes = [4.6, 2.6, 0.6];
+    const platColors = [C.npu, C.ppu, C.muxi];
+
+    // 1. Platform Overview Bar
+    reg(initChart('chart-platform-bar')).setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['报告总数', '成功数', '成功率'], bottom: 0, textStyle: { color: C.muted, fontSize: 11 } },
+        grid: { left: '3%', right: '12%', top: '10%', bottom: '15%', containLabel: true },
+        xAxis: {
+            type: 'category', data: platNames,
+            axisLabel: { color: C.muted, fontSize: 12 },
+            axisLine: { lineStyle: { color: C.muted } }
+        },
+        yAxis: [
+            { type: 'value', name: '数量', nameTextStyle: { color: C.muted }, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } } },
+            { type: 'value', name: '%', max: 105, nameTextStyle: { color: C.muted }, axisLabel: { color: C.muted, formatter: '{value}%' }, splitLine: { show: false } }
+        ],
+        series: [
+            {
+                name: '报告总数', type: 'bar', yAxisIndex: 0,
+                data: platTotals.map(function(v, i) { return { value: v, itemStyle: { color: platColors[i] } }; }),
+                barWidth: '35%', label: { show: true, position: 'top', color: C.text, fontSize: 12, fontWeight: 700 },
+                itemStyle: { borderRadius: [5,5,0,0] }
+            },
+            {
+                name: '成功数', type: 'bar', yAxisIndex: 0,
+                data: platSuccess.map(function(v,i) { return { value: v, itemStyle: { color: platColors[i], opacity: 0.6 } }; }),
+                barWidth: '35%', label: { show: true, position: 'top', color: C.text, fontSize: 11 },
+                itemStyle: { borderRadius: [5,5,0,0] }
+            },
+            {
+                name: '成功率', type: 'line', yAxisIndex: 1,
+                data: platRates,
+                lineStyle: { color: C.success, width: 2.5 },
+                symbol: 'circle', symbolSize: 10,
+                itemStyle: { color: C.success, borderColor: '#fff', borderWidth: 2 },
+                label: { show: true, color: C.success, fontSize: 12, fontWeight: 700, formatter: '{c}%' }
+            }
+        ]
+    });
+
+    // 2. Platform Pie
+    reg(initChart('chart-platform-pie')).setOption({
+        tooltip: { trigger: 'item', formatter: '{b}: {c} 份 ({d}%)' },
+        legend: { bottom: '0%', textStyle: { color: C.muted, fontSize: 11 } },
+        series: [{
+            type: 'pie',
+            radius: ['45%', '75%'],
+            center: ['50%', '45%'],
+            itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 3 },
+            label: { color: C.text, fontSize: 12, formatter: '{b}\n{d}%' },
+            emphasis: { label: { fontSize: 18, fontWeight: 'bold' } },
+            data: [
+                { value: 118, name: 'NPU', itemStyle: { color: C.npu } },
+                { value: 114, name: 'PPU', itemStyle: { color: C.ppu } },
+                { value: 113, name: 'Muxi', itemStyle: { color: C.muxi } }
+            ]
+        }]
+    });
+
+    // 3. Time Boxplot-like chart (using bar + range)
+    reg(initChart('chart-time-boxplot')).setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['平均', 'P95', '范围（最短~最长）'], bottom: 0, textStyle: { color: C.muted, fontSize: 11 } },
+        grid: { left: '3%', right: '5%', top: '10%', bottom: '15%', containLabel: true },
+        xAxis: {
+            type: 'category', data: platNames,
+            axisLabel: { color: C.muted, fontSize: 12 }
+        },
+        yAxis: {
+            type: 'value', name: '分钟',
+            nameTextStyle: { color: C.muted },
+            axisLabel: { color: C.muted },
+            splitLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } }
+        },
+        series: [
+            {
+                name: '平均', type: 'bar',
+                data: platAvgTimes.map(function(v,i) { return { value: v, itemStyle: { color: platColors[i] } }; }),
+                barWidth: '40%',
+                label: { show: true, position: 'top', color: C.text, fontSize: 11, fontWeight: 600, formatter: '{c}min' },
+                itemStyle: { borderRadius: [4,4,0,0] }
+            },
+            {
+                name: 'P95', type: 'bar',
+                data: platP95Times.map(function(v,i) { return { value: v, itemStyle: { color: platColors[i], opacity: 0.5 } }; }),
+                barWidth: '40%',
+                label: { show: true, position: 'top', color: C.muted, fontSize: 10, formatter: 'P95:{c}min' },
+                itemStyle: { borderRadius: [4,4,0,0] }
+            },
+            {
+                name: '范围（最短~最长）',
+                type: 'custom',
+                renderItem: function(params, api) {
+                    var catIndex = api.value(0);
+                    var low = api.value(1);
+                    var high = api.value(2);
+                    var start = api.coord([catIndex-0.15, low]);
+                    var end = api.coord([catIndex+0.15, high]);
+                    return {
+                        type: 'group',
+                        children: [
+                            { type: 'rect', shape: { x: start[0], y: end[1], width: end[0]-start[0], height: start[1]-end[1] }, style: { fill: 'rgba(100,116,139,0.2)', stroke: 'rgba(100,116,139,0.4)', lineWidth: 1, borderRadius: 3 } },
+                            { type: 'line', shape: { x1: start[0], y1: start[1], x2: end[0], y2: start[1] }, style: { stroke: platColors[catIndex], lineWidth: 2 } },
+                            { type: 'line', shape: { x1: start[0], y1: end[1], x2: end[0], y2: end[1] }, style: { stroke: platColors[catIndex], lineWidth: 2 } }
+                        ]
+                    };
+                },
+                data: [
+                    [0, 4.6, 48.3],
+                    [1, 2.6, 82.7],
+                    [2, 0.6, 108.5]
+                ],
+                z: 1
+            }
+        ]
+    });
+
+    // 4. Time Comparison Bar
+    reg(initChart('chart-time-compare')).setOption({
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['平均时间', '中位数', 'P95'], bottom: 0, textStyle: { color: C.muted, fontSize: 11 } },
+        grid: { left: '3%', right: '5%', top: '10%', bottom: '15%', containLabel: true },
+        xAxis: {
+            type: 'category', data: platNames,
+            axisLabel: { color: C.muted, fontSize: 12 }
+        },
+        yAxis: {
+            type: 'value', name: '分钟',
+            nameTextStyle: { color: C.muted },
+            axisLabel: { color: C.muted },
+            splitLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } }
+        },
+        series: [
+            {
+                name: '平均时间', type: 'bar',
+                data: platAvgTimes.map(function(v,i) { return { value: v, itemStyle: { color: platColors[i] } }; }),
+                barWidth: '25%', label: { show: true, position: 'top', fontSize: 10 },
+                itemStyle: { borderRadius: [4,4,0,0] }
+            },
+            {
+                name: '中位数', type: 'bar',
+                data: platMedianTimes.map(function(v,i) { return { value: v, itemStyle: { color: platColors[i], opacity: 0.7 } }; }),
+                barWidth: '25%', label: { show: true, position: 'top', fontSize: 10 },
+                itemStyle: { borderRadius: [4,4,0,0] }
+            },
+            {
+                name: 'P95', type: 'bar',
+                data: platP95Times.map(function(v,i) { return { value: v, itemStyle: { color: platColors[i], opacity: 0.4 } }; }),
+                barWidth: '25%', label: { show: true, position: 'top', fontSize: 10 },
+                itemStyle: { borderRadius: [4,4,0,0] }
+            }
+        ]
+    });
+
+    // 5. Success Rate Gauge-like bar
+    reg(initChart('chart-success-rate')).setOption({
+        tooltip: { trigger: 'axis' },
+        grid: { left: '3%', right: '8%', top: '10%', bottom: '10%', containLabel: true },
+        xAxis: {
+            type: 'category', data: platNames,
+            axisLabel: { color: C.muted, fontSize: 12 }
+        },
+        yAxis: {
+            type: 'value', name: '%', max: 105,
+            nameTextStyle: { color: C.muted },
+            axisLabel: { color: C.muted, formatter: '{value}%' },
+            splitLine: { lineStyle: { color: 'rgba(0,0,0,0.06)' } }
+        },
+        series: [{
+            type: 'bar',
+            data: platRates.map(function(v, i) {
+                return { value: v, itemStyle: { color: v >= 100 ? C.success : (v >= 90 ? C.orange : C.danger) } };
+            }),
+            barWidth: '40%',
+            itemStyle: { borderRadius: [6,6,0,0] },
+            label: { show: true, position: 'top', color: C.text, fontSize: 14, fontWeight: 700, formatter: '{c}%' },
+            markLine: {
+                silent: true, symbol: 'none',
+                lineStyle: { color: C.gold, type: 'dashed', width: 2 },
+                label: { color: C.gold, fontSize: 10, formatter: '90% 基准线' },
+                data: [{ yAxis: 90 }]
+            }
+        }]
+    });
+
+    // 6. Platform gauges (simplified pie gauges for time distribution)
+    function platformGauge(id, pkey, avgTime, p95Time, rate, under10Pct) {
+        reg(initChart(id)).setOption({
+            series: [
+                {
+                    type: 'gauge', center: ['25%', '55%'], radius: '75%',
+                    startAngle: 200, endAngle: -20,
+                    min: 0, max: 120,
+                    splitNumber: 8,
+                    axisLine: { show: true, lineStyle: { width: 12, color: [[rate/100, C.success], [1, 'rgba(0,0,0,0.08)']] } },
+                    axisTick: { show: false },
+                    splitLine: { show: false },
+                    axisLabel: { show: false },
+                    pointer: { length: '60%', width: 4, itemStyle: { color: C.text } },
+                    detail: { formatter: '{value}%', offsetCenter: [0, '66%'], fontSize: 20, fontWeight: 800, color: C.success },
+                    title: { offsetCenter: [0, '84%'], fontSize: 10, color: C.muted },
+                    data: [{ value: parseFloat(rate.toFixed(1)), name: '成功率' }]
+                },
+                {
+                    type: 'gauge', center: ['75%', '55%'], radius: '75%',
+                    startAngle: 200, endAngle: -20,
+                    min: 0, max: Math.max(p95Time * 1.2, avgTime * 2, 60),
+                    splitNumber: 6,
+                    axisLine: { show: true, lineStyle: { width: 12, color: [[avgTime / Math.max(p95Time * 1.2, avgTime * 2, 60), platColors[['npu','ppu','muxi'].indexOf(pkey)]], [1, 'rgba(0,0,0,0.08)']] } },
+                    axisTick: { show: false },
+                    splitLine: { show: false },
+                    axisLabel: { show: false },
+                    pointer: { length: '60%', width: 4, itemStyle: { color: C.text } },
+                    detail: { formatter: '{value}min', offsetCenter: [0, '66%'], fontSize: 20, fontWeight: 800, color: platColors[['npu','ppu','muxi'].indexOf(pkey)] },
+                    title: { offsetCenter: [0, '84%'], fontSize: 10, color: C.muted },
+                    data: [{ value: parseFloat(avgTime.toFixed(1)), name: '平均耗时' }]
+                }
+            ]
+        });
+    }
+
+    platformGauge('chart-npu-gauge', 'npu', 14.7, 29.0, 100.0, 28.8);
+    platformGauge('chart-ppu-gauge', 'ppu', 17.8, 53.1, 100.0, 37.7);
+    platformGauge('chart-muxi-gauge', 'muxi', 13.9, 41.0, 100.0, 53.1);
+
+})();
+</script>
+
+</body>
+</html>
