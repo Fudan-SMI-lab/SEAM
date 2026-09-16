@@ -429,6 +429,7 @@ output_projects/<项目名>_<时间戳>/
 └── migration_reports/           # 项目验收报告
     ├── USAGE.md                 #   实际环境、依赖快照和复现命令
     ├── SUMMARY_REPORT.md        #   验收总结
+    ├── MIGRATION_REPORT.md      #   统一迁移测评报告（正文 8 节 + 附录）
     ├── report_manifest.json     #   已发布报告及 SHA-256 清单
     ├── operator_inventory.json  #   算子清单
     ├── migration_manifest.json  #   闭包清单

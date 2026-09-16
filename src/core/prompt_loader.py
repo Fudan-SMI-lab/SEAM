@@ -134,6 +134,14 @@ class PromptLoader:
         for key, value in context.items():
             result = result.replace(f"{{{key}}}", str(value))
 
+        if phase_id in {"phase_6_report", "phase_6_report_ppu", "phase_6_report_musa"}:
+            from core.migration_report import phase6_evidence_index, report_skill_markdown
+
+            # Append after substitution: braces in the user's format reference
+            # are examples, not PromptLoader context placeholders.
+            result += "\n\n## Required unified migration report skill\n\n" + report_skill_markdown()
+            result += "\n\n" + phase6_evidence_index(str(context.get("report_dir", "")))
+
         return result
 
     def list_prompts(self) -> list[str]:

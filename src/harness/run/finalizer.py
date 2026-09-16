@@ -189,6 +189,31 @@ def finalize_run(request: RunFinalizationRequest) -> FinalizationResult:
             if request.summary_required:
                 finalization_failed = True
 
+    if persisted_summary_path is not None:
+        try:
+            from core.migration_report import generate_migration_report
+            from .report_publication import publish_unified_report
+
+            unified = generate_migration_report(
+                report_dir,
+                run_id=str(request.identity.run_id),
+                project_dir=request.identity.temp_dir,
+            )
+            if outcome in {TerminalOutcome.PASSED, TerminalOutcome.PASSED_WITH_REVIEWS}:
+                project = Path(request.identity.temp_dir)
+                if project.is_dir() and not project.is_symlink():
+                    publish_unified_report(unified, project)
+            logger.info("Unified migration report: %s", unified)
+        except Exception as exc:
+            # Report delivery is separate from the frozen migration outcome.
+            detail = redact_sensitive_text(str(exc))
+            logger.warning("Unified migration report failed: %s", detail)
+            diagnostics.append(
+                FinalizationDiagnostic(
+                    FinalizationStage.UNIFIED_REPORT, type(exc).__name__, detail,
+                )
+            )
+
     persisted_diagnostics_path: str | None = None
     if diagnostics:
         diagnostics_path = report_dir / "finalization_diagnostics.json"

@@ -137,6 +137,7 @@ class FinalizationStage(str, Enum):
     RUNTIME_REPORT = "runtime_report"
     ARTIFACT_FREEZE = "artifact_freeze"
     SUMMARY_WRITE = "summary_write"
+    UNIFIED_REPORT = "unified_report"
 
     @classmethod
     def callback_stages(cls) -> tuple[FinalizationStage, ...]:

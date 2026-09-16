@@ -25,6 +25,7 @@ from core.phase6_fallback import (
     resolve_phase6_timeout,
 )
 from core.prompt_loader import PromptLoader
+from core.migration_report import ensure_phase6_unified_report
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.types import PhaseDefinition, RuntimeSkillsConfig, WorkflowDefinition
 from core.validation_correction import (
@@ -752,6 +753,12 @@ class PhaseRunner:
                     "project_dir": str(project_dir),
                 }
 
+        report = ensure_phase6_unified_report(
+            report,
+            report_dir=report_dir,
+            project_dir=str(project_dir),
+            prior_outputs=prior_artifacts,
+        )
         raw_path = artifact_store.save_phase_output("phase_6_report", report, attempt=1)
         canonical_path = artifact_store.mark_validated("phase_6_report", report)
         _ = artifact_store.write_journal(

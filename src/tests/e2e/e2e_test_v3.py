@@ -392,6 +392,9 @@ def print_summary(
     if migration_reports_dir is not None:
         print(f"- Migration reports dir: {migration_reports_dir}")
     print(f"- SEAM run report dir: {summary.output_dir}")
+    unified_report = Path(summary.output_dir) / "MIGRATION_REPORT.md"
+    if unified_report.is_file():
+        print(f"- Unified migration report: {unified_report}")
     print(f"- Workflow: {summary.workflow_path}")
     print(f"- Sessions: {summary.session_count}")
     print(f"- Commands: {summary.command_count}")

@@ -1003,6 +1003,19 @@ class WorkflowExecutor:
         except Exception as exc:
             logger.error("workflow_end hook failed: %s", exc)
 
+        try:
+            from core.migration_report import generate_migration_report
+
+            generate_migration_report(
+                Path(self.output_dir),
+                artifact_dir=Path(self.artifact_store.artifact_dir),
+                prior_outputs=collect_phase6_prior_state(self.state),
+                timeline=self._build_run_timeline(),
+                project_dir=self.project_dir,
+            )
+        except Exception as exc:
+            logger.warning("Unified report generation failed: %s", exc)
+
         # 6. Cleanup container execution backend (if configured)
         if not self._defer_execution_backend_cleanup:
             self._cleanup_execution_backend()
@@ -1707,6 +1720,19 @@ class WorkflowExecutor:
                     )
                 return "failure", {**output, "validation_errors": validation_errors}
 
+        if phase.id == "phase_6_report":
+            from core.migration_report import ensure_phase6_unified_report
+
+            prior = collect_phase6_prior_artifacts(self.artifact_store)
+            prior.update(collect_phase6_prior_state(state))
+            output = ensure_phase6_unified_report(
+                output,
+                report_dir=str(input_ctx["report_dir"]),
+                project_dir=self.project_dir,
+                prior_outputs=prior,
+                timeline=self._build_run_timeline(),
+            )
+
         # 8. Save to artifact store
         try:
             self.artifact_store.save_phase_output(phase.id, output)
@@ -1751,6 +1777,7 @@ class WorkflowExecutor:
             report_dir=report_dir,
             prior_outputs=prior_outputs,
             reason=reason,
+            timeline=self._build_run_timeline(),
         )
 
     def _llm_timeout_for_phase(self, phase: PhaseDefinition) -> int | None:
@@ -2108,7 +2135,10 @@ class WorkflowExecutor:
         filtered_state = self._filter_previous_outputs(phase, state)
         serialized_state = {}
         for k, v in filtered_state.items():
-            if isinstance(v, dict):
+            if isinstance(v, dict) and phase.id == "phase_6_report":
+                # Nested metrics/environment facts are needed by the report skill.
+                serialized_state[k] = v
+            elif isinstance(v, dict):
                 sanitized = {
                     kk: vv
                     for kk, vv in v.items()

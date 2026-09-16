@@ -617,7 +617,14 @@ def test_run_phase_6_saves_reports_and_manifest(tmp_path: Path) -> None:
     result = runner.run_phase_6(str(tmp_path), artifact_store, session_mgr)
 
     assert result["phase_id"] == "phase_6_report"
-    assert result["report_paths"] == expected_paths
+    assert result["report_paths"] == expected_paths + [
+        os.path.join(report_dir, name) for name in (
+            "MIGRATION_REPORT.md", "migration_report_facts.json", "migration_report_manifest.json"
+        )
+    ]
+    unified = Path(report_dir, "MIGRATION_REPORT.md").read_text(encoding="utf-8")
+    assert "3. 报告简述" in unified
+    assert str(tmp_path / ".venv" / "bin" / "python") in unified
     assert result["migration_summary"] == {"files_migrated": 12, "files_skipped": 3}
 
     saved = artifact_store.load_phase_output("phase_6_report")

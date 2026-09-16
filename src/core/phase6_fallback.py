@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from core.migration_report import ensure_phase6_unified_report
+
 PHASE6_DEFAULT_TIMEOUT = 600
 PHASE6_TIMEOUT_CONFIG_KEYS = (
     "session_timeout_phase6",
@@ -75,6 +77,7 @@ def build_phase6_fallback_report(
     report_dir: str,
     prior_outputs: dict[str, Any],
     reason: str,
+    timeline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     report_root = Path(report_dir)
     report_root.mkdir(parents=True, exist_ok=True)
@@ -107,14 +110,20 @@ def build_phase6_fallback_report(
         _atomic_write_text(path, content)
         report_paths.append(str(path))
 
-    return {
-        "phase_id": "phase_6_report",
-        "report_paths": report_paths,
-        "migration_summary": migration_summary,
-        "project_dir": str(project_dir),
-        "fallback": True,
-        "fallback_reason": reason,
-    }
+    return ensure_phase6_unified_report(
+        {
+            "phase_id": "phase_6_report",
+            "report_paths": report_paths,
+            "migration_summary": migration_summary,
+            "project_dir": str(project_dir),
+            "fallback": True,
+            "fallback_reason": reason,
+        },
+        report_dir=report_dir,
+        project_dir=project_dir,
+        prior_outputs=prior_outputs,
+        timeline=timeline,
+    )
 
 
 def _phase_statuses(prior_outputs: dict[str, Any]) -> dict[str, str]:

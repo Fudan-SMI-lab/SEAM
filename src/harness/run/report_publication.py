@@ -178,3 +178,33 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def publish_unified_report(source: Path, project_dir: Path) -> None:
+    """Refresh the final report after terminal facts are available.
+
+    Only augment an already published successful report bundle. Failed runs
+    retain their diagnostic report in the run output directory.
+    """
+    destination_root = project_dir / "migration_reports"
+    if destination_root.is_symlink():
+        raise ReportPublicationError("Migration report directory must not be a symlink")
+    if not destination_root.is_dir():
+        return
+    manifest_path = destination_root / "report_manifest.json"
+    if manifest_path.is_symlink():
+        raise ReportPublicationError("Report manifest must not be a symlink")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    published = manifest.get("reports", [])
+    names = ("MIGRATION_REPORT.md", "migration_report_facts.json", "migration_report_manifest.json")
+    retained = [entry for entry in published if entry.get("name") not in names]
+    for name in names:
+        original = source.parent / name
+        destination = destination_root / name
+        _atomic_copy(original, destination)
+        retained.append(asdict(PublishedReport(
+            name=name, source=str(original), destination=str(destination),
+            size_bytes=destination.stat().st_size, sha256=_sha256(destination),
+        )))
+    manifest["reports"] = retained
+    _atomic_write_json(manifest_path, manifest)
