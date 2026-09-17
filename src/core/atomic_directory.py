@@ -47,6 +47,15 @@ class _RenameAt2Syscall(Protocol):
 
 
 def rename_directory_no_replace(source: Path, destination: Path) -> None:
+    if sys.platform == "darwin":
+        library = ctypes.CDLL(None, use_errno=True)
+        rename_exclusive = library.renamex_np
+        rename_exclusive.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        rename_exclusive.restype = ctypes.c_int
+        # Darwin RENAME_EXCL is atomic and never replaces an existing target.
+        if rename_exclusive(os.fsencode(source), os.fsencode(destination), 0x00000004):
+            _raise_last_error(destination)
+        return
     if sys.platform.startswith("linux"):
         library = ctypes.CDLL(None, use_errno=True)
         try:

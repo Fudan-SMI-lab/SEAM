@@ -10,6 +10,7 @@ import pytest
 
 from core import (
     atomic_file,
+    receipt_directory_io,
     phase5_attempt_receipt,
     phase5_attempt_receipt_persistence,
 )
@@ -120,6 +121,17 @@ def test_receipt_lock_cleanup_preserves_replacement(
         raising=False,
     )
 
+    if sys.platform != "linux" and os.name != "nt":
+        original_remove = receipt_directory_io._remove_owned_at
+
+        def replace_relative_lock(directory, name, expected):
+            if name == lock_path.name:
+                lock_path.unlink()
+                lock_path.write_bytes(replacement)
+            original_remove(directory, name, expected)
+
+        monkeypatch.setattr(receipt_directory_io, "_remove_owned_at", replace_relative_lock)
+
     finalized = finalize_attempt_receipt(
         receipt_path,
         custom_op_gate=CustomOpGateEvidence(status=CustomOpGateStatus.INACTIVE),
@@ -179,6 +191,16 @@ def test_initial_receipt_parent_sync_failure_rolls_back_publication(
         raise OSError("forced receipt directory sync failure")
 
     monkeypatch.setattr(atomic_file, "_fsync_parent", fail_directory_sync)
+    if sys.platform != "linux" and os.name != "nt":
+        original_fsync = os.fsync
+
+        def fail_fd_sync(descriptor):
+            import stat
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError("forced receipt directory sync failure")
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(receipt_directory_io.os, "fsync", fail_fd_sync)
 
     with pytest.raises(OSError, match="forced receipt directory sync failure"):
         _ = store.save_shell_attempt_artifacts(

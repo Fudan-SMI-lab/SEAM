@@ -168,6 +168,24 @@ def test_receipt_cas_preserves_successor_after_parent_replacement(
         swap_after_load,
     )
 
+    import sys
+    from core import receipt_directory_io
+
+    if sys.platform != "linux" and os.name != "nt":
+        original_read_at = receipt_directory_io._read_at
+
+        def swap_after_relative_read(directory, name):
+            nonlocal swapped
+            result = original_read_at(directory, name)
+            if name == receipt_path.name and not swapped:
+                swapped = True
+                shell_attempts.rename(original_parent)
+                shell_attempts.mkdir()
+                receipt_path.write_bytes(successor)
+            return result
+
+        monkeypatch.setattr(receipt_directory_io, "_read_at", swap_after_relative_read)
+
     with pytest.raises((AttemptReceiptError, OSError)):
         _ = finalize_attempt_receipt(
             receipt_path,

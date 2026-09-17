@@ -41,6 +41,7 @@ def venv_phase2_response(venv_python: str) -> str:
         capture_output=True,
         text=True,
         timeout=30,
+        check=True,
     )
     fp = VenvFingerprint.model_validate_json(result.stdout)
     return json.dumps(

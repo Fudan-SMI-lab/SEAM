@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import secrets
 import stat
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -91,6 +92,14 @@ def write_attempt_receipt(
     try:
         parent_identity = lock_identity(os.fstat(parent_descriptor))
         _require_parent_identity(path.parent, parent_identity)
+        if not sys.platform.startswith("linux"):
+            from core.receipt_directory_io import write_receipt_at
+
+            write_receipt_at(
+                parent_descriptor, path.name, receipt, previous,
+                lambda: _require_parent_identity(path.parent, parent_identity),
+            )
+            return
         anchored = Path(f"/proc/self/fd/{parent_descriptor}") / path.name
         _write_attempt_receipt(
             anchored,

@@ -11,11 +11,14 @@ import subprocess
 import sys
 import tempfile
 import venv
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
 import pytest
+
+from .e2e_v3_report_fixture import install_report_fixture
 
 import harness.server.lifecycle as server_lifecycle
 import harness.session.manager as manager_module
@@ -108,6 +111,7 @@ def run_direct_seal_parent(
     seal_manifest: bool = True,
     save_trace: bool = False,
 ) -> DirectSealParent:
+    install_report_fixture(monkeypatch)
     root = _exclusive_scenario_root(tmp_path, scenario.run_hex)
     project_dir = root / "project"
     project_dir.mkdir()
@@ -115,7 +119,7 @@ def run_direct_seal_parent(
     output_base = root / "output"
     output_base.mkdir()
     venv_dir = root / "venv"
-    venv.create(venv_dir, with_pip=False, clear=True)
+    venv.create(venv_dir, with_pip=False, clear=True, symlinks=os.name != "nt")
     venv_python = str(venv_dir / "Scripts" / "python.exe")
     if not Path(venv_python).exists():
         venv_python = str(venv_dir / "bin" / "python")

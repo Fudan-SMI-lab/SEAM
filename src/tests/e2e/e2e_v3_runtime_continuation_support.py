@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from .e2e_v3_report_fixture import install_report_fixture
+
 import harness.server.lifecycle as server_lifecycle
 import harness.session.manager as manager_module
 from core.continuation_environment_models import RetainedEnvironmentProbeRequest
@@ -147,6 +149,7 @@ def run_prepared_continuation(
     session_script: SessionScript | None = None,
     save_agent_trace: bool | None = None,
 ) -> ContinuationRunResult:
+    install_report_fixture(monkeypatch)
     manager: ScriptedSessionManager | None = None
 
     def manager_factory(**kwargs) -> ScriptedSessionManager:

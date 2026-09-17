@@ -33,7 +33,7 @@ from core.types import (
 from core.runtime_skill_resolver import RuntimeSkillBundle, RuntimeSkillResolver
 from core.variable_resolver import VariableResolver
 from core.workflow_condition_policy import ConditionRequest, evaluate_condition
-from core.workflow_dispatch_policy import select_dispatch_route
+from core.workflow_dispatch_policy import DispatchRouteError, select_dispatch_route
 from core.workflow_stagnation_policy import StagnationState, reduce_stagnation
 from core.workflow_stop_policy import StopCondition, select_stop_status
 from core.workflow_transition_policy import TransitionRequest, plan_next_phase
@@ -889,6 +889,9 @@ class WorkflowExecutor:
                     status = "failure"
                     output = {"error": f"unknown_phase_type:{phase_type}"}
 
+            except DispatchRouteError as exc:
+                status = "failure"
+                output = exc.as_output()
             except Exception as exc:
                 logger.exception("Phase '%s' raised exception: %s", phase.id, exc)
                 status = "failure"
@@ -4231,12 +4234,7 @@ class WorkflowExecutor:
                 decision.target,
             )
             return decision.target
-        logger.warning(
-            "Dispatch route '%s' not found in %s",
-            decision.route_key,
-            list(decision.available_routes),
-        )
-        return None
+        raise DispatchRouteError(decision)
 
     # ── Loop phase ──────────────────────────────────────────────────────
 
@@ -4544,6 +4542,16 @@ class WorkflowExecutor:
                     "stagnation_count": loop_state.get("stagnation_count", 0),
                 },
             )
+
+            # Routing failure is terminal even if a previous smoke test returned 0.
+            # Never let a stale success condition hide a missing repair decision.
+            if "dispatch_error" in step_outputs:
+                final_status = (
+                    iter_status
+                    if iter_status == ReviewOutcome.IMPROVEMENT_ERROR.value
+                    else "failure"
+                )
+                break
 
             # 4b. Check stop conditions
             stop_conds = (
@@ -5426,6 +5434,10 @@ class WorkflowExecutor:
 
             except ContextExhaustedError:
                 raise
+            except DispatchRouteError as exc:
+                phase_status = "failure"
+                phase_output = exc.as_output()
+                step_outputs["dispatch_error"] = phase_output
             except SessionCommandError as exc:
                 logger.warning(
                     "Sub-phase '%s' session command failed: %s", phase_id, exc
@@ -5493,7 +5505,11 @@ class WorkflowExecutor:
                     isinstance(phase_output, dict)
                     and "validation_errors" in phase_output
                 )
-                if sub_on_failure == "break" or validation_failed:
+                if (
+                    sub_on_failure == "break"
+                    or validation_failed
+                    or "dispatch_error" in step_outputs
+                ):
                     break
 
         return {

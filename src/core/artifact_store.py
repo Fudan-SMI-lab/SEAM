@@ -4,6 +4,7 @@ import json
 import os
 import re
 import stat
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -15,12 +16,21 @@ from core.phase5_attempt_receipt import (
     ShellAttemptExecution,
 )
 from core.phase5_transaction import Phase5Transaction
+from core.review_gate import ReviewGate
 
 _SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 def _phase_key(phase_id: str) -> str:
     return phase_id[6:] if phase_id.startswith("phase_") else phase_id
+
+
+def _runtime_json_default(value: object) -> dict[str, Any]:
+    # Keep the complete review evidence in reports and checkpoints. Do not use
+    # default=str: opaque strings cannot be audited or consumed on continuation.
+    if isinstance(value, ReviewGate):
+        return asdict(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 class ArtifactStore:
@@ -149,7 +159,7 @@ class ArtifactStore:
         filename = f"phase_{key}_attempt{attempt}.json"
         filepath = os.path.join(self.raw_dir, filename)
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, default=_runtime_json_default)
         return filepath
 
     def load_phase_output(self, phase_id: str) -> dict[str, Any] | None:
@@ -166,7 +176,7 @@ class ArtifactStore:
         filename = f"phase_{key}_canonical.json"
         filepath = os.path.join(self.validated_dir, filename)
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, default=_runtime_json_default)
         return filepath
 
     @staticmethod
@@ -189,7 +199,7 @@ class ArtifactStore:
 
     def write_journal(self, entry: dict[str, Any]) -> str:
         with open(self.journal_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(json.dumps(entry, default=_runtime_json_default) + "\n")
         return self.journal_path
 
     def get_journal(self) -> list[dict[str, Any]]:
@@ -205,7 +215,7 @@ class ArtifactStore:
 
     def save_checkpoint(self, state: dict[str, Any]) -> str:
         with open(self.checkpoint_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+            json.dump(state, f, indent=2, default=_runtime_json_default)
         return self.checkpoint_path
 
     def load_checkpoint(self) -> dict[str, Any] | None:

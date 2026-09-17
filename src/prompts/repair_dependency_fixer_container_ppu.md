@@ -98,3 +98,22 @@ Do NOT `pip install` these from public PyPI — they can overwrite PPU-built whe
 3. **Pin to vendor versions**: if install is needed, use the specific version provided by the PPU image.
 4. **Use --no-deps when possible**: avoid pulling in transitive dependencies that might conflict.
 5. **Inspect the container base Python environment first**. Use the base env interpreter by default when installing or verifying packages. Create a project-local `.venv` only when explicitly required by the project — do not assume `.venv` exists.
+
+### Missing isolated build dependencies
+
+For errors such as `setuptools>=77.0.3` missing from the private index, inspect
+`pyproject.toml` `[build-system].requires` and the PEP 517 build-isolation log.
+A package installed in the runtime is not automatically visible in an isolated
+build environment. Resolve pure-Python build tools from the approved wheelhouse
+or a configured domestic mirror; download only those tools at explicit compatible
+versions into a project-local wheelhouse, and record the source, versions and
+commands for replay. Do not add a public extra index to the entire vendor package
+installation: it may replace PPU torch, vllm or sglang wheels.
+
+Before using `--no-build-isolation`, verify every declared build requirement in
+the actual target interpreter, install the pinned build tools there, then rerun
+the original build in the same retained container. Never use the flag merely to
+suppress a missing dependency. If no approved source supplies a required tool,
+report `build_dependency_unavailable` with the requirement, attempted sources,
+and the next manual provisioning step; do not repeatedly run the same failing pip
+command. Include the original error and this diagnosis in `summary`.

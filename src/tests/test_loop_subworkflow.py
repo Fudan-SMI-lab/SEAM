@@ -12,6 +12,7 @@ from core.types import (
     SubWorkflowDefinition,
 )
 from core.workflow_executor import WorkflowExecutor
+from core.workflow_dispatch_policy import DispatchRouteError
 
 
 def write_runtime_skill(root: Path, name: str, content: str | None = None) -> Path:
@@ -255,8 +256,9 @@ class TestDispatchRouting:
         )
         assert target == "fix_code"
 
-    def test_dispatch_unknown_route(self, temp_dir):
-        """Unknown route should return None."""
+    @pytest.mark.parametrize("role", ["unknown_role", "", None])
+    def test_dispatch_unknown_route(self, temp_dir, role):
+        """A missing route must terminate rather than silently skip repair."""
         wf = WorkflowDefinition(name="disp", version="1.0", phases=[], terminals=[])
         session_mgr = MagicMock()
         artifact_store = MagicMock()
@@ -276,12 +278,12 @@ class TestDispatchRouting:
             "routes": {"code_adapter": "fix_code"},
         }
 
-        target = executor._execute_dispatch_phase(
-            phase, {}, {},
-            loop_vars={}, loop_state={},
-            step_outputs={"error_analysis": {"repair_role": "unknown_role"}},
-        )
-        assert target is None
+        with pytest.raises(DispatchRouteError, match="invalid_dispatch_route"):
+            executor._execute_dispatch_phase(
+                phase, {}, {},
+                loop_vars={}, loop_state={},
+                step_outputs={"error_analysis": {"repair_role": role}},
+            )
 
     def test_dispatch_uses_error_analysis_repair_role_not_handoff_role(self, temp_dir):
         wf = WorkflowDefinition(name="disp", version="1.0", phases=[], terminals=[])
@@ -463,3 +465,29 @@ class TestConditionallySkippedPhase:
             loop_state={"iteration": 1},
         )
         assert result is False
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_invalid_dispatch_stops_loop_before_fixer_and_success_condition(
+    loop_workflow, temp_dir, exit_code
+):
+    swf = loop_workflow.sub_workflows["repair_loop"]
+    swf.phases = [
+        {"id": "run_cmd", "type": "shell", "command": "ignored"},
+        {"id": "repair_dispatch", "type": "dispatch",
+         "params": {"route_field": "", "routes": {"code_adapter": "fix_code"}}},
+        {"id": "fix_code", "type": "llm", "agent": "code_adapter"},
+    ]
+    executor = WorkflowExecutor(
+        loop_workflow, MagicMock(), MagicMock(), MagicMock(), MagicMock(),
+        project_dir=temp_dir, output_dir=temp_dir,
+    )
+    with patch.object(executor, "_execute_shell_phase", return_value=(
+        "success" if exit_code == 0 else "failure",
+        {"script_exit_code": exit_code},
+    )), patch.object(executor, "_execute_llm_phase") as fixer:
+        result = executor._execute_loop_phase(loop_workflow.phases[0], {}, {})
+    assert result["status"] == "failure"
+    assert result["iterations"] == 1
+    assert result["loop_state"]["dispatch_error"]["failure_kind"] == "invalid_dispatch_route"
+    fixer.assert_not_called()

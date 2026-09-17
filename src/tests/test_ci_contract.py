@@ -146,7 +146,7 @@ def test_pull_request_workflow_runs_exact_hardware_free_gate() -> None:
     triggers = workflow["on"]
     assert isinstance(triggers, dict)
     assert "pull_request" in triggers
-    assert triggers["push"] == {"branches": [PUSH_BRANCH]}
+    assert triggers["push"] == {"branches": [PUSH_BRANCH, "v1.3.1"]}
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)

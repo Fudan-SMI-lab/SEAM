@@ -8,6 +8,8 @@ from uuid import UUID
 
 import pytest
 
+from .e2e_v3_report_fixture import install_report_fixture
+
 import harness.server.lifecycle as server_lifecycle
 import harness.session.manager as manager_module
 import core.execution_backend as backend_module
@@ -55,6 +57,7 @@ def run_runtime_scenario(
     monkeypatch: pytest.MonkeyPatch,
     scenario: RuntimeScenario,
 ) -> RuntimeResult:
+    install_report_fixture(monkeypatch)
     scenario_root = tmp_path.parent / scenario.run_hex[:8]
     scenario_root.mkdir()
     report_root = scenario_root / "r"

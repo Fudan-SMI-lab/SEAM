@@ -26,3 +26,22 @@ def select_dispatch_route(
         route_key = str(resolved_route)
     routes = parameter_routes or transition_routes
     return DispatchDecision(route_key, routes.get(route_key), tuple(routes))
+
+
+class DispatchRouteError(ValueError):
+    """An analyzer did not supply a usable next step."""
+
+    def __init__(self, decision: DispatchDecision) -> None:
+        self.decision = decision
+        super().__init__(
+            f"invalid_dispatch_route: {decision.route_key!r}; "
+            f"expected one of {list(decision.available_routes)!r}"
+        )
+
+    def as_output(self) -> dict[str, object]:
+        return {
+            "error": str(self),
+            "failure_kind": "invalid_dispatch_route",
+            "route": self.decision.route_key,
+            "available_routes": list(self.decision.available_routes),
+        }
