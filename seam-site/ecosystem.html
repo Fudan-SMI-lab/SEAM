@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>共建社区 — SEAM</title>
+<meta content="SEAM 开源项目介绍、国产 GPU 迁移使用指南与开发者文档。" name="description"/>
+<link href="assets/css/site.css" rel="stylesheet"/>
+</head>
+<body>
+<header class="site-header">
+<div class="container header-inner">
+<a class="brand" href="index.html">
+<span class="brand-mark">S</span>
+<span class="brand-text">
+<span class="brand-name">SEAM</span>
+<span class="brand-sub">FDU · CFFF</span>
+</span>
+</a>
+<button aria-expanded="false" aria-label="打开菜单" class="nav-toggle">
+<svg fill="none" height="20" stroke="currentColor" stroke-linecap="round" stroke-width="2.2" viewbox="0 0 24 24" width="20"><line x1="3" x2="21" y1="6" y2="6"></line><line x1="3" x2="21" y1="12" y2="12"></line><line x1="3" x2="21" y1="18" y2="18"></line></svg>
+</button>
+<nav class="nav">
+<a class="nav-link" href="index.html">首页</a>
+<a class="nav-link" href="download.html">下载 / 使用</a>
+<a class="nav-link" href="models.html">模型适配</a>
+<a class="nav-link" href="gpu.html">国产 GPU</a>
+<a class="nav-link" href="docs.html">文档</a>
+<a class="nav-link" href="ecosystem.html">共建社区</a>
+</nav>
+<div class="header-cta">
+<a class="btn btn-primary btn-sm" href="download.html">快速开始</a>
+</div>
+</div>
+</header>
+<main>
+<section class="section-tinted" style="padding:52px 0 36px">
+<div class="container">
+<div class="section-head left" style="margin-bottom:0;max-width:840px">
+<span class="eyebrow">Community</span>
+<h1 style="font-size:clamp(28px,3.6vw,40px)">加入 SEAM 社区贡献</h1>
+<p class="lead" style="margin-top:14px">
+        国产 GPU 的生态目前还处于发展阶段。SEAM 的初心是希望让国产 GPU 使用变简单 ——
+        而这件事，靠一个人做不完。点击下方卡片，了解你可以在哪一层参与。
+      </p>
+</div>
+<div class="grid grid-4" style="margin-top:36px">
+<a class="card lift reveal" href="#way-git" style="text-decoration:none;color:inherit">
+<div class="card-icon ci-blue">
+<svg fill="currentColor" viewbox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
+</div>
+<h3>共建 Git 仓库</h3>
+<p>提交代码、反馈 Bug、提议新功能，MIT 协议开源。</p>
+</a>
+<a class="card lift reveal" data-delay="0.06" href="#way-exp" style="text-decoration:none;color:inherit">
+<div class="card-icon ci-purple">
+<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24"><path d="M4 19.5V6a2 2 0 0 1 2-2h12v16H6a2 2 0 0 1-2-2z"></path><path d="M8 8h7M8 12h5"></path></svg>
+</div>
+<h3>贡献适配经验</h3>
+<p>把迁移过程中的问题、方案与验证报告沉淀成别人的参考。</p>
+</a>
+<a class="card lift reveal" data-delay="0.12" href="#way-memory" style="text-decoration:none;color:inherit">
+<div class="card-icon ci-green">
+<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24"><path d="M12 3v18"></path><path d="M5 8h14M5 16h14"></path><rect height="12" rx="2" width="18" x="3" y="6"></rect></svg>
+</div>
+<h3>.memory 文件分享</h3>
+<p>分享 SEAM 自进化积累的 skill 与 memory，让工具越用越聪明。</p>
+</a>
+<a class="card lift reveal" data-delay="0.18" href="#way-res" style="text-decoration:none;color:inherit">
+<div class="card-icon ci-amber">
+<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24"><rect height="12" rx="2" width="20" x="2" y="6"></rect><circle cx="12" cy="12" r="3"></circle></svg>
+</div>
+<h3>资源共享</h3>
+<p>贡献国产 GPU 卡时或 AI tokens，让更多人有机会「先试一把」。</p>
+</a>
+</div>
+</div>
+</section>
+<section class="section" id="way-git">
+<div class="container">
+<div class="two-col">
+<div class="reveal">
+<span class="eyebrow">Way 01</span>
+<h2 class="section-title" style="margin-bottom:14px">共建 Git 仓库</h2>
+<p class="lede" style="margin-bottom:20px">
+          SEAM 是一个持续迭代的开源项目。您可以通过反馈问题、提交功能建议、补充文档、
+          贡献适配经验或提交代码的方式参与共建。
+        </p>
+<div class="callout callout-info">
+<strong>仓库：</strong><a href="https://github.com/Fudan-SMI-lab/SEAM" rel="noopener" target="_blank">github.com/Fudan-SMI-lab/SEAM</a><br/>
+<strong>协议：</strong>MIT License · Copyright (c) 2026 Fudan-SMI-lab
+        </div>
+<ul class="bullets check" style="margin-top:20px">
+<li>代码贡献：提交代码实现功能迭代与问题修复</li>
+<li>反馈问题：协助我们发现并修复代码缺陷</li>
+<li>功能提议：提交新功能构想与优化建议</li>
+<li>项目推广：向身边开发者分享、推荐本项目</li>
+</ul>
+<div class="btn-row" style="margin-top:24px">
+<a class="btn btn-primary" href="https://github.com/Fudan-SMI-lab/SEAM" rel="noopener" target="_blank">前往 GitHub</a>
+<a class="btn btn-outline" href="docs.html#doc-git">查看贡献流程</a>
+</div>
+</div>
+<div class="reveal" data-delay="0.1">
+<h3 style="margin-bottom:16px">代码贡献流程</h3>
+<div class="steps">
+<div class="step">
+<div class="step-no">1</div>
+<div class="step-body"><h4>Fork 当前仓库至个人账号</h4>
+<p>基于 <code>main</code> 分支新建自定义分支，示例分支名：<code>feature/xxx</code>、<code>fix/xxx</code>。</p></div>
+</div>
+<div class="step">
+<div class="step-no">2</div>
+<div class="step-body"><h4>完成修改并充分测试</h4>
+<p>严格遵循项目编码规范，本地充分测试，确保改动可正常运行。</p></div>
+</div>
+<div class="step">
+<div class="step-no">3</div>
+<div class="step-body"><h4>提交清晰的提交说明</h4>
+<p>编写规范的提交说明，清晰描述变更内容，推送到你个人的 Fork 仓库。</p></div>
+</div>
+<div class="step">
+<div class="step-no">4</div>
+<div class="step-body"><h4>发起 Pull Request</h4>
+<p>向本仓库 <code>main</code> 分支发起 PR。我们会及时审核，与你沟通细节，共同完成代码合并。</p></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<section class="section section-alt" id="way-exp">
+<div class="container">
+<div class="section-head left reveal">
+<span class="eyebrow">Way 02</span>
+<h2 class="section-title">贡献适配经验</h2>
+<p class="section-desc">
+        SEAM 的重要能力之一是将迁移经验沉淀为可复用知识经验，越用越聪明。
+        用户在实际迁移过程中遇到的问题、解决方案和验证报告，都可以成为后续用户的重要参考。
+      </p>
+</div>
+<div class="grid grid-3" style="margin-bottom:34px">
+<div class="card reveal">
+<h3 style="font-size:16.5px">分享 SEAM 的经验报告</h3>
+<ul class="bullets tight" style="margin-top:12px">
+<li><strong>贡献适配经验</strong>：允许 SEAM 上传适配经验到 SEAM 服务器端（本功能在迭代开发中）</li>
+<li><strong>贡献迁移报告</strong>：允许 SEAM 上传适配报告到服务端并分享给身边开发者（本功能在迭代开发中）</li>
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+</ul>
+</div>
+<div class="card reveal" data-delay="0.08">
+<h3 style="font-size:16.5px">分享自己的适配经验</h3>
+<ul class="bullets tight" style="margin-top:12px">
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+</ul>
+</div>
+<div class="card reveal" data-delay="0.16">
+<h3 style="font-size:16.5px">文档与推广</h3>
+<ul class="bullets tight" style="margin-top:12px">
+<li><strong>文档完善</strong>：补充、修正 SEAM 的相关文档</li>
+<li><strong>项目推广</strong>：向身边开发者分享、推荐本项目</li>
+</ul>
+</div>
+</div>
+<div class="two-col">
+<div class="reveal">
+<h3 style="margin-bottom:14px">贡献原则</h3>
+<p class="muted" style="margin-bottom:14px;font-size:14.3px">
+          贡献适配经验时，重点是让别人能够<strong>判断、复现和复用</strong>。建议遵循以下原则：
+        </p>
+<ul class="bullets check">
+<li>说明清楚原始项目、目标 GPU 平台和运行环境</li>
+<li>提供真实运行结果，不只描述代码修改</li>
+<li>保留关键命令、日志路径和报告路径</li>
+<li>明确哪些问题已经解决，哪些问题仍未解决</li>
+<li>删除密钥、内网地址、私有数据集路径等敏感信息</li>
+<li>只提交自己理解的内容；如果某个修复来自他人建议，需要说明来源或背景</li>
+</ul>
+<h3 style="margin:30px 0 14px">什么是适配经验</h3>
+<p class="muted" style="margin-bottom:12px;font-size:14.3px">某个项目从 CUDA 迁移到国产 GPU 过程中形成的可复用信息，包括：</p>
+<div class="chip-row">
+<span class="chip chip-outline">已完成迁移的模型案例</span>
+<span class="chip chip-outline">不同 GPU 平台的适配经验</span>
+<span class="chip chip-outline">依赖安装与环境配置说明</span>
+<span class="chip chip-outline">某类错误的解决方法</span>
+<span class="chip chip-outline">框架在目标 GPU 上的特殊配置</span>
+<span class="chip chip-outline">自定义算子的迁移方法</span>
+<span class="chip chip-outline">性能与精度验证报告</span>
+<span class="chip chip-outline">可复现的测试脚本</span>
+<span class="chip chip-outline">平台专用工作流与 prompt 模板</span>
+<span class="chip chip-outline">避免 CPU fallback 的检查方法</span>
+</div>
+</div>
+<div class="reveal" data-delay="0.1">
+<h3 style="margin-bottom:14px">一份适配经验应包含什么</h3>
+<div class="table-wrap">
+<table class="data">
+<thead><tr><th>内容</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><strong>项目名称</strong></td><td>被迁移的模型或代码项目</td></tr>
+<tr><td><strong>原始环境</strong></td><td>原本运行的 CUDA、PyTorch、Python 等版本</td></tr>
+<tr><td><strong>目标平台</strong></td><td>阿里 PPU、昇腾 NPU、沐曦 GPU 或其他平台</td></tr>
+<tr><td><strong>使用框架</strong></td><td>PyTorch、vLLM、SGLang 等</td></tr>
+<tr><td><strong>问题现象</strong></td><td>报错信息或异常表现</td></tr>
+<tr><td><strong>解决方法</strong></td><td>实际采用的修改方式</td></tr>
+<tr><td><strong>验证结果</strong></td><td>是否端到端通过，是否有性能或精度报告</td></tr>
+<tr><td><strong>注意事项</strong></td><td>后续用户复用时需要注意的点</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout callout-info" style="border-left-color:var(--green-500);background:#f0fdf4;border-color:#bbf7d0;margin-top:22px">
+<strong>推荐写法：</strong>在昇腾 NPU 环境中，项目启动时报 xxx 错误。原因是依赖版本与 CANN 工具链不匹配。
+          将 xxx 版本调整为 xxx 后，入口脚本通过端到端验证，报告路径为 xxx。
+        </div>
+<div class="callout callout-red">
+<strong>不推荐写法：</strong>改了一些依赖后可以跑了。
+        </div>
+</div>
+</div>
+</div>
+</section>
+<section class="section" id="way-memory">
+<div class="container">
+<div class="two-col" style="align-items:center">
+<div class="reveal">
+<span class="eyebrow">Way 03</span>
+<h2 class="section-title" style="margin-bottom:14px">.memory 文件分享</h2>
+<p class="lede" style="margin-bottom:20px">
+          SEAM 每次迁移完成后，会评估成功与失败的案例，把有效的适配方案提炼为可复用技能（skill），
+          存入 <code>.memory/skills/</code> 和 <code>.memory/memory/</code> 目录，为下一次运行提供参考。
+        </p>
+<p class="muted" style="font-size:14.3px;margin-bottom:18px">
+          这些积累就是 SEAM「越用越聪明」的底层机制：<strong>零先验运行</strong>、
+          <strong>跨案例知识迁移</strong>、<strong>边际成本趋近于零</strong>。
+          分享你运行过程中产生的 <code>.memory</code> 内容，等于把一次适配的经验直接交给下一个人。
+        </p>
+<div class="callout callout-warn">
+<code>.memory</code>、<code>.skill</code> 等文件夹会在运行中自动更新，是 SEAM 的自进化学习经验记忆和技能素材，
+          <strong>非必要勿删</strong>。分享前请先剔除密钥、内网地址、私有数据集路径等敏感信息。
+        </div>
+</div>
+<div class="reveal" data-delay="0.1">
+<div class="code-block">
+<div class="code-head">
+<span class="code-dots"><i></i><i></i><i></i></span>
+<span class="code-title">SEAM 运行后产生的经验目录</span>
+<button class="code-copy" data-copy="#codeMemory">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              复制
+            </button>
+</div>
+<pre class="code-body" id="codeMemory">SEAM/
+├── .memory/
+│   ├── skills/      <span class="c"># 可复用技能（skill）</span>
+│   └── memory/      <span class="c"># 案例记忆（memory）</span>
+├── .skill/          <span class="c"># 运行时更新的技能素材</span>
+└── e2e-reports/
+    └── src/&lt;时间戳&gt;/
+        └── summary.json   <span class="c"># 更完整的运行结论</span>
+
+<span class="c"># 迁移后项目侧</span>
+output_projects/&lt;项目名&gt;_&lt;时间戳&gt;/
+├── migration_reports/   <span class="c"># 验收结果 / 性能 / custom-op / 构建日志</span>
+└── .sm-artifacts/       <span class="c"># 详细运行时 log</span></pre>
+</div>
+</div>
+</div>
+</div>
+</section>
+<section class="section section-alt" id="way-res">
+<div class="container">
+<div class="section-head left reveal">
+<span class="eyebrow">Way 04</span>
+<h2 class="section-title">资源共享：两大难题等你贡献</h2>
+<p class="section-desc">从 SEAM 侧理解，当前还有两大资源难题，直接决定了国产 GPU 能不能被更多人「用起来」。</p>
+</div>
+<div class="grid grid-2" style="margin-bottom:34px">
+<div class="card lift card-top-line reveal">
+<div class="card-icon ci-blue">
+<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24"><rect height="16" rx="2" width="16" x="4" y="4"></rect><rect height="6" width="6" x="9" y="9"></rect><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"></path></svg>
+</div>
+<h3>缺国产 GPU 试用环境</h3>
+<p>
+          用户在决定用国产 GPU 之前，首先最缺乏的是：<strong>缺少国产 GPU 环境去「试一把」的机会</strong>。
+          因此，如果有可贡献给 SEAM 用户免费使用或者优惠使用的国产 GPU 环境，我们会非常欢迎并协助做推广。
+        </p>
+</div>
+<div class="card lift card-top-line reveal" data-delay="0.1">
+<div class="card-icon ci-amber">
+<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+</div>
+<h3>缺 AI tokens</h3>
+<p>
+          SEAM 使用过程中需要配置 AI 大模型的 API key（也就是要花费 tokens），但很多不同领域的用户，
+          对于 tokens 的购买很不熟悉，阻碍了使用能大幅度减轻适配工作量和时长的 SEAM，
+          在冗长的自己手动去做迁移适配的工作里对国产 GPU 失去信心。
+          因此，我们也非常欢迎能免费贡献的 API tokens 供 SEAM 用户使用。
+        </p>
+</div>
+</div>
+</div>
+</section>
+<section class="section">
+</section>
+</main>
+<footer class="site-footer">
+</footer>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

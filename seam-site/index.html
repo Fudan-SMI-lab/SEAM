@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SEAM — 让 CUDA 项目迁移到国产 GPU 更简单</title>
+<meta content="SEAM 开源项目介绍、国产 GPU 迁移使用指南与开发者文档。" name="description"/>
+<link href="assets/css/site.css" rel="stylesheet"/>
+</head>
+<body>
+<header class="site-header">
+<div class="container header-inner">
+<a class="brand" href="index.html">
+<span class="brand-mark">S</span>
+<span class="brand-text">
+<span class="brand-name">SEAM</span>
+<span class="brand-sub">FDU · CFFF</span>
+</span>
+</a>
+<button aria-expanded="false" aria-label="打开菜单" class="nav-toggle">
+<svg fill="none" height="20" stroke="currentColor" stroke-linecap="round" stroke-width="2.2" viewbox="0 0 24 24" width="20"><line x1="3" x2="21" y1="6" y2="6"></line><line x1="3" x2="21" y1="12" y2="12"></line><line x1="3" x2="21" y1="18" y2="18"></line></svg>
+</button>
+<nav class="nav">
+<a class="nav-link" href="index.html">首页</a>
+<a class="nav-link" href="download.html">下载 / 使用</a>
+<a class="nav-link" href="models.html">模型适配</a>
+<a class="nav-link" href="gpu.html">国产 GPU</a>
+<a class="nav-link" href="docs.html">文档</a>
+<a class="nav-link" href="ecosystem.html">共建社区</a>
+</nav>
+<div class="header-cta">
+<a class="btn btn-primary btn-sm" href="download.html">快速开始</a>
+</div>
+</div>
+</header>
+<main>
+<section class="hero">
+<div class="container">
+<div class="hero-inner">
+<span class="hero-kicker">
+<span class="dot"></span>
+        SEAM · Self-Evolving Agentic Migration for Chinese GPUs
+      </span>
+<h1>
+        让 <span class="gradient-text">CUDA 项目</span> 迁移到国产 GPU<br/>更简单
+      </h1>
+<p class="hero-sub">
+        SEAM 是一个自动化迁移 AI 工具，能把原本只能在 NVIDIA 显卡上运行的 AI 项目，
+        自动迁移到中国国产 GPU 算力卡上运行并调优 —— 不再需要人工逐行改代码、逐个查报错。
+      </p>
+<div class="btn-row center hero-actions">
+<a class="btn btn-primary btn-lg" href="download.html">
+          开始第一次迁移
+          <svg class="ico" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4" viewbox="0 0 24 24"><line x1="5" x2="19" y1="12" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+</a>
+<a class="btn btn-outline btn-lg" href="models.html">模型适配说明</a>
+<a class="btn btn-ghost btn-lg" href="https://github.com/Fudan-SMI-lab/SEAM" rel="noopener" target="_blank">
+<svg class="ico" fill="currentColor" viewbox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path></svg>
+          GitHub 开源
+        </a>
+</div>
+</div>
+</div>
+</section>
+<section class="section section-alt">
+</section>
+<section class="section section-tinted">
+<div class="container">
+<div class="section-head reveal">
+<span class="eyebrow center">Pipeline</span>
+<h2 class="section-title">核心：八阶段自动化迁移流水线</h2>
+<p class="section-desc">由 YAML 状态机驱动 + 5 个持久化智能体协同，以目标 GPU 上的真实运行反馈闭环迭代。</p>
+</div>
+<div class="pipeline">
+<div class="phase reveal"><div class="phase-no">PHASE 01</div><h4>GPU 环境检测</h4><p>检测 Python / PyTorch 版本、目标 GPU 是否可用、厂商软件栈是否存在，确认具备迁移与运行条件。</p></div>
+<div class="phase reveal" data-delay="0.05"><div class="phase-no">PHASE 02</div><h4>用户项目分析</h4><p>解析目录结构、依赖文件、入口脚本、CUDA 调用模式与自定义算子，决定走普通迁移还是 custom-op 路线。</p></div>
+<div class="phase reveal" data-delay="0.1"><div class="phase-no">PHASE 03</div><h4>依赖准备</h4><p>按平台策略准备虚拟环境、Python 包、目标平台 PyTorch 版本与厂商 SDK 依赖。</p></div>
+<div class="phase reveal" data-delay="0.15"><div class="phase-no">PHASE 04</div><h4>规则迁移</h4><p>确定性的代码迁移：替换设备调用方式、调整导入语句、修改通信后端，不依赖大语言模型自由生成。</p></div>
+<div class="phase reveal"><div class="phase-no">PHASE 05</div><h4>验证修复循环</h4><p>执行入口脚本 → 捕获错误日志 → 分析错误类型 → 分派修复角色 → 修改项目 → 再次运行验证。</p></div>
+<div class="phase reveal" data-delay="0.05"><div class="phase-no">PHASE 06</div><h4>自定义算子最终验证</h4><p>严格校验编译产物、真实调用路径、是否回退 CPU、精度比对、性能报告与构建日志证据。</p></div>
+<div class="phase reveal" data-delay="0.1"><div class="phase-no">PHASE 07</div><h4>迁移报告生成</h4><p>输出端到端结果、改动清单、依赖与环境状态、算子适配情况、性能表现与失败卡点。</p></div>
+<div class="phase reveal" data-delay="0.15"><div class="phase-no">PHASE 08</div><h4>经验评估与精炼</h4><p>评估本次成功与失败案例，把有效适配方案提炼为可复用技能，供后续类似项目参考。</p></div>
+</div>
+<div class="pipeline-note reveal">
+<strong>规则迁移先行</strong> → 稳定可复现；<strong>验证修复循环</strong> → 直到通过或达到迭代上限；
+      <strong>自定义算子关卡</strong> → 七项证据全部满足才标记为「完整迁移通过」。
+      整个流水线共享上下文，每一次运行都以目标 GPU 上的真实执行结果作为唯一判据。
+    </div>
+</div>
+</section>
+<section class="section">
+<div class="container">
+<div class="section-head reveal">
+<span class="eyebrow center">Coverage</span>
+<h2 class="section-title">多硬件 × 多框架覆盖</h2>
+<p class="section-desc">三家国产 GPU 平台 × 三类主流框架，均已支持；其他平台与框架可按需扩展。</p>
+</div>
+<div class="matrix reveal" data-bars="">
+<div class="matrix-row">
+<div class="mrow-head">华为昇腾 Ascend NPU</div>
+<div class="grid" style="grid-template-columns:repeat(4,1fr);gap:10px">
+<div class="matrix-cell ok"><span>PyTorch</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell ok"><span>vLLM</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell ok"><span>SGLang</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell plan"><span>其他框架</span><span class="chip">等你提需求</span></div>
+</div>
+</div>
+<div class="matrix-row">
+<div class="mrow-head">阿里平头哥 PPU</div>
+<div class="grid" style="grid-template-columns:repeat(4,1fr);gap:10px">
+<div class="matrix-cell ok"><span>PyTorch</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell ok"><span>vLLM</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell ok"><span>SGLang</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell plan"><span>其他框架</span><span class="chip">等你提需求</span></div>
+</div>
+</div>
+<div class="matrix-row">
+<div class="mrow-head">沐曦 MetaX GPU</div>
+<div class="grid" style="grid-template-columns:repeat(4,1fr);gap:10px">
+<div class="matrix-cell ok"><span>PyTorch</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell ok"><span>vLLM</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell ok"><span>SGLang</span><span class="chip chip-green">已完成</span></div>
+<div class="matrix-cell plan"><span>其他框架</span><span class="chip">等你提需求</span></div>
+</div>
+</div>
+<div class="matrix-row">
+<div class="mrow-head muted">其他国产 GPU / 异构加速器</div>
+<div class="grid" style="grid-template-columns:repeat(4,1fr);gap:10px">
+<div class="matrix-cell plan"><span>按需扩展</span><span class="chip">规划中</span></div>
+<div class="matrix-cell plan"><span>按需扩展</span><span class="chip">规划中</span></div>
+<div class="matrix-cell plan"><span>按需扩展</span><span class="chip">规划中</span></div>
+<div class="matrix-cell plan"><span>按需扩展</span><span class="chip">规划中</span></div>
+</div>
+</div>
+</div>
+<p class="small muted center" style="margin-top:20px">如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+</div>
+</section>
+<section class="section section-tinted">
+<div class="container">
+<div class="section-head reveal">
+<span class="eyebrow center">Quick Start</span>
+<h2 class="section-title">三步上手 SEAM</h2>
+<p class="section-desc">在真正要运行迁移结果的国产 GPU 环境中启动 SEAM，它才能基于真实硬件反馈完成检测、运行、修复与验证。</p>
+</div>
+<div class="two-col" style="align-items:stretch">
+<div class="reveal">
+<div class="code-block">
+<div class="code-head">
+<span class="code-dots"><i></i><i></i><i></i></span>
+<span class="code-title">bash — 迁移一条命令搞定</span>
+<button class="code-copy" data-copy="#codeQuick">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              复制
+            </button>
+</div>
+<pre class="code-body" id="codeQuick"><span class="c"># 1. 下载与环境准备</span>
+git clone https://github.com/Fudan-SMI-lab/SEAM.git
+cd SEAM
+python3.10 -m venv .venv
+source .venv/bin/activate
+pip install -e "src/[dev,dashboard]"
+
+<span class="c"># 2. 启动 OpenCode Server（默认 127.0.0.1:4098）</span>
+opencode serve --hostname 127.0.0.1 --port 4098
+
+<span class="c"># 3. 运行迁移（在目标国产 GPU 环境中执行）</span>
+bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
+  --server_type opencode \
+  --server_url http://127.0.0.1:4098</pre>
+</div>
+</div>
+<div class="reveal" data-delay="0.1">
+<div class="grid" style="gap:14px">
+<div class="card card-flat">
+<div class="chip-row" style="margin-bottom:8px"><span class="chip chip-blue">步骤 1</span></div>
+<h4>进入国产 GPU 环境，准备待迁移项目</h4>
+<p>在目标国产 GPU 服务器或容器中（阿里 PPU / 昇腾 NPU / 沐曦 GPU），准备一个原本可在 NVIDIA CUDA 环境运行的 AI 项目仓库。首次测试建议选规模较小、入口清晰的项目。</p>
+</div>
+<div class="card card-flat">
+<div class="chip-row" style="margin-bottom:8px"><span class="chip chip-blue">步骤 2</span></div>
+<h4>启动 OpenCode Server</h4>
+<p>默认地址 <code>http://127.0.0.1:4098</code>。端口不同时通过 <code>--server_url</code> 指定，也可以由 SEAM 自动启动（前提是已安装 opencode 并配好 Token API Key）。</p>
+</div>
+<div class="card card-flat">
+<div class="chip-row" style="margin-bottom:8px"><span class="chip chip-blue">步骤 3</span></div>
+<h4>运行迁移并查看结果</h4>
+<p>迁移结束后终端会显示是否通过端到端验证（<strong>E2E TEST PASSED</strong>）。报告位于 <code>migration_reports/</code>，日志位于 <code>.sm-artifacts/</code>。</p>
+</div>
+</div>
+<div class="btn-row" style="margin-top:18px">
+<a class="btn btn-primary" href="download.html">查看完整安装与使用指南</a>
+</div>
+</div>
+</div>
+</div>
+</section>
+<section class="section">
+<div class="container">
+<div class="card reveal" style="background:linear-gradient(115deg,#0b1220,#1a2b4d 55%,#2b1a4d);border:0;padding:52px 46px;text-align:center">
+<h2 style="color:#fff;margin-bottom:14px">别担心，SEAM 会陪伴你用好中国国产 GPU</h2>
+<p style="color:#a9bcd8;max-width:660px;margin:0 auto 28px;font-size:15.5px">
+        加入 SEAM 社区：提交适配经验、贡献国产 GPU 或 API Token 资源、共建开源仓库 —— 让国产算力生态越用越聪明。
+      </p>
+<div class="btn-row center">
+<a class="btn btn-primary btn-lg" href="ecosystem.html">加入 SEAM 社区贡献</a>
+<a class="btn btn-lg" href="models.html" style="background:rgba(255,255,255,.12);color:#fff">模型适配说明</a>
+</div>
+</div>
+</div>
+</section>
+</main>
+<footer class="site-footer">
+</footer>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

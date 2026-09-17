@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>国产 GPU — SEAM</title>
+<meta content="SEAM 开源项目介绍、国产 GPU 迁移使用指南与开发者文档。" name="description"/>
+<link href="assets/css/site.css" rel="stylesheet"/>
+</head>
+<body>
+<header class="site-header">
+<div class="container header-inner">
+<a class="brand" href="index.html">
+<span class="brand-mark">S</span>
+<span class="brand-text">
+<span class="brand-name">SEAM</span>
+<span class="brand-sub">FDU · CFFF</span>
+</span>
+</a>
+<button aria-expanded="false" aria-label="打开菜单" class="nav-toggle">
+<svg fill="none" height="20" stroke="currentColor" stroke-linecap="round" stroke-width="2.2" viewbox="0 0 24 24" width="20"><line x1="3" x2="21" y1="6" y2="6"></line><line x1="3" x2="21" y1="12" y2="12"></line><line x1="3" x2="21" y1="18" y2="18"></line></svg>
+</button>
+<nav class="nav">
+<a class="nav-link" href="index.html">首页</a>
+<a class="nav-link" href="download.html">下载 / 使用</a>
+<a class="nav-link" href="models.html">模型适配</a>
+<a class="nav-link" href="gpu.html">国产 GPU</a>
+<a class="nav-link" href="docs.html">文档</a>
+<a class="nav-link" href="ecosystem.html">共建社区</a>
+</nav>
+<div class="header-cta">
+<a class="btn btn-primary btn-sm" href="download.html">快速开始</a>
+</div>
+</div>
+</header>
+<main>
+<section class="section-tinted" style="padding:52px 0 34px">
+<div class="container">
+<div class="section-head left" style="margin-bottom:0;max-width:820px">
+<span class="eyebrow">Chinese GPUs</span>
+<h1 style="font-size:clamp(28px,3.6vw,40px)">SEAM 已适配国产 GPU</h1>
+<p class="lead" style="margin-top:14px">
+        SEAM 面向国产 GPU 和异构加速平台，帮助用户将原本依赖 NVIDIA CUDA 的 AI 项目迁移到目标平台运行。
+        当前已在三家平台上完成规模化适配验证。
+      </p>
+</div>
+</div>
+</section>
+<section class="section section-alt">
+<div class="container">
+<div class="section-head reveal">
+<span class="eyebrow center">Why Migration</span>
+<h2 class="section-title">兼容 ≠ 能跑：为什么不同 GPU 仍需适配</h2>
+<p class="section-desc">即使某些国产 GPU 声称兼容 CUDA，也不代表所有 CUDA 项目都能直接运行。</p>
+</div>
+<div class="grid grid-2" style="align-items:start">
+<div class="card reveal">
+<h3 style="margin-bottom:18px">迁移不是简单的文本替换</h3>
+<ul class="bullets">
+<li>CUDA API 与目标平台接口存在差异</li>
+<li>PyTorch 后端和设备管理方式不同</li>
+<li>厂商驱动、SDK、编译工具链各不相同</li>
+<li>自定义 CUDA 算子可能没有现成等价实现</li>
+<li>项目依赖版本与目标平台软件栈不匹配</li>
+<li>性能调优策略与底层硬件架构强相关</li>
+</ul>
+<p class="muted" style="margin-top:18px;font-size:14px">
+          因此，迁移需要<strong>结合真实硬件环境进行运行验证和修复</strong>，
+          SEAM 需完成算子替换、底层调度逻辑改写、性能调优，兼顾可用性与实际运行性能。
+        </p>
+</div>
+<div class="reveal" data-delay="0.1">
+<h3 style="margin-bottom:16px">平台策略差异</h3>
+<div class="card card-flat" style="margin-bottom:14px;border-left:3px solid #ea580c">
+<h4>原生转换型（如部分 NPU 平台）</h4>
+<p>SEAM 可能需要将 CUDA 相关调用<strong>转换为目标平台专用接口</strong>。</p>
+</div>
+<div class="card card-flat" style="margin-bottom:14px;border-left:3px solid #0284c7">
+<h4>CUDA 兼容型（如 PPU）</h4>
+<p>部分 <code>torch.cuda</code> 调用<strong>可能需要保留</strong>，因为目标平台通过兼容层支持相关接口。</p>
+</div>
+<div class="callout callout-info">
+          SEAM 会根据目标平台策略选择对应迁移方式，并在运行过程中通过<strong>验证器</strong>检查迁移结果是否真实有效。
+        </div>
+<h3 style="margin:28px 0 14px">平台与框架支持矩阵</h3>
+<div class="table-wrap">
+<table class="data">
+<thead>
+<tr><th>平台</th><th>PyTorch</th><th>vLLM</th><th>SGLang</th><th>其他框架</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>华为昇腾 Ascend NPU</strong></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip">等你提需求</span></td></tr>
+<tr><td><strong>阿里平头哥 PPU</strong></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip">等你提需求</span></td></tr>
+<tr><td><strong>沐曦 MetaX GPU</strong></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip chip-green">已完成</span></td>
+<td><span class="chip">等你提需求</span></td></tr>
+<tr><td class="muted">其他国产 GPU / 异构加速器</td>
+<td><span class="chip">规划中</span></td>
+<td><span class="chip">规划中</span></td>
+<td><span class="chip">规划中</span></td>
+<td><span class="chip">规划中</span></td></tr>
+</tbody>
+</table>
+</div>
+<p class="tiny muted" style="margin-top:10px">
+          可根据实际需求扩展平台策略和工作流。定制需求请联系 。
+        </p>
+</div>
+</div>
+</div>
+</section>
+<section class="section section-alt">
+<div class="container">
+<div class="section-head reveal">
+<span class="eyebrow center">Docs &amp; Resources</span>
+<h2 class="section-title">开发者资料查询入口</h2>
+<p class="section-desc">各平台官方仓库与文档中心。国产 GPU 生态更新频繁，建议以官方来源为准。</p>
+</div>
+<div class="grid grid-3">
+<div class="card reveal">
+<div class="chip-row" style="margin-bottom:12px"><span class="chip chip-amber">昇腾 Ascend</span></div>
+<div class="footer-links" style="gap:10px">
+<a href="https://gitcode.com/Ascend" rel="noopener" target="_blank">昇腾 Ascend 开源软件仓库 →</a>
+<a href="https://gitcode.com/cann" rel="noopener" target="_blank">CANN 开源仓库 →</a>
+<a href="https://www.hiascend.com" rel="noopener" target="_blank">昇腾官网 →</a>
+<a href="https://www.hiascend.com/document" rel="noopener" target="_blank">昇腾文档中心 →</a>
+<a href="https://www.hiascend.com/developer/ascendhub" rel="noopener" target="_blank">开箱即用 Docker 镜像仓库 →</a>
+</div>
+<p class="tiny muted" style="margin-top:14px">
+          注意：华为昇腾早期仓库在 Gitee，后迁移到 GitCode，更新很频繁，建议去 GitCode 查询；
+          在 GitHub 上提 Issue 通常解决得更快。
+        </p>
+</div>
+<div class="card reveal" data-delay="0.08">
+<div class="chip-row" style="margin-bottom:12px"><span class="chip chip-blue">平头哥 PPU</span></div>
+<div class="footer-links" style="gap:10px">
+<a href="https://www.t-head.cn" rel="noopener" target="_blank">平头哥官网 →</a>
+<a href="https://help.aliyun.com/zh/document_detail/2864586.html" rel="noopener" target="_blank">阿里云上的真武 PPU 云服务 →</a>
+<a href="https://www.aliyun.com/product/ai-stack/pricing" rel="noopener" target="_blank">AI Stack 产品说明与定价 →</a>
+</div>
+<p class="tiny muted" style="margin-top:14px">如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+</div>
+<div class="card reveal" data-delay="0.16">
+<div class="chip-row" style="margin-bottom:12px"><span class="chip chip-purple">沐曦 MetaX</span></div>
+<div class="footer-links" style="gap:10px">
+<a href="https://www.metax-tech.com" rel="noopener" target="_blank">沐曦官网 →</a>
+<a href="https://developer.metax-tech.com/doc" rel="noopener" target="_blank">开发者网站（文档、镜像）→</a>
+</div>
+<p class="tiny muted" style="margin-top:14px">
+          沐曦的产品、镜像和文档比较全，技术服务上能「人力支持」的不多，
+          推荐优先在他们的开发者网站查询。
+        </p>
+</div>
+</div>
+</div>
+</section>
+</main>
+<footer class="site-footer">
+</footer>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

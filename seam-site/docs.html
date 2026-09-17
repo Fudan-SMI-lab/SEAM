@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>文档中心 — SEAM</title>
+<meta content="SEAM 开源项目介绍、国产 GPU 迁移使用指南与开发者文档。" name="description"/>
+<link href="assets/css/site.css" rel="stylesheet"/>
+</head>
+<body>
+<header class="site-header">
+<div class="container header-inner">
+<a class="brand" href="index.html">
+<span class="brand-mark">S</span>
+<span class="brand-text">
+<span class="brand-name">SEAM</span>
+<span class="brand-sub">FDU · CFFF</span>
+</span>
+</a>
+<button aria-expanded="false" aria-label="打开菜单" class="nav-toggle">
+<svg fill="none" height="20" stroke="currentColor" stroke-linecap="round" stroke-width="2.2" viewbox="0 0 24 24" width="20"><line x1="3" x2="21" y1="6" y2="6"></line><line x1="3" x2="21" y1="12" y2="12"></line><line x1="3" x2="21" y1="18" y2="18"></line></svg>
+</button>
+<nav class="nav">
+<a class="nav-link" href="index.html">首页</a>
+<a class="nav-link" href="download.html">下载 / 使用</a>
+<a class="nav-link" href="models.html">模型适配</a>
+<a class="nav-link" href="gpu.html">国产 GPU</a>
+<a class="nav-link" href="docs.html">文档</a>
+<a class="nav-link" href="ecosystem.html">共建社区</a>
+</nav>
+<div class="header-cta">
+<a class="btn btn-primary btn-sm" href="download.html">快速开始</a>
+</div>
+</div>
+</header>
+<main>
+<section class="section-tinted" style="padding:46px 0 30px">
+<div class="container">
+<span class="eyebrow">Documentation</span>
+<h1 style="font-size:clamp(27px,3.4vw,38px)">文档中心</h1>
+<p class="lead" style="margin-top:12px;max-width:760px">
+      SEAM 的完整使用文档：从工具定位、快速上手，到迁移流水线细节、国产 GPU 平台说明、社区贡献方式与相关协议。
+    </p>
+</div>
+</section>
+<section class="section-tight">
+<div class="container">
+<div class="docs-layout">
+<aside class="docs-nav">
+<div class="docs-nav-group">
+<div class="docs-nav-title">快速开始</div>
+<a data-doc="doc-intro" href="#doc-intro">SEAM 简介</a>
+<a data-doc="doc-quick" href="#doc-quick">快速使用 SEAM 迁移 CUDA</a>
+<a data-doc="doc-faq" href="#doc-faq">常见问题</a>
+</div>
+<div class="docs-nav-group">
+<div class="docs-nav-title">技术文档</div>
+<a data-doc="doc-flow" href="#doc-flow">模型迁移流程</a>
+<a data-doc="doc-ops" href="#doc-ops">迁移 CUDA 细节操作</a>
+<a data-doc="doc-contract" href="#doc-contract">E2E 测试契约（要点）</a>
+</div>
+<div class="docs-nav-group">
+<div class="docs-nav-title">平台</div>
+<a data-doc="doc-gpu" href="#doc-gpu">GPU 支持汇总</a>
+</div>
+<div class="docs-nav-group">
+<div class="docs-nav-title">贡献指南</div>
+<a data-doc="doc-git" href="#doc-git">共建 Git 仓库</a>
+<a data-doc="doc-exp" href="#doc-exp">贡献适配经验</a>
+<a data-doc="doc-res" href="#doc-res">资源贡献共享</a>
+</div>
+<div class="docs-nav-group">
+<div class="docs-nav-title">相关协议</div>
+<a data-doc="doc-privacy" href="#doc-privacy">用户协议与数据隐私协议</a>
+</div>
+</aside>
+<div class="docs-body">
+<article class="doc-panel active" id="doc-intro">
+<h2>SEAM 简介</h2>
+<p class="doc-sub">Self-Evolving Agentic Migration for Chinese GPUs</p>
+<h3>适用用户</h3>
+<p>要用国产 GPU 的开发者、想了解国产 GPU 的开发者。</p>
+<h3>SEAM 解决的问题</h3>
+<p>在使用国产 GPU 前，用户担心可能会遇到问题：</p>
+<ul class="bullets">
+<li><strong>不好用</strong>：可能运行不起来或者精度差，适配耗时很久，购买国产 GPU 时间上不划算。</li>
+<li><strong>缺参考</strong>：「别人真的跑通了吗？」「我这个模型有些偏冷门，能不能跑？」</li>
+<li><strong>缺指导</strong>：国产 GPU 要怎么用？都说报错后搞半天找不到原因，搜不到别人经验参考。</li>
+</ul>
+<p style="margin-top:16px">使用国产 GPU 过程中，可能出现 3 类耗时问题：</p>
+<ul class="bullets">
+<li><strong>运行不起来</strong>：不同 GPU 平台的软件栈、驱动、算子库和 Python 依赖不同。一个项目即使在 NVIDIA GPU 上可以正常运行，换到国产 GPU 后也可能因为接口不兼容、依赖版本不匹配、自定义算子缺失等原因失败。迁移技术栈深、碎片化知识难掌握。</li>
+<li><strong>缺少参考案例</strong>：用户往往不知道某个模型是否真的在目标国产 GPU 上跑通过，也不清楚失败是自己环境配置问题、代码问题，还是硬件平台适配问题。缺少可复现案例会影响用户对国产 GPU 的使用信心。</li>
+<li><strong>迁移结果难以验证</strong>：代码改完并不等于迁移成功。项目可能只是启动了，但精度不对、性能异常，或者实际运行时回退到了 CPU。SEAM 强调通过真实运行和机器验证来确认迁移结果，而不是只依赖静态代码修改。</li>
+</ul>
+<div class="callout callout-info">
+            🐧 <strong>别担心，SEAM 会陪伴你用好中国国产 GPU。</strong>
+</div>
+<h3>SEAM 能力和技术方案简介</h3>
+<h4>1. 多硬件 × 多框架覆盖</h4>
+<p>华为昇腾 NPU、阿里平头哥 PPU、沐曦 MetaX GPU 三家平台 × PyTorch / vLLM / SGLang 三类主框架均已完成适配；其他框架「等你提需求」。</p>
+<h4>2. 自动化端到端迁移</h4>
+<p>
+            SEAM 当前实现的核心是一个由 <strong>YAML 状态机驱动的多阶段迁移流水线</strong>，
+            配合 <strong>5 个持久化智能体</strong>协同工作，基于当前 GPU 真实运行反馈。
+            整个流水线包含 8 个阶段：
+          </p>
+<p class="mono" style="font-size:13px;background:var(--slate-50);padding:14px 16px;border-radius:10px;border:1px solid var(--line);color:var(--slate-700)">
+            GPU环境检测 → 用户项目分析 → 依赖准备 → 规则迁移 → 验证修复循环 → 自定义算子等最终关卡 → 迁移报告生成 → 经验评估与精炼
+          </p>
+<h4>3. 自进化：越用越聪明</h4>
+<p>
+            SEAM 有零先验运行、跨案例知识迁移、边际成本趋近于零等能力。
+            其中，每次迁移完成后，评估成功与失败的案例，把有效的适配方案提炼为可复用技能（skill），
+            存入 <code>.memory/skills/</code> 和 <code>.memory/memory/</code> 目录，为下一次运行提供参考。
+          </p>
+<h4>4. 幻觉控制：确保迁移结果真实有效</h4>
+<p>
+            SEAM 采用<strong>行为验证</strong>、<strong>错误分类和精准路由</strong>、<strong>三振出局</strong>、
+            <strong>Fail-closed 门控</strong>、<strong>自定义算子验证证据链</strong>等策略，确保迁移结果真实有效。
+          </p>
+<div class="callout callout-info">
+            「自进化」和「幻觉控制」是 SEAM 的核心能力，相辅相成，正向循环。
+          </div>
+<h3>开源与构建方</h3>
+<ul class="bullets">
+<li>开源协议：<strong>MIT License</strong>（Copyright (c) 2026 Fudan-SMI-lab）</li>
+<li>仓库地址：<a href="https://github.com/Fudan-SMI-lab/SEAM" rel="noopener" target="_blank">github.com/Fudan-SMI-lab/SEAM</a></li>
+<li>共同构建：复旦大学人工智能创新与产业研究院-统计机器智能实验室（SMI-lab）、上海创智学院、复旦大学 CFFF 智能计算平台</li>
+</ul>
+</article>
+<article class="doc-panel" id="doc-quick">
+<h2>快速使用 SEAM 迁移 CUDA</h2>
+<p class="doc-sub">快速完成您的第一次 SEAM 迁移</p>
+<div class="callout callout-warn">
+            建议在「真正要运行迁移结果的国产 GPU 环境」中启动 SEAM。这样 SEAM 才能基于真实硬件反馈完成检测、运行、修复和验证。
+          </div>
+<h3>步骤一：进入国产 GPU 环境，准备原始待迁移的项目仓库</h3>
+<p>在目标国产 GPU 服务器或容器中，例如阿里 PPU、昇腾 NPU 或沐曦 GPU。</p>
+<p>准备一个原本可以在 NVIDIA CUDA 环境运行的 AI 项目仓库。该项目可以是 PyTorch、vLLM、SGLang 或其他待适配框架项目。</p>
+<p>建议首次测试选择规模较小、入口清晰的项目，方便快速验证环境和迁移流程。</p>
+<h3>步骤二：启动 OpenCode Server</h3>
+<p>确认本机 OpenCode Server 已启动。默认地址为 <code>http://127.0.0.1:4098</code>。</p>
+<p>如果端口不同，后续运行命令中需要通过 <code>--server_url</code> 指定。也可以由 SEAM 自动启动，前提是已经安装了 opencode 且需要用的 Token API Key 也已配好。</p>
+<h3>步骤三：运行 SEAM 的迁移指令</h3>
+<p>下载 SEAM，安装依赖，并在 SEAM 项目根目录运行：</p>
+<div class="code-block">
+<div class="code-head">
+<span class="code-dots"><i></i><i></i><i></i></span>
+<span class="code-title">bash</span>
+<button class="code-copy" data-copy="#docCode1">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                复制
+              </button>
+</div>
+<pre class="code-body" id="docCode1"><span class="c"># 下载和环境准备</span>
+git clone https://github.com/Fudan-SMI-lab/SEAM.git
+cd SEAM
+python3.10 -m venv .venv
+source .venv/bin/activate
+
+<span class="c"># 安装 SEAM 依赖</span>
+pip install -e "src/[dev,dashboard]"
+
+<span class="c"># 运行 SEAM 迁移 CUDA 项目文件夹</span>
+bash src/scripts/run_seam.sh /path/to/your_original_cuda_project</pre>
+</div>
+<p style="margin-top:14px">如果您的 OpenCode 服务端口不同，可以运行：</p>
+<div class="code-block">
+<div class="code-head">
+<span class="code-dots"><i></i><i></i><i></i></span>
+<span class="code-title">bash — 指定 server 与输出目录</span>
+<button class="code-copy" data-copy="#docCode2">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                复制
+              </button>
+</div>
+<pre class="code-body" id="docCode2">bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
+  --server_type opencode \
+  --server_url http://127.0.0.1:4098
+
+<span class="c"># 指定迁移后项目的输出位置</span>
+bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
+  --output-dir /path/to/output_root</pre>
+</div>
+<h3>步骤四：等待 SEAM 自动处理</h3>
+<p>
+            SEAM 命令行运行时，日志默认是简化输出的 TUI，也可以按 <kbd>q</kbd> 退出 TUI 直接以 log 输出运行。
+          </p>
+<p>
+            根据 SEAM 的百模适配经验，绝大部分项目在 30 分钟内能完成迁移，最长的也有几个小时。
+            如果超过 30 分钟，建议查阅日志看迁移 phase 进度，以及看是否迁移异常。
+          </p>
+<h3>步骤五：查看迁移结果和使用迁移后项目</h3>
+<ol class="bullets num">
+<li>迁移结束后，终端会显示是否通过端到端验证。常见成功标识包括：<strong>E2E TEST PASSED</strong> / <strong>E2E PASS</strong>。</li>
+<li>迁移后的文件夹，在 <code>--output-dir</code> 用户指定目录，未指定则默认写入 SEAM 仓库同级目录：<code>../output_projects/&lt;项目名&gt;_&lt;时间戳&gt;/</code>。</li>
+<li>根据 <code>migration_reports/USAGE.md</code> 文件中的 <code>## Run</code> 章节建议运行指令来使用。</li>
+</ol>
+<h3>其他：看报告</h3>
+<ul class="bullets">
+<li>迁移报告位于迁移后的代码库下：<code>output目录/migration_reports/</code></li>
+<li>详细运行时 log 位于：<code>output目录/.sm-artifacts/</code></li>
+<li>更多运行 log，还可以根据迁移后的文件夹 <code>migration_reports/USAGE.md</code> 的指引，去 SEAM 目录的 <code>SEAM/e2e-reports/src/&lt;时间戳&gt;/summary.json</code> 获取。</li>
+</ul>
+<div class="callout callout-red">
+            如果运行失败，可以把 output-dir 文件夹中运行报告 <code>migration_reports/</code> 和 <code>.sm-artifacts/</code> 一起反馈给 SEAM 团队排查。
+            建议反馈时同时提供：原始项目名称或类型、目标 GPU 平台、执行的 SEAM 命令、终端失败信息、<code>migration_reports/</code>、<code>.sm-artifacts/</code>。
+          </div>
+<p class="small muted">无论迁移成功与否，都可以贡献经验给 SEAM 服务端（功能开发中，待上线）。</p>
+</article>
+<article class="doc-panel" id="doc-faq">
+<h2>常见问题</h2>
+<p class="doc-sub">关于 SEAM 的高频疑问，逐条给出答案</p>
+<h3>SEAM 能做什么？什么是模型适配迁移？</h3>
+<p>
+            SEAM 是一款基于 YAML 配置的轻量化模型适配迁移工具，核心作用是帮助开发者自动化、一键完成大模型跨硬件 GPU 迁移适配，
+            解决代码或模型从英伟达生态迁移至中国国产异构 GPU 算力硬件时，代码报错、算子不兼容、推理运行异常等适配难题。
+            SEAM 具备「自进化越用越聪明」「幻觉控制确保迁移结果真实有效」两大核心优势。
+          </p>
+<p>
+            模型适配迁移，指将原本适配 CUDA 架构的大模型推理/训练代码、运行环境、调用逻辑，
+            适配至国产异构 GPU 硬件可运行、并且性能调优发挥好硬件本身能力。
+          </p>
+<h3>SEAM 支持哪些 GPU 和框架？</h3>
+<ul class="bullets">
+<li><strong>GPUs</strong>：阿里平头哥 PPU、华为昇腾 Ascend、沐曦 MetaX 国产异构 GPU</li>
+<li><strong>框架</strong>：PyTorch 原生框架、vLLM 高速推理框架、SGLang 大语言模型服务框架</li>
+</ul>
+<p>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+<h3>为什么要用 OpenCode？</h3>
+<p>
+            SEAM 运行的时候，需要依赖 AI 模型 API 等服务。SEAM V1.0 版本使用的是 opencode
+            （支持同时使用多个不同模型的开源 coding CLI，更适合在国产显卡的终端使用场景使用），
+            未来我们也将适配到更多的 CLI 工具。
+            请用户在 <a href="https://opencode.ai" rel="noopener" target="_blank">opencode.ai</a> 下载最新的版本，如一行指令 <code>curl -fsSL https://opencode.ai/install | bash</code> 安装。
+          </p>
+<h3>阿里 PPU 和沐曦不是说兼容 CUDA，为什么也需要迁移？</h3>
+<p>
+            硬件层面的 CUDA 兼容属于指令集/基础 API 浅层兼容，并非 100% 全量 CUDA 算子、底层内核、高阶接口完美兼容，
+            甚至每一版本的硬件发布实际都需要对应的调整兼容以发挥好硬件本身能力。
+            因此需要 SEAM 完成算子替换、底层调度逻辑改写、性能调优等，兼顾可用性 + 运行性能。
+          </p>
+<h3>我没有中国产 GPU 环境，但想看看迁移效果来决定要不要买，能怎么实现？</h3>
+<p>两种解决方案：</p>
+<ol class="bullets num">
+<li>当前各大中国国产 GPU 厂商都有提供测试渠道，可以联系对应厂商预约测试，建议提前准备好要运行的代码，并了解下我们 SEAM。</li>
+</ol>
+<h3>迁移的结果和报告我要怎么理解？</h3>
+<ol class="bullets num">
+<li>会直接在终端显示是否跑通：<strong>E2E TEST PASSED</strong> / <strong>E2E PASS</strong> 或失败信息；也可以通过 <code>./e2e-reports/migration_utils/&lt;时间戳&gt;/summary.json</code> 获取更具体的信息。</li>
+<li>迁移的代码库：会默认写入 <code>./output_projects/&lt;项目名&gt;_&lt;时间戳&gt;/</code>，或是执行时输入的参数 <code>--output-dir</code>。您使用迁移后的代码库，即可在国产 GPU 上运行。</li>
+<li>迁移报告：会在迁移后的代码库下创建 <code>migration_reports/</code> 文件夹，用于查看迁移后项目本身的验收结果、性能、custom-op 迁移情况、构建日志等。</li>
+</ol>
+<div class="callout callout-warn">
+            细节运行时 log 存在迁移后项目的 <code>.sm-artifacts/</code> 下；如果运行失败，可以把运行报告和 <code>.sm-artifacts/</code> 一起反馈给我们排查。
+            运行时 <code>.memory</code> 和 <code>.skill</code> 等文件夹会更新，是 SEAM 的自进化学习的经验记忆和技能素材，<strong>非必要勿删</strong>。
+          </div>
+<h3>如何联系 SEAM？</h3>
+<p>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+<p>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+</article>
+<article class="doc-panel" id="doc-flow">
+<h2>模型迁移流程</h2>
+<p class="doc-sub">由工作流驱动的自动化流程：从环境检测开始，逐步完成项目分析、依赖准备、代码迁移、运行验证、错误修复和报告生成。</p>
+<div class="callout callout-info">
+<strong>总体流程：</strong><br/>
+<span class="mono" style="font-size:12.6px">GPU 环境检测 → 用户项目分析 → 依赖准备 → 规则迁移 → 验证修复循环 → 自定义算子最终验证 → 迁移报告生成 → 经验评估与精炼</span>
+</div>
+<h3>第一步：GPU 环境检测</h3>
+<p>SEAM 会检测当前运行环境，包括 Python 版本、PyTorch 版本、目标 GPU 是否可用、厂商软件栈是否存在等。</p>
+<p>这一阶段的目标是确认当前环境是否具备迁移和运行条件。</p>
+<h3>第二步：用户项目分析</h3>
+<p>SEAM 会分析用户提供的原始项目，包括：</p>
+<ul class="bullets">
+<li>项目目录结构</li>
+<li>依赖文件</li>
+<li>入口脚本</li>
+<li>CUDA 调用模式</li>
+<li>是否包含自定义 CUDA/C++ 算子</li>
+<li>是否使用 PyTorch、vLLM、SGLang 等框架</li>
+</ul>
+<p>这一阶段会决定后续走普通迁移路线，还是走更严格的 custom-op 迁移路线。</p>
+<h3>第三步：依赖准备</h3>
+<p>SEAM 会根据项目和目标平台准备运行环境，包括虚拟环境、Python 包、目标平台 PyTorch 版本、厂商 SDK 依赖等。</p>
+<p>不同国产 GPU 平台的依赖安装方式可能不同，因此这一阶段需要结合平台策略执行。</p>
+<h3>第四步：规则迁移</h3>
+<p>SEAM 会先执行一轮确定性的代码迁移。这个阶段主要基于规则进行文本和接口替换，不依赖大语言模型自由生成。例如：</p>
+<ul class="bullets">
+<li>替换设备调用方式</li>
+<li>调整导入语句</li>
+<li>修改通信后端</li>
+<li>处理目标平台相关配置</li>
+</ul>
+<p>规则迁移可以快速处理大量明确、稳定的适配点。</p>
+<h3>第五步：验证修复循环</h3>
+<p>规则迁移完成后，SEAM 会运行迁移后的项目。若项目失败，SEAM 会进入验证修复循环：</p>
+<ol class="bullets num">
+<li>执行入口脚本</li>
+<li>捕获错误日志</li>
+<li>分析错误类型</li>
+<li>分派给对应修复角色</li>
+<li>修改项目</li>
+<li>再次运行验证</li>
+</ol>
+<p>这个循环会持续到项目通过验证，或者达到最大迭代次数或停滞条件。</p>
+<h3>第六步：自定义算子最终验证</h3>
+<p>如果项目包含 CUDA/C++ 自定义算子，SEAM 会启用更严格的 custom-op 验证。</p>
+<p>它不会只看脚本是否运行成功，还会检查：</p>
+<ul class="bullets check">
+<li>自定义算子是否被完整发现</li>
+<li>是否生成目标平台原生编译产物</li>
+<li>是否真的调用了自定义算子路径</li>
+<li>是否没有回退到 CPU 或内建算子</li>
+<li>精度是否通过对比验证</li>
+<li>性能报告是否完整</li>
+<li>构建日志是否包含目标平台证据</li>
+</ul>
+<p>只有这些证据全部通过，才会标记为完整迁移通过。</p>
+<h3>第七步：迁移报告生成</h3>
+<p>SEAM 会生成迁移报告，用于帮助用户判断：</p>
+<ul class="bullets">
+<li>项目是否端到端跑通</li>
+<li>迁移过程中修改了什么</li>
+<li>依赖和环境是否正常</li>
+<li>自定义算子是否完成适配</li>
+<li>性能表现如何</li>
+<li>失败时卡在哪个环节</li>
+</ul>
+<h3>第八步：经验沉淀</h3>
+<p>SEAM 会评估本次迁移的成功经验和失败教训，并将有效方案沉淀为可复用技能。后续遇到类似项目时，SEAM 可以参考已有经验，提高迁移效率和成功率。</p>
+<p>这也是 SEAM 被称为 <strong>Self-Evolving</strong> 的原因。</p>
+</article>
+<article class="doc-panel" id="doc-ops">
+<h2>迁移 CUDA 细节操作</h2>
+<p class="doc-sub">运行 SEAM 前需要准备的基础环境与完整操作说明</p>
+<p>SEAM 需要在目标国产 GPU 服务器或对应容器环境中运行。如果您希望把项目迁移到国产 GPU，就应当在对应硬件可访问的环境中启动 SEAM。</p>
+<h3>运行前准备</h3>
+<p>请先确认您已经准备好：</p>
+<ul class="bullets check">
+<li>原始 CUDA 项目代码</li>
+<li>一台可访问目标国产 GPU 的服务器或容器
+              <ul class="bullets tight" style="margin-top:6px">
+<li>Python 运行环境</li>
+<li>目标 GPU 平台对应的软件栈、驱动和 SDK</li>
+<li>OpenCode Server 或 SEAM 当前支持的代码智能体运行服务</li>
+</ul>
+</li>
+</ul>
+<p>建议在「真正要运行迁移结果的国产 GPU 环境」中启动 SEAM。这样 SEAM 才能基于真实硬件反馈完成检测、运行、修复和验证。</p>
+<p>如果您暂时没有国产 GPU 环境，可以先查看已完成迁移的案例报告，或联系对应 GPU 厂商预约测试环境；SEAM 网站的国产 GPU 页面也展示了当前免费可参与的国产 GPU 使用资源活动。</p>
+<h3>获取 SEAM 和运行环境依赖</h3>
+<h4>获取 SEAM</h4>
+<p>在目标服务器或容器中下载 SEAM：</p>
+<div class="code-block">
+<div class="code-head"><span class="code-dots"><i></i><i></i><i></i></span><span class="code-title">bash</span>
+<button class="code-copy" data-copy="#docCode3">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>复制</button></div>
+<pre class="code-body" id="docCode3">git clone https://github.com/Fudan-SMI-lab/SEAM.git
+cd SEAM</pre>
+</div>
+<h4 style="margin-top:22px">安装 SEAM 依赖（如需）</h4>
+<div class="code-block">
+<div class="code-head"><span class="code-dots"><i></i><i></i><i></i></span><span class="code-title">bash</span>
+<button class="code-copy" data-copy="#docCode4">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>复制</button></div>
+<pre class="code-body" id="docCode4">cd SEAM
+python3.10 -m venv .venv
+source .venv/bin/activate
+
+<span class="c"># 安装依赖</span>
+pip install -e "src/[dev,dashboard]"</pre>
+</div>
+<h4 style="margin-top:22px">启动或者校验 OpenCode Server</h4>
+<p>SEAM 运行时需要依赖 AI 模型 API 等服务。SEAM V1.0 版本使用的是 opencode，它支持同时使用多个不同模型的开源 coding cli，适合在国产显卡的终端使用场景中使用。</p>
+<p>如需安装 OpenCode，可参考：<code>curl -fsSL https://opencode.ai/install | bash</code></p>
+<p>使用 SEAM 前，请先确认本机 OpenCode Server 已启动，默认地址为 <code>http://127.0.0.1:4098</code>，推荐在 SEAM 目录启动 OpenCode。比如启动指令如下：</p>
+<div class="code-block">
+<div class="code-head"><span class="code-dots"><i></i><i></i><i></i></span><span class="code-title">bash</span>
+<button class="code-copy" data-copy="#docCode5">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>复制</button></div>
+<pre class="code-body" id="docCode5">opencode --help
+opencode serve --hostname 127.0.0.1 --port 4098
+
+<span class="c"># 确认 OpenCode server 在运行（可以不跑，只是用来检查的）</span>
+curl -s http://127.0.0.1:4098/global/health</pre>
+</div>
+<p>也可以由 SEAM 自己启动 opencode。如果端口不同，SEAM 可以通过 <code>--server_url</code> 显式指定。</p>
+<h3>SEAM 基础运行命令</h3>
+<p>在 SEAM 根目录执行：</p>
+<div class="code-block">
+<div class="code-head"><span class="code-dots"><i></i><i></i><i></i></span><span class="code-title">bash — 主要指令</span>
+<button class="code-copy" data-copy="#docCode6">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>复制</button></div>
+<pre class="code-body" id="docCode6">bash src/scripts/run_seam.sh /path/to/your_original_cuda_project
+
+<span class="c"># 如果 OpenCode Server 端口不是默认值</span>
+bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
+  --server_type opencode \
+  --server_url http://127.0.0.1:4098
+
+<span class="c"># 显式指定输出目录</span>
+bash src/scripts/run_seam.sh /path/to/your_original_cuda_project \
+  --server_type opencode \
+  --server_url http://127.0.0.1:4098 \
+  --output-dir /path/to/output_root</pre>
+</div>
+<dl class="spec-list" style="margin-top:16px">
+<div class="spec-row"><dt>位置参数</dt><dd><code>/path/to/your_original_cuda_project</code> 是原始 CUDA 项目的路径</dd></div>
+<div class="spec-row"><dt>--server_type</dt><dd>表示使用 OpenCode Server</dd></div>
+<div class="spec-row"><dt>--server_url</dt><dd>表示 OpenCode Server 的服务地址</dd></div>
+<div class="spec-row"><dt>--output-dir</dt><dd>自定义输出文件夹目录地址，默认在 SEAM 目录的上层目录创建输出文件夹及具体任务子文件夹</dd></div>
+</dl>
+<h4 style="margin-top:22px">默认工作流设置</h4>
+<p>不传 <code>--workflow</code> 时，启动器会使用 <code>src/workflows/seam_auto_default.yaml</code> 自动选择流程，通常无需手动指定 workflow。</p>
+<p>项目根目录下的 <code>ADAPTATION_REQUIREMENTS.md</code> 会自动加载；非标准约束可以通过 <code>--extra '--user-constraints PATH'</code> 传入。</p>
+<h4 style="margin-top:22px">输出目录设置</h4>
+<p>运行完成后，迁移后的代码库默认写入 SEAM 仓库同级目录：<code>../output_projects/&lt;项目名&gt;_&lt;时间戳&gt;</code>。</p>
+<p>也可以用环境变量 <code>MIGRATION_OUTPUT_PROJECTS_ROOT</code> 改默认根目录，或用 <code>--output-dir</code> 显式指定本次输出项目根目录。</p>
+<h3>SEAM 迁移结果、日志与报告</h3>
+<p>迁移中，SEAM 会自动执行类似如下动作：</p>
+<ul class="bullets">
+<li>检测 GPU 和运行环境</li>
+<li>分析用户项目结构</li>
+<li>准备依赖环境</li>
+<li>执行代码迁移</li>
+<li>运行迁移后项目</li>
+<li>根据报错自动修复</li>
+<li>生成迁移报告</li>
+<li>沉淀可复用经验</li>
+</ul>
+<p>SEAM 命令行运行时，日志默认是简化输出的 TUI，也可以按 <kbd>q</kbd> 退出 TUI 直接以 log 输出运行。</p>
+<h4 style="margin-top:22px">迁移是否成功</h4>
+<p>迁移完成后，请重点查看：是否跑通 —— 终端最后会直接显示 <code>E2E PASS</code>、<code>E2E TEST PASSED</code> 或失败信息。</p>
+<h4 style="margin-top:22px">迁移结果文件夹使用</h4>
+<p>SEAM 会展示迁移后结果 output-dir 的文件夹地址，该迁移后的文件夹会在原待迁移 CUDA 目录基础上增加文件：</p>
+<ul class="bullets">
+<li><code>migration_reports/</code> 文件夹，用于包含重要迁移结果，如 <code>USAGE.md</code> 中会展示迁移后的运行指令</li>
+<li><code>.sm-artifacts/</code> 文件夹，详细运行时 log</li>
+</ul>
+<div class="callout callout-red">
+            如果运行失败，可以把 output-dir 文件夹中运行报告 <code>migration_reports/</code> 和 <code>.sm-artifacts/</code> 一起反馈给 SEAM 团队排查。
+            建议反馈时同时提供：原始项目名称或类型、目标 GPU 平台、执行的 SEAM 命令、终端失败信息、<code>migration_reports/</code>、<code>.sm-artifacts/</code>。
+          </div>
+<h3>注意事项</h3>
+<p>SEAM 目录的 <code>.memory</code>、<code>.skill</code> 等文件夹会在运行中更新，是 SEAM 的自进化学习经验记忆和技能素材，<strong>非必要勿删</strong>。</p>
+<p>普通代码迁移任务通常可以在较短时间内完成；具体耗时和 API 花费会受项目规模、错误修复轮数、模型 API 选择等因素影响。</p>
+</article>
+<article class="doc-panel" id="doc-contract">
+<h2>E2E 测试契约（要点）</h2>
+<p class="doc-sub">V3 E2E CLI、终态语义与产物契约 —— 面向需要做高级自动化与二次开发的用户。</p>
+<p>本文描述当前可执行代码和确定性 fixture 已验证的 V3 行为。它不是 crash resume 设计，也不把 raw trace、replay 或工作目录 state 当作运行结果 authority。</p>
+<div class="callout callout-info">
+<strong>生产支持契约</strong>：Linux 和 Python 3.10+。
+            Mandatory CI 只在无硬件 Linux runner 上验证支持下限和当前解释器，不声称验证真实 NPU/GPU。
+            Real accelerator checks remain optional and non-gating.
+          </div>
+<h3>包依赖边界</h3>
+<ul class="bullets">
+<li><code>base</code> 安装包含 <code>typing_extensions&gt;=4.12,&lt;5</code>（<code>core.compat</code> 在 Python &lt; 3.10 时回退使用，但生产 floor 已是 3.10+）。</li>
+<li><code>[sqlite]</code> 是可选 extra，提供 <code>pysqlite3-binary&gt;=0.5,&lt;1</code> 作为 stdlib sqlite3 的二进制回退；不安装 <code>[sqlite]</code> 只会禁用 session manager 的 SQLite completion evidence，不会让任何常规 runtime import 崩溃。</li>
+<li><code>[dev]</code> 提供 pytest / PyYAML / pydantic / tomli 测试工具链。</li>
+<li><code>[dashboard]</code> 提供 rich / textual 渲染器。</li>
+<li>CI 永远只安装 <code>base + [dev]</code>，不把 <code>[sqlite]</code> 设为必需。</li>
+</ul>
+<h3>公共入口</h3>
+<p>
+            日常入口是 <code>src/scripts/run_seam.sh</code>。它把参数交给 <code>run_e2e_v3.sh</code>，
+            默认服务器为 <code>http://127.0.0.1:4098</code>，默认 workflow 为
+            <code>src/workflows/seam_auto_default.yaml</code>，Phase 5 上限为 8，Review Gate 关闭，
+            输出项目保留，容器保留，raw trace 关闭。
+          </p>
+<p>
+<code>run_e2e_v3.sh</code> 也可直接使用。它的 shell 参数名称包括
+            <code>--workflow</code>、<code>--max-iter</code>、<code>--max-review-iter</code>、<code>--review</code>、
+            <code>--no-review</code>、<code>--no-keep-temp</code> 和 <code>--dry-run</code>，
+            并将有效值转换到 Python 参数。两个 shell 启动器都要求项目路径或 <code>--continue-from</code> 二选一，
+            并拒绝 continuation 加 workflow override。
+          </p>
+<h4>高级自动化：直接调用 Python 入口</h4>
+<div class="code-block">
+<div class="code-head"><span class="code-dots"><i></i><i></i><i></i></span><span class="code-title">bash</span>
+<button class="code-copy" data-copy="#docCode7">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>复制</button></div>
+<pre class="code-body" id="docCode7">PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
+  --project-dir /absolute/path/to/cuda-project \
+  --workflow-path src/workflows/seam_auto_default.yaml \
+  --server-url http://127.0.0.1:4098 \
+  --max-phase5-iter 5 \
+  --review-gate \
+  --max-review-iter 3 \
+  --review-fail-closed \
+  --keep-temp-dir \
+  --container-retention retain \
+  --opencode-readiness message \
+  --opencode-message-timeout 120</pre>
+</div>
+<h4 style="margin-top:22px">Terminal continuation</h4>
+<p>必须使用显式父 summary 路径，不进行 latest、时间戳或目录扫描。</p>
+<div class="code-block">
+<div class="code-head"><span class="code-dots"><i></i><i></i><i></i></span><span class="code-title">bash</span>
+<button class="code-copy" data-copy="#docCode8">
+<svg fill="none" height="12" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24" width="12"><rect height="13" rx="2" width="13" x="9" y="9"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>复制</button></div>
+<pre class="code-body" id="docCode8">PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
+  --continue-from /absolute/path/to/e2e-reports/parent-run-001/summary.json \
+  --server-url http://127.0.0.1:4098 \
+  --container-retention retain \
+  --no-save-agent-trace</pre>
+</div>
+<h3>Python 参数与精确默认值</h3>
+<p>下面标记区间由 <code>src/tests/test_documented_cli_contracts.py</code> 与真实 parser 的全部长参数比较。</p>
+<div class="table-wrap">
+<table class="data">
+<thead><tr><th>参数</th><th>parser 默认值</th><th>当前含义</th></tr></thead>
+<tbody>
+<tr><td><code>--server-url</code></td><td>None</td><td>显式 OpenCode URL；shell 启动器默认传入 4098。</td></tr>
+<tr><td><code>--max-phase5-iter</code></td><td>5</td><td>正整数，Phase 5 执行上限。</td></tr>
+<tr><td><code>--max-review-iter</code></td><td>未设置</td><td>只能出现一次；最终优先级为 CLI、workflow、framework、内置 3。</td></tr>
+<tr><td><code>--review-fail-closed</code></td><td>未设置</td><td>CLI strict override。</td></tr>
+<tr><td><code>--no-review-fail-closed</code></td><td>未设置</td><td>只放宽 <code>reject_exhausted</code>。</td></tr>
+</tbody>
+</table>
+</div>
+<p class="tiny muted" style="margin-top:12px">
+            本节为要点摘录。完整契约请查阅 SEAM 仓库中的测试契约文档
+            （<code>e2e测试契约.md</code>）。
+          </p>
+</article>
+<article class="doc-panel" id="doc-gpu">
+<h2>GPU 支持汇总</h2>
+<p class="doc-sub">SEAM 面向国产 GPU 和异构加速平台，帮助用户将原本依赖 NVIDIA CUDA 的 AI 项目迁移到目标平台运行。</p>
+<h3>当前支持的平台</h3>
+<div class="table-wrap">
+<table class="data">
+<thead><tr><th>平台</th><th>说明</th><th>支持状态</th></tr></thead>
+<tbody>
+<tr><td><strong>华为昇腾 Ascend NPU</strong></td><td>面向昇腾 NPU 和 CANN 软件栈的迁移适配</td><td><span class="chip chip-green">已支持</span></td></tr>
+<tr><td><strong>阿里平头哥 PPU</strong></td><td>面向 CUDA 兼容型 PPU 平台的迁移适配</td><td><span class="chip chip-green">已支持</span></td></tr>
+<tr><td><strong>沐曦 MetaX GPU</strong></td><td>面向沐曦 GPU 平台的迁移适配</td><td><span class="chip chip-green">已支持</span></td></tr>
+<tr><td class="muted">其他国产 GPU 或异构加速器</td><td>可根据实际需求扩展平台策略和工作流</td><td><span class="chip">规划中</span></td></tr>
+</tbody>
+</table>
+</div>
+<h3>当前支持的框架</h3>
+<div class="table-wrap">
+<table class="data">
+<thead><tr><th>框架</th><th>说明</th><th>支持状态</th></tr></thead>
+<tbody>
+<tr><td><strong>PyTorch</strong></td><td>常见深度学习训练和推理框架</td><td><span class="chip chip-green">已支持</span></td></tr>
+<tr><td><strong>vLLM</strong></td><td>大模型高性能推理框架</td><td><span class="chip chip-green">已支持</span></td></tr>
+<tr><td><strong>SGLang</strong></td><td>大语言模型服务与推理框架</td><td><span class="chip chip-green">已支持</span></td></tr>
+<tr><td class="muted">其他框架</td><td>可根据实际项目需求扩展</td><td><span class="chip">规划中</span></td></tr>
+</tbody>
+</table>
+</div>
+<h3>为什么不同 GPU 需要适配</h3>
+<p>即使某些国产 GPU 声称兼容 CUDA，也不代表所有 CUDA 项目都能直接运行。原因包括：</p>
+<ul class="bullets">
+<li>CUDA API 与目标平台接口存在差异</li>
+<li>PyTorch 后端和设备管理方式不同</li>
+<li>厂商驱动、SDK、编译工具链不同</li>
+<li>自定义 CUDA 算子可能没有现成等价实现</li>
+<li>项目依赖版本与目标平台软件栈不匹配</li>
+<li>性能调优策略与硬件架构有关</li>
+</ul>
+<p>因此，迁移不是简单的文本替换，而是需要结合真实硬件环境进行运行验证和修复。</p>
+<h3>平台策略差异</h3>
+<p>不同平台采用不同迁移策略。</p>
+<p>对于<strong>原生转换型</strong>平台，例如部分 NPU 平台，SEAM 可能需要将 CUDA 相关调用转换为目标平台专用接口。</p>
+<p>对于 <strong>CUDA 兼容型</strong>平台，例如 PPU，部分 <code>torch.cuda</code> 调用可能需要保留，因为目标平台通过兼容层支持相关接口。</p>
+<p>SEAM 会根据目标平台策略选择对应迁移方式，并在运行过程中通过验证器检查迁移结果是否真实有效。</p>
+<h3>AI4S 模型迁移案例</h3>
+<p>SEAM 已完成三家平台上的 AI4S 模型迁移适配验证：阿里 PPU、华为昇腾 NPU、沐曦 GPU。</p>
+<div class="btn-row" style="margin-top:18px">
+<a class="btn btn-primary btn-sm" href="models.html">模型适配说明</a>
+<a class="btn btn-outline btn-sm" href="gpu.html">查看各平台型号规格</a>
+</div>
+</article>
+<article class="doc-panel" id="doc-git">
+<h2>共建 Git 仓库</h2>
+<p class="doc-sub">SEAM 是一个持续迭代的开源项目。</p>
+<p>
+            您可以通过反馈问题、提交功能建议、补充文档、贡献适配经验或提交代码的方式参与共建。
+            无论是修复一个错别字、补充一个迁移案例，还是新增一个平台适配能力，都是对 SEAM 社区有价值的贡献。
+          </p>
+<div class="callout callout-info">
+<strong>Git 仓库入口：</strong>
+<a href="https://github.com/Fudan-SMI-lab/SEAM" rel="noopener" target="_blank">https://github.com/Fudan-SMI-lab/SEAM</a><br/>
+<strong>开源协议：</strong>MIT License
+          </div>
+<h3>Git 仓库参与方式</h3>
+<p>你可以通过以下多种形式为本项目贡献力量：</p>
+<ol class="bullets num">
+<li>代码贡献：提交代码实现功能迭代与问题修复</li>
+<li>反馈问题：协助我们发现并修复代码缺陷</li>
+<li>功能提议：提交新功能构想与优化建议</li>
+<li>项目推广：向身边开发者分享、推荐本项目</li>
+</ol>
+<h3>代码贡献操作方式</h3>
+<p>具体地，请遵循以下流程：</p>
+<ol class="bullets num">
+<li>Fork 当前仓库至个人账号</li>
+<li>基于 main 分支新建自定义分支（示例分支名：<code>feature/xxx</code>、<code>fix/xxx</code>）</li>
+<li>完成代码修改，严格遵循项目编码规范</li>
+<li>本地充分测试，确保改动可正常运行</li>
+<li>编写规范的提交说明，清晰描述变更内容</li>
+<li>将代码推送到你个人的 Fork 仓库</li>
+<li>向本仓库 main 分支发起 Pull Request</li>
+</ol>
+<p>我们会及时审核 PR，与你沟通细节，共同完成代码合并。</p>
+<h3>反馈问题</h3>
+<p>若你在使用过程中发现 Bug 或异常问题，请按如下流程提交：</p>
+<ol class="bullets num">
+<li>前往 Issues 检索，确认该问题是否已有人提交</li>
+<li>若无相关记录，点击「New Issue」，填写清晰的标题与完整问题描述</li>
+<li>补充运行环境、复现步骤等关键信息，方便我们定位排查</li>
+</ol>
+<p>
+            Issue 描述尽量详尽，比如：问题标题、运行环境、目标 GPU 平台、原始项目介绍、复现步骤、报错信息、SEAM 迁移报告、日志等。
+          </p>
+<h3>功能提议</h3>
+<p>如果您希望 SEAM 支持新的 GPU 平台、新框架、新模型类型或新的报告能力，或者有不错的新功能或优化想法，可以提交 Feature Request。</p>
+<ol class="bullets num">
+<li>先在 Issues 查看，避免重复提议；</li>
+<li>确认无重复后，新建 Issue 并选择「Feature Request」模板详细描述方案。</li>
+</ol>
+<p>建议说明包含：需求背景、用户场景描述、当前痛点、期望功能、是否有可测试项目或样例。</p>
+<p>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+</article>
+<article class="doc-panel" id="doc-exp">
+<h2>贡献适配经验</h2>
+<p class="doc-sub">SEAM 的重要能力之一是将迁移经验沉淀为可复用知识经验，越用越聪明。</p>
+<p>同时，用户在实际迁移过程中遇到的问题、解决方案和验证报告，都可以成为后续用户的重要参考。</p>
+<h3>适配经验贡献参与方式</h3>
+<ol class="bullets num">
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+<li>文档完善：补充、修正 SEAM 的相关文档</li>
+<li>项目推广：向身边开发者分享、推荐本项目</li>
+</ol>
+<h3>自定义适配经验报告的贡献原则</h3>
+<p>贡献适配经验时，重点是让别人能够判断、复现和复用。建议遵循以下原则：</p>
+<ul class="bullets check">
+<li>说明清楚原始项目、目标 GPU 平台和运行环境</li>
+<li>提供真实运行结果，不只描述代码修改</li>
+<li>保留关键命令、日志路径和报告路径</li>
+<li>明确哪些问题已经解决，哪些问题仍未解决</li>
+<li>删除密钥、内网地址、私有数据集路径等敏感信息</li>
+<li>只提交自己理解的内容；如果某个修复来自他人建议，需要说明来源或背景</li>
+</ul>
+<h3>什么是适配经验</h3>
+<p>适配经验是指某个项目从 CUDA 迁移到国产 GPU 过程中形成的可复用信息，包括：</p>
+<ul class="bullets">
+<li>已完成迁移的模型案例</li>
+<li>不同 GPU 平台的适配经验</li>
+<li>依赖安装和环境配置说明</li>
+<li>某类错误的解决方法</li>
+<li>某个平台的依赖安装方式</li>
+<li>某个框架在目标 GPU 上的特殊配置</li>
+<li>自定义算子的迁移方法和经验</li>
+<li>性能验证和精度验证方式和报告</li>
+<li>可复现的测试脚本</li>
+<li>平台专用工作流和 prompt 模板</li>
+<li>避免 CPU fallback 的检查方法</li>
+</ul>
+<h3>适配经验应包含什么</h3>
+<p>建议一份适配经验至少包含：</p>
+<div class="table-wrap">
+<table class="data">
+<thead><tr><th>内容</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><strong>项目名称</strong></td><td>被迁移的模型或代码项目</td></tr>
+<tr><td><strong>原始环境</strong></td><td>原本运行的 CUDA、PyTorch、Python 等版本</td></tr>
+<tr><td><strong>目标平台</strong></td><td>阿里 PPU、昇腾 NPU、沐曦 GPU 或其他平台</td></tr>
+<tr><td><strong>使用框架</strong></td><td>PyTorch、vLLM、SGLang 等</td></tr>
+<tr><td><strong>问题现象</strong></td><td>报错信息或异常表现</td></tr>
+<tr><td><strong>解决方法</strong></td><td>实际采用的修改方式</td></tr>
+<tr><td><strong>验证结果</strong></td><td>是否端到端通过，是否有性能或精度报告</td></tr>
+<tr><td><strong>注意事项</strong></td><td>后续用户复用时需要注意的点</td></tr>
+</tbody>
+</table>
+</div>
+<p style="margin-top:18px">提交适配经验时，请尽量使用清晰、可复现的表达。</p>
+<div class="callout callout-info" style="border-left-color:var(--green-500);background:#f0fdf4;border-color:#bbf7d0">
+<strong>推荐写法：</strong>在昇腾 NPU 环境中，项目启动时报 xxx 错误。原因是依赖版本与 CANN 工具链不匹配。
+            将 xxx 版本调整为 xxx 后，入口脚本通过端到端验证，报告路径为 xxx。
+          </div>
+<div class="callout callout-red">
+<strong>不推荐写法：</strong>改了一些依赖后可以跑了。
+          </div>
+</article>
+<article class="doc-panel" id="doc-res">
+<h2>资源贡献共享</h2>
+<p class="doc-sub">国产 GPU 的生态目前还处于发展阶段。SEAM 的初心是希望让国产 GPU 使用变简单，国产 GPU 发展越来越好。</p>
+<h3>两大资源难题等您贡献</h3>
+<p>从 SEAM 侧理解，当前还有两大资源难题：</p>
+<div class="grid grid-2" style="margin-top:16px">
+<div class="card card-flat">
+<h4 style="color:var(--brand-red)">缺国产 GPU 试用环境</h4>
+<p>用户在决定用国产 GPU 之前，首先最缺乏的是：缺少国产 GPU 环境去「试一把」的机会。
+                 因此，如果有可贡献给 SEAM 用户免费使用或者优惠使用的国产 GPU 环境，我们会非常欢迎并协助做推广。</p>
+</div>
+<div class="card card-flat">
+<h4 style="color:var(--brand-red)">缺 AI tokens</h4>
+<p>SEAM 使用过程中，需要配置 AI 大模型的 API key（也就是要花费 tokens），
+                 但是很多不同领域的用户，对于 tokens 的购买很不熟悉，阻碍了使用能大幅度减轻适配工作量和时长的 SEAM，
+                 在冗长的自己手动去做迁移适配的工作里对国产 GPU 失去信心。
+                 因此，我们也非常欢迎能免费贡献的 API tokens 供 SEAM 用户使用。</p>
+</div>
+</div>
+<h3>资源共享的贡献方式</h3>
+<ol class="bullets num">
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+<li>您提供更详细的资源说明，和使用方式，并与 SEAM 确认贡献对外公开描述。</li>
+<li>SEAM 公示贡献，等用户来认领资源使用。</li>
+</ol>
+<div class="btn-row" style="margin-top:20px">
+<a class="btn btn-outline btn-sm" href="ecosystem.html">查看更多共建方式</a>
+</div>
+</article>
+<article class="doc-panel" id="doc-privacy">
+<h2>用户协议与数据隐私协议</h2>
+<p class="doc-sub">本文为要点摘要。完整条款请在 SEAM 平台登录时阅读并同意。</p>
+<p>
+            欢迎使用 SEAM 自进化迁移 Agent 工具及配套网站服务（以下统称「SEAM 服务」）。
+            在注册、登录、使用 SEAM 全部功能前，请您完整阅读、充分理解本协议全部条款。
+            您点击「同意」、登录账号、上传文件、提交任务、使用算力即代表您已充分知悉并自愿接受本协议全部约束。
+          </p>
+<div class="callout callout-warn">
+            本项目由复旦大学人工智能创新与产业研究院-统计机器智能实验室（SMI-lab）、上海创智学院、复旦大学 CFFF 智能计算平台共同构建。
+            若您使用第三方合作平台、第三方 API 服务等，第三方将独立收集您的个人信息，请您自行阅读第三方隐私政策。
+          </div>
+<h3>一、账户的使用与安全</h3>
+<ul class="bullets">
+<li>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</li>
+<li>SEAM 会在网站服务端采取合理的技术措施保障您账户的安全。</li>
+<li>您的账户信息由 SEAM 激活并由您自行保管，一个 SEAM 账户仅能对应唯一的法律主体。除非有法律明文规定、司法裁定或者经 SEAM 同意，您不得以任何方式转让、转借、租售、赠与或让他人继承您的 SEAM 账户。</li>
+<li>如发现他人未经授权使用您的 SEAM 账户，您应立即通知 SEAM；SEAM 在核实您的身份后，将尽商业上的合理努力及时采取冻结账户、更改密码等措施。</li>
+<li>未成年人需监护人阅读并同意协议，无监护人同意不得注册使用；监护人可申请注销账号、删除未成年人数据。</li>
+</ul>
+<h3>二、平台服务及规范</h3>
+<ul class="bullets">
+<li>SEAM 目前为您开源或者免费提供服务；对于开源或免费的部分，SEAM 不排除以后升级版本不再开源、或会发布包含需要付费服务功能项。</li>
+<li>SEAM 发布的合作方平台的服务，如果有需要付费的服务，您将自行仔细研究合作方的技术资料、协议条款等，并根据自身需要再进行付费使用。</li>
+<li>截至协议生效日，用户使用 SEAM 做自动化迁移或需要配置人工智能大模型付费 API Key 才能顺畅使用，用户使用国产 GPU 可以去复旦大学 CFFF 平台参与免费项目或者付费购买算力资源。</li>
+<li>您使用 SEAM 时应遵从国家、地方法律法规、行业惯例和社会公共道德，不应出现任何破坏或试图破坏网络安全等的行为。</li>
+</ul>
+<h3>三、知识产权</h3>
+<ul class="bullets">
+<li>SEAM 包含开源软件组件。除另有说明外，开源组件的核心源代码遵循 <strong>MIT License</strong> 开源协议。</li>
+<li>一方向对方提供的任何资料、技术或技术支持、软件、服务等的知识产权均属于提供一方或其合法权利人所有。</li>
+<li>您应保证提交 SEAM 的素材、对 SEAM 服务的使用及使用 SEAM 服务所产生的成果未侵犯任何第三方的合法权益。</li>
+</ul>
+<h3>四、个人信息保护和数据隐私</h3>
+<p>SEAM 将及时响应信息安全事件，并依据国家法律法规的要求、遵照相关安全事件处理标准管理信息安全事件。收集与使用个人信息的目的包括：</p>
+<ul class="bullets">
+<li><strong>目的 1</strong>：在您使用 SEAM 各类平台或线上服务时，向您推荐、介绍产品、服务和/或方案。</li>
+<li><strong>目的 2</strong>：优化平台功能与服务质量 —— 智能体记忆优化、产品体验改进、统计与研究、模型训练与优化（均以匿名化形式处理）。</li>
+<li><strong>目的 3</strong>：按照法律法规及监管要求，履行合规义务，如用于内部审计、数据报备、防欺诈监控等。</li>
+<li><strong>目的 4</strong>：便于您在 SEAM 中建立个人账户并使用其核心功能。</li>
+<li><strong>目的 5</strong>：以用户信息统计数据为基础，设计、开发、推广全新的产品及服务。</li>
+<li><strong>目的 6</strong>：保障服务安全性，识别账号异常状态，防范钓鱼网站、欺诈、网络漏洞等安全风险。</li>
+<li><strong>目的 7</strong>：如超出收集用户信息时所声称的目的，我们将届时通知功能更新，或者再次向您告知并征得您的明示同意。</li>
+</ul>
+<p>
+            SEAM 将采取符合国家标准的安全措施和技术手段（包括身份鉴别、数据加密、访问控制、恶意代码防范、安全审计）存储和保护您的个人信息。
+          </p>
+<div class="callout callout-info">
+<strong>数据存储与跨境传输：</strong>
+            SEAM 的核心服务端部署于中华人民共和国境内（为本协议之目的，不含香港、澳门及台湾地区）。
+            我们在境内收集和产生的个人信息，将默认存储于中国境内的服务器上。
+            目前 SEAM 自有服务不涉及将您的个人信息主动向中国境外提供的行为。
+            若您主动接入位于中国境外的第三方服务（包括人工智能模型 API 等），您的数据将根据该第三方的服务器设置，可能被传输至中国境外进行处理，该等传输由您主动发起。
+          </div>
+<h3>五、责任范围和责任限制</h3>
+<p>在适用法律许可的范围内，SEAM 不对与本服务条款有关或由本服务条款引起的任何间接的、惩罚性的、特殊的、派生的损失承担赔偿责任。您在使用 SEAM 服务期间应当遵守中华人民共和国的法律，不得危害网络安全。</p>
+<h3>六、不可抗力和意外事件</h3>
+<p>因不可抗力、电力供应或通讯网络故障等公共服务因素、黑客攻击或病毒等非 SEAM 独立责任、以及经提前公告的系统维护，导致无法正常提供服务的，SEAM 不承担任何法律责任。</p>
+<h3>七、法律适用与管辖</h3>
+<p>本服务条款之效力、解释、变更、执行与争议解决均适用中华人民共和国法律。因本服务条款产生之争议应提交至上海市的人民法院予以诉讼解决。</p>
+<h3>八至十、条款更新、终止与联系我们</h3>
+<p>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+<p>如需交流或反馈，请通过 SEAM 开源仓库的 Issues 联系项目团队。</p>
+</article>
+</div>
+</div>
+</div>
+</section>
+</main>
+<footer class="site-footer">
+</footer>
+<script src="assets/js/site.js"></script>
+</body>
+</html>
