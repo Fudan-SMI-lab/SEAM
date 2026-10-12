@@ -38,6 +38,10 @@ from validators.validate_entry_script import validate as validate_entry_script
 from validators.validate_entry_static import validate as validate_entry_static
 from validators.validate_env_detect import validate as validate_env_detect
 from validators.validate_project_analysis import validate as validate_project_analysis
+from validators.validate_operator_analysis import validate as validate_operator_analysis
+from validators.validate_operator_evaluation import validate as validate_operator_evaluation
+from validators.validate_operator_env_detect import validate as validate_operator_env_detect
+from validators.validate_operator_report import validate as validate_operator_report
 from validators.validate_rule_migration import validate as validate_rule_migration
 from validators.validate_venv import validate as validate_venv
 
@@ -906,6 +910,10 @@ class PhaseRunner:
         registrations = {
             "env_detect": validate_env_detect,
             "project_analysis": validate_project_analysis,
+            "operator_env_detect": validate_operator_env_detect,
+            "operator_analysis": validate_operator_analysis,
+            "operator_evaluation": validate_operator_evaluation,
+            "operator_report": validate_operator_report,
             "venv": validate_venv,
             "entry_script": validate_entry_script,
             "entry_static": validate_entry_static,

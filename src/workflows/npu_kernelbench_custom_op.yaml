@@ -1,0 +1,142 @@
+name: npu_kernelbench_custom_op
+version: "1.0"
+description: "Single KernelBench operator generation and Ascend C repair workflow"
+
+target_platform:
+  preset: npu_ascend
+
+globals:
+  max_repair_iterations: 5
+  stagnation_threshold: 3
+  review_gate_enabled: false
+
+agents:
+  main_engineer:
+    role: "main_engineer"
+    lifecycle: "persistent"
+  error_analyzer:
+    role: "error_analyzer"
+    lifecycle: "persistent"
+  operator_fixer:
+    role: "operator_fixer"
+    lifecycle: "persistent"
+
+terminals:
+  complete: "Operator workflow complete"
+  failed: "Operator workflow failed"
+  blocked: "Operator task blocked"
+
+phases:
+  - id: phase_0_operator_env_detect
+    name: operator_environment_detection
+    type: builtin
+    operation: "operator_task_validate"
+    validator: operator_env_detect
+    input_mapping:
+      operator_task_dir: "${context.OPERATOR_TASK_DIR}"
+      solution_type: "${context.SOLUTION_TYPE}"
+    transitions:
+      on_success: phase_1_operator_analysis
+      on_failure: blocked
+
+  - id: phase_1_operator_analysis
+    name: operator_analysis
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_1_operator_analysis"
+    validator: operator_analysis
+    input_mapping:
+      operator_task_dir: "${state.phase_0_operator_env_detect.operator_task_dir}"
+      operator_name: "${state.phase_0_operator_env_detect.operator_name}"
+      level: "${state.phase_0_operator_env_detect.level}"
+      definition_path: "${state.phase_0_operator_env_detect.definition_path}"
+      workload_path: "${state.phase_0_operator_env_detect.workload_path}"
+    transitions:
+      on_success: phase_2_custom_op_prepare
+      on_failure: failed
+
+  - id: phase_2_custom_op_prepare
+    name: custom_op_prepare
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_2_custom_op_prepare"
+    validator: null
+    input_mapping:
+      operator_task_dir: "${state.phase_0_operator_env_detect.operator_task_dir}"
+      operator_name: "${state.phase_0_operator_env_detect.operator_name}"
+      definition_path: "${state.phase_0_operator_env_detect.definition_path}"
+      workload_path: "${state.phase_0_operator_env_detect.workload_path}"
+      target_soc: "${context.TARGET_SOC}"
+    runtime_skills:
+      include:
+        - cuda-custom-op-to-npu-custom-op
+      inject_full: false
+      missing: error
+    transitions:
+      on_success: phase_3_operator_validation
+      on_failure: failed
+
+  - id: phase_3_operator_validation
+    name: operator_validation_and_repair
+    type: loop
+    sub_workflow: operator_repair_loop
+    input_mapping:
+      OPERATOR_TASK_DIR: "${state.phase_0_operator_env_detect.operator_task_dir}"
+      OPERATOR_NAME: "${state.phase_0_operator_env_detect.operator_name}"
+      KERNELBENCH_ROOT: "${context.KERNELBENCH_ROOT}"
+      OPERATOR_SOLUTION_PATH: "${context.OPERATOR_SOLUTION_PATH}"
+      OPERATOR_OUTPUT_DIR: "${context.OPERATOR_OUTPUT_DIR}"
+      TARGET_SOC: "${context.TARGET_SOC}"
+    transitions:
+      on_success: phase_4_operator_report
+      on_failure: failed
+
+  - id: phase_4_operator_report
+    name: operator_report
+    type: llm
+    agent: main_engineer
+    prompt_template: "phase_4_operator_report"
+    validator: operator_report
+    input_mapping:
+      operator_name: "${state.phase_0_operator_env_detect.operator_name}"
+      operator_output_dir: "${context.OPERATOR_OUTPUT_DIR}"
+    transitions:
+      on_success: complete
+      on_failure: complete
+
+sub_workflows:
+  operator_repair_loop:
+    id: operator_repair_loop
+    type: loop
+    max_iterations: 5
+    stagnation_threshold: 3
+    review_gate_enabled: false
+    stop_conditions:
+      - condition: "$.operator_passed == true"
+        status: success
+      - condition: "$.stagnation_count >= 3"
+        status: stagnation
+    phases:
+      - id: evaluate_operator
+        type: builtin
+        operation: "operator_kernelbench_eval"
+        params:
+          timeout: 600
+
+      - id: analyze_operator_failure
+        type: llm
+        agent: error_analyzer
+        prompt_template: "phase_operator_error_analysis"
+        condition: "$.operator_passed != true"
+        output_as: "error_analysis"
+
+      - id: fix_operator
+        type: llm
+        agent: operator_fixer
+        prompt_template: "repair_operator_fixer_kernelbench_ascendc"
+        condition: "$.operator_passed != true"
+        runtime_skills:
+          include:
+            - cuda-custom-op-to-npu-custom-op
+          inject_full: false
+          missing: error

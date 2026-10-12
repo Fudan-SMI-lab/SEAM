@@ -130,6 +130,11 @@ from core.v3_phase5_runtime import (
 from core.run_outcome import PhaseId
 from core.runtime_observability_models import ImprovementStatus
 from core.platform_policy import resolve_policy, PlatformPolicy
+from core.operator_benchmark import (
+    evaluate_and_summarize_operator,
+    summarize_traces,
+    validate_operator_task,
+)
 from core.ui_events import UIEventSink, summarize_text
 from validators.validate_entry_script import (
     validate as validate_entry_script,
@@ -2225,6 +2230,44 @@ class WorkflowExecutor:
         exec_ctx = _get_exec_ctx(self.exec_backend, command=exec_cmd)
         input_ctx.update(exec_ctx)
 
+        # Operator-level benchmark loops use a task context rather than the
+        # project entry-script context used by the migration repair loop.
+        if loop_vars and loop_vars.get("OPERATOR_TASK_DIR"):
+            input_ctx.update(
+                {
+                    "operator_task_dir": loop_vars.get("OPERATOR_TASK_DIR", ""),
+                    "operator_name": loop_vars.get("OPERATOR_NAME", ""),
+                    "level": Path(
+                        str(loop_vars.get("OPERATOR_TASK_DIR", ""))
+                    ).parent.name,
+                    "kernelbench_root": loop_vars.get("KERNELBENCH_ROOT", ""),
+                    "solution_path": loop_vars.get("OPERATOR_SOLUTION_PATH", ""),
+                    "solution_source_dir": str(
+                        Path(str(loop_vars.get("OPERATOR_SOLUTION_PATH", ""))).parent
+                        / "sources"
+                    ),
+                    "repair_iteration": str(
+                        (loop_state or {}).get("iteration", "0")
+                    ),
+                }
+            )
+            evaluation = (step_outputs or {}).get("evaluate_operator", {})
+            if isinstance(evaluation, dict):
+                input_ctx.update(
+                    {
+                        "latest_trace_path": evaluation.get("traces_path", ""),
+                        "latest_evaluation_summary_path": evaluation.get(
+                            "summary_path", ""
+                        ),
+                        "latest_complete_stdout_artifact_path": evaluation.get(
+                            "stdout_path", ""
+                        ),
+                        "latest_complete_stderr_artifact_path": evaluation.get(
+                            "stderr_path", ""
+                        ),
+                    }
+                )
+
         if phase_id in ("fix_dependency", "fix_code", "fix_operator", "fix_report"):
             if phase_id in {"fix_dependency", "fix_operator", "fix_report"}:
                 repair_role = str(error_analysis.get("repair_role", ""))
@@ -3821,6 +3864,79 @@ class WorkflowExecutor:
                 state, context, loop_vars, loop_state
             )
 
+        if operation == "operator_task_validate":
+            task_dir = self._operator_task_dir(context, loop_vars)
+            result = validate_operator_task(task_dir)
+            solution_type = self._resolve_operator_value(
+                "SOLUTION_TYPE", context, loop_vars
+            ) or "ascendc"
+            if solution_type != "ascendc":
+                result.setdefault("errors", []).append(
+                    "solution_type must be ascendc in the first implementation"
+                )
+                result["validation_passed"] = False
+            result["solution_type"] = solution_type
+            result["operation"] = operation
+            return (
+                "success" if result.get("validation_passed") else "failure",
+                result,
+            )
+
+        if operation == "operator_trace_summary":
+            traces_path = self._resolve_operator_value(
+                "OPERATOR_TRACES_PATH", context, loop_vars
+            )
+            if not traces_path:
+                return (
+                    "failure",
+                    {"operation": operation, "error": "OPERATOR_TRACES_PATH is required"},
+                )
+            summary_path = self._resolve_operator_value(
+                "OPERATOR_SUMMARY_PATH", context, loop_vars
+            )
+            result = summarize_traces(
+                traces_path,
+                operator_name=self._resolve_operator_value(
+                    "OPERATOR_NAME", context, loop_vars
+                ),
+                summary_path=summary_path or None,
+            )
+            result["operation"] = operation
+            return "success", result
+
+        if operation == "operator_kernelbench_eval":
+            task_dir = self._operator_task_dir(context, loop_vars)
+            solution = self._resolve_operator_value(
+                "OPERATOR_SOLUTION_PATH", context, loop_vars
+            ) or str(Path(task_dir) / "solution.json")
+            kernelbench_root = self._resolve_operator_value(
+                "KERNELBENCH_ROOT", context, loop_vars
+            )
+            output_dir = self._resolve_operator_value(
+                "OPERATOR_OUTPUT_DIR", context, loop_vars
+            ) or self.output_dir
+            iteration = self._resolve_operator_value(
+                "REPAIR_ITERATION", context, loop_vars
+            ) or str((loop_state or {}).get("iteration", "0"))
+            if not kernelbench_root:
+                return (
+                    "failure",
+                    {"operation": operation, "error": "KERNELBENCH_ROOT is required"},
+                )
+            result = evaluate_and_summarize_operator(
+                task_dir,
+                solution,
+                kernelbench_root,
+                output_dir,
+                iteration=iteration,
+                timeout=int(_params.get("timeout", 600)),
+            )
+            result.update({"operation": operation, "iteration": iteration})
+            return (
+                "success" if result.get("evaluation_status") == "completed" else "failure",
+                result,
+            )
+
         # Generic: just return
         if not operation:
             return (
@@ -3832,6 +3948,22 @@ class WorkflowExecutor:
             )
 
         return ("success", {"operation": operation, "result": {}})
+
+    @staticmethod
+    def _resolve_operator_value(
+        key: str, context: dict, loop_vars: dict | None
+    ) -> str:
+        values = loop_vars or {}
+        value = values.get(key, context.get(key, ""))
+        return str(value) if value is not None else ""
+
+    def _operator_task_dir(self, context: dict, loop_vars: dict | None) -> str:
+        task_dir = self._resolve_operator_value(
+            "OPERATOR_TASK_DIR", context, loop_vars
+        )
+        if not task_dir:
+            raise ValueError("OPERATOR_TASK_DIR is required")
+        return task_dir
 
     def _execute_custom_op_final_gate(
         self,

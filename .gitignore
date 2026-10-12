@@ -1,5 +1,6 @@
 # Requested root exclusions for the public SEAM repo
 /_migration_manifest/
+/plan.md
 /.opencode/
 /cuda_projects/
 /original_projects/
