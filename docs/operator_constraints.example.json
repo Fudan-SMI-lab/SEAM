@@ -1,0 +1,26 @@
+{
+  "api_policy": {
+    "allowed_torch_api": [
+      "torch.empty",
+      "torch.empty_like",
+      "torch.float16",
+      "torch.float32",
+      "torch.bfloat16",
+      "torch.npu.synchronize"
+    ],
+    "allowed_torch_npu_api": [
+      "torch_npu.synchronize",
+      "torch_npu.set_device"
+    ],
+    "allowed_custom_op_prefix": [
+      "torch.ops.cpp_extension_acs.gelu_"
+    ],
+    "forbidden_api": [
+      "torch.nn.functional.gelu",
+      "torch.erf",
+      "torch.tanh",
+      "torch.ops.aten.gelu",
+      "torch_npu.npu_gelu"
+    ]
+  }
+}

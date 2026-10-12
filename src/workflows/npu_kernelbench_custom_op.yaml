@@ -51,6 +51,7 @@ phases:
       level: "${state.phase_0_operator_env_detect.level}"
       definition_path: "${state.phase_0_operator_env_detect.definition_path}"
       workload_path: "${state.phase_0_operator_env_detect.workload_path}"
+      operator_constraints: "${context.OPERATOR_CONSTRAINTS}"
     transitions:
       on_success: phase_2_custom_op_prepare
       on_failure: failed
@@ -67,6 +68,7 @@ phases:
       definition_path: "${state.phase_0_operator_env_detect.definition_path}"
       workload_path: "${state.phase_0_operator_env_detect.workload_path}"
       target_soc: "${context.TARGET_SOC}"
+      operator_constraints: "${context.OPERATOR_CONSTRAINTS}"
     runtime_skills:
       include:
         - cuda-custom-op-to-npu-custom-op
@@ -87,6 +89,7 @@ phases:
       OPERATOR_SOLUTION_PATH: "${context.OPERATOR_SOLUTION_PATH}"
       OPERATOR_OUTPUT_DIR: "${context.OPERATOR_OUTPUT_DIR}"
       TARGET_SOC: "${context.TARGET_SOC}"
+      OPERATOR_CONSTRAINTS: "${context.OPERATOR_CONSTRAINTS}"
     transitions:
       on_success: phase_4_operator_report
       on_failure: failed
@@ -129,6 +132,8 @@ sub_workflows:
         prompt_template: "phase_operator_error_analysis"
         condition: "$.operator_passed != true"
         output_as: "error_analysis"
+        input_mapping:
+          operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
 
       - id: fix_operator
         type: llm
@@ -140,3 +145,5 @@ sub_workflows:
             - cuda-custom-op-to-npu-custom-op
           inject_full: false
           missing: error
+        input_mapping:
+          operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"

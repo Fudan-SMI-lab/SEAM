@@ -45,6 +45,7 @@ Options:
   --server-conflict-action ACTION
                               Port conflict behavior: prompt, start, or error (default: prompt)
   --workflow PATH             Custom workflow YAML path (default: src/workflows/seam_auto_default.yaml)
+  --operator-constraints PATH JSON API policy for the single-operator workflow
   --max-iter N                Max Phase 5 repair iterations (default: 8)
   --max-review-iter N         Max logical review rounds (default: workflow/config, then 3)
   --review                    Enable Review Gate (default: disabled)
@@ -146,6 +147,14 @@ while [[ $# -gt 0 ]]; do
         --workflow)
             FORWARD_ARGS+=("--workflow" "$2")
             HAS_WORKFLOW=true
+            shift 2
+            ;;
+        --operator-constraints)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo -e "${RED}Error: --operator-constraints requires a JSON policy path.${NC}" >&2
+                exit 1
+            fi
+            FORWARD_ARGS+=("--operator-constraints" "$2")
             shift 2
             ;;
         --max-iter)

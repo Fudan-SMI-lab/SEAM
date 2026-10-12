@@ -4,6 +4,8 @@ Prepare the current single KernelBench operator for evaluation.
 
 ## Context
 
+- Operator API policy: `{operator_constraints}`
+
 - Operator workspace: `{operator_task_dir}`
 - Operator name: `{operator_name}`
 - Definition: `{definition_path}`
@@ -14,6 +16,10 @@ Prepare the current single KernelBench operator for evaluation.
 ## Required Actions
 
 Create or update the real Ascend C candidate implementation in the operator workspace.
+
+The operator API policy is binding. Do not introduce unlisted APIs or call an
+existing implementation of the target operator through PyTorch, ATen, or
+torch_npu. The candidate must dispatch the generated Ascend C custom-op.
 
 Required artifacts:
 

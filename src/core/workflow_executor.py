@@ -106,6 +106,7 @@ from core.repair_loop import (
     _write_final_gate_validator_runner,
     force_custom_op_operator_routing_if_needed,
 )
+from core.operator_constraints import preflight_operator_sources
 from core.review_gate import (
     REVIEW_GATE_STATE_KEY,
     ImprovementApplied,
@@ -2246,6 +2247,9 @@ class WorkflowExecutor:
                         Path(str(loop_vars.get("OPERATOR_SOLUTION_PATH", ""))).parent
                         / "sources"
                     ),
+                    "operator_constraints": loop_vars.get(
+                        "OPERATOR_CONSTRAINTS", ""
+                    ),
                     "repair_iteration": str(
                         (loop_state or {}).get("iteration", "0")
                     ),
@@ -3906,6 +3910,21 @@ class WorkflowExecutor:
 
         if operation == "operator_kernelbench_eval":
             task_dir = self._operator_task_dir(context, loop_vars)
+            constraints = self._resolve_operator_value(
+                "OPERATOR_CONSTRAINTS", context, loop_vars
+            )
+            api_preflight = preflight_operator_sources(task_dir, constraints)
+            if not api_preflight["passed"]:
+                return (
+                    "failure",
+                    {
+                        "operation": operation,
+                        "evaluation_status": "blocked",
+                        "failure_category": "api_policy_violation",
+                        "operator_passed": False,
+                        "api_preflight": api_preflight,
+                    },
+                )
             solution = self._resolve_operator_value(
                 "OPERATOR_SOLUTION_PATH", context, loop_vars
             ) or str(Path(task_dir) / "solution.json")

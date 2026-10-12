@@ -1,5 +1,12 @@
 # Phase 1: Operator Analysis
 
+## Operator API policy
+
+The following policy is binding for any adapter or implementation proposal.
+Use only the allowlisted APIs and the generated custom-op namespace:
+
+{operator_constraints}
+
 This is a single-operator KernelBench task, not a project migration.
 
 ## Context

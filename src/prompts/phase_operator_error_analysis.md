@@ -1,6 +1,9 @@
 # Operator Benchmark Failure Analysis
 
 Analyze the latest full-workload KernelBench result for one Ascend C operator.
+The following operator API policy is binding for any proposed repair:
+
+{operator_constraints}
 Use only the saved traces, summary, build output, and source evidence.
 
 Classify the primary problem as one of:

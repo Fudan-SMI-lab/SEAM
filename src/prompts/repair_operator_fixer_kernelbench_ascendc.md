@@ -4,6 +4,13 @@ This is an operator-level repair task. Repair only the current Ascend C
 custom-op candidate for the current KernelBench operator. Do not expand this
 into project migration or dataset orchestration.
 
+## Operator API policy
+
+The following policy is binding. Repairs may use only the allowlisted APIs and
+the generated custom-op namespace:
+
+{operator_constraints}
+
 ## Current Operator
 
 - Operator: `{operator_name}`

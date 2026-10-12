@@ -88,6 +88,8 @@ Options:
   --agent NAME           Override auto-detected agent name
   --output-dir DIR       Output project root (default: MIGRATION_OUTPUT_PROJECTS_ROOT or ../output_projects)
   --workflow PATH        Path to workflow YAML file (overrides default auto selector)
+  --operator-constraints PATH
+                         JSON API policy for the single-operator workflow
   --server-no-auto-start Require an already-running OpenCode server
   --opencode-readiness MODE
                           OpenCode readiness mode: off, basic, or message (default: message)
@@ -209,6 +211,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --output-dir)           OUTPUT_PROJECTS_DIR="$2"; shift 2 ;;
         --workflow)             WORKFLOW_PATH="$2"; shift 2 ;;
+        --operator-constraints)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo -e "${RED}Error: --operator-constraints requires a JSON policy path.${NC}" >&2
+                exit 1
+            fi
+            EXTRA_ARGS+=("--operator-constraints" "$2")
+            shift 2
+            ;;
         --server-no-auto-start)  SERVER_NO_AUTO_START=true; shift ;;
         --opencode-readiness)    OPENCODE_READINESS="$2"; shift 2 ;;
         --opencode-message-timeout) OPENCODE_MESSAGE_TIMEOUT="$2"; shift 2 ;;
