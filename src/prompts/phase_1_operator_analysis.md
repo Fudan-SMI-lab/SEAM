@@ -7,6 +7,11 @@ Use only the allowlisted APIs and the generated custom-op namespace:
 
 {operator_constraints}
 
+Any `torch.*` or `torch_npu.*` API not explicitly listed in the allowlist is
+forbidden. If the desired operation is not available in the allowlist, do not
+use it as a shortcut; propose an Ascend C implementation or another
+allowlisted construction and record the change in the design.
+
 This is a single-operator KernelBench task, not a project migration.
 
 ## Context

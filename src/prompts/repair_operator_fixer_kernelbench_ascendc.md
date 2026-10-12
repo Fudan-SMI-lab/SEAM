@@ -11,6 +11,12 @@ the generated custom-op namespace:
 
 {operator_constraints}
 
+Any `torch.*` or `torch_npu.*` API not explicitly listed in the allowlist is
+forbidden. When a repair would require an unlisted API, replace the approach
+with an allowlisted primitive or move the computation into the Ascend C kernel.
+Do not add the unlisted API just to make the current workload pass; report the
+repair as blocked if no compliant alternative exists.
+
 ## Current Operator
 
 - Operator: `{operator_name}`

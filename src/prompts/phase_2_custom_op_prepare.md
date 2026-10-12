@@ -20,6 +20,10 @@ Create or update the real Ascend C candidate implementation in the operator work
 The operator API policy is binding. Do not introduce unlisted APIs or call an
 existing implementation of the target operator through PyTorch, ATen, or
 torch_npu. The candidate must dispatch the generated Ascend C custom-op.
+Any `torch.*` or `torch_npu.*` API absent from the allowlist must not be used;
+replace that approach with an allowlisted primitive or implement the operation
+inside the Ascend C kernel. If no compliant approach is available, report a
+blocked build instead of silently using the unlisted API.
 
 Required artifacts:
 
