@@ -2197,6 +2197,7 @@ class WorkflowExecutor:
         loop_vars: dict,
         state: dict,
         loop_history: list | None,
+        loop_state: dict | None = None,
     ) -> None:
         if loop_history is None:
             loop_history = []
@@ -2234,6 +2235,7 @@ class WorkflowExecutor:
         # Operator-level benchmark loops use a task context rather than the
         # project entry-script context used by the migration repair loop.
         if loop_vars and loop_vars.get("OPERATOR_TASK_DIR"):
+            operator_task_dir = str(loop_vars.get("OPERATOR_TASK_DIR", ""))
             input_ctx.update(
                 {
                     "operator_task_dir": loop_vars.get("OPERATOR_TASK_DIR", ""),
@@ -2242,6 +2244,12 @@ class WorkflowExecutor:
                     or Path(str(loop_vars.get("OPERATOR_TASK_DIR", ""))).parent.name,
                     "kernelbench_root": loop_vars.get("KERNELBENCH_ROOT", ""),
                     "solution_path": loop_vars.get("OPERATOR_SOLUTION_PATH", ""),
+                    "definition_path": loop_vars.get("OPERATOR_DEFINITION_PATH")
+                    or str(Path(operator_task_dir) / "definition.json"),
+                    "workload_path": loop_vars.get("OPERATOR_WORKLOAD_PATH")
+                    or str(Path(operator_task_dir) / "workload.jsonl"),
+                    "build_artifact_path": loop_vars.get("OPERATOR_OUTPUT_DIR", "")
+                    or str(Path(operator_task_dir) / "build"),
                     "solution_source_dir": str(
                         Path(str(loop_vars.get("OPERATOR_SOLUTION_PATH", ""))).parent
                         / "sources"
@@ -5327,6 +5335,7 @@ class WorkflowExecutor:
                         loop_vars,
                         state,
                         loop_history,
+                        loop_state,
                     )
 
                     prompt_text = self.prompt_loader.load_prompt(
