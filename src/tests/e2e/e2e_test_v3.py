@@ -821,6 +821,18 @@ def run_e2e_v3(
     from validators.validate_constraint_summary import (
         validate as validate_constraint_summary,
     )
+    from validators.validate_operator_analysis import (
+        validate as validate_operator_analysis,
+    )
+    from validators.validate_operator_env_detect import (
+        validate as validate_operator_env_detect,
+    )
+    from validators.validate_operator_evaluation import (
+        validate as validate_operator_evaluation,
+    )
+    from validators.validate_operator_report import (
+        validate as validate_operator_report,
+    )
 
     if continuation is None and project_dir is not None:
         try:
@@ -1081,6 +1093,14 @@ def run_e2e_v3(
             validator.register_validator("validation_final", validate_validation_final)
             validator.register_validator("reports", validate_reports)
             validator.register_validator("constraint_summary", validate_constraint_summary)
+            validator.register_validator(
+                "operator_env_detect", validate_operator_env_detect
+            )
+            validator.register_validator("operator_analysis", validate_operator_analysis)
+            validator.register_validator(
+                "operator_evaluation", validate_operator_evaluation
+            )
+            validator.register_validator("operator_report", validate_operator_report)
             validator.register_validator(
                 "repair_classification",
                 lambda d: {"passed": True, "errors": [], "warnings": []},
