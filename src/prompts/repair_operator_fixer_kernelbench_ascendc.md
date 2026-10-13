@@ -17,29 +17,62 @@ with an allowlisted primitive or move the computation into the Ascend C kernel.
 Do not add the unlisted API just to make the current workload pass; report the
 repair as blocked if no compliant alternative exists.
 
-## Current Operator
+## Current Operator (minimal write paths)
 
 - Operator: `{operator_name}`
 - Level: `{level}`
 - Task directory: `{operator_task_dir}`
-- Definition: `{definition_path}`
-- Workloads: `{workload_path}`
 - Solution: `{solution_path}`
 - Source directory: `{solution_source_dir}`
+- Target SoC: `{target_soc}`
+- Solution type: `{solution_type}`
 - Repair iteration: `{repair_iteration}`
 
-## Current Evidence
+## Current Operator Text Context
 
-- Latest trace JSONL: `{latest_trace_path}`
-- Latest summary: `{latest_evaluation_summary_path}`
-- Build artifact path: `{build_artifact_path}`
-- Complete stdout: `{latest_complete_stdout_artifact_path}`
-- Complete stderr: `{latest_complete_stderr_artifact_path}`
+The controller already read the relevant task and evaluation evidence. Use
+this text first; do not open evidence paths yourself or search for duplicate
+task directories.
 
-Read the complete evidence before editing. Inspect workload-level status,
-`max_absolute_error`, `max_relative_error`, `matched_ratio`, and dtype-specific
-`tolerance`. The correctness contract uses KernelBench's default dtype tolerance
-and `required_matched_ratio = 0.99`.
+### Definition
+```json
+{operator_definition_text}
+```
+
+### Workload sample
+```jsonl
+{operator_workload_text}
+```
+
+### Phase 1 analysis
+```json
+{operator_analysis_text}
+```
+
+## Current Evaluation Evidence
+
+### Summary
+```json
+{operator_evaluation_text}
+```
+
+### stdout
+```text
+{operator_stdout_text}
+```
+
+### stderr
+```text
+{operator_stderr_text}
+```
+
+### Error analysis
+```json
+{operator_error_analysis_text}
+```
+
+Use the supplied summary and error text to identify the smallest real source
+or build fix. The controller will rerun every workload after the repair.
 
 ## Hard Rules
 
@@ -50,6 +83,10 @@ and `required_matched_ratio = 0.99`.
 - Do not modify a report to hide an implementation failure.
 - Modify real source/build/adapter files and rebuild the candidate.
 - After the repair, the outer workflow will rerun every workload for this operator.
+- Do not spend tool calls reopening definition, workload, trace, stdout, or
+  stderr files; their relevant contents are already included above.
+- Work sequentially: do not issue parallel tool calls. Prefer one inspection
+  call, one edit call, and one focused build/validation call.
 - If the failure is environment, dependency, or task-schema related rather than
   an operator implementation issue, state the handoff clearly instead of making
   speculative kernel edits.

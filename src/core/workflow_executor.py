@@ -2234,12 +2234,49 @@ class WorkflowExecutor:
         # Operator-level benchmark loops use a task context rather than the
         # project entry-script context used by the migration repair loop.
         if loop_vars and loop_vars.get("OPERATOR_TASK_DIR"):
+            operator_task_dir = str(loop_vars.get("OPERATOR_TASK_DIR", ""))
+            definition_path = str(
+                loop_vars.get("OPERATOR_DEFINITION_PATH")
+                or Path(operator_task_dir) / "definition.json"
+            )
+            workload_path = str(
+                loop_vars.get("OPERATOR_WORKLOAD_PATH")
+                or Path(operator_task_dir) / "workload.jsonl"
+            )
+            evaluation = (step_outputs or {}).get("evaluate_operator", {})
+            if not isinstance(evaluation, dict):
+                evaluation = {}
+
+            def read_context_file(path: str, limit: int, *, tail: bool = True) -> str:
+                if not path:
+                    return "(unavailable)"
+                try:
+                    content = Path(path).read_text(encoding="utf-8")
+                    return self._bounded_tail(content, limit) if tail else content[:limit]
+                except (OSError, UnicodeError):
+                    return "(unavailable)"
+
+            workload_lines = read_context_file(workload_path, 6000).splitlines()
+            workload_text = "\n".join(workload_lines[:12])
+            if len(workload_lines) > 12:
+                workload_text += f"\n... ({len(workload_lines) - 12} more lines omitted)"
+            analysis_text = json.dumps(
+                loop_vars.get("OPERATOR_ANALYSIS", {}),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+            error_analysis_text = json.dumps(
+                error_analysis, ensure_ascii=False, indent=2, default=str
+            )
             input_ctx.update(
                 {
-                    "operator_task_dir": loop_vars.get("OPERATOR_TASK_DIR", ""),
+                    "operator_task_dir": operator_task_dir,
                     "operator_name": loop_vars.get("OPERATOR_NAME", ""),
                     "level": loop_vars.get("OPERATOR_LEVEL")
-                    or Path(str(loop_vars.get("OPERATOR_TASK_DIR", ""))).parent.name,
+                    or Path(operator_task_dir).parent.name,
+                    "target_soc": loop_vars.get("TARGET_SOC", ""),
+                    "solution_type": loop_vars.get("SOLUTION_TYPE", "ascendc"),
                     "kernelbench_root": loop_vars.get("KERNELBENCH_ROOT", ""),
                     "solution_path": loop_vars.get("OPERATOR_SOLUTION_PATH", ""),
                     "solution_source_dir": str(
@@ -2252,24 +2289,25 @@ class WorkflowExecutor:
                     "repair_iteration": str(
                         (loop_state or {}).get("iteration", "0")
                     ),
+                    "operator_definition_text": read_context_file(
+                        definition_path, 6000, tail=False
+                    ),
+                    "operator_workload_text": workload_text or "(unavailable)",
+                    "operator_analysis_text": self._bounded_tail(analysis_text, 9000),
+                    "operator_evaluation_text": read_context_file(
+                        str(evaluation.get("summary_path", "")), 7000
+                    ),
+                    "operator_stdout_text": read_context_file(
+                        str(evaluation.get("stdout_path", "")), 3500
+                    ),
+                    "operator_stderr_text": read_context_file(
+                        str(evaluation.get("stderr_path", "")), 7000
+                    ),
+                    "operator_error_analysis_text": self._bounded_tail(
+                        error_analysis_text, 5000
+                    ),
                 }
             )
-            evaluation = (step_outputs or {}).get("evaluate_operator", {})
-            if isinstance(evaluation, dict):
-                input_ctx.update(
-                    {
-                        "latest_trace_path": evaluation.get("traces_path", ""),
-                        "latest_evaluation_summary_path": evaluation.get(
-                            "summary_path", ""
-                        ),
-                        "latest_complete_stdout_artifact_path": evaluation.get(
-                            "stdout_path", ""
-                        ),
-                        "latest_complete_stderr_artifact_path": evaluation.get(
-                            "stderr_path", ""
-                        ),
-                    }
-                )
 
         if phase_id in ("fix_dependency", "fix_code", "fix_operator", "fix_report"):
             if phase_id in {"fix_dependency", "fix_operator", "fix_report"}:

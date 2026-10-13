@@ -116,3 +116,18 @@ def test_summarize_traces_preserves_error_metrics(tmp_path: Path) -> None:
     assert summary["max_relative_error"] == 0.01
     assert summary["min_matched_ratio"] == 0.98
     assert validate_evaluation(summary)["passed"]
+
+
+def test_kernelbench_repair_prompt_uses_injected_text_not_evidence_paths() -> None:
+    prompt = Path("src/prompts/repair_operator_fixer_kernelbench_ascendc.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "{operator_definition_text}" in prompt
+    assert "{operator_workload_text}" in prompt
+    assert "{operator_evaluation_text}" in prompt
+    assert "{operator_error_analysis_text}" in prompt
+    assert "{build_artifact_path}" not in prompt
+    assert "{latest_trace_path}" not in prompt
+    assert "do not issue parallel tool calls" in prompt
+    assert "Do not spend tool calls reopening" in prompt
