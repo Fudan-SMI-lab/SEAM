@@ -2197,6 +2197,7 @@ class WorkflowExecutor:
         loop_vars: dict,
         state: dict,
         loop_history: list | None,
+        loop_state: dict | None = None,
     ) -> None:
         if loop_history is None:
             loop_history = []
@@ -2283,12 +2284,8 @@ class WorkflowExecutor:
                         Path(str(loop_vars.get("OPERATOR_SOLUTION_PATH", ""))).parent
                         / "sources"
                     ),
-                    "operator_constraints": loop_vars.get(
-                        "OPERATOR_CONSTRAINTS", ""
-                    ),
-                    "repair_iteration": str(
-                        (loop_state or {}).get("iteration", "0")
-                    ),
+                    "operator_constraints": loop_vars.get("OPERATOR_CONSTRAINTS", ""),
+                    "repair_iteration": str((loop_state or {}).get("iteration", "0")),
                     "operator_definition_text": read_context_file(
                         definition_path, 6000, tail=False
                     ),
@@ -5365,6 +5362,7 @@ class WorkflowExecutor:
                         loop_vars,
                         state,
                         loop_history,
+                        loop_state,
                     )
 
                     prompt_text = self.prompt_loader.load_prompt(
