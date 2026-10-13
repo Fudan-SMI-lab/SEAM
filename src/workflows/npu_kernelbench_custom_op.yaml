@@ -35,6 +35,7 @@ phases:
     input_mapping:
       operator_task_dir: "${context.OPERATOR_TASK_DIR}"
       solution_type: "${context.SOLUTION_TYPE}"
+      operator_level: "${context.OPERATOR_LEVEL}"
     transitions:
       on_success: phase_1_operator_analysis
       on_failure: blocked
@@ -90,6 +91,7 @@ phases:
       OPERATOR_OUTPUT_DIR: "${context.OPERATOR_OUTPUT_DIR}"
       TARGET_SOC: "${context.TARGET_SOC}"
       OPERATOR_CONSTRAINTS: "${context.OPERATOR_CONSTRAINTS}"
+      OPERATOR_LEVEL: "${context.OPERATOR_LEVEL}"
     transitions:
       on_success: phase_4_operator_report
       on_failure: failed

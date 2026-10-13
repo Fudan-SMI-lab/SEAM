@@ -71,28 +71,105 @@ def _matches(value: str, exact: list[str], prefixes: list[str]) -> bool:
     return value in exact or any(value.startswith(prefix) for prefix in prefixes)
 
 
+def _import_aliases(tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                local_name = item.asname or item.name.split(".")[0]
+                aliases[local_name] = item.name if item.asname else local_name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for item in node.names:
+                if item.name != "*":
+                    aliases[item.asname or item.name] = f"{node.module}.{item.name}"
+    return aliases
+
+
+def _resolve_alias(value: str, aliases: dict[str, str]) -> str:
+    first, separator, remainder = value.partition(".")
+    target = aliases.get(first)
+    if target is None:
+        return value
+    return f"{target}.{remainder}" if separator else target
+
+
 def preflight_operator_sources(
     task_dir: str | Path, constraints: str | None = None
 ) -> dict[str, Any]:
-    """Reject unauthorized torch APIs before invoking KernelBench."""
+    """Reject unauthorized torch APIs declared by the candidate solution."""
     root = Path(task_dir).expanduser().resolve()
     policy = load_operator_constraints(constraints)
     violations: list[dict[str, Any]] = []
-    files = sorted(path for path in root.rglob("*.py") if path.is_file())
-    for path in files:
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except (OSError, SyntaxError) as exc:
-            violations.append({"file": str(path), "api": "<parse>", "error": str(exc)})
+    solution_path = root / "solution.json"
+    try:
+        solution = json.loads(solution_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "passed": False,
+            "files_scanned": 0,
+            "violations": [
+                {"file": str(solution_path), "api": "<solution.json>", "error": str(exc)}
+            ],
+            "policy": policy,
+        }
+    sources = solution.get("sources") if isinstance(solution, dict) else None
+    if not isinstance(sources, list) or not sources:
+        return {
+            "passed": False,
+            "files_scanned": 0,
+            "violations": [
+                {"file": str(solution_path), "api": "<sources>", "error": "solution.json must declare source files"}
+            ],
+            "policy": policy,
+        }
+    python_sources = [
+        source for source in sources
+        if isinstance(source, dict)
+        and isinstance(source.get("path"), str)
+        and source["path"].endswith(".py")
+    ]
+    if not python_sources:
+        violations.append({
+            "file": str(solution_path), "api": "<python-source>",
+            "error": "candidate solution must declare a Python adapter source",
+        })
+    for source in python_sources:
+        relative_path = Path(source["path"])
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            violations.append({
+                "file": source["path"], "api": "<source-path>",
+                "error": "solution source path must be relative and stay within the solution",
+            })
             continue
+        content = source.get("content")
+        if not isinstance(content, str):
+            violations.append({
+                "file": source["path"], "api": "<source-content>",
+                "error": "Python source content must be a string",
+            })
+            continue
+        try:
+            tree = ast.parse(content, filename=source["path"])
+        except SyntaxError as exc:
+            violations.append({"file": source["path"], "api": "<parse>", "error": str(exc)})
+            continue
+        aliases = _import_aliases(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             name = _chain(node.func)
+            if name:
+                name = _resolve_alias(name, aliases)
+            elif isinstance(node.func, ast.Call) and _chain(node.func.func) == "getattr":
+                getter = node.func
+                if len(getter.args) >= 2 and isinstance(getter.args[1], ast.Constant):
+                    base = _resolve_alias(_chain(getter.args[0]), aliases)
+                    if base in {"torch", "torch_npu"}:
+                        name = f"{base}.{getter.args[1].value}"
             if not name:
                 continue
             if _matches(name, policy["forbidden_api"], policy["forbidden_api"]):
-                violations.append({"file": str(path), "line": node.lineno, "api": name})
+                violations.append({"file": source["path"], "line": node.lineno, "api": name})
                 continue
             if name.startswith("torch_npu."):
                 allowed = _matches(name, policy["allowed_torch_npu_api"], policy["allowed_torch_npu_api"])
@@ -105,10 +182,10 @@ def preflight_operator_sources(
             else:
                 continue
             if not allowed:
-                violations.append({"file": str(path), "line": node.lineno, "api": name})
+                violations.append({"file": source["path"], "line": node.lineno, "api": name})
     return {
         "passed": not violations,
-        "files_scanned": len(files),
+        "files_scanned": len(python_sources),
         "violations": violations,
         "policy": policy,
     }

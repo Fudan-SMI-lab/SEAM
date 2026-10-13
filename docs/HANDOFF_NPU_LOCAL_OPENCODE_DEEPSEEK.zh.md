@@ -161,77 +161,45 @@ sha256sum "$OPERATOR_SOLUTION_PATH" \
 - 数值结果错误；
 - OpenCode 之前的环境错误。
 
-## 6. 当前 SEAM 算子 workflow 的重要限制
+## 6. 启动 SEAM 算子生成与测试
 
-`src/workflows/npu_kernelbench_custom_op.yaml` 需要以下 context：
-
-```text
-OPERATOR_TASK_DIR
-SOLUTION_TYPE
-KERNELBENCH_ROOT
-OPERATOR_SOLUTION_PATH
-OPERATOR_OUTPUT_DIR
-TARGET_SOC
-```
-
-当前公共入口 `src/scripts/run_seam.sh` / `src/scripts/run_e2e_v3.sh` 主要面向项目迁移，能够传入 `PROJECT_DIR`，但没有公开参数把上述算子 context 注入 workflow。因此**不能直接把以下命令当作已支持的完整算子启动命令**：
+使用专用 launcher：
 
 ```bash
-bash src/scripts/run_seam.sh "$OPERATOR_TASK_DIR" \
-  --workflow src/workflows/npu_kernelbench_custom_op.yaml \
-  --server_url http://127.0.0.1:4098
+cd "$SEAM_ROOT"
+bash src/scripts/run_operator.sh \
+  "$OPERATOR_TASK_DIR" \
+  "$KERNELBENCH_ROOT" \
+  --target-soc "$TARGET_SOC" \
+  --operator-output-dir "$SEAM_ROOT/operator_runs/GELU/$(date '+%Y%m%d_%H%M%S')" \
+  --operator-constraints "$SEAM_ROOT/docs/operator_constraints.example.json" \
+  --server-url http://127.0.0.1:4098 \
+  --agent opencode-deepseek
 ```
 
-在补充 context 注入入口之前，这条命令很可能在 Phase 0 报 `OPERATOR_TASK_DIR is required`，不应作为服务器验收步骤。
+launcher 会验证任务文件和 KernelBench 根目录，并让 V3 把算子任务复制到
+保留的独立工作副本。Phase 2 在副本中生成 `solution.json` 和 Ascend C 源码，
+不会修改原始 benchmark task。完整流程由
+`src/workflows/npu_kernelbench_custom_op.yaml` 驱动。
 
-## 7. 完整 workflow 的接入要求
+输出目录默认位于 `../operator_runs/<operator>/<timestamp>`；可通过
+`--operator-output-dir` 指定。生成工作副本位置会在 V3 日志中打印。
+
+## 7. 算子 API policy 和评测前置检查
 
 算子 workflow 现在支持通过 `--operator-constraints PATH` 注入 JSON API
 策略。示例文件位于 `docs/operator_constraints.example.json`。该策略会传给
 算子分析、Ascend C 生成、失败分析和 repair prompt；KernelBench 调用前还会
-由 SEAM 对候选 Python adapter/source 执行 API allowlist preflight。
-
-示例：
-
-```bash
-PYTHONPATH=src python -m tests.e2e.e2e_test_v3 \
-  --project-dir "$OPERATOR_TASK_DIR" \
-  --workflow-path src/workflows/npu_kernelbench_custom_op.yaml \
-  --operator-constraints docs/operator_constraints.example.json \
-  --server-url http://127.0.0.1:4098 \
-  --server-no-auto-start
-```
+由 SEAM 对 `solution.json` 声明的候选 Python source 执行 API allowlist preflight。
 
 API preflight 是 SEAM 侧第一道检查，不替代 KernelBench 的 `ast_scan` 和
 `kernel_signature`。策略文件应只包含 JSON API policy，不要把 token 或其他
-敏感信息写入其中。
+敏感信息写入其中。preflight 只扫描候选 solution，不扫描 reference 的 `main.py`。
 
-要在服务器上运行完整的“分析 → 生成 → 修复 → 评测”闭环，需要提供一个能够构造以下初始 context 的入口：
-
-```python
-{
-    "OPERATOR_TASK_DIR": "/abs/path/to/.../level1/GELU",
-    "SOLUTION_TYPE": "ascendc",
-    "KERNELBENCH_ROOT": "/abs/path/to/npu-kernelbench",
-    "OPERATOR_SOLUTION_PATH": "/abs/path/to/.../GELU/solution.json",
-    "OPERATOR_OUTPUT_DIR": "/abs/path/to/operator_runs/GELU",
-    "TARGET_SOC": "Ascend910B1",
-}
-```
-
-建议的后续实现方向：
-
-1. 在 V3 CLI 增加 `--context-json PATH`，读取一个本地 JSON 文件；
-2. 在 `run_workflow` / executor 的初始 context 中合并该 JSON；
-3. 对算子 workflow 做必填字段校验和路径校验；
-4. 保留现有项目迁移入口行为不变；
-5. 增加一个 `run_operator.sh`，只负责参数检查、OpenCode readiness 和调用 V3。
-
-服务器侧在该入口完成前，可以继续执行第 5 节的 baseline；也可以先运行 workflow 的静态测试：
+查看 launcher 参数：
 
 ```bash
-cd "$SEAM_ROOT"
-PYTHONPATH=src python -m pytest -q src/tests/test_operator_benchmark.py
+bash src/scripts/run_operator.sh --help
 ```
 
 ## 8. OpenCode 本地运行时建议

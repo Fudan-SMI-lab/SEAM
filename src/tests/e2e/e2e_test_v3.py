@@ -759,6 +759,10 @@ def run_e2e_v3(
     output_project_dir: Path | None = None,
     user_constraints: str = "",
     operator_constraints: str = "",
+    operator_kernelbench_root: Path | None = None,
+    operator_output_dir: Path | None = None,
+    operator_target_soc: str = "",
+    operator_solution_type: str = "ascendc",
     server_auto_start: bool = True,
     server_port: int = 0,
     review_gate: bool = False,
@@ -1232,6 +1236,33 @@ def run_e2e_v3(
                     "PROJECT_DIR": str(temp_dir),
                     "USER_CONSTRAINTS": execution_user_constraints,
                     "OPERATOR_CONSTRAINTS": operator_constraints,
+                    "OPERATOR_TASK_DIR": (
+                        str(temp_dir) if operator_kernelbench_root is not None else ""
+                    ),
+                    "KERNELBENCH_ROOT": (
+                        str(operator_kernelbench_root.resolve())
+                        if operator_kernelbench_root is not None
+                        else ""
+                    ),
+                    "OPERATOR_SOLUTION_PATH": (
+                        str(temp_dir / "solution.json")
+                        if operator_kernelbench_root is not None
+                        else ""
+                    ),
+                    "OPERATOR_OUTPUT_DIR": (
+                        str(operator_output_dir.expanduser().resolve())
+                        if operator_output_dir is not None
+                        else ""
+                    ),
+                    "TARGET_SOC": operator_target_soc,
+                    "SOLUTION_TYPE": operator_solution_type,
+                    "OPERATOR_LEVEL": (
+                        project_dir.parent.name
+                        if operator_kernelbench_root is not None
+                        and project_dir is not None
+                        and project_dir.parent.name.startswith("level")
+                        else ""
+                    ),
                 }
             )
             outcome_value = execution_result.get("run_outcome")
@@ -1702,6 +1733,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="JSON API policy for the single-operator workflow.",
     )
+    _ = parser.add_argument(
+        "--operator-kernelbench-root", type=Path, default=None,
+        help="KernelBench package root; enables operator workflow context injection.",
+    )
+    _ = parser.add_argument("--operator-output-dir", type=Path, default=None)
+    _ = parser.add_argument("--operator-target-soc", default="")
+    _ = parser.add_argument("--operator-solution-type", default="ascendc")
     _ = parser.add_argument("--review-gate", action="store_true")
     _ = parser.add_argument("--framework-config", type=str, default=None)
     _ = parser.add_argument("--server-auto-start", action="store_true", default=True)
@@ -1761,6 +1799,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.continue_from is not None and args.workflow_path is not None:
         parser.error("--continue-from and --workflow-path are mutually exclusive")
+    if args.continue_from is not None and args.operator_kernelbench_root is not None:
+        parser.error("--continue-from cannot be combined with operator workflow context")
 
     user_constraints_text = ""
     if args.user_constraints:
@@ -1770,6 +1810,32 @@ def main() -> int:
         operator_constraints_text = _resolve_user_constraints(
             str(args.operator_constraints)
         )
+        from core.operator_constraints import load_operator_constraints
+
+        try:
+            load_operator_constraints(operator_constraints_text)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.operator_kernelbench_root is not None:
+        required_operator_args = {
+            "--project-dir": args.project_dir,
+            "--operator-output-dir": args.operator_output_dir,
+            "--operator-target-soc": args.operator_target_soc,
+        }
+        missing_operator_args = [
+            name for name, value in required_operator_args.items() if not value
+        ]
+        if missing_operator_args:
+            parser.error(
+                "operator workflow requires " + ", ".join(missing_operator_args)
+            )
+        if not args.operator_kernelbench_root.is_dir():
+            parser.error("--operator-kernelbench-root must be an existing directory")
+        if not (args.operator_kernelbench_root / "pyproject.toml").is_file():
+            parser.error("--operator-kernelbench-root must contain pyproject.toml")
+        for required_file in ("definition.json", "workload.jsonl"):
+            if not (args.project_dir / required_file).is_file():
+                parser.error(f"--project-dir must contain {required_file} for operator runs")
 
     configure_utc_logging(verbose=args.verbose)
 
@@ -1821,6 +1887,10 @@ def main() -> int:
         output_project_dir=args.output_dir,
         user_constraints=user_constraints_text,
         operator_constraints=operator_constraints_text,
+        operator_kernelbench_root=args.operator_kernelbench_root,
+        operator_output_dir=args.operator_output_dir,
+        operator_target_soc=args.operator_target_soc,
+        operator_solution_type=args.operator_solution_type,
         server_auto_start=server_auto_start,
         server_port=args.server_port,
         review_gate=args.review_gate,

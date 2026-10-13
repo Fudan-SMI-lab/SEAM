@@ -2238,9 +2238,8 @@ class WorkflowExecutor:
                 {
                     "operator_task_dir": loop_vars.get("OPERATOR_TASK_DIR", ""),
                     "operator_name": loop_vars.get("OPERATOR_NAME", ""),
-                    "level": Path(
-                        str(loop_vars.get("OPERATOR_TASK_DIR", ""))
-                    ).parent.name,
+                    "level": loop_vars.get("OPERATOR_LEVEL")
+                    or Path(str(loop_vars.get("OPERATOR_TASK_DIR", ""))).parent.name,
                     "kernelbench_root": loop_vars.get("KERNELBENCH_ROOT", ""),
                     "solution_path": loop_vars.get("OPERATOR_SOLUTION_PATH", ""),
                     "solution_source_dir": str(
@@ -3871,6 +3870,11 @@ class WorkflowExecutor:
         if operation == "operator_task_validate":
             task_dir = self._operator_task_dir(context, loop_vars)
             result = validate_operator_task(task_dir)
+            operator_level = self._resolve_operator_value(
+                "OPERATOR_LEVEL", context, loop_vars
+            )
+            if operator_level:
+                result["level"] = operator_level
             solution_type = self._resolve_operator_value(
                 "SOLUTION_TYPE", context, loop_vars
             ) or "ascendc"
