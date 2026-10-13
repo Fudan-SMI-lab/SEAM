@@ -202,6 +202,21 @@ API preflight 是 SEAM 侧第一道检查，不替代 KernelBench 的 `ast_scan`
 bash src/scripts/run_operator.sh --help
 ```
 
+按每个 level 前 5 个算子批量执行并生成汇总报告：
+
+```bash
+bash src/scripts/run_operator_levels.sh \
+  "$KERNELBENCH_ROOT" \
+  --target-soc "$TARGET_SOC" \
+  --levels level1,level2,level3,level4,level5 \
+  --count 5 \
+  --server-url http://127.0.0.1:4096 \
+  --agent opencode-deepseek
+```
+
+报告和每个算子的日志默认写入 `operator_runs/batch_<timestamp>/`，报告文件为
+`operator_batch_report.md`。该命令按顺序执行，不并发占用同一个 OpenCode agent。
+
 ## 8. OpenCode 本地运行时建议
 
 完整 workflow 启动时，显式复用服务器已有的 OpenCode：
