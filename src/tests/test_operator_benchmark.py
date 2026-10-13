@@ -23,10 +23,10 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
     assert generation_loop.phases[0]["condition"] == "${loop_state.iteration} == 1"
     assert generation_loop.phases[1]["id"] == "evaluate_operator"
     assert generation_loop.phases[2]["condition"] == (
-        "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
+        "${loop_state.operator_passed} != true"
     )
     assert generation_loop.phases[3]["condition"] == (
-        "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
+        "${loop_state.operator_passed} != true"
     )
     assert generation_loop.phases[1]["on_failure"] == "continue"
     assert generation_loop.phases[3]["on_failure"] == "continue"

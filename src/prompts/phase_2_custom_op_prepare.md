@@ -5,6 +5,14 @@ This phase runs only on the first iteration of the combined generation and
 evaluation loop. Later iterations use the repair prompt with the latest
 KernelBench evidence.
 
+This is a bounded implementation task, not a KernelBench or CANN source-code
+survey. Read only the supplied task definition, workload sample, reference,
+the relevant custom-op skill, and the minimum build example needed for the
+target SoC. Do not scan the whole KernelBench repository, anti-hack
+implementation, CANN header tree, or unrelated operators. Do not write
+exploratory test projects. Produce the candidate artifacts first, then run at
+most one narrow structural check.
+
 ## Context
 
 - Operator API policy: `{operator_constraints}`

@@ -136,7 +136,7 @@ sub_workflows:
         type: llm
         agent: error_analyzer
         prompt_template: "phase_operator_error_analysis"
-        condition: "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
+        condition: "${loop_state.operator_passed} != true"
         output_as: "error_analysis"
         input_mapping:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
@@ -145,7 +145,7 @@ sub_workflows:
         type: llm
         agent: operator_fixer
         prompt_template: "repair_operator_fixer_kernelbench_ascendc"
-        condition: "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
+        condition: "${loop_state.operator_passed} != true"
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op

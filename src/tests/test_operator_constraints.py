@@ -24,6 +24,16 @@ def test_operator_constraints_allow_generated_custom_op(tmp_path: Path) -> None:
     assert result["passed"] is True
 
 
+def test_operator_constraints_allow_non_gelu_generated_custom_op(tmp_path: Path) -> None:
+    _write_solution(
+        tmp_path,
+        "import torch\ndef run(x, y):\n"
+        "    return torch.ops.cpp_extension_acs.add_custom(x, y)\n",
+    )
+    result = preflight_operator_sources(tmp_path)
+    assert result["passed"] is True
+
+
 def test_operator_constraints_reject_unlisted_torch_api(tmp_path: Path) -> None:
     _write_solution(tmp_path, "import torch\ndef run(x):\n    return torch.sigmoid(x)\n")
     result = preflight_operator_sources(tmp_path)

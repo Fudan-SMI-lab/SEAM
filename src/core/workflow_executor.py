@@ -4783,6 +4783,16 @@ class WorkflowExecutor:
                 ReviewOutcome.SESSION_ERROR.value,
                 ReviewOutcome.IMPROVEMENT_ERROR.value,
             }:
+                if loop_vars.get("OPERATOR_TASK_DIR") and iteration < max_iterations:
+                    logger.info(
+                        "Operator iteration failed but remains repairable; "
+                        "continuing to next iteration: iteration=%d status=%s "
+                        "evaluation_status=%s",
+                        iteration,
+                        iter_status,
+                        loop_state.get("evaluation_status", "unknown"),
+                    )
+                    continue
                 final_status = iter_status
                 break
 
