@@ -86,7 +86,7 @@ def test_hydrate_phase5_execution_resets_all_loop_counters(
     _ = executor._execute_loop_phase(phase, {}, {})
 
     expected = CounterSnapshot(
-        iteration=0,
+        iteration=1,
         stagnation_count=0,
         last_error_signature="",
         review_reject_count=0,

@@ -1,6 +1,9 @@
 # Phase 2: Ascend C Custom-Op Preparation
 
-Prepare the current single KernelBench operator for evaluation.
+Generate the initial candidate for the current single KernelBench operator.
+This phase runs only on the first iteration of the combined generation and
+evaluation loop. Later iterations use the repair prompt with the latest
+KernelBench evidence.
 
 ## Context
 
@@ -36,7 +39,11 @@ Required artifacts:
 
 Do not modify `definition.json` or `workload.jsonl`. Do not add CPU fallback, reference bypass, stub success, or report-only evidence. The implementation must be the candidate evaluated by KernelBench.
 
-Run the narrowest available build or structural validation and report actual results.
+Do not claim the candidate passes evaluation. The enclosing workflow immediately
+runs the authoritative full-workload KernelBench evaluation and API preflight.
+Run only a narrow structural check if needed to ensure the candidate artifacts
+are present and internally consistent; report actual results without replacing
+the KernelBench result.
 
 ## Output Format
 

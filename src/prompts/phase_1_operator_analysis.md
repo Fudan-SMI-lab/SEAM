@@ -30,6 +30,8 @@ This is a single-operator KernelBench task, not a project migration.
    this task directory and its required files; do not reconstruct the path or
    search for another copy with `find`.
 2. Read `definition.json`, `workload.jsonl`, and the reference implementation.
+   Use tool calls sequentially: issue at most one tool call per assistant turn,
+   then continue after its result until the required inputs have been inspected.
 3. Describe the mathematical semantics, input/output contract, dtypes, shapes, scalar attributes, optional inputs, broadcasting, layout, and workload variations.
 4. Design an Ascend C implementation: kernel strategy, tiling, block dimension, GM/UB movement, dtype handling, tail handling, and numerical-risk points.
 5. Define the adapter entry point that KernelBench will call.

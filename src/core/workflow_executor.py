@@ -4421,6 +4421,8 @@ class WorkflowExecutor:
             "stagnation_count": 0,
             "last_error_signature": "",
             "review_reject_count": 0,
+            "operator_passed": False,
+            "evaluation_status": "not_run",
         }
         loop_history: list[dict] = []
         stagnation_threshold = int(
@@ -4484,6 +4486,11 @@ class WorkflowExecutor:
         post_repair_validation_ran = False
         while iteration < max_iterations:
             iteration += 1
+            # Conditions inside a sub-workflow receive loop_state before the
+            # iteration is executed. Keep the current 1-based iteration
+            # visible so first-pass generation and later repair passes can be
+            # selected deterministically.
+            loop_state["iteration"] = iteration
             logger.info(
                 "Loop iteration %d/%d for phase '%s'",
                 iteration,
@@ -5634,6 +5641,29 @@ class WorkflowExecutor:
                 state[out_as] = phase_output
                 if out_as != phase_id:
                     step_outputs[out_as] = phase_output
+                if phase_id == "evaluate_operator":
+                    # KernelBench returns its decision inside the builtin
+                    # phase payload. Promote the scalar decision fields so
+                    # stop conditions and following sub-phase conditions can
+                    # read the current iteration without depending on a
+                    # nested implementation detail.
+                    for key in (
+                        "operator_passed",
+                        "evaluation_status",
+                        "operator_pass_rate",
+                        "workload_pass_rate",
+                        "total_workloads",
+                        "passed_workloads",
+                        "failure_category",
+                        "traces_path",
+                        "summary_path",
+                        "stdout_path",
+                        "stderr_path",
+                    ):
+                        if key in phase_output:
+                            step_outputs[key] = phase_output[key]
+                            if loop_state is not None:
+                                loop_state[key] = phase_output[key]
                 if phase_id == "analyze_error":
                     action_result = self._maybe_apply_entry_script_action(
                         phase_output, loop_vars, state, step_outputs, loop_state or {}

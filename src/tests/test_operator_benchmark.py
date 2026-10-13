@@ -9,19 +9,27 @@ from validators.validate_operator_env_detect import validate as validate_env
 from validators.validate_operator_evaluation import validate as validate_evaluation
 
 
-def test_kernelbench_workflow_has_five_numbered_phases() -> None:
+def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -> None:
     workflow = load_workflow("src/workflows/npu_kernelbench_custom_op.yaml")
 
     assert [phase.id for phase in workflow.phases] == [
         "phase_0_operator_env_detect",
         "phase_1_operator_analysis",
         "phase_2_custom_op_prepare",
-        "phase_3_operator_validation",
         "phase_4_operator_report",
     ]
-    assert workflow.sub_workflows["operator_repair_loop"].phases[0]["id"] == (
-        "evaluate_operator"
+    generation_loop = workflow.sub_workflows["operator_repair_loop"]
+    assert generation_loop.phases[0]["id"] == "prepare_operator"
+    assert generation_loop.phases[0]["condition"] == "${loop_state.iteration} == 1"
+    assert generation_loop.phases[1]["id"] == "evaluate_operator"
+    assert generation_loop.phases[2]["condition"] == (
+        "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
     )
+    assert generation_loop.phases[3]["condition"] == (
+        "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
+    )
+    assert generation_loop.phases[1]["on_failure"] == "continue"
+    assert generation_loop.phases[3]["on_failure"] == "continue"
 
 
 def test_validate_real_gelu_task() -> None:

@@ -1,6 +1,6 @@
 name: npu_kernelbench_custom_op
 version: "1.0"
-description: "Single KernelBench operator generation and Ascend C repair workflow"
+description: "Single KernelBench operator generation, evaluation, and Ascend C repair workflow"
 
 target_platform:
   preset: npu_ascend
@@ -58,40 +58,22 @@ phases:
       on_failure: failed
 
   - id: phase_2_custom_op_prepare
-    name: custom_op_prepare
-    type: llm
-    agent: main_engineer
-    prompt_template: "phase_2_custom_op_prepare"
-    validator: null
-    input_mapping:
-      operator_task_dir: "${state.phase_0_operator_env_detect.operator_task_dir}"
-      operator_name: "${state.phase_0_operator_env_detect.operator_name}"
-      definition_path: "${state.phase_0_operator_env_detect.definition_path}"
-      workload_path: "${state.phase_0_operator_env_detect.workload_path}"
-      target_soc: "${context.TARGET_SOC}"
-      operator_constraints: "${context.OPERATOR_CONSTRAINTS}"
-    runtime_skills:
-      include:
-        - cuda-custom-op-to-npu-custom-op
-      inject_full: false
-      missing: error
-    transitions:
-      on_success: phase_3_operator_validation
-      on_failure: failed
-
-  - id: phase_3_operator_validation
-    name: operator_validation_and_repair
+    name: operator_generation_evaluation_and_repair
     type: loop
     sub_workflow: operator_repair_loop
     input_mapping:
       OPERATOR_TASK_DIR: "${state.phase_0_operator_env_detect.operator_task_dir}"
       OPERATOR_NAME: "${state.phase_0_operator_env_detect.operator_name}"
+      OPERATOR_DEFINITION_PATH: "${state.phase_0_operator_env_detect.definition_path}"
+      OPERATOR_WORKLOAD_PATH: "${state.phase_0_operator_env_detect.workload_path}"
       KERNELBENCH_ROOT: "${context.KERNELBENCH_ROOT}"
       OPERATOR_SOLUTION_PATH: "${context.OPERATOR_SOLUTION_PATH}"
       OPERATOR_OUTPUT_DIR: "${context.OPERATOR_OUTPUT_DIR}"
       TARGET_SOC: "${context.TARGET_SOC}"
       OPERATOR_CONSTRAINTS: "${context.OPERATOR_CONSTRAINTS}"
       OPERATOR_LEVEL: "${context.OPERATOR_LEVEL}"
+      SOLUTION_TYPE: "${context.SOLUTION_TYPE}"
+      OPERATOR_ANALYSIS: "${state.phase_1_operator_analysis}"
     transitions:
       on_success: phase_4_operator_report
       on_failure: failed
@@ -122,17 +104,39 @@ sub_workflows:
       - condition: "$.stagnation_count >= 3"
         status: stagnation
     phases:
+      - id: prepare_operator
+        type: llm
+        agent: main_engineer
+        prompt_template: "phase_2_custom_op_prepare"
+        condition: "${loop_state.iteration} == 1"
+        output_as: "operator_preparation"
+        input_mapping:
+          operator_task_dir: "${loop_vars.OPERATOR_TASK_DIR}"
+          operator_name: "${loop_vars.OPERATOR_NAME}"
+          definition_path: "${loop_vars.OPERATOR_DEFINITION_PATH}"
+          workload_path: "${loop_vars.OPERATOR_WORKLOAD_PATH}"
+          target_soc: "${loop_vars.TARGET_SOC}"
+          operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
+          previous_outputs: "${loop_vars.OPERATOR_ANALYSIS}"
+        runtime_skills:
+          include:
+            - cuda-custom-op-to-npu-custom-op
+          inject_full: false
+          missing: error
+        on_failure: break
+
       - id: evaluate_operator
         type: builtin
         operation: "operator_kernelbench_eval"
         params:
           timeout: 600
+        on_failure: continue
 
       - id: analyze_operator_failure
         type: llm
         agent: error_analyzer
         prompt_template: "phase_operator_error_analysis"
-        condition: "$.operator_passed != true"
+        condition: "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
         output_as: "error_analysis"
         input_mapping:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
@@ -141,7 +145,7 @@ sub_workflows:
         type: llm
         agent: operator_fixer
         prompt_template: "repair_operator_fixer_kernelbench_ascendc"
-        condition: "$.operator_passed != true"
+        condition: "${loop_state.operator_passed} != true and ${loop_state.evaluation_status} != 'blocked'"
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
@@ -149,3 +153,4 @@ sub_workflows:
           missing: error
         input_mapping:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
+        on_failure: continue
