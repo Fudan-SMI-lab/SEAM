@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
 PYTHON_BIN="${PYTHON:-python3}"
 WORKFLOW_PATH="$SRC_DIR/workflows/npu_kernelbench_custom_op.yaml"
 DEFAULT_POLICY="$REPO_ROOT/docs/operator_constraints.example.json"
-SERVER_URL="http://127.0.0.1:4098"
+SERVER_URL="http://127.0.0.1:4096"
 TARGET_SOC=""
 MAX_ITER=5
 AGENT=""
@@ -28,7 +28,7 @@ Required:
 Options:
   --operator-output-dir DIR  Trace/summary output directory
   --operator-constraints PATH  JSON API policy (default: docs/operator_constraints.example.json)
-  --server-url URL           OpenCode server (default: http://127.0.0.1:4098)
+  --server-url URL           OpenCode server (default: http://127.0.0.1:4096)
   --agent NAME               OpenCode agent override
   --max-iter N               Maximum repair iterations (default: 5)
   --help                     Show this help
@@ -91,6 +91,35 @@ if [[ -z "$OUTPUT_DIR" ]]; then
 fi
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
+
+add_loopback_to_no_proxy() {
+    local current="${NO_PROXY:-},${no_proxy:-}"
+    local entry
+    local -a entries
+    local -a required=(127.0.0.1 localhost ::1)
+
+    IFS=',' read -r -a entries <<< "$current"
+    current=""
+    for entry in "${entries[@]}"; do
+        entry="${entry//[[:space:]]/}"
+        [[ -n "$entry" ]] && current+="${current:+,}$entry"
+    done
+    for entry in "${required[@]}"; do
+        local normalized_current
+        local normalized_entry
+        normalized_current="$(printf '%s' "$current" | tr '[:upper:]' '[:lower:]')"
+        normalized_entry="$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')"
+        case ",$normalized_current," in
+            *",$normalized_entry,"*) ;;
+            *) current+="${current:+,}$entry" ;;
+        esac
+    done
+
+    export NO_PROXY="$current"
+    export no_proxy="$current"
+}
+
+add_loopback_to_no_proxy
 
 cd "$REPO_ROOT"
 ARGS=(

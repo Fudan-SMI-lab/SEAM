@@ -26,11 +26,19 @@ This is a single-operator KernelBench task, not a project migration.
 
 ## Required Actions
 
-1. Read `definition.json`, `workload.jsonl`, and the reference implementation.
-2. Describe the mathematical semantics, input/output contract, dtypes, shapes, scalar attributes, optional inputs, broadcasting, layout, and workload variations.
-3. Design an Ascend C implementation: kernel strategy, tiling, block dimension, GM/UB movement, dtype handling, tail handling, and numerical-risk points.
-4. Define the adapter entry point that KernelBench will call.
-5. Do not modify `definition.json` or `workload.jsonl`.
+1. Use the exact absolute paths supplied above. Phase 0 has already validated
+   this task directory and its required files; do not reconstruct the path or
+   search for another copy with `find`.
+2. Read `definition.json`, `workload.jsonl`, and the reference implementation.
+3. Describe the mathematical semantics, input/output contract, dtypes, shapes, scalar attributes, optional inputs, broadcasting, layout, and workload variations.
+4. Design an Ascend C implementation: kernel strategy, tiling, block dimension, GM/UB movement, dtype handling, tail handling, and numerical-risk points.
+5. Define the adapter entry point that KernelBench will call.
+6. Do not modify `definition.json` or `workload.jsonl`.
+
+This run is non-interactive. Do not ask the user questions or invoke a
+question/confirmation tool. If a supplied path cannot be read, return the
+required JSON with the exact failing path and a clear failure summary; do not
+guess another path or claim the analysis succeeded.
 
 ## Output Format
 

@@ -86,12 +86,12 @@ uv run npu-kernelbench eval --help
 
 ## 4. 启动并检查本地 OpenCode
 
-SEAM 推荐使用本机回环地址 `127.0.0.1:4098`。如果服务尚未运行，在服务器本地启动：
+单算子 launcher 默认使用本机回环地址 `127.0.0.1:4096`（与 V3 CLI 默认值一致）。如果服务尚未运行，在服务器本地启动：
 
 ```bash
 nohup opencode serve \
   --hostname 127.0.0.1 \
-  --port 4098 \
+  --port 4096 \
   > "$OPERATOR_OUTPUT_DIR/opencode.server.log" 2>&1 &
 
 echo $! > "$OPERATOR_OUTPUT_DIR/opencode.server.pid"
@@ -100,7 +100,7 @@ echo $! > "$OPERATOR_OUTPUT_DIR/opencode.server.pid"
 检查服务是否可访问：
 
 ```bash
-curl -fsS http://127.0.0.1:4098/agent \
+curl --noproxy '*' -fsS http://127.0.0.1:4096/agent \
   > "$OPERATOR_OUTPUT_DIR/opencode.agent.json"
 
 python -m json.tool \
@@ -113,7 +113,7 @@ python -m json.tool \
 如果服务器已有 OpenCode 进程，不要重复启动；直接确认：
 
 ```bash
-curl -fsS http://127.0.0.1:4098/agent > "$OPERATOR_OUTPUT_DIR/opencode.agent.json"
+curl --noproxy '*' -fsS http://127.0.0.1:4096/agent > "$OPERATOR_OUTPUT_DIR/opencode.agent.json"
 ```
 
 ## 5. 先执行一次纯 KernelBench baseline
@@ -173,7 +173,7 @@ bash src/scripts/run_operator.sh \
   --target-soc "$TARGET_SOC" \
   --operator-output-dir "$SEAM_ROOT/operator_runs/GELU/$(date '+%Y%m%d_%H%M%S')" \
   --operator-constraints "$SEAM_ROOT/docs/operator_constraints.example.json" \
-  --server-url http://127.0.0.1:4098 \
+  --server-url http://127.0.0.1:4096 \
   --agent opencode-deepseek
 ```
 
@@ -207,7 +207,7 @@ bash src/scripts/run_operator.sh --help
 完整 workflow 启动时，显式复用服务器已有的 OpenCode：
 
 ```bash
---server-url http://127.0.0.1:4098 \
+--server-url http://127.0.0.1:4096 \
 --server-no-auto-start \
 --opencode-readiness message \
 --opencode-message-timeout 120
@@ -271,8 +271,8 @@ tar -czf "$SEAM_ROOT/GELU-handoff-$(date +%Y%m%d-%H%M%S).tar.gz" \
 
 ```bash
 ps -ef | rg '[o]pencode'
-ss -ltnp | rg ':4098'
-curl -v http://127.0.0.1:4098/agent
+ss -ltnp | rg ':4096'
+curl --noproxy '*' -v http://127.0.0.1:4096/agent
 tail -200 "$OPERATOR_OUTPUT_DIR/opencode.server.log"
 ```
 
