@@ -4917,7 +4917,13 @@ class WorkflowExecutor:
             ):
                 final_status = "failure"
 
-        if final_status == "success" and loop_state.get("script_exit_code") != 0:
+        script_exit_code = loop_state.get("script_exit_code")
+        if (
+            final_status == "success"
+            and isinstance(script_exit_code, int)
+            and not isinstance(script_exit_code, bool)
+            and script_exit_code != 0
+        ):
             final_status = "failure"
         if (
             final_status == "success"
