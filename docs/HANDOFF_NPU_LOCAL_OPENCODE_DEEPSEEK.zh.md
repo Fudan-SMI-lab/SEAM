@@ -208,14 +208,19 @@ bash src/scripts/run_operator.sh --help
 bash src/scripts/run_operator_levels.sh \
   "$KERNELBENCH_ROOT" \
   --target-soc "$TARGET_SOC" \
-  --levels level1,level2,level3,level4,level5 \
+  --levels level1,level2,level3,level4 \
   --count 5 \
   --server-url http://127.0.0.1:4096 \
-  --agent opencode-deepseek
+  --agent opencode-deepseek \
+  --message-timeout 900 \
+  --tool-barrier-timeout 180
 ```
 
 报告和每个算子的日志默认写入 `operator_runs/batch_<timestamp>/`，报告文件为
 `operator_batch_report.md`。该命令按顺序执行，不并发占用同一个 OpenCode agent。
+算子 launcher 默认给 OpenCode 单条消息 900 秒，并将 completed-tool barrier
+停滞窗口设为 180 秒；如服务器明确确认卡死，可将
+`--tool-barrier-timeout` 调小，设为 `0` 可关闭该 watchdog。
 
 ## 8. OpenCode 本地运行时建议
 

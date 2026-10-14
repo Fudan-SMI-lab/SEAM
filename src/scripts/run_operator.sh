@@ -13,6 +13,8 @@ MAX_ITER=5
 AGENT=""
 POLICY_PATH="$DEFAULT_POLICY"
 OUTPUT_DIR=""
+MESSAGE_TIMEOUT=900
+TOOL_BARRIER_TIMEOUT=180
 
 usage() {
     cat <<'USAGE'
@@ -31,6 +33,8 @@ Options:
   --server-url URL           OpenCode server (default: http://127.0.0.1:4096)
   --agent NAME               OpenCode agent override
   --max-iter N               Maximum repair iterations (default: 5)
+  --message-timeout N        OpenCode message timeout seconds (default: 900)
+  --tool-barrier-timeout N   Seconds before a completed-tool stall is aborted (default: 180)
   --help                     Show this help
 
 The launcher copies the task into SEAM's retained output workspace before the
@@ -70,6 +74,12 @@ while [[ $# -gt 0 ]]; do
         --max-iter)
             [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--max-iter requires a positive integer" >&2; exit 2; }
             MAX_ITER="$2"; shift 2 ;;
+        --message-timeout)
+            [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--message-timeout requires a positive integer" >&2; exit 2; }
+            MESSAGE_TIMEOUT="$2"; shift 2 ;;
+        --tool-barrier-timeout)
+            [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "--tool-barrier-timeout requires a non-negative integer" >&2; exit 2; }
+            TOOL_BARRIER_TIMEOUT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -120,6 +130,7 @@ add_loopback_to_no_proxy() {
 }
 
 add_loopback_to_no_proxy
+export SEAM_TOOL_BARRIER_STALL_TIMEOUT_S="$TOOL_BARRIER_TIMEOUT"
 
 cd "$REPO_ROOT"
 ARGS=(
@@ -134,6 +145,7 @@ ARGS=(
     --server-url "$SERVER_URL"
     --server-no-auto-start
     --opencode-readiness message
+    --opencode-message-timeout "$MESSAGE_TIMEOUT"
     --max-phase5-iter "$MAX_ITER"
     --keep-temp-dir
 )

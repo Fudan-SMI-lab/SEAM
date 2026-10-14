@@ -55,7 +55,7 @@ def test_operator_launcher_uses_v3_default_port_and_bypasses_loopback_proxy(
     fake_python = tmp_path / "python"
     fake_python.write_text(
         "#!/bin/sh\n"
-        "printf 'NO_PROXY=%s\\nno_proxy=%s\\n' \"$NO_PROXY\" \"$no_proxy\" > \"$CAPTURE\"\n"
+        "printf 'NO_PROXY=%s\\nno_proxy=%s\\nBARRIER=%s\\n' \"$NO_PROXY\" \"$no_proxy\" \"$SEAM_TOOL_BARRIER_STALL_TIMEOUT_S\" > \"$CAPTURE\"\n"
         "printf 'ARG=%s\\n' \"$@\" >> \"$CAPTURE\"\n",
         encoding="utf-8",
     )
@@ -96,3 +96,6 @@ def test_operator_launcher_uses_v3_default_port_and_bypasses_loopback_proxy(
     assert "localhost" in captured
     assert "::1" in captured
     assert "http://127.0.0.1:4096" in captured
+    assert "900" in captured
+    assert "--opencode-message-timeout" in captured
+    assert "BARRIER=180" in captured

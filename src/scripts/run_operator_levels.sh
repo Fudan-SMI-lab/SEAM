@@ -13,6 +13,8 @@ OUTPUT_ROOT=""
 TASK_ROOT=""
 LEVELS=""
 MAX_ITER=5
+MESSAGE_TIMEOUT=900
+TOOL_BARRIER_TIMEOUT=180
 
 usage() {
     cat <<'USAGE'
@@ -29,6 +31,8 @@ Options:
   --server-url URL            OpenCode server (default: http://127.0.0.1:4096)
   --agent NAME                OpenCode agent override
   --max-iter N                Maximum repair iterations per task (default: 5)
+  --message-timeout N         OpenCode message timeout seconds (default: 900)
+  --tool-barrier-timeout N    Seconds before a completed-tool stall is aborted (default: 180)
   --help                      Show this help
 USAGE
 }
@@ -47,6 +51,8 @@ while [[ $# -gt 0 ]]; do
         --server-url) [[ $# -ge 2 ]] || { echo "--server-url requires a URL" >&2; exit 2; }; SERVER_URL="$2"; shift 2 ;;
         --agent) [[ $# -ge 2 ]] || { echo "--agent requires a name" >&2; exit 2; }; AGENT="$2"; shift 2 ;;
         --max-iter) [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--max-iter requires a positive integer" >&2; exit 2; }; MAX_ITER="$2"; shift 2 ;;
+        --message-timeout) [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--message-timeout requires a positive integer" >&2; exit 2; }; MESSAGE_TIMEOUT="$2"; shift 2 ;;
+        --tool-barrier-timeout) [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "--tool-barrier-timeout requires a non-negative integer" >&2; exit 2; }; TOOL_BARRIER_TIMEOUT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -98,7 +104,7 @@ for level_dir in "${level_dirs[@]}"; do
         task_output="$OUTPUT_ROOT/$(basename "$level_dir")/$operator"
         mkdir -p "$task_output"
         log="$task_output/launcher.log"
-        args=("$task" "$KERNELBENCH_ROOT" --target-soc "$TARGET_SOC" --operator-output-dir "$task_output" --operator-constraints "$POLICY_PATH" --server-url "$SERVER_URL" --max-iter "$MAX_ITER")
+        args=("$task" "$KERNELBENCH_ROOT" --target-soc "$TARGET_SOC" --operator-output-dir "$task_output" --operator-constraints "$POLICY_PATH" --server-url "$SERVER_URL" --max-iter "$MAX_ITER" --message-timeout "$MESSAGE_TIMEOUT" --tool-barrier-timeout "$TOOL_BARRIER_TIMEOUT")
         [[ -n "$AGENT" ]] && args+=(--agent "$AGENT")
         echo "Running $(basename "$level_dir")/$operator"
         if bash "$RUN_OPERATOR" "${args[@]}" >"$log" 2>&1; then code=0; else code=$?; fi
