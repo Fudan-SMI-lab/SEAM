@@ -10,6 +10,7 @@ import sys
 import time
 import uuid
 import hashlib
+import fcntl
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,13 @@ def run_kernelbench_eval(
         "--solution", str(solution_path), "--runner", "persistent",
         "--timeout", str(timeout), "-o", str(traces), "--verbose",
     ]
+    lock_path = root / ".seam-kernelbench-evaluator.lock"
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(json.dumps({"owner": "seam.operator_benchmark", "traces": str(traces)}) + "\n")
+    lock_file.flush()
     runtime_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if runtime_env_file:
         env_path = Path(runtime_env_file).expanduser().resolve()
@@ -49,15 +57,20 @@ def run_kernelbench_eval(
                     continue
                 key, value = line.split("=", 1)
                 runtime_env[key.strip()] = value.strip()
-    process = subprocess.Popen(
-        command,
-        cwd=root,
-        env=runtime_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=root,
+            env=runtime_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+    except Exception:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
+        raise
     process_metadata = {
         "pid": process.pid,
         "command": command,
@@ -65,6 +78,7 @@ def run_kernelbench_eval(
         "cwd": str(root),
         "traces_path": str(traces),
         "runtime_env_file": str(runtime_env_file) if runtime_env_file else "",
+        "staging_root": runtime_env.get("SEAM_OPERATOR_STAGING_ROOT", ""),
     }
     traces.with_name("process.json").write_text(
         json.dumps(process_metadata, ensure_ascii=False, indent=2) + "\n",
@@ -74,6 +88,8 @@ def run_kernelbench_eval(
         stdout, stderr = process.communicate(timeout=timeout)
         stdout_path.write_text(stdout or "", encoding="utf-8")
         stderr_path.write_text(stderr or "", encoding="utf-8")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
         return {
             "evaluation_status": "completed" if process.returncode == 0 else "failed",
             "exit_code": process.returncode,
@@ -83,6 +99,7 @@ def run_kernelbench_eval(
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
             "process_metadata_path": str(traces.with_name("process.json")),
+            "evaluator_lock": str(lock_path),
         }
     except subprocess.TimeoutExpired:
         cleanup_status = _terminate_process_group(process.pid)
@@ -96,6 +113,8 @@ def run_kernelbench_eval(
             stdout, stderr = process.communicate()
         stdout_path.write_text(stdout or "", encoding="utf-8")
         stderr_path.write_text(stderr or "", encoding="utf-8")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
         return {
             "evaluation_status": "timeout",
             "exit_code": None,
@@ -106,6 +125,7 @@ def run_kernelbench_eval(
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
             "process_metadata_path": str(traces.with_name("process.json")),
+            "evaluator_lock": str(lock_path),
         }
 
 
@@ -161,13 +181,16 @@ def evaluate_and_summarize_operator(
     )
     traces_path = evaluation_dir / "traces.jsonl"
     evaluation_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_env_file = _prepare_evaluation_runtime(
+        evaluation_dir, runtime_env_file
+    )
     process = run_kernelbench_eval(
         task_dir,
         solution,
         kernelbench_root,
         traces_path,
         timeout=timeout,
-        runtime_env_file=runtime_env_file,
+        runtime_env_file=evaluation_env_file,
     )
     result = dict(process)
     result.update(
@@ -175,6 +198,7 @@ def evaluate_and_summarize_operator(
             "evaluation_id": evaluation_id,
             "iteration": str(iteration),
             "evaluation_dir": str(evaluation_dir),
+            "evaluation_runtime_env_file": str(evaluation_env_file),
         }
     )
     if traces_path.is_file():
@@ -223,6 +247,59 @@ def evaluate_and_summarize_operator(
     history_path.write_text(json.dumps(history, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     result["iteration_history_path"] = str(history_path)
     return result
+
+
+def _prepare_evaluation_runtime(
+    evaluation_dir: Path, base_env_file: str | Path | None
+) -> Path:
+    """Create an evaluation-owned temp/cache/staging namespace.
+
+    KernelBench may create internal staging through ``tempfile`` or toolkit
+    cache variables. Keeping these directories below the unique evaluation
+    directory prevents a timed-out evaluator or another run from deleting a
+    still-active candidate's sources.
+    """
+    runtime_root = evaluation_dir / "runtime"
+    tmp_dir = runtime_root / "tmp"
+    cache_dir = runtime_root / "cache"
+    staging_dir = runtime_root / "staging"
+    for directory in (tmp_dir, cache_dir, staging_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    env: dict[str, str] = {}
+    if base_env_file:
+        path = Path(base_env_file).expanduser().resolve()
+        if path.is_file():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                env[key.strip()] = value.strip()
+    env.update(
+        {
+            "SEAM_OPERATOR_EVALUATION_ROOT": str(evaluation_dir),
+            "SEAM_OPERATOR_STAGING_ROOT": str(staging_dir),
+            "TMPDIR": str(tmp_dir),
+            "TMP": str(tmp_dir),
+            "TEMP": str(tmp_dir),
+            "XDG_CACHE_HOME": str(cache_dir),
+        }
+    )
+    env_file = evaluation_dir / "runtime.env"
+    env_file.write_text(
+        "".join(f"{key}={value}\n" for key, value in sorted(env.items())),
+        encoding="utf-8",
+    )
+    ownership = {
+        "evaluation_dir": str(evaluation_dir),
+        "staging_root": str(staging_dir),
+        "owner": "seam.operator_benchmark",
+    }
+    (runtime_root / "ownership.json").write_text(
+        json.dumps(ownership, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return env_file
 
 
 def build_failure_manifest(

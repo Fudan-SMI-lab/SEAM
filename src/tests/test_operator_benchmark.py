@@ -5,6 +5,7 @@ from pathlib import Path
 
 from core.config import load_workflow
 from core.operator_benchmark import (
+    _prepare_evaluation_runtime,
     build_failure_manifest,
     configure_operator_runtime,
     summarize_traces,
@@ -181,6 +182,22 @@ def test_failure_manifest_marks_incomplete_evaluation(tmp_path: Path) -> None:
     assert manifest["invalid_reason"] == "timeout"
     assert manifest["failure_groups"][0]["category"] == "runtime_error"
     assert manifest["failure_groups"][0]["representative_workloads"] == ["case-001"]
+
+
+def test_evaluation_runtime_isolated_from_base_runtime(tmp_path: Path) -> None:
+    base_env = tmp_path / "base.env"
+    base_env.write_text("ASCEND_OPP_PATH=/opt/opp\nTMPDIR=/shared/tmp\n", encoding="utf-8")
+    first = _prepare_evaluation_runtime(tmp_path / "eval-1", base_env)
+    second = _prepare_evaluation_runtime(tmp_path / "eval-2", base_env)
+
+    first_text = first.read_text(encoding="utf-8")
+    second_text = second.read_text(encoding="utf-8")
+    assert "ASCEND_OPP_PATH=/opt/opp" in first_text
+    assert "TMPDIR=/shared/tmp" not in first_text
+    assert "TMPDIR=" in first_text
+    assert first_text != second_text
+    assert (tmp_path / "eval-1" / "runtime" / "ownership.json").is_file()
+    assert (tmp_path / "eval-2" / "runtime" / "ownership.json").is_file()
 
 
 def test_kernelbench_repair_prompt_uses_injected_text_not_evidence_paths() -> None:
