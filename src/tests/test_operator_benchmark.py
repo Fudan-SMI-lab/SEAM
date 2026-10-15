@@ -4,7 +4,12 @@ import json
 from pathlib import Path
 
 from core.config import load_workflow
-from core.operator_benchmark import summarize_traces, validate_operator_task
+from core.operator_benchmark import (
+    build_failure_manifest,
+    configure_operator_runtime,
+    summarize_traces,
+    validate_operator_task,
+)
 from validators.validate_operator_env_detect import validate as validate_env
 from validators.validate_operator_evaluation import validate as validate_evaluation
 
@@ -14,8 +19,10 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
 
     assert [phase.id for phase in workflow.phases] == [
         "phase_0_operator_env_detect",
-        "phase_1_operator_analysis",
-        "phase_2_custom_op_prepare",
+        "phase_1_operator_runtime_detect",
+        "phase_1_5_operator_runtime_configure",
+        "phase_2_operator_analysis",
+        "phase_3_custom_op_prepare",
         "phase_4_operator_report",
     ]
     generation_loop = workflow.sub_workflows["operator_repair_loop"]
@@ -25,11 +32,19 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
     assert generation_loop.phases[2]["condition"] == (
         "${loop_state.operator_passed} != true"
     )
+    assert generation_loop.phases[3]["id"] == "fix_operator_environment"
     assert generation_loop.phases[3]["condition"] == (
-        "${loop_state.operator_passed} != true"
+        "${loop_state.operator_passed} != true and "
+        "${loop_state.error_analysis.repair_role} == 'operator_environment_fixer'"
     )
-    assert generation_loop.phases[1]["on_failure"] == "continue"
+    assert generation_loop.phases[4]["id"] == "fix_operator"
+    assert generation_loop.phases[4]["condition"] == (
+        "${loop_state.operator_passed} != true and "
+        "${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'"
+    )
     assert generation_loop.phases[3]["on_failure"] == "continue"
+    assert generation_loop.phases[4]["on_failure"] == "continue"
+    assert generation_loop.phases[1]["on_failure"] == "continue"
 
 
 def test_validate_real_gelu_task() -> None:
@@ -116,6 +131,56 @@ def test_summarize_traces_preserves_error_metrics(tmp_path: Path) -> None:
     assert summary["max_relative_error"] == 0.01
     assert summary["min_matched_ratio"] == 0.98
     assert validate_evaluation(summary)["passed"]
+
+
+def test_runtime_configuration_is_run_scoped(tmp_path: Path) -> None:
+    result = configure_operator_runtime(
+        output_dir=tmp_path,
+        runtime_report={"python_executable": "/opt/python", "opp_path": "/opt/opp"},
+    )
+
+    env_path = Path(result["environment_file"])
+    assert result["configuration_status"] == "ready"
+    assert env_path.is_file()
+    env_text = env_path.read_text(encoding="utf-8")
+    assert f"SEAM_OPERATOR_RUN_ROOT={tmp_path}" in env_text
+    assert "TMPDIR=" in env_text
+    assert "ASCEND_OPP_PATH=/opt/opp" in env_text
+    assert (tmp_path / "runtime" / "configuration.json").is_file()
+
+
+def test_failure_manifest_marks_incomplete_evaluation(tmp_path: Path) -> None:
+    traces_path = tmp_path / "traces.jsonl"
+    traces_path.write_text(
+        json.dumps(
+            {
+                "uuid": "case-001",
+                "evaluation": {"status": "RUNTIME_ERROR"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    solution = tmp_path / "solution.json"
+    solution.write_text("{}", encoding="utf-8")
+    manifest = build_failure_manifest(
+        {
+            "iteration": "2",
+            "evaluation_id": "eval-test",
+            "evaluation_status": "timeout",
+            "evaluation_valid": False,
+            "total_workloads": 1,
+            "passed_workloads": 0,
+            "statuses": {"RUNTIME_ERROR": 1},
+            "trace_complete": False,
+        },
+        traces_path,
+        solution,
+    )
+    assert manifest["evaluation_valid"] is False
+    assert manifest["invalid_reason"] == "timeout"
+    assert manifest["failure_groups"][0]["category"] == "runtime_error"
+    assert manifest["failure_groups"][0]["representative_workloads"] == ["case-001"]
 
 
 def test_kernelbench_repair_prompt_uses_injected_text_not_evidence_paths() -> None:

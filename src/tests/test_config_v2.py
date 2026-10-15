@@ -89,10 +89,11 @@ def test_sm_adapt_workflow_yamls_have_no_phase_or_session_timeouts():
         "npu_ascend_general.yaml",
         "npu_ascend_vllm.yaml",
         "ppu_custom_op.yaml",
-        "ppu_general.yaml",
-        "ppu_sglang.yaml",
-        "ppu_vllm.yaml",
-    }
+            "ppu_general.yaml",
+            "ppu_sglang.yaml",
+            "ppu_vllm.yaml",
+            "npu_kernelbench_custom_op.yaml",
+        }
     for workflow_path in (PACKAGE_ROOT / "workflows").glob("*.yaml"):
         text = workflow_path.read_text(encoding="utf-8")
         for token in timeout_tokens:

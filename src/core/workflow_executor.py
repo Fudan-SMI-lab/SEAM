@@ -132,6 +132,8 @@ from core.run_outcome import PhaseId
 from core.runtime_observability_models import ImprovementStatus
 from core.platform_policy import resolve_policy, PlatformPolicy
 from core.operator_benchmark import (
+    configure_operator_runtime,
+    detect_operator_runtime,
     evaluate_and_summarize_operator,
     summarize_traces,
     validate_operator_task,
@@ -3902,6 +3904,39 @@ class WorkflowExecutor:
                 state, context, loop_vars, loop_state
             )
 
+        if operation == "operator_runtime_detect":
+            kernelbench_root = self._resolve_operator_value(
+                "KERNELBENCH_ROOT", context, loop_vars
+            )
+            target_soc = self._resolve_operator_value(
+                "TARGET_SOC", context, loop_vars
+            ) or ""
+            if not kernelbench_root:
+                return (
+                    "failure",
+                    {
+                        "operation": operation,
+                        "runtime_status": "blocked",
+                        "blocking_issues": ["KERNELBENCH_ROOT is required"],
+                    },
+                )
+            result = detect_operator_runtime(
+                kernelbench_root=kernelbench_root,
+                target_soc=target_soc,
+            )
+            return "success", result
+
+        if operation == "operator_runtime_configure":
+            output_dir = self._resolve_operator_value(
+                "OPERATOR_OUTPUT_DIR", context, loop_vars
+            ) or str(self.output_dir)
+            runtime_report = state.get("phase_1_operator_runtime_detect", {})
+            result = configure_operator_runtime(
+                output_dir=output_dir,
+                runtime_report=runtime_report if isinstance(runtime_report, dict) else None,
+            )
+            return "success", result
+
         if operation == "operator_task_validate":
             task_dir = self._operator_task_dir(context, loop_vars)
             result = validate_operator_task(task_dir)
@@ -3988,6 +4023,9 @@ class WorkflowExecutor:
                 output_dir,
                 iteration=iteration,
                 timeout=int(_params.get("timeout", 600)),
+                runtime_env_file=self._resolve_operator_value(
+                    "OPERATOR_RUNTIME_ENV_FILE", context, loop_vars
+                ) or None,
             )
             result.update({"operation": operation, "iteration": iteration})
             return (

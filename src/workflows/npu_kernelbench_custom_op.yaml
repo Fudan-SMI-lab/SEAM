@@ -20,6 +20,9 @@ agents:
   operator_fixer:
     role: "operator_fixer"
     lifecycle: "persistent"
+  operator_environment_fixer:
+    role: "operator_environment_fixer"
+    lifecycle: "persistent"
 
 terminals:
   complete: "Operator workflow complete"
@@ -37,14 +40,41 @@ phases:
       solution_type: "${context.SOLUTION_TYPE}"
       operator_level: "${context.OPERATOR_LEVEL}"
     transitions:
-      on_success: phase_1_operator_analysis
+      on_success: phase_1_operator_runtime_detect
       on_failure: blocked
 
-  - id: phase_1_operator_analysis
+  - id: phase_1_operator_runtime_detect
+    name: operator_runtime_detection
+    type: builtin
+    operation: "operator_runtime_detect"
+    validator: operator_runtime_detect
+    input_mapping:
+      operator_task_dir: "${state.phase_0_operator_env_detect.operator_task_dir}"
+      kernelbench_root: "${context.KERNELBENCH_ROOT}"
+      target_soc: "${context.TARGET_SOC}"
+      operator_level: "${state.phase_0_operator_env_detect.level}"
+    transitions:
+      on_success: phase_1_5_operator_runtime_configure
+      on_failure: phase_1_5_operator_runtime_configure
+
+  - id: phase_1_5_operator_runtime_configure
+    name: operator_runtime_configuration
+    type: builtin
+    operation: "operator_runtime_configure"
+    input_mapping:
+      operator_task_dir: "${state.phase_0_operator_env_detect.operator_task_dir}"
+      kernelbench_root: "${context.KERNELBENCH_ROOT}"
+      target_soc: "${context.TARGET_SOC}"
+      runtime_report: "${state.phase_1_operator_runtime_detect}"
+    transitions:
+      on_success: phase_2_operator_analysis
+      on_failure: blocked
+
+  - id: phase_2_operator_analysis
     name: operator_analysis
     type: llm
     agent: main_engineer
-    prompt_template: "phase_1_operator_analysis"
+    prompt_template: "phase_2_operator_analysis"
     validator: operator_analysis
     input_mapping:
       operator_task_dir: "${state.phase_0_operator_env_detect.operator_task_dir}"
@@ -53,11 +83,13 @@ phases:
       definition_path: "${state.phase_0_operator_env_detect.definition_path}"
       workload_path: "${state.phase_0_operator_env_detect.workload_path}"
       operator_constraints: "${context.OPERATOR_CONSTRAINTS}"
+      runtime_report: "${state.phase_1_operator_runtime_detect}"
+      runtime_configuration: "${state.phase_1_5_operator_runtime_configure}"
     transitions:
-      on_success: phase_2_custom_op_prepare
+      on_success: phase_3_custom_op_prepare
       on_failure: failed
 
-  - id: phase_2_custom_op_prepare
+  - id: phase_3_custom_op_prepare
     name: operator_generation_evaluation_and_repair
     type: loop
     sub_workflow: operator_repair_loop
@@ -73,7 +105,10 @@ phases:
       OPERATOR_CONSTRAINTS: "${context.OPERATOR_CONSTRAINTS}"
       OPERATOR_LEVEL: "${context.OPERATOR_LEVEL}"
       SOLUTION_TYPE: "${context.SOLUTION_TYPE}"
-      OPERATOR_ANALYSIS: "${state.phase_1_operator_analysis}"
+      OPERATOR_ANALYSIS: "${state.phase_2_operator_analysis}"
+      OPERATOR_RUNTIME_REPORT: "${state.phase_1_operator_runtime_detect}"
+      OPERATOR_RUNTIME_CONFIGURATION: "${state.phase_1_5_operator_runtime_configure}"
+      OPERATOR_RUNTIME_ENV_FILE: "${state.phase_1_5_operator_runtime_configure.environment_file}"
     transitions:
       on_success: phase_4_operator_report
       on_failure: failed
@@ -107,7 +142,7 @@ sub_workflows:
       - id: prepare_operator
         type: llm
         agent: main_engineer
-        prompt_template: "phase_2_custom_op_prepare"
+        prompt_template: "phase_3_custom_op_prepare"
         condition: "${loop_state.iteration} == 1"
         output_as: "operator_preparation"
         input_mapping:
@@ -118,6 +153,8 @@ sub_workflows:
           target_soc: "${loop_vars.TARGET_SOC}"
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
           previous_outputs: "${loop_vars.OPERATOR_ANALYSIS}"
+          runtime_report: "${loop_vars.OPERATOR_RUNTIME_REPORT}"
+          runtime_configuration: "${loop_vars.OPERATOR_RUNTIME_CONFIGURATION}"
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
@@ -129,7 +166,7 @@ sub_workflows:
         type: builtin
         operation: "operator_kernelbench_eval"
         params:
-          timeout: 600
+          timeout: 1800
         on_failure: continue
 
       - id: analyze_operator_failure
@@ -140,12 +177,31 @@ sub_workflows:
         output_as: "error_analysis"
         input_mapping:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
+          runtime_report: "${loop_vars.OPERATOR_RUNTIME_REPORT}"
+          runtime_configuration: "${loop_vars.OPERATOR_RUNTIME_CONFIGURATION}"
+
+      - id: fix_operator_environment
+        type: llm
+        agent: operator_environment_fixer
+        prompt_template: "repair_operator_environment"
+        condition: >-
+          ${loop_state.operator_passed} != true
+          and ${loop_state.error_analysis.repair_role} == 'operator_environment_fixer'
+        input_mapping:
+          runtime_report: "${loop_vars.OPERATOR_RUNTIME_REPORT}"
+          runtime_configuration: "${loop_vars.OPERATOR_RUNTIME_CONFIGURATION}"
+          error_analysis: "${loop_state.error_analysis}"
+          operator_task_dir: "${loop_vars.OPERATOR_TASK_DIR}"
+          kernelbench_root: "${loop_vars.KERNELBENCH_ROOT}"
+        on_failure: continue
 
       - id: fix_operator
         type: llm
         agent: operator_fixer
         prompt_template: "repair_operator_fixer_kernelbench_ascendc"
-        condition: "${loop_state.operator_passed} != true"
+        condition: >-
+          ${loop_state.operator_passed} != true
+          and ${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
