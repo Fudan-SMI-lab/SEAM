@@ -5,10 +5,13 @@ from pathlib import Path
 
 from core.config import load_workflow
 from core.operator_benchmark import (
+    _classify_timeout,
+    _evaluator_lock_path,
     _prepare_evaluation_runtime,
     build_failure_manifest,
     configure_operator_runtime,
     summarize_traces,
+    validate_operator_artifact,
     validate_operator_task,
 )
 from validators.validate_operator_env_detect import validate as validate_env
@@ -27,25 +30,49 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
         "phase_4_operator_report",
     ]
     generation_loop = workflow.sub_workflows["operator_repair_loop"]
-    assert generation_loop.phases[0]["id"] == "prepare_operator"
-    assert generation_loop.phases[0]["condition"] == "${loop_state.iteration} == 1"
-    assert generation_loop.phases[1]["id"] == "evaluate_operator"
-    assert generation_loop.phases[2]["condition"] == (
+    assert generation_loop.phases[0]["id"] == "validate_operator_artifact"
+    assert generation_loop.phases[0]["operation"] == "operator_artifact_validate"
+    assert generation_loop.phases[1]["id"] == "prepare_operator"
+    assert "operator_artifact_state.rebuild_required" in generation_loop.phases[1]["condition"]
+    assert generation_loop.phases[1]["on_failure"] == "continue"
+    assert generation_loop.phases[2]["id"] == "refresh_operator_artifact"
+    assert generation_loop.phases[2]["output_as"] == "operator_artifact_state"
+    assert generation_loop.phases[3]["id"] == "evaluate_operator"
+    assert generation_loop.phases[3]["condition"] == (
+        "${loop_state.operator_artifact_state.solution_ready} == true"
+    )
+    assert generation_loop.phases[4]["condition"] == (
         "${loop_state.operator_passed} != true"
     )
-    assert generation_loop.phases[3]["id"] == "fix_operator_environment"
-    assert generation_loop.phases[3]["condition"] == (
+    assert generation_loop.phases[5]["id"] == "fix_operator_environment"
+    assert generation_loop.phases[5]["condition"] == (
         "${loop_state.operator_passed} != true and "
         "${loop_state.error_analysis.repair_role} == 'operator_environment_fixer'"
     )
-    assert generation_loop.phases[4]["id"] == "fix_operator"
-    assert generation_loop.phases[4]["condition"] == (
+    assert generation_loop.phases[6]["id"] == "fix_operator"
+    assert generation_loop.phases[6]["condition"] == (
         "${loop_state.operator_passed} != true and "
         "${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'"
     )
+    assert generation_loop.phases[5]["on_failure"] == "continue"
+    assert generation_loop.phases[6]["on_failure"] == "continue"
     assert generation_loop.phases[3]["on_failure"] == "continue"
-    assert generation_loop.phases[4]["on_failure"] == "continue"
-    assert generation_loop.phases[1]["on_failure"] == "continue"
+
+
+def test_operator_artifact_validation_requires_rebuild(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    missing = validate_operator_artifact(task_dir / "solution.json", task_dir)
+    assert missing["solution_ready"] is False
+    assert missing["artifact_complete"] is False
+    assert missing["rebuild_required"] is True
+
+    solution = task_dir / "solution.json"
+    solution.write_text(json.dumps({"sources": "sources"}), encoding="utf-8")
+    ready = validate_operator_artifact(solution, task_dir)
+    assert ready["solution_ready"] is True
+    assert ready["artifact_complete"] is True
+    assert ready["rebuild_required"] is False
 
 
 def test_validate_real_gelu_task() -> None:
@@ -182,6 +209,22 @@ def test_failure_manifest_marks_incomplete_evaluation(tmp_path: Path) -> None:
     assert manifest["invalid_reason"] == "timeout"
     assert manifest["failure_groups"][0]["category"] == "runtime_error"
     assert manifest["failure_groups"][0]["representative_workloads"] == ["case-001"]
+
+
+def test_timeout_evidence_is_classified_without_hiding_the_timeout(tmp_path: Path) -> None:
+    traces = tmp_path / "traces.jsonl"
+    traces.write_text(json.dumps({"uuid": "case-001"}) + "\n", encoding="utf-8")
+    assert _classify_timeout(traces, "", "", "cleaned") == "partial_trace_timeout"
+    assert _classify_timeout(tmp_path / "missing.jsonl", "", "", "cleaned") == "no_trace_timeout"
+    assert _classify_timeout(tmp_path / "missing.jsonl", "", "Segmentation fault", "cleaned") == "host_crash"
+
+
+def test_evaluator_lock_is_device_scoped_when_one_device_is_visible(tmp_path: Path) -> None:
+    lock = _evaluator_lock_path(
+        tmp_path, {"ASCEND_RT_VISIBLE_DEVICES": "3"}
+    )
+    assert lock.name == ".seam-kernelbench-evaluator.3.lock"
+    assert _evaluator_lock_path(tmp_path, {"ASCEND_RT_VISIBLE_DEVICES": "0,1"}).name == ".seam-kernelbench-evaluator.lock"
 
 
 def test_evaluation_runtime_isolated_from_base_runtime(tmp_path: Path) -> None:

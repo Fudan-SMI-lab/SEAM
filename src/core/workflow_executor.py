@@ -136,6 +136,7 @@ from core.operator_benchmark import (
     detect_operator_runtime,
     evaluate_and_summarize_operator,
     summarize_traces,
+    validate_operator_artifact,
     validate_operator_task,
 )
 from core.ui_events import UIEventSink, summarize_text
@@ -3960,6 +3961,25 @@ class WorkflowExecutor:
                 result,
             )
 
+        if operation == "operator_artifact_validate":
+            solution = self._resolve_operator_value(
+                "OPERATOR_SOLUTION_PATH", context, loop_vars
+            )
+            task_dir = self._operator_task_dir(context, loop_vars)
+            if not solution:
+                return (
+                    "failure",
+                    {
+                        "operation": operation,
+                        "solution_ready": False,
+                        "artifact_complete": False,
+                        "rebuild_required": True,
+                        "errors": ["OPERATOR_SOLUTION_PATH is required"],
+                    },
+                )
+            result = validate_operator_artifact(solution, task_dir)
+            return ("success" if result["solution_ready"] else "failure", result)
+
         if operation == "operator_trace_summary":
             traces_path = self._resolve_operator_value(
                 "OPERATOR_TRACES_PATH", context, loop_vars
@@ -5745,6 +5765,10 @@ class WorkflowExecutor:
                         "total_workloads",
                         "passed_workloads",
                         "failure_category",
+                        "timeout_classification",
+                        "cleanup_status",
+                        "visible_device",
+                        "failure_manifest_path",
                         "traces_path",
                         "summary_path",
                         "stdout_path",

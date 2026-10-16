@@ -11,6 +11,7 @@ import time
 import uuid
 import hashlib
 import fcntl
+import re
 from pathlib import Path
 from typing import Any
 
@@ -40,13 +41,6 @@ def run_kernelbench_eval(
         "--solution", str(solution_path), "--runner", "persistent",
         "--timeout", str(timeout), "-o", str(traces), "--verbose",
     ]
-    lock_path = root / ".seam-kernelbench-evaluator.lock"
-    lock_file = lock_path.open("a+", encoding="utf-8")
-    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-    lock_file.seek(0)
-    lock_file.truncate()
-    lock_file.write(json.dumps({"owner": "seam.operator_benchmark", "traces": str(traces)}) + "\n")
-    lock_file.flush()
     runtime_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if runtime_env_file:
         env_path = Path(runtime_env_file).expanduser().resolve()
@@ -57,6 +51,22 @@ def run_kernelbench_eval(
                     continue
                 key, value = line.split("=", 1)
                 runtime_env[key.strip()] = value.strip()
+    lock_path = _evaluator_lock_path(root, runtime_env)
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(
+        json.dumps(
+            {
+                "owner": "seam.operator_benchmark",
+                "traces": str(traces),
+                "device": _visible_device_tag(runtime_env) or "unknown",
+            }
+        )
+        + "\n"
+    )
+    lock_file.flush()
     try:
         process = subprocess.Popen(
             command,
@@ -79,6 +89,8 @@ def run_kernelbench_eval(
         "traces_path": str(traces),
         "runtime_env_file": str(runtime_env_file) if runtime_env_file else "",
         "staging_root": runtime_env.get("SEAM_OPERATOR_STAGING_ROOT", ""),
+        "visible_device": _visible_device_tag(runtime_env) or "",
+        "evaluator_lock": str(lock_path),
     }
     traces.with_name("process.json").write_text(
         json.dumps(process_metadata, ensure_ascii=False, indent=2) + "\n",
@@ -90,9 +102,13 @@ def run_kernelbench_eval(
         stderr_path.write_text(stderr or "", encoding="utf-8")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
+        failure_category = ""
+        if process.returncode != 0:
+            failure_category = _classify_process_failure(process.returncode, stdout or "", stderr or "")
         return {
             "evaluation_status": "completed" if process.returncode == 0 else "failed",
             "exit_code": process.returncode,
+            "failure_category": failure_category,
             "process_group_cleaned": True,
             "command": command,
             "traces_path": str(traces),
@@ -100,6 +116,7 @@ def run_kernelbench_eval(
             "stderr_path": str(stderr_path),
             "process_metadata_path": str(traces.with_name("process.json")),
             "evaluator_lock": str(lock_path),
+            "timeout_classification": "",
         }
     except subprocess.TimeoutExpired:
         cleanup_status = _terminate_process_group(process.pid)
@@ -115,6 +132,9 @@ def run_kernelbench_eval(
         stderr_path.write_text(stderr or "", encoding="utf-8")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
+        timeout_classification = _classify_timeout(
+            traces, stdout or "", stderr or "", cleanup_status
+        )
         return {
             "evaluation_status": "timeout",
             "exit_code": None,
@@ -126,7 +146,52 @@ def run_kernelbench_eval(
             "stderr_path": str(stderr_path),
             "process_metadata_path": str(traces.with_name("process.json")),
             "evaluator_lock": str(lock_path),
+            "timeout_classification": timeout_classification,
         }
+
+
+def _visible_device_tag(environment: dict[str, str]) -> str:
+    value = environment.get("ASCEND_RT_VISIBLE_DEVICES") or environment.get(
+        "ASCEND_VISIBLE_DEVICES", ""
+    )
+    devices = [item.strip() for item in value.split(",") if item.strip()]
+    if len(devices) != 1:
+        return ""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", devices[0])
+
+
+def _evaluator_lock_path(root: Path, environment: dict[str, str]) -> Path:
+    device = _visible_device_tag(environment)
+    if device:
+        return root / f".seam-kernelbench-evaluator.{device}.lock"
+    return root / ".seam-kernelbench-evaluator.lock"
+
+
+def _classify_timeout(
+    traces_path: Path, stdout: str, stderr: str, cleanup_status: str
+) -> str:
+    evidence = f"{stdout}\n{stderr}".lower()
+    if any(marker in evidence for marker in ("segmentation fault", "sigsegv", "core dumped")):
+        return "host_crash"
+    if cleanup_status not in {"cleaned", ""}:
+        return "cleanup_failed"
+    trace_count = 0
+    if traces_path.is_file():
+        trace_count = sum(1 for line in traces_path.read_text(encoding="utf-8").splitlines() if line.strip())
+    if trace_count:
+        return "partial_trace_timeout"
+    return "no_trace_timeout"
+
+
+def _classify_process_failure(returncode: int | None, stdout: str, stderr: str) -> str:
+    evidence = f"{stdout}\n{stderr}".lower()
+    if returncode == -signal.SIGSEGV or any(
+        marker in evidence for marker in ("segmentation fault", "sigsegv", "core dumped")
+    ):
+        return "host_crash"
+    if returncode is not None and returncode < 0:
+        return f"signal_{-returncode}"
+    return "evaluator_failed"
 
 
 def _terminate_process_group(pid: int | None) -> str:
@@ -231,6 +296,11 @@ def evaluate_and_summarize_operator(
         result.get("evaluation_status") == "completed"
         and result.get("trace_complete")
     )
+    if not result.get("failure_category"):
+        if result.get("evaluation_status") == "timeout":
+            result["failure_category"] = result.get("timeout_classification", "timeout")
+        elif not result.get("evaluation_valid"):
+            result["failure_category"] = "incomplete_trace"
     manifest = build_failure_manifest(result, traces_path, solution)
     manifest_path = evaluation_dir / "failure_manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -342,13 +412,18 @@ def build_failure_manifest(
         "evaluation_id": result.get("evaluation_id", ""),
         "evaluation_valid": bool(result.get("evaluation_valid")),
         "evaluation_status": result.get("evaluation_status", ""),
+        "failure_category": result.get("failure_category", ""),
+        "exit_code": result.get("exit_code"),
+        "timeout_classification": result.get("timeout_classification", ""),
+        "cleanup_status": result.get("cleanup_status", ""),
+        "visible_device": result.get("visible_device", ""),
         "solution_sha256": solution_hash,
         "total": result.get("total_workloads", 0),
         "passed": result.get("passed_workloads", 0),
         "statuses": result.get("statuses", {}),
         "failure_groups": failures,
         "trace_complete": bool(result.get("trace_complete")),
-        "invalid_reason": "" if result.get("evaluation_valid") else result.get("evaluation_status", "incomplete_traces"),
+        "invalid_reason": "" if result.get("evaluation_valid") else result.get("failure_category") or result.get("evaluation_status", "incomplete_traces"),
         "traces_path": str(traces_path),
     }
 
@@ -569,6 +644,41 @@ def validate_operator_task(task_dir: str | Path) -> dict[str, Any]:
         "workload_path": str(workload_path),
         "workload_count": len(workloads),
         "definition": definition,
+    }
+
+
+def validate_operator_artifact(solution: str | Path, task_dir: str | Path) -> dict[str, Any]:
+    """Check whether the current candidate can be evaluated safely."""
+    solution_path = Path(solution).expanduser().resolve()
+    task_root = Path(task_dir).expanduser().resolve()
+    errors: list[str] = []
+    if not solution_path.is_file():
+        errors.append("solution.json is missing")
+    elif solution_path.stat().st_size == 0:
+        errors.append("solution.json is empty")
+    else:
+        try:
+            loaded = json.loads(solution_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                errors.append("solution.json must contain an object")
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"solution.json cannot be loaded: {exc}")
+    source_dir = solution_path.parent / "sources"
+    artifact_complete = solution_path.is_file() and solution_path.stat().st_size > 0
+    if source_dir.exists() and not source_dir.is_dir():
+        errors.append("sources exists but is not a directory")
+        artifact_complete = False
+    return {
+        "operation": "operator_artifact_validate",
+        "solution_path": str(solution_path),
+        "task_dir": str(task_root),
+        "solution_ready": not errors,
+        "artifact_complete": artifact_complete and not errors,
+        "rebuild_required": bool(errors),
+        "errors": errors,
+        "solution_sha256": hashlib.sha256(solution_path.read_bytes()).hexdigest()
+        if solution_path.is_file()
+        else "",
     }
 
 

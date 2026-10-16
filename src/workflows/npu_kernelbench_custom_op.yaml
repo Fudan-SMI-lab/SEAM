@@ -139,11 +139,19 @@ sub_workflows:
       - condition: "$.stagnation_count >= 3"
         status: stagnation
     phases:
+      - id: validate_operator_artifact
+        type: builtin
+        operation: "operator_artifact_validate"
+        output_as: "operator_artifact_state"
+        on_failure: continue
+
       - id: prepare_operator
         type: llm
         agent: main_engineer
         prompt_template: "phase_3_custom_op_prepare"
-        condition: "${loop_state.iteration} == 1"
+        condition: >-
+          ${loop_state.operator_artifact_state.rebuild_required} == true
+          or ${loop_state.operator_artifact_state.solution_ready} != true
         output_as: "operator_preparation"
         input_mapping:
           operator_task_dir: "${loop_vars.OPERATOR_TASK_DIR}"
@@ -160,11 +168,18 @@ sub_workflows:
             - cuda-custom-op-to-npu-custom-op
           inject_full: false
           missing: error
-        on_failure: break
+        on_failure: continue
+
+      - id: refresh_operator_artifact
+        type: builtin
+        operation: "operator_artifact_validate"
+        output_as: "operator_artifact_state"
+        on_failure: continue
 
       - id: evaluate_operator
         type: builtin
         operation: "operator_kernelbench_eval"
+        condition: "${loop_state.operator_artifact_state.solution_ready} == true"
         params:
           timeout: 1800
         on_failure: continue
