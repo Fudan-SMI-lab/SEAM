@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -34,12 +35,17 @@ def run_kernelbench_eval(
     root = Path(kernelbench_root).expanduser().resolve()
     traces = Path(output_path).expanduser().resolve()
     traces.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = traces.parent / "work"
+    profile_dir = traces.parent / "profile"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir.mkdir(parents=True, exist_ok=True)
     stdout_path = traces.with_suffix(".stdout.log")
     stderr_path = traces.with_suffix(".stderr.log")
     command = [
         "uv", "run", "npu-kernelbench", "eval", str(task),
         "--solution", str(solution_path), "--runner", "persistent",
         "--timeout", str(timeout), "-o", str(traces), "--verbose",
+        "--work-dir", str(work_dir), "--profile-dir", str(profile_dir),
     ]
     runtime_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     if runtime_env_file:
@@ -91,6 +97,9 @@ def run_kernelbench_eval(
         "staging_root": runtime_env.get("SEAM_OPERATOR_STAGING_ROOT", ""),
         "visible_device": _visible_device_tag(runtime_env) or "",
         "evaluator_lock": str(lock_path),
+        "work_dir": str(work_dir),
+        "profile_dir": str(profile_dir),
+        "resource_before": _resource_snapshot(traces.parent),
     }
     traces.with_name("process.json").write_text(
         json.dumps(process_metadata, ensure_ascii=False, indent=2) + "\n",
@@ -100,6 +109,7 @@ def run_kernelbench_eval(
         stdout, stderr = process.communicate(timeout=timeout)
         stdout_path.write_text(stdout or "", encoding="utf-8")
         stderr_path.write_text(stderr or "", encoding="utf-8")
+        resource_after = _resource_snapshot(traces.parent)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
         failure_category = ""
@@ -117,6 +127,10 @@ def run_kernelbench_eval(
             "process_metadata_path": str(traces.with_name("process.json")),
             "evaluator_lock": str(lock_path),
             "timeout_classification": "",
+            "resource_before": process_metadata["resource_before"],
+            "resource_after": resource_after,
+            "work_dir": str(work_dir),
+            "profile_dir": str(profile_dir),
         }
     except subprocess.TimeoutExpired:
         cleanup_status = _terminate_process_group(process.pid)
@@ -130,6 +144,7 @@ def run_kernelbench_eval(
             stdout, stderr = process.communicate()
         stdout_path.write_text(stdout or "", encoding="utf-8")
         stderr_path.write_text(stderr or "", encoding="utf-8")
+        resource_after = _resource_snapshot(traces.parent)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
         timeout_classification = _classify_timeout(
@@ -147,7 +162,27 @@ def run_kernelbench_eval(
             "process_metadata_path": str(traces.with_name("process.json")),
             "evaluator_lock": str(lock_path),
             "timeout_classification": timeout_classification,
+            "resource_before": process_metadata["resource_before"],
+            "resource_after": resource_after,
+            "work_dir": str(work_dir),
+            "profile_dir": str(profile_dir),
         }
+
+
+def _resource_snapshot(path: Path) -> dict[str, Any]:
+    """Capture disk and inode availability without making policy decisions."""
+    try:
+        usage = shutil.disk_usage(path)
+        stat = os.statvfs(path)
+        return {
+            "path": str(path),
+            "free_bytes": usage.free,
+            "total_bytes": usage.total,
+            "free_inodes": stat.f_bavail,
+            "total_inodes": stat.f_files,
+        }
+    except OSError as exc:
+        return {"path": str(path), "error": str(exc)}
 
 
 def _visible_device_tag(environment: dict[str, str]) -> str:
@@ -173,6 +208,12 @@ def _classify_timeout(
     evidence = f"{stdout}\n{stderr}".lower()
     if any(marker in evidence for marker in ("segmentation fault", "sigsegv", "core dumped")):
         return "host_crash"
+    if any(marker in evidence for marker in ("devmm", "507035", "vector core", "page fault", "aivec")):
+        return "device_memory_fault"
+    if any(marker in evidence for marker in ("setflag", "waitflag", "synchronize", "device hang")):
+        return "device_sync_hang"
+    if "no space left on device" in evidence or "cannot allocate memory" in evidence:
+        return "resource_exhausted"
     if cleanup_status not in {"cleaned", ""}:
         return "cleanup_failed"
     trace_count = 0
@@ -189,6 +230,10 @@ def _classify_process_failure(returncode: int | None, stdout: str, stderr: str) 
         marker in evidence for marker in ("segmentation fault", "sigsegv", "core dumped")
     ):
         return "host_crash"
+    if any(marker in evidence for marker in ("devmm", "507035", "vector core", "page fault", "aivec")):
+        return "device_memory_fault"
+    if "no space left on device" in evidence or "cannot allocate memory" in evidence:
+        return "resource_exhausted"
     if returncode is not None and returncode < 0:
         return f"signal_{-returncode}"
     return "evaluator_failed"
@@ -417,6 +462,10 @@ def build_failure_manifest(
         "timeout_classification": result.get("timeout_classification", ""),
         "cleanup_status": result.get("cleanup_status", ""),
         "visible_device": result.get("visible_device", ""),
+        "resource_before": result.get("resource_before", {}),
+        "resource_after": result.get("resource_after", {}),
+        "work_dir": result.get("work_dir", ""),
+        "profile_dir": result.get("profile_dir", ""),
         "solution_sha256": solution_hash,
         "total": result.get("total_workloads", 0),
         "passed": result.get("passed_workloads", 0),
@@ -647,7 +696,13 @@ def validate_operator_task(task_dir: str | Path) -> dict[str, Any]:
     }
 
 
-def validate_operator_artifact(solution: str | Path, task_dir: str | Path) -> dict[str, Any]:
+def validate_operator_artifact(
+    solution: str | Path,
+    task_dir: str | Path,
+    *,
+    baseline_sha256: str = "",
+    require_changed: bool = False,
+) -> dict[str, Any]:
     """Check whether the current candidate can be evaluated safely."""
     solution_path = Path(solution).expanduser().resolve()
     task_root = Path(task_dir).expanduser().resolve()
@@ -668,17 +723,32 @@ def validate_operator_artifact(solution: str | Path, task_dir: str | Path) -> di
     if source_dir.exists() and not source_dir.is_dir():
         errors.append("sources exists but is not a directory")
         artifact_complete = False
+    solution_sha256 = (
+        hashlib.sha256(solution_path.read_bytes()).hexdigest()
+        if solution_path.is_file()
+        else ""
+    )
+    candidate_changed = bool(solution_sha256 and solution_sha256 != baseline_sha256)
+    stale_error = (
+        "solution.json did not change after a rebuild attempt"
+        if require_changed and not candidate_changed and not errors
+        else ""
+    )
+    if stale_error:
+        errors.append(stale_error)
+    candidate_evaluable = not errors
     return {
         "operation": "operator_artifact_validate",
         "solution_path": str(solution_path),
         "task_dir": str(task_root),
         "solution_ready": not errors,
         "artifact_complete": artifact_complete and not errors,
+        "candidate_evaluable": candidate_evaluable,
+        "candidate_changed": candidate_changed,
+        "stale_candidate": stale_error != "",
         "rebuild_required": bool(errors),
         "errors": errors,
-        "solution_sha256": hashlib.sha256(solution_path.read_bytes()).hexdigest()
-        if solution_path.is_file()
-        else "",
+        "solution_sha256": solution_sha256,
     }
 
 

@@ -3977,7 +3977,21 @@ class WorkflowExecutor:
                         "errors": ["OPERATOR_SOLUTION_PATH is required"],
                     },
                 )
-            result = validate_operator_artifact(solution, task_dir)
+            previous = (loop_state or {}).get("operator_artifact_state", {})
+            baseline_sha256 = (
+                str(previous.get("solution_sha256", ""))
+                if isinstance(previous, dict)
+                else ""
+            )
+            require_changed = bool(_params.get("require_changed")) and bool(
+                (loop_state or {}).get("prepare_attempted")
+            )
+            result = validate_operator_artifact(
+                solution,
+                task_dir,
+                baseline_sha256=baseline_sha256,
+                require_changed=require_changed,
+            )
             return ("success" if result["solution_ready"] else "failure", result)
 
         if operation == "operator_trace_summary":
@@ -4003,6 +4017,24 @@ class WorkflowExecutor:
             return "success", result
 
         if operation == "operator_kernelbench_eval":
+            artifact_state = (loop_state or {}).get("operator_artifact_state", {})
+            if isinstance(artifact_state, dict) and not artifact_state.get(
+                "candidate_evaluable", artifact_state.get("solution_ready", False)
+            ):
+                return (
+                    "failure",
+                    {
+                        "operation": operation,
+                        "evaluation_status": "blocked",
+                        "failure_category": (
+                            "stale_candidate"
+                            if artifact_state.get("stale_candidate")
+                            else "candidate_missing"
+                        ),
+                        "operator_passed": False,
+                        "artifact_state": artifact_state,
+                    },
+                )
             task_dir = self._operator_task_dir(context, loop_vars)
             constraints = self._resolve_operator_value(
                 "OPERATOR_CONSTRAINTS", context, loop_vars
@@ -5751,6 +5783,9 @@ class WorkflowExecutor:
                 state[out_as] = phase_output
                 if out_as != phase_id:
                     step_outputs[out_as] = phase_output
+                if phase_id == "prepare_operator" and loop_state is not None:
+                    loop_state["prepare_attempted"] = True
+                    step_outputs["prepare_attempted"] = True
                 if phase_id == "evaluate_operator":
                     # KernelBench returns its decision inside the builtin
                     # phase payload. Promote the scalar decision fields so
@@ -5769,6 +5804,10 @@ class WorkflowExecutor:
                         "cleanup_status",
                         "visible_device",
                         "failure_manifest_path",
+                        "resource_before",
+                        "resource_after",
+                        "work_dir",
+                        "profile_dir",
                         "traces_path",
                         "summary_path",
                         "stdout_path",

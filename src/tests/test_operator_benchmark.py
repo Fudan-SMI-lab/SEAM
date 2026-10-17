@@ -37,10 +37,9 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
     assert generation_loop.phases[1]["on_failure"] == "continue"
     assert generation_loop.phases[2]["id"] == "refresh_operator_artifact"
     assert generation_loop.phases[2]["output_as"] == "operator_artifact_state"
+    assert generation_loop.phases[2]["params"]["require_changed"] is True
     assert generation_loop.phases[3]["id"] == "evaluate_operator"
-    assert generation_loop.phases[3]["condition"] == (
-        "${loop_state.operator_artifact_state.solution_ready} == true"
-    )
+    assert "condition" not in generation_loop.phases[3]
     assert generation_loop.phases[4]["condition"] == (
         "${loop_state.operator_passed} != true"
     )
@@ -73,6 +72,15 @@ def test_operator_artifact_validation_requires_rebuild(tmp_path: Path) -> None:
     assert ready["solution_ready"] is True
     assert ready["artifact_complete"] is True
     assert ready["rebuild_required"] is False
+
+    stale = validate_operator_artifact(
+        solution,
+        task_dir,
+        baseline_sha256=ready["solution_sha256"],
+        require_changed=True,
+    )
+    assert stale["candidate_evaluable"] is False
+    assert stale["stale_candidate"] is True
 
 
 def test_validate_real_gelu_task() -> None:
@@ -217,6 +225,8 @@ def test_timeout_evidence_is_classified_without_hiding_the_timeout(tmp_path: Pat
     assert _classify_timeout(traces, "", "", "cleaned") == "partial_trace_timeout"
     assert _classify_timeout(tmp_path / "missing.jsonl", "", "", "cleaned") == "no_trace_timeout"
     assert _classify_timeout(tmp_path / "missing.jsonl", "", "Segmentation fault", "cleaned") == "host_crash"
+    assert _classify_timeout(tmp_path / "missing.jsonl", "", "devmm acl error 507035", "cleaned") == "device_memory_fault"
+    assert _classify_timeout(tmp_path / "missing.jsonl", "", "No space left on device", "cleaned") == "resource_exhausted"
 
 
 def test_evaluator_lock_is_device_scoped_when_one_device_is_visible(tmp_path: Path) -> None:

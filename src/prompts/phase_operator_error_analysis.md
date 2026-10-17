@@ -12,6 +12,13 @@ Use only the saved traces, summary, build output, and source evidence.
 
 Runtime detection report: {runtime_report}
 Runtime configuration result: {runtime_configuration}
+Latest evaluator result: {evaluation_result}
+
+Treat `failure_category`, `timeout_classification`, `resource_before`, and
+`resource_after` as framework evidence. A `device_memory_fault`,
+`device_sync_hang`, `host_crash`, `resource_exhausted`, `candidate_missing`,
+or `stale_candidate` result must not be misclassified as a numerical or
+operator-code failure without direct source evidence.
 
 Classify the primary problem as one of:
 

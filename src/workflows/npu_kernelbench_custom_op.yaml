@@ -173,13 +173,14 @@ sub_workflows:
       - id: refresh_operator_artifact
         type: builtin
         operation: "operator_artifact_validate"
+        params:
+          require_changed: true
         output_as: "operator_artifact_state"
         on_failure: continue
 
       - id: evaluate_operator
         type: builtin
         operation: "operator_kernelbench_eval"
-        condition: "${loop_state.operator_artifact_state.solution_ready} == true"
         params:
           timeout: 1800
         on_failure: continue
@@ -194,6 +195,7 @@ sub_workflows:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
           runtime_report: "${loop_vars.OPERATOR_RUNTIME_REPORT}"
           runtime_configuration: "${loop_vars.OPERATOR_RUNTIME_CONFIGURATION}"
+          evaluation_result: "${loop_state.evaluate_operator}"
 
       - id: fix_operator_environment
         type: llm
