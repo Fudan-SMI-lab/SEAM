@@ -13,6 +13,7 @@ Use only the saved traces, summary, build output, and source evidence.
 Runtime detection report: {runtime_report}
 Runtime configuration result: {runtime_configuration}
 Latest evaluator result: {evaluation_result}
+Deterministic evaluation classification: {evaluation_classification}
 
 Treat `failure_category`, `timeout_classification`, `resource_before`, and
 `resource_after` as framework evidence. A `device_memory_fault`,

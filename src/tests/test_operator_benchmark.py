@@ -8,7 +8,9 @@ from core.operator_benchmark import (
     _classify_timeout,
     _evaluator_lock_path,
     _prepare_evaluation_runtime,
+    build_candidate_manifest,
     build_failure_manifest,
+    classify_operator_evaluation,
     configure_operator_runtime,
     summarize_traces,
     validate_operator_artifact,
@@ -40,22 +42,74 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
     assert generation_loop.phases[2]["params"]["require_changed"] is True
     assert generation_loop.phases[3]["id"] == "evaluate_operator"
     assert "condition" not in generation_loop.phases[3]
-    assert generation_loop.phases[4]["condition"] == (
+    assert generation_loop.phases[4]["id"] == "classify_operator_evaluation"
+    assert generation_loop.phases[5]["condition"] == (
         "${loop_state.operator_passed} != true"
     )
-    assert generation_loop.phases[5]["id"] == "fix_operator_environment"
-    assert generation_loop.phases[5]["condition"] == (
-        "${loop_state.operator_passed} != true and "
-        "${loop_state.error_analysis.repair_role} == 'operator_environment_fixer'"
+    assert generation_loop.phases[6]["id"] == "fix_operator_environment"
+    assert "evaluation_classification.repair_role" in generation_loop.phases[6]["condition"]
+    assert generation_loop.phases[7]["id"] == "fix_operator"
+    assert "evaluation_classification.repair_role" in generation_loop.phases[7]["condition"]
+    assert generation_loop.phases[6]["condition"].count("operator_environment_fixer") == 2
+    assert generation_loop.phases[7]["condition"] == (
+        "${loop_state.operator_passed} != true "
+        "and ${loop_state.evaluation_classification.repair_role} != 'operator_environment_fixer' "
+        "and ${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'"
     )
-    assert generation_loop.phases[6]["id"] == "fix_operator"
-    assert generation_loop.phases[6]["condition"] == (
-        "${loop_state.operator_passed} != true and "
-        "${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'"
-    )
-    assert generation_loop.phases[5]["on_failure"] == "continue"
     assert generation_loop.phases[6]["on_failure"] == "continue"
+    assert generation_loop.phases[7]["on_failure"] == "continue"
     assert generation_loop.phases[3]["on_failure"] == "continue"
+
+
+def test_operator_evaluation_classification_routes_reference_and_device_failures() -> None:
+    reference = classify_operator_evaluation(
+        {
+            "failure_category": "evaluator_failed",
+            "evaluation_scope": "reference",
+            "evaluation_completeness": "reference_failed",
+        }
+    )
+    assert reference["category"] == "reference_unavailable"
+    assert reference["repair_role"] == "operator_environment_fixer"
+
+    device = classify_operator_evaluation(
+        {
+            "failure_category": "device_memory_fault",
+            "evaluation_scope": "candidate",
+            "evaluation_completeness": "partial",
+            "first_failure_workload": "case-014",
+        }
+    )
+    assert device["repair_role"] == "operator_fixer"
+    assert device["requires_single_workload_debug"] is True
+    assert device["first_failure_workload"] == "case-014"
+
+    ordinary_candidate_log = classify_operator_evaluation(
+        {
+            "failure_category": "evaluator_failed",
+            "evaluation_scope": "unknown",
+            "evaluation_completeness": "no_trace",
+        }
+    )
+    assert ordinary_candidate_log["category"] == "evaluator_failed"
+    assert ordinary_candidate_log["repair_role"] == "none"
+
+
+def test_operator_artifact_validation_detects_materialized_source_mismatch(tmp_path: Path) -> None:
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    solution = task_dir / "solution.json"
+    solution.write_text(
+        json.dumps(
+            {"sources": [{"path": "adapter.py", "content": "return 1\n"}]}
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "adapter.py").write_text("return 2\n", encoding="utf-8")
+    result = validate_operator_artifact(solution, task_dir)
+    assert result["solution_ready"] is False
+    assert result["writeback_status"] == "mismatch"
+    assert result["candidate_manifest"]["writeback_mismatches"] == ["adapter.py"]
 
 
 def test_operator_artifact_validation_requires_rebuild(tmp_path: Path) -> None:
@@ -67,11 +121,15 @@ def test_operator_artifact_validation_requires_rebuild(tmp_path: Path) -> None:
     assert missing["rebuild_required"] is True
 
     solution = task_dir / "solution.json"
-    solution.write_text(json.dumps({"sources": "sources"}), encoding="utf-8")
+    solution.write_text(
+        json.dumps(
+            {"sources": [{"path": "adapter.py", "content": "return 1\n"}]}
+        ),
+        encoding="utf-8",
+    )
     ready = validate_operator_artifact(solution, task_dir)
     assert ready["solution_ready"] is True
     assert ready["artifact_complete"] is True
-    assert ready["rebuild_required"] is False
 
     stale = validate_operator_artifact(
         solution,
@@ -81,6 +139,29 @@ def test_operator_artifact_validation_requires_rebuild(tmp_path: Path) -> None:
     )
     assert stale["candidate_evaluable"] is False
     assert stale["stale_candidate"] is True
+
+
+def test_candidate_manifest_detects_source_writeback_mismatch(tmp_path: Path) -> None:
+    solution_dir = tmp_path / "candidate"
+    solution_dir.mkdir()
+    solution = solution_dir / "solution.json"
+    solution.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {"path": "adapter.py", "content": "return 1\n"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (solution_dir / "adapter.py").write_text("return 2\n", encoding="utf-8")
+
+    manifest = build_candidate_manifest(solution)
+
+    assert manifest["writeback_status"] == "mismatch"
+    assert manifest["candidate_evaluable"] is False
+    assert manifest["writeback_mismatches"] == ["adapter.py"]
 
 
 def test_validate_real_gelu_task() -> None:

@@ -137,6 +137,7 @@ from core.operator_benchmark import (
     evaluate_and_summarize_operator,
     summarize_traces,
     validate_operator_artifact,
+    classify_operator_evaluation,
     validate_operator_task,
 )
 from core.ui_events import UIEventSink, summarize_text
@@ -4085,6 +4086,14 @@ class WorkflowExecutor:
                 result,
             )
 
+        if operation == "operator_evaluation_classify":
+            evaluation = (loop_state or {}).get("evaluate_operator", {})
+            if not isinstance(evaluation, dict):
+                evaluation = {}
+            result = classify_operator_evaluation(evaluation)
+            result["operation"] = operation
+            return "success", result
+
         # Generic: just return
         if not operation:
             return (
@@ -5804,6 +5813,12 @@ class WorkflowExecutor:
                         "cleanup_status",
                         "visible_device",
                         "failure_manifest_path",
+                        "candidate_manifest_path",
+                        "candidate_manifest",
+                        "evaluation_scope",
+                        "evaluation_completeness",
+                        "first_failure_workload",
+                        "cascade_failure_count",
                         "resource_before",
                         "resource_after",
                         "work_dir",

@@ -185,6 +185,12 @@ sub_workflows:
           timeout: 1800
         on_failure: continue
 
+      - id: classify_operator_evaluation
+        type: builtin
+        operation: "operator_evaluation_classify"
+        output_as: "evaluation_classification"
+        on_failure: continue
+
       - id: analyze_operator_failure
         type: llm
         agent: error_analyzer
@@ -196,6 +202,7 @@ sub_workflows:
           runtime_report: "${loop_vars.OPERATOR_RUNTIME_REPORT}"
           runtime_configuration: "${loop_vars.OPERATOR_RUNTIME_CONFIGURATION}"
           evaluation_result: "${loop_state.evaluate_operator}"
+          evaluation_classification: "${loop_state.evaluation_classification}"
 
       - id: fix_operator_environment
         type: llm
@@ -203,6 +210,8 @@ sub_workflows:
         prompt_template: "repair_operator_environment"
         condition: >-
           ${loop_state.operator_passed} != true
+          and ${loop_state.evaluation_classification.repair_role} == 'operator_environment_fixer'
+          or ${loop_state.operator_passed} != true
           and ${loop_state.error_analysis.repair_role} == 'operator_environment_fixer'
         input_mapping:
           runtime_report: "${loop_vars.OPERATOR_RUNTIME_REPORT}"
@@ -218,6 +227,7 @@ sub_workflows:
         prompt_template: "repair_operator_fixer_kernelbench_ascendc"
         condition: >-
           ${loop_state.operator_passed} != true
+          and ${loop_state.evaluation_classification.repair_role} != 'operator_environment_fixer'
           and ${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'
         runtime_skills:
           include:

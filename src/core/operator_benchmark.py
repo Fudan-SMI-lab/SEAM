@@ -20,6 +20,112 @@ from typing import Any
 SUPPORTED_SOLUTION_TYPES = {"ascendc"}
 
 
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _canonical_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return _sha256_bytes(payload)
+
+
+def _load_solution(solution_path: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    errors: list[str] = []
+    try:
+        loaded = json.loads(solution_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [f"solution.json cannot be loaded: {exc}"]
+    if not isinstance(loaded, dict):
+        return None, ["solution.json must contain an object"]
+    sources = loaded.get("sources")
+    if not isinstance(sources, list) or not sources:
+        errors.append("solution.json must declare a non-empty sources list")
+    return loaded, errors
+
+
+def build_candidate_manifest(
+    solution: str | Path,
+    *,
+    manifest_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Build a hashable description of the candidate actually being evaluated."""
+    solution_path = Path(solution).expanduser().resolve()
+    solution_bytes = solution_path.read_bytes() if solution_path.is_file() else b""
+    loaded, errors = _load_solution(solution_path) if solution_path.is_file() else (
+        None,
+        ["solution.json is missing"],
+    )
+    sources = loaded.get("sources", []) if isinstance(loaded, dict) else []
+    source_entries: list[dict[str, Any]] = []
+    materialized_entries: list[dict[str, Any]] = []
+    for source in sources if isinstance(sources, list) else []:
+        if not isinstance(source, dict):
+            errors.append("sources must contain objects")
+            continue
+        relative_path = source.get("path")
+        content = source.get("content")
+        if not isinstance(relative_path, str) or not relative_path:
+            errors.append("each source must have a non-empty path")
+            continue
+        if not isinstance(content, str):
+            errors.append(f"source content must be a string: {relative_path}")
+            continue
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            errors.append(f"source path escapes candidate root: {relative_path}")
+            continue
+        source_entry = {
+            "path": relative_path,
+            "content_sha256": _sha256_bytes(content.encode("utf-8")),
+            "content_present": True,
+        }
+        source_entries.append(source_entry)
+        materialized_path = solution_path.parent / relative
+        if materialized_path.is_file():
+            materialized_entries.append(
+                {
+                    "path": relative_path,
+                    "sha256": _sha256_bytes(materialized_path.read_bytes()),
+                    "matches_embedded": source_entry["content_sha256"]
+                    == _sha256_bytes(materialized_path.read_bytes()),
+                }
+            )
+
+    embedded_source_hash = _canonical_sha256(source_entries)
+    materialized_source_hash = _canonical_sha256(materialized_entries)
+    mismatches = [
+        entry["path"]
+        for entry in materialized_entries
+        if entry.get("matches_embedded") is False
+    ]
+    manifest = {
+        "manifest_version": 1,
+        "solution_path": str(solution_path),
+        "solution_sha256": _sha256_bytes(solution_bytes),
+        "embedded_source_sha256": embedded_source_hash,
+        "materialized_source_sha256": materialized_source_hash,
+        "source_count": len(source_entries),
+        "materialized_source_count": len(materialized_entries),
+        "source_entries": source_entries,
+        "materialized_entries": materialized_entries,
+        "writeback_status": "mismatch" if mismatches else "consistent",
+        "writeback_mismatches": mismatches,
+        "errors": errors,
+        "candidate_evaluable": not errors and not mismatches,
+    }
+    if manifest_path is not None:
+        destination = Path(manifest_path).expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        manifest["manifest_path"] = str(destination)
+    return manifest
+
+
 def run_kernelbench_eval(
     task_dir: str | Path,
     solution: str | Path,
@@ -291,6 +397,47 @@ def evaluate_and_summarize_operator(
     )
     traces_path = evaluation_dir / "traces.jsonl"
     evaluation_dir.mkdir(parents=True, exist_ok=True)
+    candidate_manifest = build_candidate_manifest(
+        solution, manifest_path=evaluation_dir / "candidate_manifest.json"
+    )
+    if not candidate_manifest["candidate_evaluable"]:
+        result = {
+            "evaluation_status": "blocked",
+            "evaluation_id": evaluation_id,
+            "iteration": str(iteration),
+            "evaluation_dir": str(evaluation_dir),
+            "failure_category": "artifact_writeback_failed"
+            if candidate_manifest["writeback_mismatches"]
+            else "candidate_invalid",
+            "operator_passed": False,
+            "evaluation_valid": False,
+            "candidate_manifest_path": candidate_manifest["manifest_path"],
+            "candidate_manifest": candidate_manifest,
+        }
+        manifest = build_failure_manifest(result, traces_path, solution)
+        manifest["candidate_manifest"] = candidate_manifest
+        manifest_path = evaluation_dir / "failure_manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        result["failure_manifest_path"] = str(manifest_path)
+        history_path = Path(output_dir).expanduser().resolve() / "iteration_history.json"
+        history: list[dict[str, Any]] = []
+        if history_path.is_file():
+            try:
+                loaded_history = json.loads(history_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_history, list):
+                    history = loaded_history
+            except (OSError, json.JSONDecodeError):
+                history = []
+        history.append(manifest)
+        history_path.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        result["iteration_history_path"] = str(history_path)
+        return result
     evaluation_env_file = _prepare_evaluation_runtime(
         evaluation_dir, runtime_env_file
     )
@@ -309,6 +456,8 @@ def evaluate_and_summarize_operator(
             "iteration": str(iteration),
             "evaluation_dir": str(evaluation_dir),
             "evaluation_runtime_env_file": str(evaluation_env_file),
+            "candidate_manifest_path": candidate_manifest["manifest_path"],
+            "candidate_manifest": candidate_manifest,
         }
     )
     if traces_path.is_file():
@@ -341,12 +490,14 @@ def evaluate_and_summarize_operator(
         result.get("evaluation_status") == "completed"
         and result.get("trace_complete")
     )
+    result.update(_classify_evaluation_scope(result, traces_path))
     if not result.get("failure_category"):
         if result.get("evaluation_status") == "timeout":
             result["failure_category"] = result.get("timeout_classification", "timeout")
         elif not result.get("evaluation_valid"):
             result["failure_category"] = "incomplete_trace"
     manifest = build_failure_manifest(result, traces_path, solution)
+    manifest["candidate_manifest"] = candidate_manifest
     manifest_path = evaluation_dir / "failure_manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     result["failure_manifest_path"] = str(manifest_path)
@@ -467,6 +618,16 @@ def build_failure_manifest(
         "work_dir": result.get("work_dir", ""),
         "profile_dir": result.get("profile_dir", ""),
         "solution_sha256": solution_hash,
+        "candidate_manifest_path": result.get("candidate_manifest_path", ""),
+        "embedded_source_sha256": result.get("candidate_manifest", {}).get(
+            "embedded_source_sha256", ""
+        ),
+        "materialized_source_sha256": result.get("candidate_manifest", {}).get(
+            "materialized_source_sha256", ""
+        ),
+        "writeback_status": result.get("candidate_manifest", {}).get(
+            "writeback_status", ""
+        ),
         "total": result.get("total_workloads", 0),
         "passed": result.get("passed_workloads", 0),
         "statuses": result.get("statuses", {}),
@@ -474,6 +635,134 @@ def build_failure_manifest(
         "trace_complete": bool(result.get("trace_complete")),
         "invalid_reason": "" if result.get("evaluation_valid") else result.get("failure_category") or result.get("evaluation_status", "incomplete_traces"),
         "traces_path": str(traces_path),
+        "evaluation_scope": result.get("evaluation_scope", "unknown"),
+        "evaluation_completeness": result.get("evaluation_completeness", "unknown"),
+        "first_failure_workload": result.get("first_failure_workload", ""),
+        "cascade_failure_count": result.get("cascade_failure_count", 0),
+    }
+
+
+def _classify_evaluation_scope(
+    result: dict[str, Any], traces_path: Path
+) -> dict[str, Any]:
+    """Separate reference failures, candidate failures, and incomplete runs."""
+    evidence_paths = [result.get("stdout_path", ""), result.get("stderr_path", "")]
+    evidence = "\n".join(
+        Path(path).read_text(encoding="utf-8", errors="replace")
+        for path in evidence_paths
+        if path and Path(path).is_file()
+    ).lower()
+    reference_markers = (
+        "build_baseline",
+        "aclnnflashattentionscorev3",
+        "not in libopapi.so",
+        "reference runtime error",
+    )
+    candidate_markers = (
+        "candidate",
+        "aicore exception",
+        "devmm",
+        "vector core",
+        "device fault",
+    )
+    traces: list[dict[str, Any]] = []
+    if traces_path.is_file():
+        try:
+            traces = _read_jsonl(traces_path)
+        except (OSError, json.JSONDecodeError):
+            traces = []
+    failed_traces = [trace for trace in traces if _status(trace) != "PASSED"]
+    first_failure = ""
+    if failed_traces:
+        first_failure = str(
+            failed_traces[0].get("uuid")
+            or failed_traces[0].get("workload_id")
+            or ""
+        )
+    cascade_count = max(0, len(failed_traces) - 1) if first_failure else 0
+    if any(marker in evidence for marker in reference_markers):
+        scope = "reference"
+    elif any(marker in evidence for marker in candidate_markers):
+        scope = "candidate"
+    elif result.get("evaluation_valid"):
+        scope = "candidate"
+    else:
+        scope = "unknown"
+    if result.get("evaluation_valid"):
+        completeness = "complete"
+    elif scope == "reference":
+        completeness = "reference_failed"
+    elif result.get("total_workloads", 0):
+        completeness = "partial"
+    else:
+        completeness = "no_trace"
+    return {
+        "evaluation_scope": scope,
+        "evaluation_completeness": completeness,
+        "first_failure_workload": first_failure,
+        "cascade_failure_count": cascade_count,
+    }
+
+
+def classify_operator_evaluation(result: dict[str, Any]) -> dict[str, Any]:
+    """Map evaluator evidence to a deterministic repair role."""
+    category = str(result.get("failure_category") or "")
+    scope = str(result.get("evaluation_scope") or "unknown")
+    completeness = str(result.get("evaluation_completeness") or "unknown")
+    if result.get("operator_passed") is True:
+        return {
+            "category": "passed",
+            "repair_role": "none",
+            "evaluation_completeness": completeness,
+            "requires_single_workload_debug": False,
+        }
+    if category in {"artifact_writeback_failed", "candidate_invalid", "stale_candidate"}:
+        return {
+            "category": category,
+            "repair_role": "artifact_repair",
+            "evaluation_completeness": "not_evaluated",
+            "requires_single_workload_debug": False,
+        }
+    if category in {"resource_exhausted", "staging_missing", "cleanup_failed"}:
+        return {
+            "category": category,
+            "repair_role": "operator_environment_fixer",
+            "evaluation_completeness": completeness,
+            "requires_single_workload_debug": False,
+        }
+    if scope == "reference" or completeness == "reference_failed":
+        return {
+            "category": "reference_unavailable",
+            "repair_role": "operator_environment_fixer",
+            "evaluation_completeness": "reference_failed",
+            "requires_single_workload_debug": False,
+        }
+    if category in {
+        "device_memory_fault",
+        "device_sync_hang",
+        "host_crash",
+        "no_trace_timeout",
+        "partial_trace_timeout",
+    }:
+        return {
+            "category": category,
+            "repair_role": "operator_fixer",
+            "evaluation_completeness": completeness,
+            "requires_single_workload_debug": True,
+            "first_failure_workload": result.get("first_failure_workload", ""),
+        }
+    if category in {"compile_error", "incomplete_trace"}:
+        return {
+            "category": category,
+            "repair_role": "operator_fixer",
+            "evaluation_completeness": completeness,
+            "requires_single_workload_debug": False,
+        }
+    return {
+        "category": category or "inconclusive",
+        "repair_role": "operator_fixer" if scope == "candidate" else "none",
+        "evaluation_completeness": completeness,
+        "requires_single_workload_debug": False,
     }
 
 
@@ -706,28 +995,16 @@ def validate_operator_artifact(
     """Check whether the current candidate can be evaluated safely."""
     solution_path = Path(solution).expanduser().resolve()
     task_root = Path(task_dir).expanduser().resolve()
-    errors: list[str] = []
-    if not solution_path.is_file():
-        errors.append("solution.json is missing")
-    elif solution_path.stat().st_size == 0:
-        errors.append("solution.json is empty")
-    else:
-        try:
-            loaded = json.loads(solution_path.read_text(encoding="utf-8"))
-            if not isinstance(loaded, dict):
-                errors.append("solution.json must contain an object")
-        except (OSError, json.JSONDecodeError) as exc:
-            errors.append(f"solution.json cannot be loaded: {exc}")
+    candidate_manifest = build_candidate_manifest(solution_path)
+    errors = list(candidate_manifest["errors"])
     source_dir = solution_path.parent / "sources"
     artifact_complete = solution_path.is_file() and solution_path.stat().st_size > 0
     if source_dir.exists() and not source_dir.is_dir():
         errors.append("sources exists but is not a directory")
         artifact_complete = False
-    solution_sha256 = (
-        hashlib.sha256(solution_path.read_bytes()).hexdigest()
-        if solution_path.is_file()
-        else ""
-    )
+    if candidate_manifest["writeback_status"] == "mismatch":
+        errors.append("embedded source content differs from materialized source")
+    solution_sha256 = candidate_manifest["solution_sha256"]
     candidate_changed = bool(solution_sha256 and solution_sha256 != baseline_sha256)
     stale_error = (
         "solution.json did not change after a rebuild attempt"
@@ -749,6 +1026,10 @@ def validate_operator_artifact(
         "rebuild_required": bool(errors),
         "errors": errors,
         "solution_sha256": solution_sha256,
+        "candidate_manifest": candidate_manifest,
+        "embedded_source_sha256": candidate_manifest["embedded_source_sha256"],
+        "materialized_source_sha256": candidate_manifest["materialized_source_sha256"],
+        "writeback_status": candidate_manifest["writeback_status"],
     }
 
 
