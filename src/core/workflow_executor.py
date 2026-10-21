@@ -5792,6 +5792,24 @@ class WorkflowExecutor:
                 state[out_as] = phase_output
                 if out_as != phase_id:
                     step_outputs[out_as] = phase_output
+
+                # Promote critical fields from builtin operator evaluation to loop_state top level
+                # so stop_conditions can find them ($.operator_passed queries top level only)
+                if phase_type == "builtin" and isinstance(phase_output, dict):
+                    operation = phase_output.get("operation")
+                    if operation == "operator_kernelbench_eval":
+                        critical_fields = [
+                            "operator_passed",
+                            "evaluation_status",
+                            "workload_pass_rate",
+                            "operator_pass_rate",
+                        ]
+                        for key in critical_fields:
+                            if key in phase_output:
+                                step_outputs[key] = phase_output[key]
+                                if loop_state is not None:
+                                    loop_state[key] = phase_output[key]
+
                 if phase_id == "prepare_operator" and loop_state is not None:
                     loop_state["prepare_attempted"] = True
                     step_outputs["prepare_attempted"] = True

@@ -81,12 +81,15 @@ or build fix. The controller will rerun every workload after the repair.
 - Do not modify `definition.json` or `workload.jsonl`.
 - Do not delete, skip, or rewrite failed workloads.
 - Do not modify a report to hide an implementation failure.
-- Modify real source/build/adapter files and rebuild the candidate.
+- **Modify real source files AND update solution.json embedded sources.**
+  → After editing a `.cpp` file, you MUST read it back and write its content into
+    `solution.json`'s `sources[].content` field for that file. Otherwise the next
+    evaluation will use the OLD embedded version, not your fix.
 - After the repair, the outer workflow will rerun every workload for this operator.
 - Do not spend tool calls reopening definition, workload, trace, stdout, or
   stderr files; their relevant contents are already included above.
 - Work sequentially: do not issue parallel tool calls. Prefer one inspection
-  call, one edit call, and one focused build/validation call.
+  call, one edit call, ONE solution.json update call, and one validation call.
 - If the failure is environment, dependency, or task-schema related rather than
   an operator implementation issue, state the handoff clearly instead of making
   speculative kernel edits.
@@ -111,7 +114,8 @@ Return exactly one JSON object:
     "workload_unchanged": true,
     "cpu_fallback_added": false,
     "reference_bypass_detected": false,
-    "requires_full_workload_rerun": true
+    "requires_full_workload_rerun": true,
+    "solution_json_updated": true
   }
 }
 ```

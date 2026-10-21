@@ -26,6 +26,37 @@ most one narrow structural check.
 - Runtime detection report: `{runtime_report}`
 - Runtime configuration result: `{runtime_configuration}`
 
+## Memory Safety Requirements (Critical)
+
+The Ascend C implementation MUST guarantee memory safety. VA (Virtual Address) faults are the most common failure mode in the official KernelBench 105 benchmark suite:
+
+1. **Address calculation**: All GM/UB offsets must stay within allocated regions.
+   - For tiling: verify each tile's start/end offset before DataCopy.
+   - For tail blocks: if `remaining < tileSize`, use `remaining`, not `tileSize`.
+   - Example: `offset = blockIdx * tileSize + threadIdx * elementSize` must satisfy
+     `offset + copyLen <= totalAllocatedBytes`.
+
+2. **DataCopy blockLen**: Must match the actual data size, not exceed buffer capacity.
+   - Common mistake: using `tileSize` for the last block when only `remaining` elements exist.
+   - Fix: `actualLen = min(tileSize, totalElements - processedElements)`.
+
+3. **Alignment**: NPU requires 32-byte alignment for bulk DataCopy.
+   - If offset is NOT 32-byte aligned, use scalar GetValue/SetValue instead.
+   - After scalar operations, call `PipeBarrier<PIPE_ALL>()` before vector ops.
+
+4. **Verification**: Before submission, mentally trace the LAST workload:
+   - What is the final tile's offset?
+   - Does `offset + blockLen` exceed allocated size?
+   - If yes, reduce `blockLen` for the tail block.
+
+VA (Virtual Address) faults manifest as:
+- `devmm Va error / Check alloced va / Device fault error ret=-22`
+- Timeout with 0/0 traces (worker stops responding)
+- Access address exactly `allocEnd + pageSize` (典型的 +1 页越界)
+
+If your implementation has ANY dynamic offset calculation (e.g., loop with 
+`blockIdx`, `for (int i = 0; i < rows; i++)`), apply tail-block protection.
+
 ## Required Actions
 
 Create or update the real Ascend C candidate implementation in the operator workspace.

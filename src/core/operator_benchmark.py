@@ -140,6 +140,12 @@ def run_kernelbench_eval(
     solution_path = Path(solution).expanduser().resolve()
     root = Path(kernelbench_root).expanduser().resolve()
     traces = Path(output_path).expanduser().resolve()
+
+    # Remove old traces to prevent cross-iteration aggregation
+    # (each eval should report only current iteration's workloads)
+    if traces.exists():
+        traces.unlink()
+
     traces.parent.mkdir(parents=True, exist_ok=True)
     work_dir = traces.parent / "work"
     profile_dir = traces.parent / "profile"

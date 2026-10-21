@@ -149,6 +149,7 @@ sub_workflows:
         type: llm
         agent: main_engineer
         prompt_template: "phase_3_custom_op_prepare"
+        timeout: 1200
         condition: >-
           ${loop_state.operator_artifact_state.rebuild_required} == true
           or ${loop_state.operator_artifact_state.solution_ready} != true
@@ -225,6 +226,7 @@ sub_workflows:
         type: llm
         agent: operator_fixer
         prompt_template: "repair_operator_fixer_kernelbench_ascendc"
+        timeout: 1200
         condition: >-
           ${loop_state.operator_passed} != true
           and ${loop_state.evaluation_classification.repair_role} != 'operator_environment_fixer'
