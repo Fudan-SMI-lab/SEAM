@@ -26,6 +26,40 @@ most one narrow structural check.
 - Runtime detection report: `{runtime_report}`
 - Runtime configuration result: `{runtime_configuration}`
 
+## CANN API Version Compatibility
+
+The runtime detection has identified which `torch_npu.*` APIs are available in the
+current CANN environment. **You must respect these constraints**:
+
+**Runtime API compatibility**:
+```json
+{runtime_report.api_availability}
+```
+
+**Usage rules**:
+1. **Check the `api_availability` mapping** before using any version-gated API.
+2. **If an API is marked `"available": false`**, use its `"fallback"` instead.
+3. **Never hardcode V2 APIs** without checking availability first.
+
+**Example**: `npu_grouped_matmul_swiglu_quant_v2`
+```python
+# ❌ Wrong: hardcoded V2
+output = torch_npu.npu_grouped_matmul_swiglu_quant_v2(...)
+
+# ✅ Correct: use fallback from runtime config
+# If V2 unavailable, fallback is "npu_grouped_matmul_swiglu_quant"
+output = torch_npu.npu_grouped_matmul_swiglu_quant(...)
+```
+
+**If you encounter a missing API during implementation**, return with:
+```json
+{
+  "build_status": "blocked",
+  "blocking_category": "environment",
+  "summary": "Operator requires aclnnXXX (CANN >= X.Y) but current environment only has CANN X.Z. No compatible fallback exists."
+}
+```
+
 ## Critical: Reference Implementation Is a Baseline, Not Ground Truth
 
 The reference implementation in the task directory is **one possible interpretation

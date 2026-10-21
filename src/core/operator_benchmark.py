@@ -848,6 +848,25 @@ def detect_operator_runtime(
         blocking.append(f"missing runtime dependencies: {', '.join(missing_deps)}")
     if not root.is_dir():
         blocking.append(f"KernelBench root does not exist: {root}")
+
+    # Probe CANN API availability
+    api_availability: dict[str, dict[str, Any]] = {}
+    version_gated_apis = [
+        ("npu_grouped_matmul_swiglu_quant_v2", "npu_grouped_matmul_swiglu_quant", "8.5"),
+        ("npu_flash_attention_score_v3", "npu_flash_attention_score_v2", "8.5"),
+    ]
+    for v2_api, v1_api, min_version in version_gated_apis:
+        probe_ok, probe_result = python_probe(
+            f"import torch_npu; print(hasattr(torch_npu, '{v2_api}'))"
+        )
+        available = probe_ok and "True" in probe_result
+        api_availability[v2_api] = {
+            "available": available,
+            "fallback": v1_api,
+            "min_cann_version": min_version,
+            "reason": f"Requires CANN >= {min_version}" if not available else "available",
+        }
+
     return {
         "operation": "operator_runtime_detect",
         "phase_id": "phase_1_operator_runtime_detect",
@@ -867,6 +886,7 @@ def detect_operator_runtime(
         "opp_path": opp_path,
         "kernelbench_available": kernelbench_ok,
         "dependency_checks": deps,
+        "api_availability": api_availability,
         "path_checks": {
             "kernelbench_root": root.is_dir(),
             "ascend_home": bool(ascend_home),
@@ -912,17 +932,64 @@ def configure_operator_runtime(
         "".join(f"{key}={value}\n" for key, value in env_values.items()),
         encoding="utf-8",
     )
+
+    # Generate API compatibility mappings based on runtime detection
+    api_mappings: dict[str, Any] = {}
+    recommended_apis: dict[str, str] = {}
+    if runtime_report and isinstance(runtime_report.get("api_availability"), dict):
+        api_availability = runtime_report["api_availability"]
+        for v2_api, info in api_availability.items():
+            if isinstance(info, dict):
+                available = info.get("available", False)
+                fallback = info.get("fallback", "")
+                if not available and fallback:
+                    # Map torch_npu function name for easy reference in prompts
+                    recommended_apis[v2_api] = fallback
+                api_mappings[v2_api] = {
+                    "available": available,
+                    "fallback": fallback,
+                    "reason": info.get("reason", ""),
+                    "min_cann_version": info.get("min_cann_version", ""),
+                }
+
+    api_config_path = runtime_root / "api_compatibility.json"
+    api_config = {
+        "cann_version": runtime_report.get("cann_version", "") if runtime_report else "",
+        "torch_npu_version": runtime_report.get("torch_npu_version", "") if runtime_report else "",
+        "api_compatibility": api_mappings,
+        "recommended_apis": recommended_apis,
+        "usage_guidance": (
+            "When implementing operators, use the 'recommended_apis' mapping. "
+            "APIs marked as unavailable should be replaced with their fallback. "
+            "Example: if npu_grouped_matmul_swiglu_quant_v2 is unavailable, "
+            "use npu_grouped_matmul_swiglu_quant instead."
+        ),
+    }
+    api_config_path.write_text(
+        json.dumps(api_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
     result = {
         "operation": "operator_runtime_configure",
         "phase_id": "phase_1_5_operator_runtime_configure",
         "configuration_status": "ready",
         "environment_file": str(env_path),
+        "api_compatibility_file": str(api_config_path),
         "staging_root": str(staging_dir),
-        "changes": [f"created {directory}" for directory in (tmp_dir, cache_dir, staging_dir)],
-        "verified_checks": ["runtime.env written", "run-scoped tmp/cache/staging created"],
+        "changes": [
+            f"created {directory}" for directory in (tmp_dir, cache_dir, staging_dir)
+        ] + ["created api_compatibility.json"],
+        "verified_checks": [
+            "runtime.env written",
+            "run-scoped tmp/cache/staging created",
+            "API compatibility mappings generated",
+        ],
         "remaining_blocking_issues": [],
         "handoff_role": "",
-        "summary": "Created run-scoped runtime configuration without modifying vendor installations.",
+        "summary": (
+            f"Created run-scoped runtime configuration. "
+            f"{len(recommended_apis)} version-gated APIs mapped to fallbacks."
+        ),
     }
     (runtime_root / "configuration.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

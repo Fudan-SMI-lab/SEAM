@@ -39,6 +39,37 @@ the failure is a **candidate bug** or a **reference defect**:
 
 Do NOT modify the candidate to match a broken reference.
 
+## CANN API Version Compatibility
+
+The runtime detection has identified which `torch_npu.*` APIs are available in the
+current CANN environment. **Respect these constraints during repairs**:
+
+**Runtime API compatibility**: See `{runtime_report.api_availability}`
+
+**If the failure is caused by using an unavailable API**:
+1. Check the `api_availability` mapping from runtime detection.
+2. Replace the unavailable API with its `fallback`.
+3. Verify the fallback has equivalent semantics for this workload.
+
+**Example**: Repairing `GroupedMatmulSwigluQuantV2` when V2 is unavailable:
+```python
+# Original (failing on CANN 8.3)
+output = torch_npu.npu_grouped_matmul_swiglu_quant_v2(...)
+
+# Repaired (fallback to V1)
+output = torch_npu.npu_grouped_matmul_swiglu_quant(...)
+```
+
+**If no compatible fallback exists**, return with:
+```json
+{
+  "build_status": "blocked",
+  "evaluation_status": "blocked",
+  "failure_category": "environment",
+  "summary": "Operator requires aclnnXXX (CANN >= X.Y) but current environment only has CANN X.Z. No compatible fallback API exists."
+}
+```
+
 ## Operator API policy
 
 The following policy is binding. Repairs may use only the allowlisted APIs and
