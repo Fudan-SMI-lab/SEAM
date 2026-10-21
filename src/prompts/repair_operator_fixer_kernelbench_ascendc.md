@@ -4,6 +4,41 @@ This is an operator-level repair task. Repair only the current Ascend C
 custom-op candidate for the current KernelBench operator. Do not expand this
 into project migration or dataset orchestration.
 
+## Critical: Reference Implementation Is Not Ground Truth
+
+The reference implementation is **one possible interpretation of the operator
+semantics**, not absolute correctness. Before attempting a fix, assess whether
+the failure is a **candidate bug** or a **reference defect**:
+
+**Suspect reference defects when**:
+- All failures share **identical patterns** correlated with specific parameter
+  values (e.g., all `pad=False` fail, all `pad=True` pass).
+- Reference code returns **uninitialized memory** or undefined values for certain
+  input combinations.
+- Candidate output is **semantically valid** but doesn't match reference due to
+  ambiguous specification in `definition.json`.
+- Reference has visible **TODOs, NotImplementedError, or incomplete branches**.
+
+**Confirm candidate bugs when**:
+- Failures have **diverse patterns** across workloads.
+- Candidate produces **invalid outputs** (crashes, VA faults, wrong shapes, NaN
+  where valid values expected).
+- Source code has **direct implementation errors** (off-by-one, memory leaks,
+  race conditions).
+
+**If the failure is a reference defect**, return with:
+```json
+{
+  "build_status": "success",
+  "evaluation_status": "blocked",
+  "failure_category": "reference_defect",
+  "handoff_role": "none",
+  "summary": "Reference implementation has defect: [具体描述]. Candidate output is semantically valid but doesn't match undefined reference behavior."
+}
+```
+
+Do NOT modify the candidate to match a broken reference.
+
 ## Operator API policy
 
 The following policy is binding. Repairs may use only the allowlisted APIs and

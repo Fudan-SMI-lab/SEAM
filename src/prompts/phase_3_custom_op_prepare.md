@@ -26,6 +26,27 @@ most one narrow structural check.
 - Runtime detection report: `{runtime_report}`
 - Runtime configuration result: `{runtime_configuration}`
 
+## Critical: Reference Implementation Is a Baseline, Not Ground Truth
+
+The reference implementation in the task directory is **one possible interpretation
+of the operator semantics**, not absolute correctness. When studying the reference:
+
+1. **Use it as a semantic guide**, not a literal template to copy.
+2. **Identify the core algorithm** and data flow, not implementation details.
+3. **Expect potential defects**: uninitialized memory for certain parameter
+   combinations, undefined edge case handling, mixed precision inconsistencies.
+4. **Definition.json is the contract**, not the reference code. If they conflict,
+   the JSON specification takes precedence.
+
+**Your candidate will be judged against the reference output**, but if you detect
+obvious reference bugs during implementation (e.g., uninitialized returns, TODOs,
+NotImplementedError), note them in the operator manifest so later repair phases
+can distinguish candidate bugs from reference defects.
+
+Do NOT blindly replicate reference bugs. Implement the semantics as specified in
+`definition.json` first; if that produces valid outputs that happen to differ
+from a broken reference, the repair phase will handle it.
+
 ## Memory Safety Requirements (Critical)
 
 The Ascend C implementation MUST guarantee memory safety. VA (Virtual Address) faults are the most common failure mode in the official KernelBench 105 benchmark suite:
