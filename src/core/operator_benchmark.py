@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from core.atomic_file import atomic_write_bytes
+
 
 SUPPORTED_SOLUTION_TYPES = {"ascendc"}
 
@@ -447,9 +449,15 @@ def evaluate_and_summarize_operator(
     evaluation_env_file = _prepare_evaluation_runtime(
         evaluation_dir, runtime_env_file
     )
+    snapshot_path = evaluation_dir / "solution.json"
+    snapshot_bytes = Path(solution).read_bytes()
+    if _sha256_bytes(snapshot_bytes) != candidate_manifest["solution_sha256"]:
+        raise ValueError("candidate changed before evaluation snapshot")
+    atomic_write_bytes(snapshot_path, snapshot_bytes)
+    snapshot_path.chmod(0o444)
     process = run_kernelbench_eval(
         task_dir,
-        solution,
+        snapshot_path,
         kernelbench_root,
         traces_path,
         timeout=timeout,
@@ -464,6 +472,8 @@ def evaluate_and_summarize_operator(
             "evaluation_runtime_env_file": str(evaluation_env_file),
             "candidate_manifest_path": candidate_manifest["manifest_path"],
             "candidate_manifest": candidate_manifest,
+            "evaluated_solution_path": str(snapshot_path),
+            "evaluated_solution_sha256": _sha256_bytes(snapshot_bytes),
         }
     )
     if traces_path.is_file():
@@ -502,7 +512,7 @@ def evaluate_and_summarize_operator(
             result["failure_category"] = result.get("timeout_classification", "timeout")
         elif not result.get("evaluation_valid"):
             result["failure_category"] = "incomplete_trace"
-    manifest = build_failure_manifest(result, traces_path, solution)
+    manifest = build_failure_manifest(result, traces_path, snapshot_path)
     manifest["candidate_manifest"] = candidate_manifest
     manifest_path = evaluation_dir / "failure_manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -624,6 +634,8 @@ def build_failure_manifest(
         "work_dir": result.get("work_dir", ""),
         "profile_dir": result.get("profile_dir", ""),
         "solution_sha256": solution_hash,
+        "evaluated_solution_path": result.get("evaluated_solution_path", ""),
+        "evaluated_solution_sha256": result.get("evaluated_solution_sha256", ""),
         "candidate_manifest_path": result.get("candidate_manifest_path", ""),
         "embedded_source_sha256": result.get("candidate_manifest", {}).get(
             "embedded_source_sha256", ""
@@ -1096,7 +1108,8 @@ def validate_operator_artifact(
         "candidate_evaluable": candidate_evaluable,
         "candidate_changed": candidate_changed,
         "stale_candidate": stale_error != "",
-        "rebuild_required": bool(errors),
+        "rebuild_required": bool(candidate_manifest["errors"] or not artifact_complete),
+        "pack_required": candidate_manifest["writeback_status"] == "mismatch",
         "errors": errors,
         "solution_sha256": solution_sha256,
         "candidate_manifest": candidate_manifest,

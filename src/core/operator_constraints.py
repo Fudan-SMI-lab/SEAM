@@ -94,15 +94,21 @@ def _resolve_alias(value: str, aliases: dict[str, str]) -> str:
 
 
 def preflight_operator_sources(
-    task_dir: str | Path, constraints: str | None = None
+    task_dir: str | Path,
+    constraints: str | None = None,
+    *,
+    solution: str | Path | None = None,
 ) -> dict[str, Any]:
     """Reject unauthorized torch APIs declared by the candidate solution."""
     root = Path(task_dir).expanduser().resolve()
     policy = load_operator_constraints(constraints)
     violations: list[dict[str, Any]] = []
-    solution_path = root / "solution.json"
+    solution_path = (
+        Path(solution).expanduser().resolve()
+        if solution is not None else root / "solution.json"
+    )
     try:
-        solution = json.loads(solution_path.read_text(encoding="utf-8"))
+        loaded_solution = json.loads(solution_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {
             "passed": False,
@@ -112,7 +118,7 @@ def preflight_operator_sources(
             ],
             "policy": policy,
         }
-    sources = solution.get("sources") if isinstance(solution, dict) else None
+    sources = loaded_solution.get("sources") if isinstance(loaded_solution, dict) else None
     if not isinstance(sources, list) or not sources:
         return {
             "passed": False,

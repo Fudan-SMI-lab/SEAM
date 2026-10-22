@@ -1,9 +1,8 @@
-# Phase 2: Ascend C Custom-Op Preparation
+# Phase 3: Ascend C Custom-Op Preparation
 
 Generate the initial candidate for the current single KernelBench operator.
-This phase runs only on the first iteration of the combined generation and
-evaluation loop. Later iterations use the repair prompt with the latest
-KernelBench evidence.
+This phase runs when the candidate is missing or structurally invalid. Existing
+candidates use the repair prompt with the latest KernelBench evidence.
 
 This is a bounded implementation task, not a KernelBench or CANN source-code
 survey. Read only the supplied task definition, workload sample, reference,
@@ -25,6 +24,9 @@ most one narrow structural check.
 - Analysis output: `{previous_outputs}`
 - Runtime detection report: `{runtime_report}`
 - Runtime configuration result: `{runtime_configuration}`
+- Candidate root (source paths are relative to this directory): `{solution_source_dir}`
+- Editable source specification: `{solution_spec_path}`
+- Framework-generated solution (do not edit): `{solution_path}`
 
 ## CANN API Version Compatibility
 
@@ -193,12 +195,21 @@ blocked build instead of silently using the unlisted API.
 
 Required artifacts:
 
-- `solution.json` describing the candidate implementation;
+- `solution_spec.json` beside the configured `solution.json`, containing the
+  evaluator's solution metadata and an explicit `sources` list of objects with
+  `path` but no `content`. Preserve the evaluator's metadata schema; do not invent
+  replacement field names. Paths are relative to the directory containing the
+  specification, and must point to real candidate files (prefer `sources/`).
 - Ascend C host tiling/source;
 - Ascend C device kernel/source;
 - KernelBench adapter entry point;
 - build configuration required by the chosen Ascend C builder;
-- an operator manifest describing the generated implementation.
+- an operator manifest describing the generated implementation. The framework
+  reads only the files explicitly listed in `solution_spec.json` and atomically
+  creates `solution.json` after this phase. Do not create or edit `solution.json`,
+  duplicate source text into the specification, or list build outputs/cache files.
+  List all adapters, headers, device/host sources, and build inputs needed by the
+  evaluator. To add or remove a source, update the explicit list.
 
 Do not modify `definition.json` or `workload.jsonl`. Do not add CPU fallback, reference bypass, stub success, or report-only evidence. The implementation must be the candidate evaluated by KernelBench.
 

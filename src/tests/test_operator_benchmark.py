@@ -32,33 +32,41 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
         "phase_4_operator_report",
     ]
     generation_loop = workflow.sub_workflows["operator_repair_loop"]
-    assert generation_loop.phases[0]["id"] == "validate_operator_artifact"
-    assert generation_loop.phases[0]["operation"] == "operator_artifact_validate"
-    assert generation_loop.phases[1]["id"] == "prepare_operator"
-    assert "operator_artifact_state.rebuild_required" in generation_loop.phases[1]["condition"]
-    assert generation_loop.phases[1]["on_failure"] == "continue"
-    assert generation_loop.phases[2]["id"] == "refresh_operator_artifact"
-    assert generation_loop.phases[2]["output_as"] == "operator_artifact_state"
-    assert generation_loop.phases[2]["params"]["require_changed"] is True
-    assert generation_loop.phases[3]["id"] == "evaluate_operator"
-    assert "condition" not in generation_loop.phases[3]
-    assert generation_loop.phases[4]["id"] == "classify_operator_evaluation"
-    assert generation_loop.phases[5]["condition"] == (
+    phases = {phase["id"]: phase for phase in generation_loop.phases}
+    order = list(phases)
+    assert phases["initialize_operator_artifact"]["operation"] == "operator_artifact_initialize"
+    assert phases["validate_operator_artifact"]["operation"] == "operator_artifact_validate"
+    assert order.index("initialize_operator_artifact") < order.index("validate_operator_artifact")
+    assert phases["pack_existing_operator"]["operation"] == "operator_artifact_pack"
+    assert order.index("initialize_operator_artifact") < order.index("pack_existing_operator")
+    assert order.index("pack_existing_operator") < order.index("validate_operator_artifact")
+    assert "operator_artifact_state.rebuild_required" in phases["prepare_operator"]["condition"]
+    assert "solution_ready" not in phases["prepare_operator"]["condition"]
+    assert phases["prepare_operator"]["on_failure"] == "continue"
+    assert phases["pack_prepared_operator"]["params"]["producer"] == "prepare_operator"
+    assert order.index("prepare_operator") < order.index("pack_prepared_operator")
+    assert order.index("pack_prepared_operator") < order.index("refresh_operator_artifact")
+    assert phases["refresh_operator_artifact"]["output_as"] == "operator_artifact_state"
+    assert not phases["refresh_operator_artifact"].get("params", {}).get("require_changed")
+    assert order.index("refresh_operator_artifact") < order.index("evaluate_operator")
+    assert "condition" not in phases["evaluate_operator"]
+    assert order.index("evaluate_operator") < order.index("classify_operator_evaluation")
+    assert phases["analyze_operator_failure"]["condition"] == (
         "${loop_state.operator_passed} != true"
     )
-    assert generation_loop.phases[6]["id"] == "fix_operator_environment"
-    assert "evaluation_classification.repair_role" in generation_loop.phases[6]["condition"]
-    assert generation_loop.phases[7]["id"] == "fix_operator"
-    assert "evaluation_classification.repair_role" in generation_loop.phases[7]["condition"]
-    assert generation_loop.phases[6]["condition"].count("operator_environment_fixer") == 2
-    assert generation_loop.phases[7]["condition"] == (
+    assert "evaluation_classification.repair_role" in phases["fix_operator_environment"]["condition"]
+    assert phases["fix_operator_environment"]["condition"].count("operator_environment_fixer") == 2
+    assert phases["fix_operator"]["condition"] == (
         "${loop_state.operator_passed} != true "
         "and ${loop_state.evaluation_classification.repair_role} != 'operator_environment_fixer' "
         "and ${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'"
     )
-    assert generation_loop.phases[6]["on_failure"] == "continue"
-    assert generation_loop.phases[7]["on_failure"] == "continue"
-    assert generation_loop.phases[3]["on_failure"] == "continue"
+    assert phases["fix_operator_environment"]["on_failure"] == "continue"
+    assert phases["fix_operator"]["on_failure"] == "continue"
+    assert phases["evaluate_operator"]["on_failure"] == "continue"
+    assert phases["pack_repaired_operator"]["params"]["producer"] == "fix_operator"
+    assert phases["pack_repaired_operator"]["condition"] == phases["fix_operator"]["condition"]
+    assert order.index("fix_operator") < order.index("pack_repaired_operator")
 
 
 def test_operator_evaluation_classification_routes_reference_and_device_failures() -> None:

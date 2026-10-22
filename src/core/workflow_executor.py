@@ -140,6 +140,7 @@ from core.operator_benchmark import (
     classify_operator_evaluation,
     validate_operator_task,
 )
+from core.operator_solution import initialize_operator_solution, pack_operator_solution
 from core.ui_events import UIEventSink, summarize_text
 from validators.validate_entry_script import (
     validate as validate_entry_script,
@@ -2274,6 +2275,14 @@ class WorkflowExecutor:
             error_analysis_text = json.dumps(
                 error_analysis, ensure_ascii=False, indent=2, default=str
             )
+            solution_path = str(loop_vars.get("OPERATOR_SOLUTION_PATH", ""))
+            solution_root = Path(solution_path).parent if solution_path else Path(operator_task_dir)
+            evaluation_text = read_context_file(str(evaluation.get("summary_path", "")), 7000)
+            if evaluation_text == "(unavailable)":
+                evaluation_text = self._bounded_tail(
+                    json.dumps(evaluation, ensure_ascii=False, indent=2, default=str),
+                    7000,
+                )
             input_ctx.update(
                 {
                     "operator_task_dir": operator_task_dir,
@@ -2283,11 +2292,9 @@ class WorkflowExecutor:
                     "target_soc": loop_vars.get("TARGET_SOC", ""),
                     "solution_type": loop_vars.get("SOLUTION_TYPE", "ascendc"),
                     "kernelbench_root": loop_vars.get("KERNELBENCH_ROOT", ""),
-                    "solution_path": loop_vars.get("OPERATOR_SOLUTION_PATH", ""),
-                    "solution_source_dir": str(
-                        Path(str(loop_vars.get("OPERATOR_SOLUTION_PATH", ""))).parent
-                        / "sources"
-                    ),
+                    "solution_path": solution_path,
+                    "solution_source_dir": str(solution_root),
+                    "solution_spec_path": str(solution_root / "solution_spec.json"),
                     "operator_constraints": loop_vars.get("OPERATOR_CONSTRAINTS", ""),
                     "repair_iteration": str((loop_state or {}).get("iteration", "0")),
                     "operator_definition_text": read_context_file(
@@ -2295,9 +2302,7 @@ class WorkflowExecutor:
                     ),
                     "operator_workload_text": workload_text or "(unavailable)",
                     "operator_analysis_text": self._bounded_tail(analysis_text, 9000),
-                    "operator_evaluation_text": read_context_file(
-                        str(evaluation.get("summary_path", "")), 7000
-                    ),
+                    "operator_evaluation_text": evaluation_text,
                     "operator_stdout_text": read_context_file(
                         str(evaluation.get("stdout_path", "")), 3500
                     ),
@@ -3995,6 +4000,52 @@ class WorkflowExecutor:
             )
             return ("success" if result["solution_ready"] else "failure", result)
 
+        if operation in {"operator_artifact_initialize", "operator_artifact_pack"}:
+            solution = self._resolve_operator_value(
+                "OPERATOR_SOLUTION_PATH", context, loop_vars
+            )
+            task_dir = self._operator_task_dir(context, loop_vars)
+            if not solution:
+                return "failure", {
+                    "operation": operation,
+                    "packed": False,
+                    "errors": ["OPERATOR_SOLUTION_PATH is required"],
+                }
+            if operation == "operator_artifact_initialize":
+                previous_pack = state.get("operator_artifact_pack", {})
+                if previous_pack and not previous_pack.get("packed"):
+                    return "failure", {
+                        "operation": operation,
+                        "initialized": False,
+                        "errors": ["previous candidate publication failed; a successful producer is required"],
+                        "pack_result": previous_pack,
+                    }
+                result = initialize_operator_solution(solution, task_dir)
+                return ("failure" if result["errors"] else "success", result)
+            producer = str(_params.get("producer", ""))
+            previous_pack = state.get("operator_artifact_pack", {})
+            if not producer and previous_pack and not previous_pack.get("packed"):
+                return "failure", {
+                    "operation": operation,
+                    "packed": False,
+                    "errors": previous_pack.get("errors") or [
+                        "previous candidate publication failed; a successful producer is required"
+                    ],
+                }
+            producer_output = (loop_state or {}).get(producer, {})
+            if not isinstance(producer_output, dict):
+                producer_output = {}
+            if producer and producer_output.get("framework_execution_status") != "success":
+                return "failure", {
+                    "operation": operation,
+                    "packed": False,
+                    "errors": [
+                        f"{producer} did not complete successfully; candidate not published"
+                    ],
+                }
+            result = pack_operator_solution(solution, task_dir)
+            return ("success" if result["packed"] else "failure", result)
+
         if operation == "operator_trace_summary":
             traces_path = self._resolve_operator_value(
                 "OPERATOR_TRACES_PATH", context, loop_vars
@@ -4018,6 +4069,19 @@ class WorkflowExecutor:
             return "success", result
 
         if operation == "operator_kernelbench_eval":
+            initialization = (loop_state or {}).get("initialize_operator_artifact", {})
+            pack_state = (loop_state or {}).get("operator_artifact_pack", {})
+            if (initialization.get("errors") and not pack_state.get("packed")) or (
+                pack_state and not pack_state.get("packed")
+            ):
+                return "failure", {
+                    "operation": operation,
+                    "evaluation_status": "blocked",
+                    "failure_category": "artifact_writeback_failed",
+                    "operator_passed": False,
+                    "evaluation_valid": False,
+                    "pack_result": pack_state or initialization,
+                }
             artifact_state = (loop_state or {}).get("operator_artifact_state", {})
             if isinstance(artifact_state, dict) and not artifact_state.get(
                 "candidate_evaluable", artifact_state.get("solution_ready", False)
@@ -4040,7 +4104,12 @@ class WorkflowExecutor:
             constraints = self._resolve_operator_value(
                 "OPERATOR_CONSTRAINTS", context, loop_vars
             )
-            api_preflight = preflight_operator_sources(task_dir, constraints)
+            solution = self._resolve_operator_value(
+                "OPERATOR_SOLUTION_PATH", context, loop_vars
+            ) or str(Path(task_dir) / "solution.json")
+            api_preflight = preflight_operator_sources(
+                task_dir, constraints, solution=solution
+            )
             if not api_preflight["passed"]:
                 return (
                     "failure",
@@ -4052,9 +4121,6 @@ class WorkflowExecutor:
                         "api_preflight": api_preflight,
                     },
                 )
-            solution = self._resolve_operator_value(
-                "OPERATOR_SOLUTION_PATH", context, loop_vars
-            ) or str(Path(task_dir) / "solution.json")
             kernelbench_root = self._resolve_operator_value(
                 "KERNELBENCH_ROOT", context, loop_vars
             )
@@ -5422,7 +5488,7 @@ class WorkflowExecutor:
                     state,
                     context,
                     loop_vars=loop_vars,
-                    loop_state=loop_state or {},
+                    loop_state={**(loop_state or {}), **step_outputs},
                     step_outputs=step_outputs,
                 )
                 if not cond_met:
@@ -5782,6 +5848,8 @@ class WorkflowExecutor:
 
             # Store in step_outputs
             if isinstance(phase_output, dict):
+                if phase_id in {"prepare_operator", "fix_operator"}:
+                    phase_output["framework_execution_status"] = phase_status
                 if phase_type == "llm":
                     self._attach_experience_usage_report(
                         step_outputs, phase_id, phase_output

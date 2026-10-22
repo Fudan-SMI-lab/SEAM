@@ -82,3 +82,15 @@ def _write_solution(task_dir: Path, source: str) -> None:
     (task_dir / "solution.json").write_text(
         json.dumps(solution), encoding="utf-8"
     )
+
+
+def test_operator_constraints_scan_configured_solution_path(tmp_path: Path) -> None:
+    _write_solution(tmp_path, "def run(value):\n    return value\n")
+    candidate_dir = tmp_path / "candidate"
+    candidate_dir.mkdir()
+    _write_solution(candidate_dir, "import torch\ndef run(value):\n    return torch.sigmoid(value)\n")
+
+    result = preflight_operator_sources(tmp_path, solution=candidate_dir / "solution.json")
+
+    assert result["passed"] is False
+    assert result["violations"][0]["api"] == "torch.sigmoid"

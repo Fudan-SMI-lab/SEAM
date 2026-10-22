@@ -89,7 +89,8 @@ repair as blocked if no compliant alternative exists.
 - Level: `{level}`
 - Task directory: `{operator_task_dir}`
 - Solution: `{solution_path}`
-- Source directory: `{solution_source_dir}`
+- Editable solution specification: `{solution_spec_path}`
+- Candidate root (source paths are relative to this directory): `{solution_source_dir}`
 - Target SoC: `{target_soc}`
 - Solution type: `{solution_type}`
 - Repair iteration: `{repair_iteration}`
@@ -140,73 +141,32 @@ task directories.
 Use the supplied summary and error text to identify the smallest real source
 or build fix. The controller will rerun every workload after the repair.
 
-## Ascend C API Constraints (Critical Compilation Rules)
+## Evidence-Based Diagnosis
 
-**Before making ANY repair to Ascend C kernel code**, verify the fix complies with these HARD CONSTRAINTS enforced by the Ascend C compiler:
+Treat compiler output and evaluation traces as evidence, not as keywords that
+select a predetermined code edit. Do not search diagnostics for fixed strings to
+trigger mechanical replacements or apply a repair solely because an error
+message resembles a known pattern.
 
-### 1. Queue Position API
-```cpp
-// ❌ WRONG: These do NOT exist
-TQue<QuePos::VEC_IN, ...>
-TQue<QuePosition::VEC_IN, ...>
+For each failure:
 
-// ✅ CORRECT: Only these exist
-TQue<QuePosition::VECIN, BUFFER_NUM>   // Input queue
-TQue<QuePosition::VECOUT, BUFFER_NUM>  // Output queue
-```
+1. Locate the failing source and inspect the relevant expression together with
+   its declarations, types, call site, and surrounding control/data flow.
+2. Read enough of the diagnostic to identify the actual source location and
+   compiler interpretation. Verify relevant API declarations against the active
+   CANN headers/documentation and the project's build configuration; do not
+   infer an API signature from a remembered example alone.
+3. State the causal explanation and supporting evidence. If evidence does not
+   distinguish between plausible causes, report the diagnosis as uncertain and
+   gather a narrower reproduction instead of guessing.
+4. Make the smallest semantically justified change, then rebuild and rerun the
+   affected workload. Confirm that the change fixes the original failure and
+   does not introduce regressions in related dtypes, shapes, or branches.
 
-If the error mentions `QuePos` or `VEC_IN`, replace with `QuePosition::VECIN` / `VECOUT`.
-
-### 2. LocalTensor Scalar Access
-```cpp
-// ❌ WRONG: Cannot assign LocalTensor to scalar
-half value = tensor;  // Compiler error
-
-// ✅ CORRECT: Use GetValue(index)
-half value = tensor.GetValue(0);
-```
-
-If the error mentions "cannot convert LocalTensor to scalar type", add `.GetValue(i)`.
-
-### 3. Cast API
-```cpp
-// ❌ WRONG: Mismatched signature or same-dtype cast
-Cast(dst, src, RoundMode::CAST_NONE, N);  // Wrong param order
-Cast(fp32Tensor, fp32Tensor, ...);        // Unnecessary
-
-// ✅ CORRECT: Match template signature, skip same-dtype
-if (srcDtype != dstDtype) {
-    Cast(dst, src, RoundMode::CAST_NONE, count);
-}
-```
-
-If the error mentions `Cast` signature mismatch, read the skill template's `Cast` usage.
-
-### 4. Type Conversion in aicore
-```cpp
-// ❌ WRONG: float ↔ unsigned int inside __aicore__
-unsigned int u = (unsigned int)floatVar;  // Not allowed
-
-// ✅ CORRECT: Avoid or use bit_cast / do on host
-```
-
-If the error mentions "invalid conversion from float to unsigned int", remove the conversion or move it to host code.
-
-### 5. Variable Initialization
-```cpp
-// ❌ WRONG: Uninitialized const
-const float scale;  // Compiler error
-
-// ✅ CORRECT: Always initialize
-const float scale = 1.0f;
-```
-
-**Common repair patterns**:
-- Compilation error mentioning `QuePos` → replace with `QuePosition`
-- Compilation error mentioning `VEC_IN/VEC_OUT` → replace with `VECIN/VECOUT`
-- Compilation error assigning `LocalTensor` to scalar → add `.GetValue(i)`
-- Compilation error with `Cast` → check signature against template, skip same-dtype casts
-- Compilation error with uninitialized variable → add explicit initialization
+Skill examples are references for understanding APIs, not error-message
+detectors or automatic rewrite rules. Verify their applicability to the active
+toolchain and the operator's semantics before using them. The configured Python
+API allowlist remains binding and is separate from failure diagnosis.
 
 ## Hard Rules
 
@@ -215,15 +175,16 @@ const float scale = 1.0f;
 - Do not modify `definition.json` or `workload.jsonl`.
 - Do not delete, skip, or rewrite failed workloads.
 - Do not modify a report to hide an implementation failure.
-- **Modify real source files AND update solution.json embedded sources.**
-  → After editing a `.cpp` file, you MUST read it back and write its content into
-    `solution.json`'s `sources[].content` field for that file. Otherwise the next
-    evaluation will use the OLD embedded version, not your fix.
+- Edit the real candidate files declared by `{solution_spec_path}`. Their paths
+  are relative to `{solution_source_dir}`. Add or remove files explicitly in the
+  specification's `sources` list; preserve the evaluator metadata and omit source
+  `content`. The framework packages exactly these files after a completed repair;
+  do not create or edit `solution.json` manually. Do not edit build/staging copies.
 - After the repair, the outer workflow will rerun every workload for this operator.
 - Do not spend tool calls reopening definition, workload, trace, stdout, or
   stderr files; their relevant contents are already included above.
 - Work sequentially: do not issue parallel tool calls. Prefer one inspection
-  call, one edit call, ONE solution.json update call, and one validation call.
+  call, one edit call, and one validation call.
 - If the failure is environment, dependency, or task-schema related rather than
   an operator implementation issue, state the handoff clearly instead of making
   speculative kernel edits.

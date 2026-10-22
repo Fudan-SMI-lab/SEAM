@@ -139,6 +139,17 @@ sub_workflows:
       - condition: "$.stagnation_count >= 3"
         status: stagnation
     phases:
+      - id: initialize_operator_artifact
+        type: builtin
+        operation: "operator_artifact_initialize"
+        on_failure: continue
+
+      - id: pack_existing_operator
+        type: builtin
+        operation: "operator_artifact_pack"
+        output_as: "operator_artifact_pack"
+        on_failure: continue
+
       - id: validate_operator_artifact
         type: builtin
         operation: "operator_artifact_validate"
@@ -152,7 +163,6 @@ sub_workflows:
         timeout: 2400  # qwen3.8-27b 慢，从 1200 提到 2400（40 分钟）
         condition: >-
           ${loop_state.operator_artifact_state.rebuild_required} == true
-          or ${loop_state.operator_artifact_state.solution_ready} != true
         output_as: "operator_preparation"
         input_mapping:
           operator_task_dir: "${loop_vars.OPERATOR_TASK_DIR}"
@@ -171,11 +181,18 @@ sub_workflows:
           missing: error
         on_failure: continue
 
+      - id: pack_prepared_operator
+        type: builtin
+        operation: "operator_artifact_pack"
+        params:
+          producer: prepare_operator
+        condition: "${loop_state.operator_artifact_state.rebuild_required} == true"
+        output_as: "operator_artifact_pack"
+        on_failure: continue
+
       - id: refresh_operator_artifact
         type: builtin
         operation: "operator_artifact_validate"
-        params:
-          require_changed: true
         output_as: "operator_artifact_state"
         on_failure: continue
 
@@ -238,4 +255,16 @@ sub_workflows:
           missing: error
         input_mapping:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
+        on_failure: continue
+
+      - id: pack_repaired_operator
+        type: builtin
+        operation: "operator_artifact_pack"
+        params:
+          producer: fix_operator
+        condition: >-
+          ${loop_state.operator_passed} != true
+          and ${loop_state.evaluation_classification.repair_role} != 'operator_environment_fixer'
+          and ${loop_state.error_analysis.repair_role} != 'operator_environment_fixer'
+        output_as: "operator_artifact_pack"
         on_failure: continue
