@@ -140,6 +140,74 @@ task directories.
 Use the supplied summary and error text to identify the smallest real source
 or build fix. The controller will rerun every workload after the repair.
 
+## Ascend C API Constraints (Critical Compilation Rules)
+
+**Before making ANY repair to Ascend C kernel code**, verify the fix complies with these HARD CONSTRAINTS enforced by the Ascend C compiler:
+
+### 1. Queue Position API
+```cpp
+// ❌ WRONG: These do NOT exist
+TQue<QuePos::VEC_IN, ...>
+TQue<QuePosition::VEC_IN, ...>
+
+// ✅ CORRECT: Only these exist
+TQue<QuePosition::VECIN, BUFFER_NUM>   // Input queue
+TQue<QuePosition::VECOUT, BUFFER_NUM>  // Output queue
+```
+
+If the error mentions `QuePos` or `VEC_IN`, replace with `QuePosition::VECIN` / `VECOUT`.
+
+### 2. LocalTensor Scalar Access
+```cpp
+// ❌ WRONG: Cannot assign LocalTensor to scalar
+half value = tensor;  // Compiler error
+
+// ✅ CORRECT: Use GetValue(index)
+half value = tensor.GetValue(0);
+```
+
+If the error mentions "cannot convert LocalTensor to scalar type", add `.GetValue(i)`.
+
+### 3. Cast API
+```cpp
+// ❌ WRONG: Mismatched signature or same-dtype cast
+Cast(dst, src, RoundMode::CAST_NONE, N);  // Wrong param order
+Cast(fp32Tensor, fp32Tensor, ...);        // Unnecessary
+
+// ✅ CORRECT: Match template signature, skip same-dtype
+if (srcDtype != dstDtype) {
+    Cast(dst, src, RoundMode::CAST_NONE, count);
+}
+```
+
+If the error mentions `Cast` signature mismatch, read the skill template's `Cast` usage.
+
+### 4. Type Conversion in aicore
+```cpp
+// ❌ WRONG: float ↔ unsigned int inside __aicore__
+unsigned int u = (unsigned int)floatVar;  // Not allowed
+
+// ✅ CORRECT: Avoid or use bit_cast / do on host
+```
+
+If the error mentions "invalid conversion from float to unsigned int", remove the conversion or move it to host code.
+
+### 5. Variable Initialization
+```cpp
+// ❌ WRONG: Uninitialized const
+const float scale;  // Compiler error
+
+// ✅ CORRECT: Always initialize
+const float scale = 1.0f;
+```
+
+**Common repair patterns**:
+- Compilation error mentioning `QuePos` → replace with `QuePosition`
+- Compilation error mentioning `VEC_IN/VEC_OUT` → replace with `VECIN/VECOUT`
+- Compilation error assigning `LocalTensor` to scalar → add `.GetValue(i)`
+- Compilation error with `Cast` → check signature against template, skip same-dtype casts
+- Compilation error with uninitialized variable → add explicit initialization
+
 ## Hard Rules
 
 - Use an Ascend C native custom-op path.

@@ -112,6 +112,73 @@ VA (Virtual Address) faults manifest as:
 If your implementation has ANY dynamic offset calculation (e.g., loop with 
 `blockIdx`, `for (int i = 0; i < rows; i++)`), apply tail-block protection.
 
+## Ascend C API Constraints (Critical for Code Generation)
+
+**These are HARD CONSTRAINTS enforced by the Ascend C compiler**. Violating any of these will cause compilation failures:
+
+### 1. Queue Position API
+```cpp
+// ❌ WRONG: These do NOT exist
+TQue<QuePos::VEC_IN, BUFFER_NUM>
+TQue<AscendC::QuePos::VECIN, ...>
+TQue<QuePosition::VEC_IN, ...>
+
+// ✅ CORRECT: Only these exist
+TQue<QuePosition::VECIN, BUFFER_NUM>   // Input queue
+TQue<QuePosition::VECOUT, BUFFER_NUM>  // Output queue
+```
+
+**Never abbreviate** `QuePosition` to `QuePos`. Never use `VEC_IN` or `VEC_OUT` — the correct enum values are `VECIN` and `VECOUT` (no underscore).
+
+### 2. LocalTensor Scalar Access
+```cpp
+// ❌ WRONG: Cannot assign LocalTensor directly to scalar
+LocalTensor<half> tensor = ...;
+half value = tensor;  // ❌ Compiler error
+
+// ✅ CORRECT: Use GetValue(index)
+half value = tensor.GetValue(0);
+```
+
+**Every scalar read** from `LocalTensor` must use `.GetValue(i)`, even when the tensor is 1D and you only need element 0.
+
+### 3. Cast API
+```cpp
+// ❌ WRONG: Mismatched signature or unnecessary cast
+Cast(dst, src, RoundMode::CAST_NONE, N);  // Wrong param order/type
+Cast(fp32Tensor, fp32Tensor, ...);        // Same dtype, no cast needed
+
+// ✅ CORRECT: Match template signature, skip same-dtype cast
+if (dtype != TARGET_DTYPE) {
+    Cast(dst, src, RoundMode::CAST_NONE, elementCount);
+}
+```
+
+**Read the skill template's `Cast` signature** before using it. Never cast a tensor to its own dtype (e.g., `float → float`).
+
+### 4. Type Conversion in aicore Functions
+```cpp
+// ❌ WRONG: float ↔ unsigned int conversion inside __aicore__ function
+__aicore__ void kernel(...) {
+    float f = 1.0f;
+    unsigned int u = (unsigned int)f;  // ❌ Not allowed
+}
+
+// ✅ CORRECT: Avoid float ↔ uint conversion, or do it on host
+// If unavoidable, use bit_cast or extract the conversion to a separate CPU function
+```
+
+### 5. Variable Initialization
+```cpp
+// ❌ WRONG: Uninitialized const variables
+const float scale;  // ❌ Must be initialized
+
+// ✅ CORRECT: Always initialize
+const float scale = 1.0f;
+```
+
+**Before calling any tool to write Ascend C code**, verify your generated code against these 5 rules. If unsure about an API, **read the skill template** (`op_template.cpp`) first — it contains the correct usage patterns.
+
 ## Required Actions
 
 Create or update the real Ascend C candidate implementation in the operator workspace.
@@ -140,6 +207,24 @@ runs the authoritative full-workload KernelBench evaluation and API preflight.
 Run only a narrow structural check if needed to ensure the candidate artifacts
 are present and internally consistent; report actual results without replacing
 the KernelBench result.
+
+## Pre-Submission Validation (Critical for Multi-Dtype Operators)
+
+**Before finalizing the candidate**, verify it handles ALL dtypes present in the workload:
+
+1. **Check `workload.jsonl` for dtype variants** (e.g., `float16`, `float32`, `bfloat16`).
+2. **Test the candidate with at least one workload per dtype**:
+   - If the operator has fp16/fp32/bf16 workloads, run 1 sample of each.
+   - Verify the kernel does NOT unconditionally cast (e.g., `float → float` is unnecessary).
+3. **If any dtype path fails**, fix it before submission.
+
+**Common dtype issues**:
+- **Unconditional Cast**: `Cast(fp32, fp32, ...)` is redundant and may cause numerical errors.
+  → Fix: Skip Cast when `srcDtype == dstDtype`.
+- **Only fp16 tested**: Kernel works for fp16 but breaks for fp32/bf16 due to precision/alignment differences.
+  → Fix: Run at least 1 workload per dtype variant before submission.
+
+**Why this matters**: The official KernelBench 105 contains fp16/fp32/bf16 variants. A candidate that only validates fp16 will fail 2/3 of the workloads. Testing ALL dtype paths **once before submission** prevents wasting repair iterations later.
 
 ## Output Format
 

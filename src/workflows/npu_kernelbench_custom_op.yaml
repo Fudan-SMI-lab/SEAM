@@ -6,7 +6,7 @@ target_platform:
   preset: npu_ascend
 
 globals:
-  max_repair_iterations: 5
+  max_repair_iterations: 8  # 从 5 提到 8，应对 qwen3.8-27b 的慢修复
   stagnation_threshold: 3
   review_gate_enabled: false
 
@@ -130,7 +130,7 @@ sub_workflows:
   operator_repair_loop:
     id: operator_repair_loop
     type: loop
-    max_iterations: 5
+    max_iterations: 8  # 与 globals 保持一致
     stagnation_threshold: 3
     review_gate_enabled: false
     stop_conditions:
@@ -149,7 +149,7 @@ sub_workflows:
         type: llm
         agent: main_engineer
         prompt_template: "phase_3_custom_op_prepare"
-        timeout: 1200
+        timeout: 2400  # qwen3.8-27b 慢，从 1200 提到 2400（40 分钟）
         condition: >-
           ${loop_state.operator_artifact_state.rebuild_required} == true
           or ${loop_state.operator_artifact_state.solution_ready} != true
@@ -167,7 +167,7 @@ sub_workflows:
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
-          inject_full: false
+          inject_full: true  # 将模板完整注入 prompt，避免模型臆造 API
           missing: error
         on_failure: continue
 
@@ -226,7 +226,7 @@ sub_workflows:
         type: llm
         agent: operator_fixer
         prompt_template: "repair_operator_fixer_kernelbench_ascendc"
-        timeout: 1200
+        timeout: 2400  # qwen3.8-27b 慢，从 1200 提到 2400（40 分钟）
         condition: >-
           ${loop_state.operator_passed} != true
           and ${loop_state.evaluation_classification.repair_role} != 'operator_environment_fixer'
@@ -234,7 +234,7 @@ sub_workflows:
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
-          inject_full: false
+          inject_full: true  # 修复阶段同样需要完整模板
           missing: error
         input_mapping:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
