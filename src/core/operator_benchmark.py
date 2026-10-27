@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 import hashlib
@@ -128,6 +129,15 @@ def build_candidate_manifest(
     return manifest
 
 
+def _ensure_path(env: dict[str, str], *paths: str) -> None:
+    current = env.get("PATH", "")
+    parts = current.split(":") if current else []
+    for p in paths:
+        if p not in parts:
+            parts.append(p)
+    env["PATH"] = ":".join(parts)
+
+
 def run_kernelbench_eval(
     task_dir: str | Path,
     solution: str | Path,
@@ -162,6 +172,7 @@ def run_kernelbench_eval(
         "--work-dir", str(work_dir), "--profile-dir", str(profile_dir),
     ]
     runtime_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    _ensure_path(runtime_env, "/usr/local/bin")
     if runtime_env_file:
         env_path = Path(runtime_env_file).expanduser().resolve()
         if env_path.is_file():
@@ -537,16 +548,15 @@ def _prepare_evaluation_runtime(
     """Create an evaluation-owned temp/cache/staging namespace.
 
     KernelBench may create internal staging through ``tempfile`` or toolkit
-    cache variables. Keeping these directories below the unique evaluation
-    directory prevents a timed-out evaluator or another run from deleting a
-    still-active candidate's sources.
+    cache variables. Keeping these directories evaluation-scoped prevents a
+    timed-out evaluator or another run from deleting a still-active
+    candidate's sources. The temp directory is relocated to a short path when
+    the nested evaluation path would exceed the Ascend compiler's AF_UNIX
+    socket limit.
     """
     runtime_root = evaluation_dir / "runtime"
-    tmp_dir = runtime_root / "tmp"
     cache_dir = runtime_root / "cache"
     staging_dir = runtime_root / "staging"
-    for directory in (tmp_dir, cache_dir, staging_dir):
-        directory.mkdir(parents=True, exist_ok=True)
     env: dict[str, str] = {}
     if base_env_file:
         path = Path(base_env_file).expanduser().resolve()
@@ -557,6 +567,18 @@ def _prepare_evaluation_runtime(
                     continue
                 key, value = line.split("=", 1)
                 env[key.strip()] = value.strip()
+    short_tmp_root = env.get("SEAM_OPERATOR_SHORT_TMP_ROOT") or os.environ.get(
+        "SEAM_OPERATOR_SHORT_TMP_ROOT"
+    )
+    tmp_dir = runtime_root / "tmp"
+    if short_tmp_root:
+        # Ascend TBE/AOE opens AF_UNIX sockets below TMPDIR, whose sun_path is
+        # capped at ~107 bytes; the nested evaluation path is too long for it.
+        tmp_dir = Path(short_tmp_root).expanduser() / evaluation_dir.name[:60]
+    if len(str(tmp_dir)) > 70:
+        tmp_dir = Path(tempfile.gettempdir()) / "seam-kb" / evaluation_dir.name[:60]
+    for directory in (tmp_dir, cache_dir, staging_dir):
+        directory.mkdir(parents=True, exist_ok=True)
     env.update(
         {
             "SEAM_OPERATOR_EVALUATION_ROOT": str(evaluation_dir),
@@ -1091,9 +1113,25 @@ def validate_operator_artifact(
         errors.append("embedded source content differs from materialized source")
     solution_sha256 = candidate_manifest["solution_sha256"]
     candidate_changed = bool(solution_sha256 and solution_sha256 != baseline_sha256)
+    # A rebuild that is a byte-identical no-op over an already-complete
+    # candidate is legitimate: the builder stages sources from the embedded
+    # content, so an unchanged solution.json still evaluates safely. Only
+    # flag staleness when the artifact set is not fully materialized and
+    # hash-consistent on disk.
+    fully_materialized = (
+        not candidate_manifest["errors"]
+        and candidate_manifest["writeback_status"] == "consistent"
+        and candidate_manifest["materialized_source_count"]
+        == candidate_manifest["source_count"]
+    )
     stale_error = (
         "solution.json did not change after a rebuild attempt"
-        if require_changed and not candidate_changed and not errors
+        if (
+            require_changed
+            and not candidate_changed
+            and not errors
+            and not fully_materialized
+        )
         else ""
     )
     if stale_error:

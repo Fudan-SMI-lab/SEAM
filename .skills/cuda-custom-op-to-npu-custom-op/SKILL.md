@@ -9,6 +9,54 @@ The notes below preserve practical migration lessons from previous projects.
 Project scope, priorities, acceptance criteria, reports, and stop conditions live
 in the user's current request or in the target project's own plan.
 
+## KernelBench (build_method=cmake) — read this FIRST
+
+If the task's `solution.json` uses `build_method: "cmake"` (KernelBench), copy the
+structure of KernelBench's own official sample and build template:
+
+- Sample (canonical, correct): `/home/yiding/bench/npu-kernelbench/tests/samples/vector_add_ascendc_cmake/`
+  - `op_kernel/add_custom.cpp`, `op_host/my_add.cpp`, `op_host/utils.h`, `main.py`
+- Build skeleton: `/home/yiding/bench/npu-kernelbench/src/npu_kernelbench/builder/templates/CMakeLists.txt.j2`
+  (it compiles `op_kernel/**` into the kernel lib, links `torch_npu/ascendcl/tiling_api/register/platform`,
+  and CANN's `ascendc.cmake` generates the `aclrtlaunch_*.h` headers)
+
+Hard rules confirmed by that sample:
+- Device entry MUST be `extern "C" __global__ __aicore__ void <kernel>(GM_ADDR ...)`.
+  Never use `__global__ __vector__` (bisheng: "1 error generated").
+- Host MUST `#include "aclrtlaunch_<kernel>.h"` and
+  `ACLRT_LAUNCH_KERNEL(<kernel>)(blockDim, aclStream, ...)` with
+  `c10_npu::getCurrentNPUStream().stream(false)`.
+- Files: `op_kernel/<name>.cpp`, `op_host/<name>.cpp` (+ optional `utils.h`), `main.py`.
+- Do NOT hand-write CMakeLists (the builder generates it).
+
+### Matrix-multiply / Cube ops (matmul, batched matmul, conv using mmad)
+
+This CANN install has TWO matmul header trees; only one is complete:
+- COMPLETE (use this): `/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/ascendc/include/highlevel_api/`
+  (`lib/matmul/matmul_intf.h` + `impl/kfc/kfc_register_obj.h` + `impl/matmul/**` all present)
+- BROKEN (never use): `/usr/local/Ascend/ascend-toolkit/latest/tools/tikcpp/tikcfw/`
+  (its `impl/kfc/` is EMPTY, so `matmul_intf.h` fails with
+  `fatal error: '../impl/kfc/kfc_register_obj.h' file not found`)
+
+Rules for matmul:
+- Do NOT rely on a bare `#include "matmul_intf.h"` (the compiler may pick the broken
+  `tikcfw` copy). Include the COMPLETE tree explicitly, e.g.
+  `#include "<highlevel_api>/lib/matmul/matmul_intf.h"`, or copy the entire
+  `highlevel_api/{lib,impl}` into the project preserving that layout and include the
+  local path — the header's `../impl/kfc/...` includes must resolve inside the copied tree.
+- Use `AscendC::Matmul` + `TCubeTiling` with host-side tiling (`tiling_api` is already
+  linked by the builder). Do not copy vendor `opp/**` or `tikcfw`.
+- Verify with a tiny standalone macro/cube kernel compile before writing the full op.
+
+Read scope:
+- USE: KernelBench `tests/samples/**`, `builder/templates/**`, `docs/**`,
+  CANN `ascendc/include/**` + tiling headers, and the task's own `definition.json`
+  (`definition.json.reference` is the operator spec, provided by design).
+- AVOID (cheating / noise): previously solved AscendC solutions under
+  `output_projects/**` or `operator_runs/**`, vendor `opp/**` and `tikcfw`
+  implementations, and `/home/yiding/opencode_home/**`. Do not copy a finished
+  solution; derive from the reference and AscendC public API only.
+
 ## Common Placeholders
 
 The examples use placeholders to avoid binding generic notes to one site or
@@ -263,3 +311,62 @@ evidentiary; this shared directory stays generic.
 8. Bind coverage observations to loaded producer and adapter identities.
 9. Keep shared notes generic and store project-specific results in project-local
    reports or explicit examples.
+
+## AscendC Basic API Cheatsheet (CANN 8.3.RC1 — verified against local headers)
+
+Authoritative: `AscendC::` namespace from `kernel_operator.h`. These rules are
+GENERAL; never tailor them to a single operator.
+
+### Enums & names — use the exact names below
+- Buffer position enum is `AscendC::TPosition` (NOT `QuePosition`, NOT `QuePos`):
+  `TPosition::VECIN`, `TPosition::VECOUT`, `TPosition::VECCALC` (and A1/A2/... for
+  specialized layouts). `TQue<TPosition::VECIN, 2>` / `TQue<TPosition::VECOUT, 2>`.
+- Cast mode is `AscendC::RoundMode` with members `CAST_NONE`, `CAST_RINT`,
+  `CAST_FLOOR`, `CAST_CEIL`, `CAST_ROUND`, `CAST_TRUNC`, `CAST_ODD`.
+  There is no `RoundMode::Round_NEAREST`.
+- Event ids that exist: `EVENT_ID0`, `EVENT_ID1`, `EVENT_ID2` (qualify with
+  `AscendC::` like `AscendC::SafeSetFlag<AscendC::HardEvent::M_MTE2>(EVENT_ID1)`).
+- `DEFAULT_BLK_STRIDE`, `DEFAULT_REPEAT_STRIDE`, `DEFAULT_DATA_COPY_NBURST` are in
+  namespace `AscendC` — write `AscendC::DEFAULT_BLK_STRIDE`, never bare.
+- `RoundMode`, `CMPMODE` etc. are in `AscendC` — qualify when out of a `using`.
+
+### Queue / buffer usage
+- `TPipe pipe;` then `pipe.InitBuffer(q, N, bytes)` (or `InitBuffer` with element
+  count).
+- Always `AllocTensor<T>()` -> `EnQue` (= fill) / `DeQue<T>()` -> `FreeTensor`.
+- Inside templates, dependent calls need the `template` keyword:
+  `buf.template AllocTensor<float>()`, `q.template DeQue<float>()`.
+- Scalar access: `float v = src.GetValue(i);` / `dst.SetValue(i, v);`.
+  NEVER assign a `LocalTensor` to a scalar (add `.GetValue(i)`).
+
+### Vector intrinsics
+- `Add(dst, src1, src2, count)`, `Muls(dst, src, scalar, count)`,
+  `Adds/Mul/Sub/Maxs/Mins/Exp/Log/Rsqrt(dst, src[,2], count)`, `ReduceSum(...)`.
+- `count` is the ELEMENT count of the tile, and the final argument of these ops.
+- dtypes: keep src and dst identical (preferred); bf16 mixes are NOT supported in
+  `Muls`/`Adds` (static_assert) — cast to fp32 first, compute, cast back.
+
+### Cast / conversions
+- `Cast(dstLocal, srcLocal, RoundMode::CAST_NONE, len)` — src and dst are both
+  LocalTensor; pass the rounding mode from the RoundMode list above.
+- In aicore functions float<->unsigned conversions are FORBIDDEN. Convert
+  float->signed int (int32) via `Cast`, or rework the math; never write
+  `uint32_t u = (uint32_t)f` in device code.
+- `const float x;` members with no initializer are errors — always initialize.
+
+### DataCopy
+- `DataCopy(dstLocal, srcGm[offset], count)` blob copy.
+- `DataCopyPad(dstLocal, srcGm, {blockCount, blockLen, srcStride, dstStride, rsv},
+  padParms)` for padded/tail tiles; `DataCopyExtParams` field order is
+  `{blockCount, blockLen, srcStride, dstStride, rsv}` (blockLen in BYTES).
+
+### Includes / entry
+- Device file: `#include "kernel_operator.h"` + `using namespace AscendC;`.
+- Entry MUST be `extern "C" __global__ __aicore__ void <op>(...)` (never
+  `__global__ __vector__`).
+- Math: use `sqrt/rsqrt/exp/pow` (there is no `sqrtf`/`expf` on aicore).
+
+### Matmul / cube (only if the op needs it)
+- Use the COMPLETE header tree (see matmul note above): include
+  `highlevel_api/...`; do not include from `tools/tikcpp/tikcfw` (kfc missing →
+  `kfc_register_obj.h file not found`). Follow KernelBench's own sample/Host glue.

@@ -33,3 +33,9 @@ context_management:
   keep_recent_turns: 2
   max_compactions_per_session: 2
   max_recoveries_per_command: 1
+
+# Raised single-message wait for operator LLM phases (default 600s).
+# 8-way concurrency makes qwen3.8 generation slow; give each phase up to 2h.
+# Keep in sync with operator_bench_config.yaml.
+session_timeout_phase: 7200
+session_timeout_repair: 7200
