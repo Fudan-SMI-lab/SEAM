@@ -203,12 +203,15 @@ def test_rejects_path_traversal_skill_names(tmp_path: Path):
 
 
 def test_inject_full_false_keeps_paths_without_content(tmp_path: Path):
-    write_skill(tmp_path, "brief", markdown="# Brief\n\nFull content")
+    skill_dir = write_skill(tmp_path, "brief", markdown="# Brief\n\nFull content")
 
     bundle = RuntimeSkillResolver(tmp_path).resolve(
         phase_config=RuntimeSkillsConfig(include=["brief"], inject_full=False)
     )
 
     assert bundle.names == ["brief"]
-    assert "Source:" in bundle.markdown
+    source = skill_dir / "SKILL.md"
+    assert bundle.paths == [str(source)]
+    assert f"Source: `{source}`" in bundle.markdown
+    assert source.is_file()
     assert "Full content" not in bundle.markdown

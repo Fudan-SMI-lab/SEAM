@@ -4,71 +4,24 @@ This is an operator-level repair task. Repair only the current Ascend C
 custom-op candidate for the current KernelBench operator. Do not expand this
 into project migration or dataset orchestration.
 
-## Critical: Reference Implementation Is Not Ground Truth
+## Reference and Candidate Evidence
 
-The reference implementation is **one possible interpretation of the operator
-semantics**, not absolute correctness. Before attempting a fix, assess whether
-the failure is a **candidate bug** or a **reference defect**:
-
-**Suspect reference defects when**:
-- All failures share **identical patterns** correlated with specific parameter
-  values (e.g., all `pad=False` fail, all `pad=True` pass).
-- Reference code returns **uninitialized memory** or undefined values for certain
-  input combinations.
-- Candidate output is **semantically valid** but doesn't match reference due to
-  ambiguous specification in `definition.json`.
-- Reference has visible **TODOs, NotImplementedError, or incomplete branches**.
-
-**Confirm candidate bugs when**:
-- Failures have **diverse patterns** across workloads.
-- Candidate produces **invalid outputs** (crashes, VA faults, wrong shapes, NaN
-  where valid values expected).
-- Source code has **direct implementation errors** (off-by-one, memory leaks,
-  race conditions).
-
-**If the failure is a reference defect**, return with:
-```json
-{
-  "build_status": "success",
-  "evaluation_status": "blocked",
-  "failure_category": "reference_defect",
-  "handoff_role": "none",
-  "summary": "Reference implementation has defect: [具体描述]. Candidate output is semantically valid but doesn't match undefined reference behavior."
-}
-```
-
-Do NOT modify the candidate to match a broken reference.
+Use `definition.json` as the contract and the reference as the comparison
+baseline. Failure patterns, TODOs or missing traces alone do not establish a
+reference defect or a candidate bug. Tie each suspected defect to the exact
+source branch, contract and affected workload. Do not edit the reference or
+weaken acceptance criteria. If an external reference issue prevents validation,
+report the evidence and request escalation; do not claim the candidate is correct
+or set build status to success without an actual successful build.
 
 ## CANN API Version Compatibility
 
-The runtime detection has identified which `torch_npu.*` APIs are available in the
-current CANN environment. **Respect these constraints during repairs**:
-
-**Runtime API compatibility**: See `{runtime_report.api_availability}`
-
-**If the failure is caused by using an unavailable API**:
-1. Check the `api_availability` mapping from runtime detection.
-2. Replace the unavailable API with its `fallback`.
-3. Verify the fallback has equivalent semantics for this workload.
-
-**Example**: Repairing `GroupedMatmulSwigluQuantV2` when V2 is unavailable:
-```python
-# Original (failing on CANN 8.3)
-output = torch_npu.npu_grouped_matmul_swiglu_quant_v2(...)
-
-# Repaired (fallback to V1)
-output = torch_npu.npu_grouped_matmul_swiglu_quant(...)
-```
-
-**If no compatible fallback exists**, return with:
-```json
-{
-  "build_status": "blocked",
-  "evaluation_status": "blocked",
-  "failure_category": "environment",
-  "summary": "Operator requires aclnnXXX (CANN >= X.Y) but current environment only has CANN X.Z. No compatible fallback API exists."
-}
-```
+Use `{runtime_report.api_availability}` as availability evidence where provided.
+Verify installed declarations and the binding API policy before using an API or
+fallback. A missing convenience API does not establish an environment defect:
+consider a compliant Ascend C implementation first. If none is feasible, report
+the verified missing capability and blocking reason without inventing a version
+requirement or automatically substituting an existing target operator.
 
 ## Operator API policy
 
@@ -97,9 +50,10 @@ repair as blocked if no compliant alternative exists.
 
 ## Current Operator Text Context
 
-The controller already read the relevant task and evaluation evidence. Use
-this text first; do not open evidence paths yourself or search for duplicate
-task directories.
+The controller supplies bounded excerpts of task and evaluation evidence. Use
+this text first. Do not search for duplicate task directories. If an excerpt is
+missing, truncated or insufficient, read only the relevant original artifact
+at a path supplied by the evaluation/diagnosis; otherwise report missing evidence.
 
 ### Definition
 ```json
@@ -111,7 +65,7 @@ task directories.
 {operator_workload_text}
 ```
 
-### Phase 1 analysis
+### Phase 2 analysis
 ```json
 {operator_analysis_text}
 ```
@@ -159,9 +113,26 @@ For each failure:
 3. State the causal explanation and supporting evidence. If evidence does not
    distinguish between plausible causes, report the diagnosis as uncertain and
    gather a narrower reproduction instead of guessing.
-4. Make the smallest semantically justified change, then rebuild and rerun the
-   affected workload. Confirm that the change fixes the original failure and
-   does not introduce regressions in related dtypes, shapes, or branches.
+4. Make the smallest semantically justified change in the declared candidate
+   source. Run at most one narrow local structural or build check if available;
+   record its command, exit status and log path. Do not launch a competing NPU
+   evaluator. The controller packages the repaired sources and performs the
+   authoritative full-workload rerun in the next evaluation step. Until that
+   evidence exists, runtime correctness remains pending, not confirmed.
+
+Read the skill entry point at its injected `Source` path and only the linked
+sections needed for this repair. Reuse Phase 2's documentation/API evidence when
+applicable; verify newly introduced or changed APIs against active declarations
+or version-matched official documentation. Check exact qualified names,
+signatures, argument units, dtypes and SoC support, not just name similarity.
+Record path and symbol/section in the operator manifest. A fallback listed by
+runtime detection is not automatically allowlisted or semantically equivalent.
+
+If a new result invalidates the Phase 2 design, record the prior assumption,
+supporting evidence and revised design in the manifest. Do not claim to have
+changed the controller's stored analysis. If diagnosis requests `none` or an
+environment handoff, do not edit the kernel speculatively; return the blocking
+reason and required evidence/action.
 
 Skill examples are references for understanding APIs, not error-message
 detectors or automatic rewrite rules. Verify their applicability to the active
@@ -181,8 +152,9 @@ API allowlist remains binding and is separate from failure diagnosis.
   `content`. The framework packages exactly these files after a completed repair;
   do not create or edit `solution.json` manually. Do not edit build/staging copies.
 - After the repair, the outer workflow will rerun every workload for this operator.
-- Do not spend tool calls reopening definition, workload, trace, stdout, or
-  stderr files; their relevant contents are already included above.
+- Do not spend tool calls reopening complete definition, workload, trace, stdout,
+  or stderr excerpts. Reopen only the relevant original file when the injected
+  excerpt is insufficient, and explain the missing evidence being recovered.
 - Work sequentially: do not issue parallel tool calls. Prefer one inspection
   call, one edit call, and one validation call.
 - If the failure is environment, dependency, or task-schema related rather than
@@ -199,18 +171,24 @@ Return exactly one JSON object:
   "summary": "",
   "operator": "{operator_name}",
   "iteration": 0,
-  "build_status": "success|failed|blocked",
+  "build_status": "not_run|success|failed|blocked",
   "evaluation_status": "pending|success|failed|blocked",
   "failure_category": "",
   "remaining_failures": [],
   "handoff_role": "",
+  "api_evidence": [],
+  "validation_evidence": [],
   "verification": {
     "definition_unchanged": true,
     "workload_unchanged": true,
     "cpu_fallback_added": false,
     "reference_bypass_detected": false,
     "requires_full_workload_rerun": true,
-    "solution_json_updated": true
+    "solution_json_updated": false
   }
 }
 ```
+
+`solution_json_updated` reports only an update actually observed; it is false
+for this role because the framework, not this agent, creates `solution.json`.
+Do not claim evaluation success from a source edit or a local build check.

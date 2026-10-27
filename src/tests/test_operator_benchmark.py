@@ -69,6 +69,27 @@ def test_kernelbench_workflow_combines_generation_evaluation_and_repair_loop() -
     assert order.index("fix_operator") < order.index("pack_repaired_operator")
 
 
+def test_kernelbench_agents_share_path_only_documentation() -> None:
+    workflow = load_workflow("src/workflows/npu_kernelbench_custom_op.yaml")
+    analysis = next(
+        phase for phase in workflow.phases if phase.id == "phase_2_operator_analysis"
+    )
+    assert analysis.runtime_skills is not None
+    assert analysis.runtime_skills.include == ["cuda-custom-op-to-npu-custom-op"]
+    assert analysis.runtime_skills.inject_full is False
+    assert analysis.runtime_skills.missing == "error"
+
+    phases = {
+        phase["id"]: phase
+        for phase in workflow.sub_workflows["operator_repair_loop"].phases
+    }
+    for phase_id in ("prepare_operator", "fix_operator"):
+        config = phases[phase_id]["runtime_skills"]
+        assert config["include"] == analysis.runtime_skills.include
+        assert config["inject_full"] is False
+        assert config["missing"] == "error"
+
+
 def test_operator_evaluation_classification_routes_reference_and_device_failures() -> None:
     reference = classify_operator_evaluation(
         {

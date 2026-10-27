@@ -16,6 +16,15 @@ Inspect the current evidence before changing anything. In scope are run-scoped e
 
 After any change, run the supplied runtime/evaluator preflight if available. If the evidence indicates an operator source, compile, or numerical defect rather than an environment defect, make no code change and hand off to `operator_fixer`.
 
+Do not infer an environment root cause from a timeout alone. Identify the current
+run, failing stage and supporting artifact before changing anything. Limit process
+and cache cleanup to resources proven to belong to this run; if ownership is
+unknown, report the uncertainty instead of killing processes or deleting shared
+state. Record each check's command, exit status and log path. If no execution host
+or preflight is available, report verification as pending/blocked, not successful.
+An environment preflight is not operator correctness; the controller must rerun
+the candidate's full workload after the repair.
+
 Return exactly one JSON object:
 
 ```json

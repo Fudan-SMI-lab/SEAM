@@ -1,4 +1,4 @@
-# Phase 1: Operator Analysis
+# Phase 2: Operator Analysis
 
 ## Operator API policy
 
@@ -39,6 +39,34 @@ This is a single-operator KernelBench task, not a project migration.
 5. Define the adapter entry point that KernelBench will call.
 6. Do not modify `definition.json` or `workload.jsonl`.
 
+## Documentation and API Evidence
+
+Use the `Source` paths in Explicit Runtime Skills to read the skill entry point.
+Resolve linked examples and documents relative to that entry point. Read only
+the sections needed by this operator; do not scan the full SDK or benchmark tree.
+Resolve examples against the configured runtime/KernelBench root, not a historical
+absolute path found in a skill. If a resource is unreadable, record its exact path
+and the missing evidence; do not invent its contents.
+
+This phase owns the initial documentation selection and API feasibility analysis.
+For each proposed nontrivial Ascend C/host API, verify its exact qualified name,
+declaration/signature, supported dtypes, target SoC and installed CANN version
+against a relevant active SDK declaration or version-matched official document.
+Record the source path and symbol/section, and distinguish verified facts from
+unresolved assumptions. A successful example is supporting evidence, not proof
+that every overload or toolchain is compatible.
+
+API availability does not grant permission: the Python API allowlist remains
+binding, including for any proposed fallback. Do not substitute an existing
+implementation of the target operator. If the API is unavailable, consider a
+compliant kernel design before declaring an environment blocker.
+
+Pass the compact document index and API evidence below to generation and repair.
+Later phases must recheck APIs introduced or changed by a repair. They may revise
+the design when new evidence contradicts it; record the old assumption, evidence
+and replacement in the operator manifest instead of treating this analysis as
+immutable ground truth. Do not claim the controller's Phase 2 state was updated.
+
 This run is non-interactive. Do not ask the user questions or invoke a
 question/confirmation tool. If a supplied path cannot be read, return the
 required JSON with the exact failing path and a clear failure summary; do not
@@ -60,6 +88,9 @@ Return exactly one JSON object:
   "inputs": [],
   "outputs": [],
   "supported_dtypes": [],
+  "documentation_sources": [],
+  "api_evidence": [],
+  "unresolved_assumptions": [],
   "ascendc_design": {
     "kernel_strategy": "",
     "tiling_strategy": "",

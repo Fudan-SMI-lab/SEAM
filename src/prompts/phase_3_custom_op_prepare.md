@@ -28,158 +28,52 @@ most one narrow structural check.
 - Editable source specification: `{solution_spec_path}`
 - Framework-generated solution (do not edit): `{solution_path}`
 
-## CANN API Version Compatibility
+## Read Documentation and Verify APIs Before Implementation
 
-The runtime detection has identified which `torch_npu.*` APIs are available in the
-current CANN environment. **You must respect these constraints**:
+Read the compact documentation index and API evidence from Phase 2 first.
+Use the `Source` paths in Explicit Runtime Skills to open the skill entry point,
+then read only the relevant linked example or API section. Resolve relative
+links from the skill directory and benchmark examples from the configured
+runtime root; do not assume historical absolute paths still exist. Do not scan
+the full CANN header tree. If a required source cannot be read, record its path
+and the unresolved question instead of inventing its contents.
 
-**Runtime API compatibility**:
-```json
-{runtime_report.api_availability}
-```
+Before using a nontrivial Ascend C, host, or adapter API:
 
-**Usage rules**:
-1. **Check the `api_availability` mapping** before using any version-gated API.
-2. **If an API is marked `"available": false`**, use its `"fallback"` instead.
-3. **Never hardcode V2 APIs** without checking availability first.
+1. Verify the exact qualified symbol name and declaration in the active SDK or
+   version-matched official documentation. Do not guess enum spellings, overloads,
+   template parameters, argument order, units, or supported conversions.
+2. Check parameter/return types, supported dtypes, target SoC, alignment and
+   synchronization requirements for the chosen overload. Verify names such as
+   queue positions and tensor accessors from declarations, not memory.
+3. Record the source path and symbol/section with the verified signature and
+   applicability in the operator manifest. Reuse Phase 2 evidence only when it
+   matches the active toolchain and the API actually used.
+4. Treat runtime API availability as evidence of existence, not authorization or
+   semantic equivalence. Any fallback must independently satisfy the API policy,
+   operator semantics and installed signature. Never automatically call a target
+   operator implementation because a runtime report lists it as a fallback.
+5. If the evidence is missing, state the uncertainty. If no compliant kernel
+   implementation is feasible, return `prepared: false`, `build_status: "blocked"`
+   with a factual blocking explanation; do not invent APIs or claim a build ran.
 
-**Example**: `npu_grouped_matmul_swiglu_quant_v2`
-```python
-# ❌ Wrong: hardcoded V2
-output = torch_npu.npu_grouped_matmul_swiglu_quant_v2(...)
+Do not implement error-message string detectors or mechanical source rewrites.
+The fixed Python API allowlist is a separate policy check and remains binding.
 
-# ✅ Correct: use fallback from runtime config
-# If V2 unavailable, fallback is "npu_grouped_matmul_swiglu_quant"
-output = torch_npu.npu_grouped_matmul_swiglu_quant(...)
-```
+## Semantics and Memory Safety
 
-**If you encounter a missing API during implementation**, return with:
-```json
-{
-  "build_status": "blocked",
-  "blocking_category": "environment",
-  "summary": "Operator requires aclnnXXX (CANN >= X.Y) but current environment only has CANN X.Z. No compatible fallback exists."
-}
-```
+Use `definition.json` as the operator contract and the reference as the evaluator's
+comparison baseline. A mismatch or a TODO alone does not prove a reference defect.
+Record a suspected conflict with the exact contract, source branch and affected
+workload; do not edit the reference, weaken comparison, or claim a pass.
 
-## Critical: Reference Implementation Is a Baseline, Not Ground Truth
-
-The reference implementation in the task directory is **one possible interpretation
-of the operator semantics**, not absolute correctness. When studying the reference:
-
-1. **Use it as a semantic guide**, not a literal template to copy.
-2. **Identify the core algorithm** and data flow, not implementation details.
-3. **Expect potential defects**: uninitialized memory for certain parameter
-   combinations, undefined edge case handling, mixed precision inconsistencies.
-4. **Definition.json is the contract**, not the reference code. If they conflict,
-   the JSON specification takes precedence.
-
-**Your candidate will be judged against the reference output**, but if you detect
-obvious reference bugs during implementation (e.g., uninitialized returns, TODOs,
-NotImplementedError), note them in the operator manifest so later repair phases
-can distinguish candidate bugs from reference defects.
-
-Do NOT blindly replicate reference bugs. Implement the semantics as specified in
-`definition.json` first; if that produces valid outputs that happen to differ
-from a broken reference, the repair phase will handle it.
-
-## Memory Safety Requirements (Critical)
-
-The Ascend C implementation MUST guarantee memory safety. VA (Virtual Address) faults are the most common failure mode in the official KernelBench 105 benchmark suite:
-
-1. **Address calculation**: All GM/UB offsets must stay within allocated regions.
-   - For tiling: verify each tile's start/end offset before DataCopy.
-   - For tail blocks: if `remaining < tileSize`, use `remaining`, not `tileSize`.
-   - Example: `offset = blockIdx * tileSize + threadIdx * elementSize` must satisfy
-     `offset + copyLen <= totalAllocatedBytes`.
-
-2. **DataCopy blockLen**: Must match the actual data size, not exceed buffer capacity.
-   - Common mistake: using `tileSize` for the last block when only `remaining` elements exist.
-   - Fix: `actualLen = min(tileSize, totalElements - processedElements)`.
-
-3. **Alignment**: NPU requires 32-byte alignment for bulk DataCopy.
-   - If offset is NOT 32-byte aligned, use scalar GetValue/SetValue instead.
-   - After scalar operations, call `PipeBarrier<PIPE_ALL>()` before vector ops.
-
-4. **Verification**: Before submission, mentally trace the LAST workload:
-   - What is the final tile's offset?
-   - Does `offset + blockLen` exceed allocated size?
-   - If yes, reduce `blockLen` for the tail block.
-
-VA (Virtual Address) faults manifest as:
-- `devmm Va error / Check alloced va / Device fault error ret=-22`
-- Timeout with 0/0 traces (worker stops responding)
-- Access address exactly `allocEnd + pageSize` (典型的 +1 页越界)
-
-If your implementation has ANY dynamic offset calculation (e.g., loop with 
-`blockIdx`, `for (int i = 0; i < rows; i++)`), apply tail-block protection.
-
-## Ascend C API Constraints (Critical for Code Generation)
-
-**These are HARD CONSTRAINTS enforced by the Ascend C compiler**. Violating any of these will cause compilation failures:
-
-### 1. Queue Position API
-```cpp
-// ❌ WRONG: These do NOT exist
-TQue<QuePos::VEC_IN, BUFFER_NUM>
-TQue<AscendC::QuePos::VECIN, ...>
-TQue<QuePosition::VEC_IN, ...>
-
-// ✅ CORRECT: Only these exist
-TQue<QuePosition::VECIN, BUFFER_NUM>   // Input queue
-TQue<QuePosition::VECOUT, BUFFER_NUM>  // Output queue
-```
-
-**Never abbreviate** `QuePosition` to `QuePos`. Never use `VEC_IN` or `VEC_OUT` — the correct enum values are `VECIN` and `VECOUT` (no underscore).
-
-### 2. LocalTensor Scalar Access
-```cpp
-// ❌ WRONG: Cannot assign LocalTensor directly to scalar
-LocalTensor<half> tensor = ...;
-half value = tensor;  // ❌ Compiler error
-
-// ✅ CORRECT: Use GetValue(index)
-half value = tensor.GetValue(0);
-```
-
-**Every scalar read** from `LocalTensor` must use `.GetValue(i)`, even when the tensor is 1D and you only need element 0.
-
-### 3. Cast API
-```cpp
-// ❌ WRONG: Mismatched signature or unnecessary cast
-Cast(dst, src, RoundMode::CAST_NONE, N);  // Wrong param order/type
-Cast(fp32Tensor, fp32Tensor, ...);        // Same dtype, no cast needed
-
-// ✅ CORRECT: Match template signature, skip same-dtype cast
-if (dtype != TARGET_DTYPE) {
-    Cast(dst, src, RoundMode::CAST_NONE, elementCount);
-}
-```
-
-**Read the skill template's `Cast` signature** before using it. Never cast a tensor to its own dtype (e.g., `float → float`).
-
-### 4. Type Conversion in aicore Functions
-```cpp
-// ❌ WRONG: float ↔ unsigned int conversion inside __aicore__ function
-__aicore__ void kernel(...) {
-    float f = 1.0f;
-    unsigned int u = (unsigned int)f;  // ❌ Not allowed
-}
-
-// ✅ CORRECT: Avoid float ↔ uint conversion, or do it on host
-// If unavoidable, use bit_cast or extract the conversion to a separate CPU function
-```
-
-### 5. Variable Initialization
-```cpp
-// ❌ WRONG: Uninitialized const variables
-const float scale;  // ❌ Must be initialized
-
-// ✅ CORRECT: Always initialize
-const float scale = 1.0f;
-```
-
-**Before calling any tool to write Ascend C code**, verify your generated code against these 5 rules. If unsure about an API, **read the skill template** (`op_template.cpp`) first — it contains the correct usage patterns.
+For every workload dtype and shape family, reason about address bounds, GM/UB
+allocation sizes, element-versus-byte units, tile and tail lengths, alignment,
+queue ownership and synchronization. Verify the chosen copy/conversion APIs
+against their actual declarations; do not prescribe scalar copies or a global
+barrier as a universal fix. Include empty, smallest, largest and non-aligned
+cases when they occur in the workload. A timeout or missing trace alone is not
+proof of an out-of-bounds access.
 
 ## Required Actions
 
@@ -219,23 +113,19 @@ Run only a narrow structural check if needed to ensure the candidate artifacts
 are present and internally consistent; report actual results without replacing
 the KernelBench result.
 
-## Pre-Submission Validation (Critical for Multi-Dtype Operators)
+## Validation Ownership and Evidence
 
-**Before finalizing the candidate**, verify it handles ALL dtypes present in the workload:
+Inspect the complete workload metadata for dtype, shape and attribute coverage;
+do not infer coverage or pass rates from a sample. Record the intended paths and
+unverified risks in the manifest. This phase may run at most one narrow structural
+check; do not launch an independent NPU evaluator or per-dtype test suite here.
 
-1. **Check `workload.jsonl` for dtype variants** (e.g., `float16`, `float32`, `bfloat16`).
-2. **Test the candidate with at least one workload per dtype**:
-   - If the operator has fp16/fp32/bf16 workloads, run 1 sample of each.
-   - Verify the kernel does NOT unconditionally cast (e.g., `float → float` is unnecessary).
-3. **If any dtype path fails**, fix it before submission.
-
-**Common dtype issues**:
-- **Unconditional Cast**: `Cast(fp32, fp32, ...)` is redundant and may cause numerical errors.
-  → Fix: Skip Cast when `srcDtype == dstDtype`.
-- **Only fp16 tested**: Kernel works for fp16 but breaks for fp32/bf16 due to precision/alignment differences.
-  → Fix: Run at least 1 workload per dtype variant before submission.
-
-**Why this matters**: The official KernelBench 105 contains fp16/fp32/bf16 variants. A candidate that only validates fp16 will fail 2/3 of the workloads. Testing ALL dtype paths **once before submission** prevents wasting repair iterations later.
+The controller owns packaging and authoritative build/full-workload evaluation.
+Report a command, exit status and log path for any check actually run. Use
+`build_status: "not_run"` unless a real build was executed. Structural validity,
+API inspection and candidate preparation do not establish compilation or runtime
+correctness. Missing NPU access is not proof that the target runtime is broken;
+leave runtime validation pending for the controller on the execution host.
 
 ## Output Format
 
@@ -252,7 +142,10 @@ Return exactly one JSON object:
   "manifest_path": "",
   "build_config_path": "",
   "prepared": true,
-  "build_status": "not_run|success|failed",
+  "build_status": "not_run|success|failed|blocked",
+  "blocking_category": "",
+  "api_evidence": [],
+  "validation_evidence": [],
   "modified_files": [],
   "summary": ""
 }

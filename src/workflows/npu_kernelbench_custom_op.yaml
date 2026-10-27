@@ -76,6 +76,11 @@ phases:
     agent: main_engineer
     prompt_template: "phase_2_operator_analysis"
     validator: operator_analysis
+    runtime_skills:
+      include:
+        - cuda-custom-op-to-npu-custom-op
+      inject_full: false
+      missing: error
     input_mapping:
       operator_task_dir: "${state.phase_0_operator_env_detect.operator_task_dir}"
       operator_name: "${state.phase_0_operator_env_detect.operator_name}"
@@ -177,7 +182,7 @@ sub_workflows:
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
-          inject_full: true  # 将模板完整注入 prompt，避免模型臆造 API
+          inject_full: false
           missing: error
         on_failure: continue
 
@@ -251,7 +256,7 @@ sub_workflows:
         runtime_skills:
           include:
             - cuda-custom-op-to-npu-custom-op
-          inject_full: true  # 修复阶段同样需要完整模板
+          inject_full: false
           missing: error
         input_mapping:
           operator_constraints: "${loop_vars.OPERATOR_CONSTRAINTS}"
