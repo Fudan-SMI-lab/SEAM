@@ -1,0 +1,37 @@
+- id: workflow-worker-thread
+  disabled: false
+- id: tool-bash
+  disabled: false
+- id: tool-fs
+  disabled: false
+- id: tool-fs-search
+  disabled: false
+- insert:
+    - id: seam-workflow
+      name: !!js process.env.SEAM_DSH_PLUGIN
+      config:
+        repository: !!js process.env.SEAM_REPOSITORY
+        runRoot: !!js process.env.SEAM_RUN_ROOT
+        python: !!js process.env.SEAM_PYTHON
+        workflows:
+          kernelbench: src/workflows/npu_kernelbench_custom_op.yaml
+        defaultTimeoutSeconds: 3600
+        maxPromptBytes: 200000
+        roleTools:
+          main_engineer: [read, write, edit, glob, grep, bash]
+          error_analyzer: [read, glob, grep]
+          operator_fixer: [read, write, edit, glob, grep, bash]
+          operator_environment_fixer: [read, write, edit, glob, grep, bash]
+        roleOptions:
+          main_engineer:
+            provider: !!js process.env.SEAM_PROVIDER
+            model: !!js process.env.SEAM_MODEL
+          error_analyzer:
+            provider: !!js process.env.SEAM_PROVIDER
+            model: !!js process.env.SEAM_MODEL
+          operator_fixer:
+            provider: !!js process.env.SEAM_PROVIDER
+            model: !!js process.env.SEAM_MODEL
+          operator_environment_fixer:
+            provider: !!js process.env.SEAM_PROVIDER
+            model: !!js process.env.SEAM_MODEL
