@@ -1,25 +1,24 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdir, realpath, rm } from 'node:fs/promises'
 import { join, resolve as absolute } from 'node:path'
-import { parse } from 'yaml'
 import { DomainBridge } from './bridge.js'
 import { DshRuntime, type DshHost } from './dsh-runtime.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { WorkflowEngine } from '@deepseek-ai/dsh-workflow'
 import { NativeWorkflow } from './native-workflow.js'
 import type { WorkflowTransport } from './workflow-transport.js'
-import { compileWorkflow } from './workflow-compiler.js'
-import { checkOperatorWorkflow } from './preflight.js'
+import { buildWorkflowPackage, loadWorkflowPackage, verifyPackageBindings, type WorkflowPackage } from './workflow-package.js'
 import { RunStore } from './store.js'
 import { createShellPhase } from './shell.js'
 import { ContainerExecutionBackend, LocalExecutionBackend } from './execution-backend.js'
-import type { Data, RunSnapshot, Workflow } from './types.js'
+import type { Data, RunSnapshot } from './types.js'
 
 export interface ControllerConfig {
   repository: string
   runRoot: string
   python: string
   workflows: Record<string, string>
+  workflowPackages?: Record<string, string>
   roleTools: Record<string, string[]>
   roleOptions?: Record<string, Data>
   defaultTimeoutSeconds: number
@@ -32,6 +31,7 @@ export class SeamController {
   private readonly active = new Map<string, ActiveRun>()
   private readonly chats = new Map<string, { runtime: DshRuntime; release(): Promise<void> }>()
   private readonly pending = new Set<Promise<unknown>>()
+  private readonly packages = new Map<string, Promise<WorkflowPackage>>()
   private closing = false
   private readonly lifecycle = new AbortController()
   constructor(private readonly host: DshHost, private readonly config: ControllerConfig, private readonly workflowEngine: WorkflowEngine, private readonly transport: WorkflowTransport) {
@@ -53,13 +53,26 @@ export class SeamController {
     await mkdir(lock)
     return () => rm(lock, { recursive: true })
   }
+  private workflowPackage(name: string): Promise<WorkflowPackage> {
+    const cached = this.packages.get(name)
+    if (cached) return cached
+    const explicit = this.config.workflowPackages && Object.hasOwn(this.config.workflowPackages, name) ? this.config.workflowPackages[name] : undefined
+    const yaml = Object.hasOwn(this.config.workflows, name) ? this.config.workflows[name] : undefined
+    if (!explicit && !yaml) return Promise.reject(new Error('Workflow is not configured in this profile'))
+    const pending = explicit
+      ? loadWorkflowPackage(absolute(this.config.repository, explicit), this.config.repository)
+      : buildWorkflowPackage(absolute(this.config.repository, yaml!), join(this.config.runRoot, 'workflow-packages'), this.config.repository)
+    this.packages.set(name, pending)
+    void pending.catch(() => { this.packages.delete(name) })
+    return pending
+  }
   run(request: { runId: string; workflow: string; workspace: string; context: Data }, parent: Agent): Promise<{ runId: string; status: string }> {
     return this.track(async () => {
       if (!parent) throw new Error('A calling dsh Agent is required to own the workflow')
       if (this.active.has(request.runId) || this.chats.has(request.runId)) throw new Error('Run is already owned')
-      const file = Object.hasOwn(this.config.workflows, request.workflow) ? this.config.workflows[request.workflow] : undefined
-      if (!file) throw new Error('Workflow is not configured in this profile')
-      const workflow = parse(await readFile(absolute(this.config.repository, file), 'utf8')) as Workflow
+      const bundle = await this.workflowPackage(request.workflow)
+      await verifyPackageBindings(bundle, this.config.repository)
+      const workflow = structuredClone(bundle.workflow)
       const workspace = await realpath(request.workspace)
       const store = new RunStore(this.config.runRoot, request.runId)
       const backendConfig = workflow.execution_backend as Data | undefined
@@ -68,8 +81,6 @@ export class SeamController {
       if (backendMode !== 'local' && backendMode !== 'container') throw new Error(`Unsupported execution_backend.mode: ${String(backendMode)}`)
       const containerBackend = backendMode === 'container' ? new ContainerExecutionBackend(backendConfig as never, workspace) : undefined
       const bridge = new DomainBridge({ repository: this.config.repository, python: this.config.python, outputDir: store.directory, maxPromptBytes: this.config.maxPromptBytes, agentSkills: Object.fromEntries(Object.entries(workflow.agents ?? {}).map(([role, agent]) => [role, (agent as Data).runtime_skills as Data ?? {}])) })
-      checkOperatorWorkflow(workflow, { containerBackend: Boolean(containerBackend) })
-      await compileWorkflow(workflow, Boolean(containerBackend))
       for (const phase of [...workflow.phases, ...Object.values(workflow.sub_workflows ?? {}).flatMap(loop => loop.phases)]) {
         if ((phase.type ?? 'llm') === 'llm' && !Object.hasOwn(this.config.roleTools, phase.agent ?? '')) throw new Error(`Explicit tool policy missing: ${phase.agent}`)
       }
@@ -78,7 +89,7 @@ export class SeamController {
       const runtime = new DshRuntime({ host: this.host, workspace, roleTools: this.config.roleTools, roleOptions: this.config.roleOptions, containerBackend, lifecycle: Object.fromEntries(Object.entries(workflow.agents ?? {}).map(([role, agent]) => [role, agent.lifecycle ?? 'persistent'])), render: execution => bridge.render(execution), onSessions: async () => { await engine?.checkpoint() }, onEvents: async (phase, events) => { await store.artifact(`${phase}-events`, events) } })
       try {
         this.lifecycle.signal.throwIfAborted()
-        engine = new NativeWorkflow({ workflow, runtime, handlers: { builtin: bridge.builtin, shell: createShellPhase(containerBackend ?? new LocalExecutionBackend()) }, store, workspace, context: request.context, validate: (execution, result) => bridge.validate(execution, result), defaultTimeoutSeconds: this.config.defaultTimeoutSeconds, signal: this.lifecycle.signal, containerBackend: Boolean(containerBackend) }, this.workflowEngine, this.transport, parent)
+        engine = new NativeWorkflow({ workflow, runtime, handlers: { builtin: bridge.builtin, shell: createShellPhase(containerBackend ?? new LocalExecutionBackend()) }, store, workspace, context: request.context, validate: (execution, result) => bridge.validate(execution, result), defaultTimeoutSeconds: this.config.defaultTimeoutSeconds, signal: this.lifecycle.signal, containerBackend: Boolean(containerBackend) }, this.workflowEngine, this.transport, parent, bundle)
         const done = engine.run().finally(async () => {
           try { await containerBackend?.close(new AbortController().signal) }
           finally { try { await release() } finally { this.active.delete(request.runId) } }

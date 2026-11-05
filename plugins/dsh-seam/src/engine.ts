@@ -57,7 +57,7 @@ export function checkWorkflow(workflow: Workflow, handlers: Record<string, Handl
     if (ids.size !== phases.length) throw new Error('Duplicate phase ids')
     for (const phase of phases) {
       if (!phase.id) throw new Error('Missing phase id')
-      checkFields(phase, ['id', 'name', 'type', 'agent', 'operation', 'handler', 'prompt_template', 'validator', 'timeout', 'condition', 'input_mapping', 'params', 'output_as', 'sub_workflow', 'on_failure', 'transitions', 'runtime_skills', 'route_field', 'routes', 'output_schema', 'command', 'cwd', 'env', 'capture'], `phases.${phase.id}`)
+      checkFields(phase, ['id', 'name', 'type', 'agent', 'operation', 'handler', 'prompt_template', 'validator', 'timeout', 'condition', 'input_mapping', 'input_schema', 'params', 'output_as', 'sub_workflow', 'on_failure', 'transitions', 'runtime_skills', 'route_field', 'routes', 'output_schema', 'command', 'cwd', 'env', 'capture'], `phases.${phase.id}`)
       const type = phase.type ?? 'llm'
       if (!['llm', 'loop', 'dispatch'].includes(type) && !handlers[type]) throw new Error(`No handler for phase type ${type}`)
       if (phase.hooks || phase.retrieve_experience || phase.validate_only) throw new Error(`Not migrated: phase extensions in ${phase.id}`)

@@ -27,6 +27,8 @@ export interface Phase {
   env?: Record<string, string>
   capture?: Record<string, string>
   runtime_skills?: { include?: string[]; inject_full?: boolean; missing?: string }
+  input_schema?: Data | boolean
+  output_schema?: Data | boolean
   [key: string]: unknown
 }
 export interface Loop {
@@ -87,5 +89,6 @@ export interface RunSnapshot {
   sessions: Record<string, string>
   executionEngine?: 'dsh-workflow'
   dshWorkflowId?: string
+  workflowPackageId?: string
   error?: string
 }

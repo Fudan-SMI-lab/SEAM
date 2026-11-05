@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { realpath } from 'node:fs/promises'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { WorkflowEngine, WorkflowRun } from '@deepseek-ai/dsh-workflow'
-import { compileWorkflow } from './workflow-compiler.js'
+import { generateWorkflow, type CompiledWorkflow } from './workflow-compiler.js'
 import { executePhase } from './phase-executor.js'
 import { executeWorkflowHooks } from './hooks.js'
 import { WorkflowTransport, type WorkflowCommand } from './workflow-transport.js'
@@ -14,7 +14,8 @@ export class NativeWorkflow {
   private snapshot?: RunSnapshot
   private native?: WorkflowRun
   private started = false
-  constructor(private readonly options: EngineOptions, private readonly engine: WorkflowEngine, private readonly transport: WorkflowTransport, private readonly parent: Agent) {}
+  private compiled?: CompiledWorkflow
+  constructor(private readonly options: EngineOptions, private readonly engine: WorkflowEngine, private readonly transport: WorkflowTransport, private readonly parent: Agent, private readonly bundle?: CompiledWorkflow & { id?: string }) {}
   status(): RunSnapshot | undefined { return this.snapshot && structuredClone(this.snapshot) }
   cancel(): void { this.cancellation.abort(new Error('Workflow cancelled')); this.native?.cancel('SEAM workflow cancelled') }
   async checkpoint(): Promise<void> {
@@ -53,8 +54,7 @@ export class NativeWorkflow {
       }
       return { state: snapshot.state }
     }
-    const phases = [...this.options.workflow.phases, ...Object.values(this.options.workflow.sub_workflows ?? {}).flatMap(loop => loop.phases)]
-    const phase = phases.find(item => item.id === command.phaseId)
+    const phase = typeof command.phaseId === 'string' && this.compiled && Object.hasOwn(this.compiled.stages, command.phaseId) ? this.compiled.stages[command.phaseId] : undefined
     if (!phase || ['loop', 'dispatch'].includes(phase.type ?? 'llm')) throw new Error('Unknown leaf phase')
     if (!command.scope || typeof command.scope !== 'object' || Array.isArray(command.scope)) throw new Error('Phase scope is required')
     const scope = structuredClone(command.scope) as Scope
@@ -66,18 +66,21 @@ export class NativeWorkflow {
   async run(): Promise<RunSnapshot> {
     if (this.started) throw new Error('Workflow may only start once')
     this.started = true
-    const script = await compileWorkflow(this.options.workflow, this.options.containerBackend)
+    this.compiled = this.bundle ?? await generateWorkflow(this.options.workflow, this.options.containerBackend)
+    if (JSON.stringify(this.compiled.workflow) !== JSON.stringify(this.options.workflow)) throw new Error('Workflow package does not match execution configuration')
+    const script = this.compiled.script
     const signal = this.options.signal ? AbortSignal.any([this.cancellation.signal, this.options.signal]) : this.cancellation.signal
     await this.options.store.acquire()
     let binding: ReturnType<WorkflowTransport['bind']> | undefined
     let result: RunSnapshot | undefined
     try {
       this.snapshot = { format: 1, runId: this.options.store.runId, workflow: this.options.workflow.name, workflowHash: createHash('sha256').update(JSON.stringify(this.options.workflow)).digest('hex'), workspace: await realpath(this.options.workspace), status: 'running', state: {}, context: structuredClone(this.options.context), sessions: this.options.runtime.sessions(), executionEngine: 'dsh-workflow' }
+      if (this.bundle?.id) this.snapshot.workflowPackageId = this.bundle.id
       await this.checkpoint()
       await this.options.store.artifact('dsh-script', { engine: 'dsh-workflow', script, sha256: createHash('sha256').update(script).digest('hex'), workflow: this.options.workflow })
       signal.throwIfAborted()
       binding = this.transport.bind(this.parent, (command, callerSignal) => this.operation(command, AbortSignal.any([signal, callerSignal])))
-      this.native = this.engine.start({ script, meta: { name: this.options.workflow.name, description: 'Fixed SEAM YAML workflow' }, args: { workflow: this.options.workflow, context: this.options.context, token: binding.token }, subagentProvider: this.transport.name, parent: this.parent, signal })
+      this.native = this.engine.start({ script, meta: { name: this.options.workflow.name, description: 'Compiled SEAM workflow' }, args: { context: this.options.context, token: binding.token }, subagentProvider: this.transport.name, parent: this.parent, signal })
       this.snapshot.dshWorkflowId = this.native.id
       await this.checkpoint()
       await this.options.store.artifact('dsh-run', { id: this.native.id, provider: this.transport.name })

@@ -1,6 +1,6 @@
 # SEAM on dsh：迁移实现与边界
 
-截至 2026-11-02，**本插件的算子状态机已由真实 dsh Workflow Engine 的 worker 执行**，已做宿主集成与差分测试，不是全部工作流已经切换的声明。原 Python/OpenCode 启动入口仍保持原样；本插件不调用 OpenCode，也不委托给旧 `WorkflowExecutor`。
+截至 2026-11-05，**算子 YAML 已提前生成为显式 JS，打包后由真实 dsh Workflow Engine 的 worker 执行**。工作流包可跨任务复用，不再在每次任务中解释 YAML。原 Python/OpenCode 启动入口仍保持原样；本插件不调用 OpenCode，也不委托给旧 `WorkflowExecutor`。
 
 迁移方向不变：全面替换 runtime，先保留流程。当前支持现有 `npu_kernelbench_custom_op.yaml` 的执行语义；`npu_ascend_custom_op.yaml` 等项目级流程仍有下面列出的执行策略待移植。未迁移字段会在开始执行前报错，**不静默忽略，不回退 OpenCode**。这不是只替换某一个 LLM phase，也没有重写阶段编号或改成动态流程。
 
@@ -8,7 +8,10 @@
 
 - `src/plugin.ts`：dsh/Cordis 原生插件，注入 `agents`、`sessions`、`tools`、`workflowEngine`、`subagents`，注册控制服务、工具和专用操作 provider。
 - `src/native-workflow.ts`：调用 dsh `workflowEngine.start`，关联原生 run ID，管理取消、检查点、资源清理。
-- `src/workflow-compiler.ts`、`src/fixed-script.ts`：严格校验 YAML，打包固定解释器；dsh worker 执行 phase、transition、loop、dispatch、condition 和停滞策略。LLM 不决定流程跳转。
+- `src/workflow-compiler.ts`：校验定义，生成阶段函数、显式 transition 分支与有限 loop；控制结构不再由运行时 YAML 解释器选择。
+- `src/compiled-runtime.ts`：worker 的无 YAML 辅助库，只提供 RPC、取值、条件求值、记录与停滞计算；不持有阶段表和流程调度器。
+- `src/workflow-package.ts`：构建与校验内容寻址工作流包，复用 JS、阶段配置和源位置映射；启动时检查依赖漂移。
+- `src/contracts.ts`：严格 JSON Schema 输入输出校验，不隐式转换输入类型。
 - `src/workflow-transport.ts`、`src/phase-executor.ts`：带 run capability 和 parent 校验的宿主 RPC，执行单阶段和有限重试；不在宿主重新调度流程。
 - `src/engine.ts`：旧调度器仅作差分回归基线；静态校验仍复用，插件不实例化它。
 - `src/dsh-runtime.ts`：每角色独立 session，同一角色复用聊天；通过 dsh AgentLoop 执行消息与工具调用。临时角色也可配置为 `ephemeral`。
@@ -50,6 +53,49 @@ npm run audit -- ../../src/workflows/npu_kernelbench_custom_op.yaml
 `npm run audit` 不带参数会只读检查所有现有 workflow，输出逐文件 JSON 与第一个阻塞原因。有不兼容文件时退出码为 1，这是兼容审查结果，不代表执行了这些任务。审查检查的是已迁移语义，不证明环境、模型或 NPU 可以运行。
 
 ## 加载插件
+
+### 先构建可复用工作流包
+
+在 SEAM 仓库根目录执行（先完成插件 `npm run build`）：
+
+```sh
+npm --prefix plugins/dsh-seam run compile:workflow -- \
+  "$PWD/src/workflows/npu_kernelbench_custom_op.yaml" \
+  "$HOME/.local/state/seam-dsh/workflow-packages" "$PWD"
+```
+
+命令输出工作流包 `id` 和 `directory`。包包含 `workflow.js`、`stages.json`、`definition.json`、`source-map.json`、`source.yaml`、`manifest.json`。相同输入使用同一目录；包修改或依赖漂移会拒绝运行。摘要用于一致性检查，不是数字签名；仅加载可信本地包。
+
+将 overlay 中的 `workflows` 配置替换成（其他配置不变）：
+
+```yaml
+workflows: {}
+workflowPackages:
+  kernelbench: /absolute/path/to/workflow-packages/<id>
+```
+
+显式包模式从包加载 JS/阶段配置，原始 YAML 不需要存在。旧 `workflows: {kernelbench: path.yaml}` 仍可用：每个插件实例首次使用时构建并缓存，之后不重读 YAML；要完全避免启动时编译，应使用 `workflowPackages`。修改 YAML 后须显式重建并更新配置/重启实例，不热替换运行中的包。
+
+依赖清单检查仓库 prompt、validator、Python core、显式技能根及部分阶段执行模块；它不是完整部署镜像，不锁定外部 SDK、模型、provider 或 NPU。运行时仍从仓库读取业务资源，不能删除整个仓库；外部环境由 runtime 检测负责。workspace 不打进包，同一任务共享 workspace，不同 run 保持独立状态与证据；复用 workspace 受原有租约保护，不自动续跑旧任务。
+
+### 阶段契约
+
+叶子阶段可声明内联 `input_schema`、`output_schema`（JSON Schema draft-07，由 Ajv strict 模式校验）；未知关键字、错误 schema 在构建时拒绝。暂不支持异步 schema、远程 schema 下载及控制阶段 schema。输入验证失败不调用能力；输出结构不符不会成功发布。LLM 可在同阶段有限修正，builtin 不自动重跑；原有领域 validator 继续执行。未声明 schema 的旧 YAML 保持原行为，本次不自动发明其业务契约。
+
+```yaml
+input_schema:
+  type: object
+  required: [candidate]
+  properties:
+    candidate: {type: string}
+output_schema:
+  type: object
+  required: [operator_passed]
+  properties:
+    operator_passed: {type: boolean}
+```
+
+输入映射与条件表达式暂沿用既有受限求值策略，不运行任意 JS，不新增静态跨阶段字段推断；如需拒绝缺失值，在 `input_schema` 声明必填字段和类型。
 
 `examples/seam.patch.yml` 是加入现有 dsh profile 的 overlay，不是完整部署。宿主须已加载 AgentRegistry、AgentLoop、持久化 SessionStore、SubagentRuntime、WorkerThreadWorkflowEngine、LLM provider 和工具。所验证版本的 Web profile 默认关闭 host workflow worker 和文件/bash 工具，因此 overlay 显式重新启用它们；不启用动态 `tool-workflow`。示例角色使用全局 `read/write/edit/glob/grep/bash`。启用全局工具也可能影响其他 Agent 可见性，部署时必须复核宿主及 preset 权限。
 
@@ -106,7 +152,7 @@ provider/model 应是该 dsh profile 已配置的名称；凭证与 API 地址�
 | action | 行为 |
 | --- | --- |
 | `run` | 校验配置后异步启动，返回 `starting`；随后查询状态 |
-| `status` | 返回状态、阶段、结果、角色 session ID、executionEngine 和 dshWorkflowId；本实例清理完成前不提前报告完成 |
+| `status` | 返回阶段、结果、角色 session ID、executionEngine、dshWorkflowId 和 workflowPackageId；清理完成前不提前报告完成 |
 | `cancel` | 取消当前实例拥有的任务，等待 AgentLoop/sidecar 清理和最终快照 |
 | `restore_chat` | 恢复已停止任务的角色聊天，校验 cwd、应用工具策略；不重新发送 prompt、不重跑 phase |
 | `close_chat` | 释放恢复的角色会话与 workspace 租约，保留持久化日志 |
@@ -147,4 +193,4 @@ provider/model 应是该 dsh profile 已配置的名称；凭证与 API 地址�
 - 崩溃后锁不会自动删除，`running` 快照不允许直接恢复。先核实旧进程和设备任务已停止，再人工处置锁；不要用无条件删锁脚本规避竞争。
 - 尚未替换旧 CLI/服务入口，也没有删除 OpenCode 依赖。后续步骤和验收门见 `docs/dsh-runtime-migration.md`；必须先移植项目级执行语义并接入统一启动入口，再做真实模型/NPU 回归，最后才可切默认并清理旧 runtime。
 
-插件的算子执行器已切换为 dsh 原生 workflow，不是把 YAML 塞进提示词。版本化 artifact 包含 `dsh-script`（脚本及摘要）、`dsh-run`、`dsh-result`，可核实原生执行链。dsh `agentsStarted` 也统计这些宿主 RPC，不等于模型调用次数。当前支持聊天恢复，不支持进程重启后续跑 workflow。详细架构与硬件验收要求见 `docs/dsh-workflow-engine-migration.md`。
+插件执行生成的固定 JS，不是把 YAML 塞进提示词。版本化 artifact 包含 `dsh-script`（脚本及摘要）、`dsh-run`、`dsh-result`，运行快照关联工作流包 ID。dsh `agentsStarted` 也统计宿主 RPC，不等于模型调用次数。聊天恢复不续跑 workflow。评测实时落盘、服务器报告中的 wait/入口/history 修复不属于本次架构修改，仍需分别合入和验证。

@@ -1,10 +1,10 @@
 # SEAM → dsh 迁移执行计划
 
-状态更新日：2026-11-02。目标是把 OpenCode runtime 契约替换为 dsh 插件执行，并将固定 YAML 状态机迁到 dsh Workflow Engine 执行。迁移期间不得把不兼容 YAML 静默忽略、改写成 prompt，或仅为某个错误增加字符串匹配补丁。新迁移设计见 `docs/dsh-workflow-engine-migration.md`。
+状态更新日：2026-11-05。算子 YAML 已提前生成显式 JS 和版本化阶段配置，工作流包可跨任务复用，由 dsh Workflow Engine 执行；运行时不再解释 YAML。不得把不兼容定义静默忽略、改写成 prompt，或增加诊断字符串专例补丁。架构见 `docs/dsh-workflow-engine-migration.md`。
 
 ## 已完成
 
-- 算子插件入口已经使用真实 dsh `ctx.workflowEngine`：严格校验 YAML，加载固定脚本，将流程状态机放到 dsh worker 执行。旧 TypeScript `WorkflowEngine` 仅留作静态校验与差分回归基线，不再承担插件调度。
+- 算子插件入口使用真实 dsh `ctx.workflowEngine`，加载工作流包执行显式生成的流程代码；支持包完整性校验、依赖漂移拒绝、可选阶段输入输出 schema。旧 TypeScript `WorkflowEngine` 只作静态校验和差分基线。
 - dsh 角色 session 建立、复用、清理、持久化、取消、状态查看及仅聊天恢复。
 - 共享 workspace 租约、不可变 artifact、phase 超时/取消边界、KernelBench 算子领域桥接。
 - `npu_kernelbench_custom_op.yaml` 的本地执行链已通过真实 YAML 的状态机回归：环境检测、runtime 检测/配置、分析、生成/评测修复 loop、报告；phase 0 规范化的 level/solution type 会传入 loop。

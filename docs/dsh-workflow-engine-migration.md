@@ -1,54 +1,50 @@
-# SEAM 算子流程迁入 dsh Workflow Engine
+# SEAM 算子工作流：YAML 构建与 dsh 原生执行
 
-更新：2026-11-02。**插件的算子执行入口已切到真实 `ctx.workflowEngine`，不再实例化 SEAM 自己的调度 Engine。** 已完成宿主集成和固定流程回归；尚未做真实模型/NPU 验收，也未替换项目级 Python/OpenCode 启动入口。
+更新：2026-11-05。算子路径已改为提前生成固定 JS，并按工作流包版本复用。没有修改 dsh 源码，也没有改变 KernelBench YAML 的业务阶段顺序。真实模型/NPU 验收尚未执行，项目级 workflow 不因此自动兼容。
 
-## 谁控制流程
+## 构建与运行
 
-```text
-seam_workflow(run) → Controller → strict YAML preflight
-  → dsh workflowEngine.start(fixed script, YAML args, parent, signal)
-    → dsh worker 执行固定解释器：condition / transition / dispatch / loop
-      → agent(JSON command) → SEAM 专用 SubagentProvider
-        → step：单阶段执行器 → dsh 角色 session 或 Python 领域 builtin
-        → artifact / checkpoint / hooks：宿主持久化操作
-```
+构建时，`workflow-compiler.ts` 校验 YAML，并生成显式阶段函数、顶层 switch、transition 分支、有限 for loop 和停止条件；不再加载固定的 YAML 状态机解释器。表达式求值和状态记录由 `compiled-runtime.ts` 提供，不在辅助库里查找下一阶段。`source-map.json` 保存阶段 ID、YAML 结构路径及生成 JS 行范围，不是完整的标准调试 source map。
 
-YAML 不变成提示词，LLM 不参与编排。`workflow-compiler.ts` 校验 YAML 并加载构建好的 `fixed-script.bundle.js`；脚本是固定的解释器，YAML 作为 `args` 传入，不是让模型生成 JavaScript。**循环、分支、停止条件和状态推进实际运行在 dsh workflow worker 中**，宿主只执行叶子阶段、持久化和管理资源。
+工作流包由 `workflow-package.ts` 原子发布到内容摘要目录，包含：
 
-dsh 的 workflow 脚本 API 不直接提供 SEAM builtin/artifact hook，因此使用其正式 `subagentProvider` 扩展点桥接。`agent()` 在这里是版本化 JSON RPC，不意味着每次都调用模型。provider 以 `action` 分发，不靠提示词 label 猜测；每次 run 使用随机 capability，绑定调用方 parent 身份，拒绝过期或跨 parent 请求。角色仍由 `DshRuntime` 创建独立 session，同角色重试/后续阶段复用聊天；builtin 不调用模型。
+- `workflow.js`：预先生成的流程代码和辅助库。
+- `stages.json`：宿主执行叶子阶段所需的配置。
+- `definition.json`：归档定义及角色、hooks、backend 配置；不交给 worker 解释。
+- `source.yaml`：构建输入的审计副本。
+- `source-map.json`：阶段源位置映射。
+- `manifest.json`：编译器/阶段协议版本、文件摘要、仓库依赖摘要和包 ID。
 
-## 已迁移的状态机语义
+相同构建输入产生相同包 ID；包是可信代码部署产物，不是安全沙箱。哈希不提供签名认证。部署者必须保护包目录，不能允许任务模型修改。
 
-- 顶层阶段顺序、transition、terminal、output_as、输入映射和条件表达式。
-- repair loop、角色 dispatch、stop conditions、评测字段提升、历史、停滞与迭代上限。
-- 单阶段 deadline、同角色 JSON 修正、validator 重试；重试不重置整个阶段预算。
-- workflow_start/workflow_end hooks；关键收尾 hook 失败不能留下成功状态。
-- 9 个算子 builtin、算子 validator、框架打包 solution 与失效候选保护保持原有领域实现。
-- `run/status/cancel/restore_chat/close_chat` 统一由插件控制；恢复聊天不等于续跑 workflow。
+任务启动时配置 `workflowPackages: {kernelbench: /path/to/package}` 和 `workflows: {}`，无需读取原 YAML。旧 `workflows` 配置在插件实例首次使用时编译并缓存，不每任务重读定义。修改 YAML 后重建包并更新配置/重启，不热更新运行中流程。
 
-`engine.ts` 的旧调度类仅作为差分测试基线保留；生产路径会复用其静态 YAML 校验，但不会执行旧调度器。项目级 orchestration/review、blocks、phase hooks 等未迁移能力仍在启动前明确拒绝，不能据此宣称全仓库工作流已经迁完。
+## 执行位置
 
-## 生命周期与运行证据
+1. dsh 主进程：加载和缓存包、核对依赖、获取 workspace 租约、建立本次调用身份。
+2. dsh Workflow Engine：启动真实 worker，参数只有任务 context 和调用 capability，不传入 YAML 流程对象。
+3. worker：执行生成的 JS，决定阶段、条件、循环、转移和终态。
+4. dsh 主进程插件：接收已登记阶段 ID，使用包中的阶段配置执行角色/builtin/shell，验证结果和持久化。
+5. Python bridge / KernelBench：执行已有领域逻辑、编译、设备评测。
 
-- 原生 dsh run 的 stopReason/result 映射为 SEAM 状态；native error、非法返回或取消均不能冒充完成。
-- 运行快照有 `executionEngine: dsh-workflow` 和 `dshWorkflowId`；递增 artifact 保存 `dsh-script`（含摘要和 YAML）、`dsh-run`、`dsh-result`，以及逐阶段证据。脚本 capability 不写进这些脚本 artifact。
-- 取消同时传给 dsh workflow、角色 Agent 和领域操作。无论 dsh worker 的 dispose grace 是否已结束，都等待宿主 pending 操作、角色和子进程清理后才释放 workspace/run 锁。
-- LLM/provider 取消仍是协作式，不能保证失联工具在固定时间内退出。清理未完成时不提前开放 workspace。
-- dsh 的 `agentsStarted` 包含 RPC artifact/checkpoint 等调用，**不是 LLM 调用数**。当前使用引擎默认调用预算；若扩大 loop/工作流，需复核 dsh 的 maxTotalAgents 上限。
-- 进程重启后可以恢复本插件持久化的角色聊天，但没有执行中 workflow 的断点续跑。
+worker 到主进程仍使用 dsh 的正式 `subagentProvider` 扩展点。`WorkflowTransport` 只校验 run capability/parent 和传递 step、artifact、checkpoint、hooks，不决定阶段转移。builtin 不调用模型，角色仍由 DshRuntime 创建或复用独立 session。dsh 子调用计数包含这些 RPC，不等于模型调用次数。
 
-## 配置与验证
+## 阶段输入、输出和验证
 
-见 `plugins/dsh-seam/README.md`。使用 `examples/seam.patch.yml` 叠加在兼容 dsh profile 上；overlay 显式启用 host `workflow-worker-thread` 和角色需要的基本工具，不启用让模型自由编排的 `tool-workflow`。这会增加 host 工具可见性，部署时仍需审查其他 Agent 的权限和每角色 allowlist。
+叶子阶段新增可选内联 `input_schema`、`output_schema`，由 Ajv strict draft-07 在构建时编译。运行前验证实际输入；角色结束后解析 JSON，再验证输出结构、运行领域 validator，并重新检查输出契约。输入不合法不执行；builtin 输出非法不自动重试。LLM 输出修正有限次且共享阶段 deadline。
 
-```sh
-cd plugins/dsh-seam
-npm run typecheck
-npm run build
-npm test
-npm run audit -- ../../src/workflows/npu_kernelbench_custom_op.yaml
-```
+未声明契约的旧阶段不自动获得完整业务验证。现有输入映射/条件求值保留，尚未实现跨阶段 schema 推断、引用可达性证明或任意表达式编译。未知定义字段、操作、validator 和不支持策略仍 fail closed。
 
-回归直接加载真实 dsh WorkerThreadWorkflowEngine/Subagent/AgentLoop/JSONL，验证固定算子 YAML 两轮评测失败→修复→通过的调度结果与旧执行器一致，以及环境修复分流、停滞、迭代上限、关键 hooks、超时/取消 drain、会话复用和恢复。全流程用模拟阶段结果验证状态机；另有真实 Python builtin 桥接测试。**这些不能替代真实 API、编译器和 NPU 正确性/性能验收。**
+角色 prompt/skill 和 Python 实现继续来自仓库；包绑定仓库资源摘要以拒绝依赖漂移，并非完整自包含镜像。外部 SDK、provider、模型和硬件状态不在包锁定范围，需运行时检测。并发修改部署代码不受 workspace 锁保护，应采用只读部署及显式升级。
 
-后续设备验收应保存模型/provider 配置、runtime 检测结果、源码与 solution 摘要、完整编译/评测 artifact，以及取消后无残留任务的证据；验收通过后再决定是否替换旧 launcher 和移除旧 runtime 依赖。
+## 状态与清理
+
+每个 run 独立保存 context、状态和证据，快照记录 `executionEngine: dsh-workflow`、`dshWorkflowId`、`workflowPackageId`。相同包可服务多个任务，不共享可变运行状态。任务内共享 workspace，同角色复用 session；workspace 复用仍受租约约束，不表示可恢复旧 workflow。
+
+取消传给 dsh 和操作执行器。worker dispose grace 到期后，主进程仍等待领域 pending 操作清理，再保存终态、释放 workspace。提供聊天恢复，不提供进程崩溃后的工作流续跑。旧 `engine.ts` 留作静态校验和差分测试，生产路径不实例化旧调度器。
+
+## 验收与未覆盖范围
+
+实际测试加载 dsh WorkerThreadWorkflowEngine、Subagent、AgentLoop 和 JSONL，比较旧执行器和生成代码的阶段顺序、循环、停滞、终态与状态。另测工作流包复用、删除原 YAML 后运行、内容损坏/依赖漂移拒绝、输入输出契约、取消清理和真实 Python builtin。
+
+命令与部署配置见 `plugins/dsh-seam/README.md`。项目 orchestration/review、blocks、控制阶段 schema、容器 builtin 等仍未迁移。服务器报告中的 wait/CLI/history 补丁尚未出现在本次拉取的远端；评测实时写盘和超时层级问题也未由本次架构重构解决，不应宣称硬件评测问题已修复。

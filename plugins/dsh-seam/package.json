@@ -5,14 +5,18 @@
   "type": "module",
   "exports": { ".": "./dist/plugin.js", "./engine": "./dist/engine.js" },
   "scripts": {
-    "build": "tsc && node scripts/build-fixed-script.mjs",
-    "pretest": "node scripts/build-fixed-script.mjs",
+    "build": "tsc && node scripts/build-compiled-runtime.mjs",
+    "pretest": "node scripts/build-compiled-runtime.mjs",
     "audit": "tsx scripts/audit-workflows.ts",
+    "compile:workflow": "tsx scripts/compile-workflow.ts",
     "link:dsh": "node scripts/link-dsh.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
     "test": "tsx --test tests/*.test.ts"
   },
-  "dependencies": { "yaml": "^2.8.1" },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "yaml": "^2.8.1"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-agent": ">=0.1.2-rc.1",

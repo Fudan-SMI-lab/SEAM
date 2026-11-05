@@ -21,6 +21,7 @@ import { stringify } from 'yaml'
 import * as SeamPlugin from '../src/plugin.js'
 import type { SeamController, ControllerConfig } from '../src/controller.js'
 import type { Data, RunSnapshot } from '../src/types.js'
+import { buildWorkflowPackage } from '../src/workflow-package.js'
 
 const repository = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 
@@ -206,4 +207,45 @@ test('dsh workflow routes a real operator builtin to Python without invoking the
   assert.equal(adapter.requests.length, 0)
   assert.equal(result.executionEngine, 'dsh-workflow')
   assert.ok(result.dshWorkflowId)
+})
+
+test('explicit package runs twice without YAML and each run keeps its own workspace state', async context => {
+  const { root, workflow, config } = await fixture()
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(workflow, stringify({ name: 'package-smoke', version: 1, phases: [{ id: 'validate_task', type: 'builtin', operation: 'operator_task_validate' }] }))
+  await writeFile(join(root, 'definition.json'), JSON.stringify({ name: 'package-smoke', reference: 'def run(value):\n    return value\n' }))
+  await writeFile(join(root, 'workload.jsonl'), '{"shape":[16]}\n')
+  const bundle = await buildWorkflowPackage(workflow, join(root, 'packages'), repository)
+  await rm(workflow)
+  config.workflows = {}
+  config.workflowPackages = { fixture: bundle.directory }
+  const { ctx, controller, parent } = await setup(root, new ScriptedAdapter([]), config)
+  context.after(() => ctx.fiber.dispose())
+  for (const runId of ['package-one', 'package-two']) {
+    await controller.run({ runId, workflow: 'fixture', workspace: root, context: { OPERATOR_TASK_DIR: root, RUN_LABEL: runId } }, parent)
+    const result = await settled(controller, runId)
+    assert.equal(result.status, 'complete', JSON.stringify(result))
+    assert.equal(result.workflowPackageId, bundle.id)
+    assert.equal(result.context.RUN_LABEL, runId)
+    assert.equal(result.executionEngine, 'dsh-workflow')
+  }
+})
+
+test('legacy YAML configuration compiles once per instance and reuses the package after source removal', async context => {
+  const { root, workflow, config } = await fixture()
+  context.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(workflow, stringify({ name: 'cached', version: 1, phases: [{ id: 'validate_task', type: 'builtin', operation: 'operator_task_validate' }] }))
+  await writeFile(join(root, 'definition.json'), JSON.stringify({ name: 'cached', reference: 'def run(value):\n    return value\n' }))
+  await writeFile(join(root, 'workload.jsonl'), '{"shape":[16]}\n')
+  const { ctx, controller, parent } = await setup(root, new ScriptedAdapter([]), config)
+  context.after(() => ctx.fiber.dispose())
+  await controller.run({ runId: 'cached-one', workflow: 'fixture', workspace: root, context: { OPERATOR_TASK_DIR: root } }, parent)
+  const first = await settled(controller, 'cached-one')
+  assert.equal(first.status, 'complete')
+  await rm(workflow)
+  await controller.run({ runId: 'cached-two', workflow: 'fixture', workspace: root, context: { OPERATOR_TASK_DIR: root } }, parent)
+  const second = await settled(controller, 'cached-two')
+  assert.equal(second.status, 'complete')
+  assert.ok(first.workflowPackageId)
+  assert.equal(first.workflowPackageId, second.workflowPackageId)
 })
