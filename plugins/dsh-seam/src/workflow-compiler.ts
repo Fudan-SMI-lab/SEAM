@@ -27,7 +27,7 @@ export async function generateWorkflow(definition: Workflow, containerBackend = 
   const names = new Map(all.map((step, index) => [step.id, `step_${index}`]))
   const stages = Object.fromEntries(all.filter(step => !['loop', 'dispatch'].includes(step.type ?? 'llm')).map(step => [step.id, step]))
   const runtime = await readFile(new URL('../dist/compiled-runtime.bundle.js', import.meta.url), 'utf8')
-  const lines = [runtime, `const runtime = SeamCompiledRuntime.createRuntime(args.context, ${json(workflow.globals ?? {})}, args.token, agent, phase);`, 'const scope = runtime.scope;']
+  const lines = [runtime, `const runtime = SeamCompiledRuntime.createRuntime(args.context, ${json(workflow.globals ?? {})}, args.token, agent, phase, args.outputDir);`, 'const scope = runtime.scope;']
   const sourceMap: CompiledWorkflow['sourceMap'] = []
   const emit = (line: string) => { lines.push(line) }
   const lineCount = () => lines.join('\n').split('\n').length

@@ -80,7 +80,7 @@ export class NativeWorkflow {
       await this.options.store.artifact('dsh-script', { engine: 'dsh-workflow', script, sha256: createHash('sha256').update(script).digest('hex'), workflow: this.options.workflow })
       signal.throwIfAborted()
       binding = this.transport.bind(this.parent, (command, callerSignal) => this.operation(command, AbortSignal.any([signal, callerSignal])))
-      this.native = this.engine.start({ script, meta: { name: this.options.workflow.name, description: 'Compiled SEAM workflow' }, args: { context: this.options.context, token: binding.token }, subagentProvider: this.transport.name, parent: this.parent, signal })
+      this.native = this.engine.start({ script, meta: { name: this.options.workflow.name, description: 'Compiled SEAM workflow' }, args: { context: this.options.context, token: binding.token, outputDir: this.options.store.directory }, subagentProvider: this.transport.name, parent: this.parent, signal })
       this.snapshot.dshWorkflowId = this.native.id
       await this.checkpoint()
       await this.options.store.artifact('dsh-run', { id: this.native.id, provider: this.transport.name })

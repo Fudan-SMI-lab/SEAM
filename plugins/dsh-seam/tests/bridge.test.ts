@@ -90,7 +90,7 @@ test('prompt bundles round artifacts and suggestions together, with an explicit 
   assert.ok(prompt.includes('fixture-sha'))
   assert.ok(prompt.includes('inspect the actual source types'))
   const limited = new DomainBridge({ repository, python, outputDir: root, maxPromptBytes: 10 })
-  await assert.rejects(limited.render(execution), /exceeds max_prompt_bytes/)
+  await assert.rejects(limited.render(execution), /exceeds .+ after degradation/)
 })
 
 test('project prompt rendering receives generic phase, project, mapped input and prior state', async context => {

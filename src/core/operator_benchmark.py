@@ -513,6 +513,36 @@ def evaluate_and_summarize_operator(
     ) if (Path(task_dir) / "workload.jsonl").is_file() else 0
     result["expected_workloads"] = expected_workloads
     result["trace_complete"] = result.get("total_workloads", 0) == expected_workloads
+
+    # Workload execution state tracking
+    if traces_path.is_file():
+        traces = _read_jsonl(traces_path)
+        workload_states = []
+        for idx, trace in enumerate(traces):
+            status = _status(trace)
+            workload_states.append({
+                "index": idx,
+                "uuid": trace.get("uuid", ""),
+                "status": status,
+                "executed": True
+            })
+
+        # Add not-run workloads
+        for idx in range(len(traces), expected_workloads):
+            workload_states.append({
+                "index": idx,
+                "uuid": "",
+                "status": "NOT_RUN",
+                "executed": False
+            })
+
+        result["workload_states"] = workload_states
+        result["executed_count"] = len(traces)
+        result["not_run_count"] = expected_workloads - len(traces)
+    else:
+        result["workload_states"] = []
+        result["executed_count"] = 0
+        result["not_run_count"] = expected_workloads
     result["evaluation_valid"] = bool(
         result.get("evaluation_status") == "completed"
         and result.get("trace_complete")
@@ -670,6 +700,8 @@ def build_failure_manifest(
         ),
         "total": result.get("total_workloads", 0),
         "passed": result.get("passed_workloads", 0),
+        "executed_count": result.get("executed_count", 0),
+        "not_run_count": result.get("not_run_count", 0),
         "statuses": result.get("statuses", {}),
         "failure_groups": failures,
         "trace_complete": bool(result.get("trace_complete")),

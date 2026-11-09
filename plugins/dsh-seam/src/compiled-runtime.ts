@@ -1,10 +1,11 @@
 import { conditionDecision, pythonString, resolve, truth } from './expressions.js'
 import { failureEvidence } from './evidence.js'
+import { compactHistoryEntry, summarizeHistory, type CompactHistory } from './history-compactor.js'
 import type { Data, Result, Scope } from './types.js'
 
 type AgentCall = (prompt: string, options: { label: string }) => Promise<unknown>
 
-export function createRuntime(context: Data, globals: Data, token: string, agent: AgentCall, phase: (title: string) => void) {
+export function createRuntime(context: Data, globals: Data, token: string, agent: AgentCall, phase: (title: string) => void, outputDir: string) {
   const scope: Scope = { state: {}, context, globals, loop_vars: {}, loop_state: {}, loop_history: [], step_outputs: {} }
   let currentPhase = ''
   const rpc = async (action: string, payload: Data): Promise<Data> => {
@@ -54,7 +55,9 @@ export function createRuntime(context: Data, globals: Data, token: string, agent
       }
     },
     remember: (current: Scope, iteration: number, status: Result['status']) => {
-      current.loop_history.push({ iteration, status, outputs: JSON.parse(JSON.stringify(current.step_outputs)) })
+      const compact = compactHistoryEntry(iteration, status, current.step_outputs, outputDir) as unknown as Data
+      current.loop_history.push(compact)
+      current.loop_history = summarizeHistory(current.loop_history as unknown as CompactHistory[], 5) as unknown as Data[]
     },
     stagnates: (current: Scope, threshold: number): boolean => {
       const signature = failureEvidence(current.loop_state).split('\n').map(line => line.trimEnd()).join('\n')
